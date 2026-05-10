@@ -120,6 +120,26 @@ def _bucket_to_minutes(b: str) -> int:
     return -1
 
 
+def _ts_to_et_bucket_minutes(ts_str: str) -> int:
+    """Convert an ISO UTC timestamp to ET minutes-from-midnight.
+
+    Why: the workflow that fetched some ticker series (pull-rth-bars.yml)
+    used a hardcoded UTC-5 offset which produces WRONG et_bucket values
+    on DST dates (March 9 - November 1). This helper re-derives the bucket
+    from the ts field with proper US/Eastern timezone handling, so we
+    don't rely on a possibly-stale et_bucket string. Returns -1 on parse
+    failure.
+    """
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        et = ts.astimezone(ZoneInfo("US/Eastern"))
+        return et.hour * 60 + et.minute
+    except Exception:
+        return -1
+
+
 # ---------- bar loading ----------
 @dataclass
 class Bar1m:
@@ -144,7 +164,14 @@ def load_day_bars(corpus_dir: Path, date: str, ticker: str) -> list[Bar1m]:
                 d = json.loads(line)
             except Exception:
                 continue
-            bkt = _bucket_to_minutes(d.get("et_bucket", ""))
+            # Prefer DST-aware bucket re-derived from ts; fall back to
+            # the saved et_bucket only if ts is missing/unparseable.
+            # The pull-rth-bars fetcher had a DST bug (hardcoded UTC-5);
+            # using ts here normalizes both old and new ticker series.
+            ts_str = d.get("ts", "")
+            bkt = _ts_to_et_bucket_minutes(ts_str) if ts_str else -1
+            if bkt < 0:
+                bkt = _bucket_to_minutes(d.get("et_bucket", ""))
             if bkt < 0:
                 continue
             o = d.get("open"); h = d.get("high"); l = d.get("low"); c = d.get("close")
