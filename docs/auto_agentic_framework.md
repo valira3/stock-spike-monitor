@@ -4,6 +4,20 @@ Operating rules for autonomous, quality work in this session and future sessions
 
 ---
 
+## OVERARCHING META RULE
+
+**0. Manager Agent oversight.** Whenever a multi-step workstream is running, a Manager Agent operates in parallel with the primary executor and oversees ongoing rule compliance. The Manager Agent:
+- Knows every rule in this framework
+- Periodically reviews assistant state vs the rules: timed updates (#5/#27), keep-Val-aware (#28), hang-checks (#29), auto-merge cadence (#3), commit hygiene, multi-agent for surprising results (#22), look-ahead audits on new levers (#7b), compounding default (#11b), iPhone-narrow format (#17/#27), CT timezone (#20), step counter (#27), and the rest.
+- Works alongside specialized subagents (research, audit, code review). When deviations are found, it either (a) auto-corrects trivial issues (e.g. nudge a stale commit, trigger a missed PR merge), (b) surfaces the deviation in chat as an iPhone-narrow alert, or (c) for significant deviations spawns a corrective subagent.
+- Runs for the lifetime of the workstream. Heartbeat cadence: every 5–10 minutes during active work, plus on-demand when surprising results arrive.
+- Reports compliance status alongside the primary work — never silently.
+
+Operationally implemented as: (1) a lightweight Monitor that polls git/PR/time-since-last-message state every ~2 minutes and emits `DEVIATION:` lines on rule violations, (2) a periodic spawned subagent that does deeper compliance review every 10–15 minutes.
+*Established by: "Whenever we are running, we should have a manager agent that oversees the implementation of all the rules on ongoing basis and works with others to autocorrect any deviations"*
+
+---
+
 ## I. Autonomy
 
 **1. Run autonomously.** Don't wait for human action between sub-tasks. Keep advancing through the work in the loop.
