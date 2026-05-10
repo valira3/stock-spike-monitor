@@ -64,6 +64,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
+# v15 earnings-window blackout
+try:
+    from tools.orb_earnings_calendar import is_earnings_window
+except ImportError:
+    # When run as a script with cwd=repo root, sibling import works:
+    try:
+        from orb_earnings_calendar import is_earnings_window  # type: ignore
+    except ImportError:
+        def is_earnings_window(*a, **k):  # fallback no-op
+            return False
+
 
 # ---------- env knobs ----------
 def _envf(name: str, default: float) -> float:
@@ -230,6 +241,13 @@ class ORBConfig:
     skip_gap_above_pct: float = 0.0      # skip ticker on day if |today_open - prev_close|/prev_close > this; 0 = off
     require_prior_nr_n: int = 0          # require prior session range = min of last N daily ranges (Crabel NR_N); 0 = off
     skip_prior_wr_n: int = 0             # skip if prior session range = max of last N daily ranges (wide-range exhaustion); 0 = off
+    # v15 earnings-window blackout -- skip per-ticker signals when the
+    # ticker is within a [-N, +M] day window of its scheduled earnings
+    # announcement. CLEAN look-ahead: earnings dates are public schedules
+    # known weeks in advance.
+    skip_earnings_window: bool = False   # if True, gate on EARNINGS_CALENDAR
+    earnings_days_before: int = 1        # days before announcement to skip
+    earnings_days_after: int = 0         # days after announcement to skip
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -290,6 +308,9 @@ class ORBConfig:
             skip_gap_above_pct=_envf("ORB_SKIP_GAP_ABOVE_PCT", 0.0),
             require_prior_nr_n=_envi("ORB_REQUIRE_PRIOR_NR_N", 0),
             skip_prior_wr_n=_envi("ORB_SKIP_PRIOR_WR_N", 0),
+            skip_earnings_window=_envs("ORB_SKIP_EARNINGS_WINDOW", "0") == "1",
+            earnings_days_before=_envi("ORB_EARNINGS_DAYS_BEFORE", 1),
+            earnings_days_after=_envi("ORB_EARNINGS_DAYS_AFTER", 0),
         )
 
 
@@ -1038,6 +1059,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     gap_signals_dropped = 0
     nr_signals_dropped = 0
     wr_signals_dropped = 0
+    earnings_signals_dropped = 0
     if (cfg.skip_gap_above_pct > 0 or cfg.require_prior_nr_n > 0
             or cfg.skip_prior_wr_n > 0):
         daily_stats = compute_daily_session_stats(
@@ -1189,6 +1211,20 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     ticker_block[tk] = bool(is_wr)
                 if ticker_block[tk]:
                     wr_signals_dropped += 1
+                else:
+                    kept.append(p)
+            candidate_pairs = kept
+
+        # v15 earnings-window blackout: drop signals on tickers within
+        # [-N, +M] days of their scheduled earnings announcement. Public
+        # schedule, not a leak.
+        if cfg.skip_earnings_window and candidate_pairs:
+            kept = []
+            for p in candidate_pairs:
+                if is_earnings_window(p["ticker"], date,
+                                      days_before=cfg.earnings_days_before,
+                                      days_after=cfg.earnings_days_after):
+                    earnings_signals_dropped += 1
                 else:
                     kept.append(p)
             candidate_pairs = kept
@@ -1345,6 +1381,8 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "gap_signals_dropped": gap_signals_dropped,
         "nr_signals_dropped": nr_signals_dropped,
         "wr_signals_dropped": wr_signals_dropped,
+        "skip_earnings_window": cfg.skip_earnings_window,
+        "earnings_signals_dropped": earnings_signals_dropped,
         "config": {
             "strategy": "orb_classical",
             "or_minutes": cfg.or_minutes,
