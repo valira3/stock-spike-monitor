@@ -4,6 +4,62 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.17.0 (2026-05-10) -- v10 ORB exit cutover wired into broker/positions.py
+
+Ninth PR in v10 rollout. Wires the v10 `check_exit_by_ticker` API
+into `broker/positions.py:manage_positions` and `manage_short_positions`,
+making v10 the live exit path for v10-managed positions.
+
+### A. Changes in `broker/positions.py`
+
+  1. Import `orb.live_runtime` + `engine.timing.minutes_since_et_midnight`
+  2. In `manage_positions` (long side) BEFORE `_run_sentinel`:
+     - If `ORB_LIVE_MODE=1`: call `_orb_rt.check_exit_by_ticker(...)`
+     - On `exit=True`: close the position with reason `V10_<exit_reason>`
+       (e.g. `V10_TARGET`, `V10_STOP`, `V10_BE_STOP`, `V10_EOD`)
+     - On `exit=False` AND v10 owns the position (reason != "no_open_v10_position"):
+       skip the legacy Sentinel for this position (v10 said "stay")
+     - On `exit=False, reason="no_open_v10_position"`: fall through to
+       legacy Sentinel (legacy-held position, e.g. opened before
+       ORB_LIVE_MODE was set)
+  3. Mirror logic for `manage_short_positions`
+  4. Every v10 exit emits `[V79-ORB-EXIT] {side} {ticker} reason=...
+     exit_price=...` for forensic analysis
+
+### B. Coexistence semantics
+
+`ORB_LIVE_MODE=1`: v10 owns exits for v10-managed positions; legacy
+Sentinel handles legacy positions during the transition.
+
+`ORB_LIVE_MODE=0`: kill-switch. All exit decisions revert to legacy
+Sentinel. v10 runtime stays bootstrapped (dashboard observability).
+
+### C. Tests
+
+All 174 v7.x strategy tests still pass. The exit wiring itself is
+hard to unit-test inside `broker/positions.py` because that module
+has heavy `tg.fetch_1min_bars` / `tg.close_position` dependencies;
+those are integration concerns for paper-fire validation in PR12.
+
+### Effect
+
+**v10 ORB now owns ALL trade lifecycle decisions for v10 positions:**
+entry detection (PR7), risk admission (PR4-5), and exit (THIS PR).
+
+The legacy Tiger Sovereign Sentinel remains as a fallback only for
+positions opened outside the v10 path. As long as `ORB_LIVE_MODE=1`
+stays on, every new position is v10-managed end-to-end.
+
+### Look-ahead audit per rule #7b
+
+  - bar_high/bar_low taken from the latest 1m bar's `highs[-1]`/`lows[-1]`
+    (the forming bar's intra-bar wicks), with current_price as fallback
+  - bar_close = current_price (most recent print)
+  - bar_bucket_min computed from `timestamps[-1]` via DST-aware helper
+  - No future data; no cross-day leak
+
+---
+
 ## v7.16.0 (2026-05-10) -- v10 ORB exit-by-ticker API for broker wiring
 
 Eighth PR in v10 rollout. Adds the `check_exit_by_ticker` API on
