@@ -75,6 +75,18 @@ except ImportError:
         def is_earnings_window(*a, **k):  # fallback no-op
             return False
 
+# v16 VIX gate
+try:
+    from tools.orb_vix_loader import load_vix_closes, vix_close_for
+except ImportError:
+    try:
+        from orb_vix_loader import load_vix_closes, vix_close_for  # type: ignore
+    except ImportError:
+        def load_vix_closes(*a, **k):  # fallback empty
+            return {}
+        def vix_close_for(*a, **k):
+            return None
+
 
 # ---------- env knobs ----------
 def _envf(name: str, default: float) -> float:
@@ -248,6 +260,12 @@ class ORBConfig:
     skip_earnings_window: bool = False   # if True, gate on EARNINGS_CALENDAR
     earnings_days_before: int = 1        # days before announcement to skip
     earnings_days_after: int = 0         # days after announcement to skip
+    # v16 VIX absolute-level gate -- skip the entire trading day if
+    # VIX_close(D-1) > threshold. Source: TOS Indicators, Options.cafe;
+    # high-VIX regimes break ORB continuation. CLEAN look-ahead: prior
+    # session close is fully observable.
+    skip_vix_above: float = 0.0          # 0 = off; e.g. 25 to skip if VIX(D-1) > 25
+    vix_csv_path: str = "data/external/vix-daily.csv"
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -311,6 +329,8 @@ class ORBConfig:
             skip_earnings_window=_envs("ORB_SKIP_EARNINGS_WINDOW", "0") == "1",
             earnings_days_before=_envi("ORB_EARNINGS_DAYS_BEFORE", 1),
             earnings_days_after=_envi("ORB_EARNINGS_DAYS_AFTER", 0),
+            skip_vix_above=_envf("ORB_SKIP_VIX_ABOVE", 0.0),
+            vix_csv_path=_envs("ORB_VIX_CSV_PATH", "data/external/vix-daily.csv"),
         )
 
 
@@ -1064,6 +1084,11 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             or cfg.skip_prior_wr_n > 0):
         daily_stats = compute_daily_session_stats(
             corpus_dir, dates, list(tickers))
+    # v16 VIX gate: load CSV once
+    vix_closes: dict = {}
+    vix_days_skipped = 0
+    if cfg.skip_vix_above > 0:
+        vix_closes = load_vix_closes(cfg.vix_csv_path)
 
     for date in dates:
         # v11 compounding: at the start of each day, snapshot the running
@@ -1092,6 +1117,17 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     regime_skip_day = True
                     regime_skip_reason = "regime_low_or"
                     regime_days_skipped_low_or += 1
+
+        # v16 VIX absolute-level gate: skip whole day if VIX(D-1) > threshold.
+        # Halts new entries entirely (compounding base preserved). CLEAN
+        # look-ahead: prior session close is the most recent VIX value
+        # available before the open.
+        if cfg.skip_vix_above > 0 and not regime_skip_day:
+            prior_vix = vix_close_for(vix_closes, dates, date)
+            if prior_vix is not None and prior_vix > cfg.skip_vix_above:
+                regime_skip_day = True
+                regime_skip_reason = f"vix_high_{prior_vix:.1f}"
+                vix_days_skipped += 1
 
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
@@ -1383,6 +1419,9 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "wr_signals_dropped": wr_signals_dropped,
         "skip_earnings_window": cfg.skip_earnings_window,
         "earnings_signals_dropped": earnings_signals_dropped,
+        # v16 VIX gate diagnostics
+        "skip_vix_above": cfg.skip_vix_above,
+        "vix_days_skipped": vix_days_skipped,
         "config": {
             "strategy": "orb_classical",
             "or_minutes": cfg.or_minutes,
