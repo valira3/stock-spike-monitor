@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.11.0 (2026-05-10) -- v10 ORB live-adapter bridge
+
+Third PR in the v10 ORB rollout. Adds `orb/live_adapter.py`: the bridge
+between `OrbEngine` and the `engine/scan.py` callback API. Still no
+production wiring -- `engine/scan.py` is unchanged. PR4 will make the
+actual call-site swap.
+
+### A. New module: `orb/live_adapter.py`
+
+`LiveAdapter` per portfolio. Public surface:
+
+  - `feed_bar(ticker, ohlc)` -- forwards a 1-min bar to the OR window
+  - `check_entry(ticker, side, five_min_close, next_open, equity)` ->
+    `EntryResult` with full geometry (price, stop, target, shares,
+    risk_dollars, ticket_id) on admission, or diagnostic `reason_no`
+  - `check_exit(ticker, ticket_id, bar_high, bar_low, bar_close,
+    bar_bucket_min)` -> `ExitResult` (target/stop/be_stop/eod) or
+    no-op
+  - `reset_session()` -- clear open positions
+
+Adapter holds `OrbPosition` map keyed by `ticket_id` so callers don't
+track that themselves. `LiveAdapterRegistry` provides one adapter per
+portfolio_id.
+
+### B. Tests (`tests/strategy/test_orb_live_adapter.py`)
+
+15 new tests:
+  - `feed_bar` routes to engine's OR window
+  - `check_entry` long + short admission paths
+  - `check_entry` rejection paths (no signal, opposite side, invalid
+    side, risk-cap reject)
+  - `check_exit` target / stop / no-exit-in-range / unknown-ticket
+  - `reset_session` clears open-position map
+  - Multi-portfolio: 3 adapters take 3 entries on AAPL with different
+    ticket ids and independent equity scaling
+  - Registry behavior
+
+### C. Test totals
+
+  v7.x strategy tests: **110/110 passing** (95 + 15 new).
+
+### Effect
+
+No production behavior change. Live engine still routes through Tiger
+Sovereign. PR4 will swap `engine/scan.py:_per_ticker_tick` to call
+`LiveAdapter.check_entry / check_exit` and replace the legacy path.
+
+---
+
 ## v7.10.0 (2026-05-10) -- v10 ORB engine + exits
 
 Second PR in the v10 ORB rollout. Adds the public engine surface and
