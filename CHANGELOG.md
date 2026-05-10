@@ -4,6 +4,98 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.34.0 (2026-05-10) -- Tier-1 accuracy verification (pricing-math + leaks + reference engine)
+
+Twenty-sixth PR in v10 rollout. Adds three layers of accuracy
+assurance that run across the existing scenario suite.
+
+### A. Pricing-math property tests (12 parametrized cases)
+
+For every admission, assert the spec-derived invariants hold exactly:
+  - `target = entry + rr * (entry - stop)` (long)
+  - `target = entry - rr * (stop - entry)` (short)
+  - `stop  = OR_opp +/- stop_buffer_bps`
+  - `shares = min(risk_budget / risk_per_share, notional_cap / entry)`
+  - `notional     <= max_trade_notional_pct * equity`
+  - `risk_dollars <= risk_per_trade_pct * equity` (+ epsilon)
+  - `risk_dollars matches risk_per_share * shares`
+
+11 hand-curated cases sweep long/short, varying entry prices, OR
+widths within keystone bounds, equity sizes, and a notional-cap
+edge case. Any arithmetic regression (off-by-one bps, wrong-side
+stop, sizing miscalc, RR drift) fails the test.
+
+### B. Round-trip leak detector (5 scenarios)
+
+After every scenario, assert RiskBook bookkeeping reconciles:
+  - `sum(open_tickets.risk_dollars) == _open_risk`
+  - `sum(open_tickets.notional)     == _open_notional`
+  - Every admit eventually has exactly one release
+  - On exit (target/stop/eod), `open_count` returns to 0
+
+Run across admit+target, admit+stop, admit+eod, two simultaneous
+admits with one release, and daily-kill-triggered-on-stop paths.
+Catches state leaks where the RiskBook would have eventually
+blocked legitimate admissions because of orphaned tickets.
+
+### C. Spec-as-code reference engine (geometry, 30 LOC)
+
+`reference_geometry(side, or_high, or_low, entry, equity)` -- an
+independent reimplementation of the v10 position geometry in plain
+Python that does NOT touch any `orb/*` code. Runs alongside every
+admission in 5 parametrized parity cases; geometry must agree to
+within $0.005.
+
+The reference itself has 7 unit tests asserting it encodes the spec
+correctly (RR holds long/short, stop above/below OR opposite, one_r
+formula, notional cap behavior). If the reference were wrong, the
+live engine could match it and still be wrong -- so the reference is
+itself test-covered.
+
+### Tests
+
+**321 strategy tests pass** (was 294, +27 new). 8 sandbox-skipped.
+
+### Why this matters
+
+Each admission was already going through unit tests for individual
+components, but no test had so far asserted that the FULL geometry
++ sizing math matches the spec for every admission across the
+suite. The pricing-math property test runs on every parametrized
+case; if v7.35.0 introduces a regression in `make_position` or
+`try_enter`'s sizing, the test will fail with a clear "X != Y"
+error pointing at the exact field.
+
+The leak detector catches the class of bug where a ticket is
+admitted but never released -- the RiskBook's internal state
+would silently drift, eventually blocking legitimate admissions
+"for no apparent reason" in production.
+
+The reference engine cross-check protects against a subtle class
+of regression: where both the live engine and the unit tests
+make the same systematic error (e.g. wrong RR direction). Since
+the reference uses ONLY the spec text, it cannot share that bug.
+
+### Deferred to PR27+
+
+Tier 1A (backtest <-> live parity test using `tools/orb_backtest.py`)
+needs the backtest wrapped for an in-memory drive; ~300 LOC.
+
+Tier 2 items (Hypothesis property tests, golden ledger snapshots,
+spec-as-code reference for the FSM not just geometry, boundary-value
+matrix sweep) remain queued.
+
+### Files
+
+- `bot_version.py` -- 7.33.0 -> 7.34.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.34.0
+- `tests/strategy/test_orb_accuracy.py` -- new (27 tests across
+  4 classes: TestPricingMathAcrossScenarios, TestRoundTripLeaks,
+  TestReferenceGeometryAgreement, TestReferenceGeometry)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.33.0 (2026-05-10) -- Simulator coverage expansion + session-start equity fix
 
 Twenty-fifth PR in v10 rollout. Closes the simulator-coverage audit
