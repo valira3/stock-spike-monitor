@@ -1,6 +1,14 @@
 """broker.positions \u2014 per-tick position management.
 
 Extracted from trade_genius.py in v5.11.2 PR 3.
+
+v7.17.0: v10 ORB exit cutover. When ORB_LIVE_MODE=1, the v10 ORB
+runtime owns exits for positions it admitted via the entry route.
+The legacy Tiger Sentinel A/B/C (`_run_sentinel`) path is bypassed
+for v10-managed positions; it remains the fallback path for any
+positions that were opened BEFORE the v10 entry route went live or
+that were opened directly via legacy callbacks (e.g. via ORB_LIVE_MODE
+toggled mid-session).
 """
 
 from __future__ import annotations
@@ -11,6 +19,10 @@ import sys as _sys
 import time as _time
 
 from broker.orders import check_breakout  # noqa: F401
+
+# v7.17.0: v10 ORB exit routing
+import orb.live_runtime as _orb_rt
+from engine.timing import minutes_since_et_midnight as _to_et_min
 
 # v5.26.0 \u2014 broker.stops module deleted. Imports were unused in this
 # file's body and the surviving R-2 hard stop flows through the
@@ -987,13 +999,49 @@ def manage_positions():
         current_price = bars["current_price"]
         pos = positions[ticker]
 
-        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (parallel
-        # alarms A & B & C). Spec-literal: A_LOSS=-$500 hard floor,
+        # v7.17.0: v10 ORB exit cutover.
+        # When ORB_LIVE_MODE=1 (default), the v10 runtime owns exits for
+        # positions it admitted. Legacy Tiger Sentinel A/B/C is the
+        # fallback for legacy-held positions (those that exist in
+        # tg.positions but have no v10 ticket -- e.g. opened before
+        # ORB_LIVE_MODE flipped on, or opened via the legacy fallback
+        # path when ORB_LIVE_MODE=0 was temporarily set).
+        _v10_handled = False
+        if _orb_rt.is_live_mode_on():
+            try:
+                _ts_arr = bars.get("timestamps") or []
+                _bucket = _to_et_min(int(_ts_arr[-1])) if _ts_arr else 600
+                _highs = bars.get("highs") or []
+                _lows = bars.get("lows") or []
+                _bar_h = float(_highs[-1] if _highs and _highs[-1] is not None else current_price)
+                _bar_l = float(_lows[-1] if _lows and _lows[-1] is not None else current_price)
+                _v10_res = _orb_rt.check_exit_by_ticker(
+                    portfolio_id="main", ticker=ticker,
+                    bar_high=_bar_h, bar_low=_bar_l,
+                    bar_close=float(current_price),
+                    bar_bucket_min=_bucket,
+                )
+                if _v10_res.exit:
+                    logger.info(
+                        "[V79-ORB-EXIT] long %s reason=%s exit_price=%.4f",
+                        ticker, _v10_res.reason, _v10_res.price,
+                    )
+                    tickers_to_close.append(
+                        (ticker, _v10_res.price, f"V10_{_v10_res.reason.upper()}"))
+                    _v10_handled = True
+                elif _v10_res.reason != "no_open_v10_position":
+                    # v10 owns this position; v10 said "stay" -> skip Sentinel
+                    _v10_handled = True
+            except Exception as _e:
+                logger.warning("[V79-ORB-EXIT] long %s error: %s", ticker, _e)
+                # Fall through to legacy on exception (defensive)
+        if _v10_handled:
+            continue
+
+        # Legacy Tiger Sovereign Sentinel Loop (fallback for non-v10
+        # positions). Spec-literal: A_LOSS=-$500 hard floor,
         # A2=-1% over 60s, B=closed 5m close < 9-EMA, C=Titan Grip
-        # Harvest. Alarms are evaluated INDEPENDENTLY (not
-        # short-circuited). Sole exit decision-maker as of v5.13.10
-        # \u2014 the legacy phase-machine / ladder / RED_CANDLE path
-        # was removed when LEGACY_EXITS_ENABLED retired.
+        # Harvest. Alarms are evaluated INDEPENDENTLY.
         _sentinel_reason = _run_sentinel(
             ticker,
             _SENTINEL_SIDE_LONG,
@@ -1032,10 +1080,40 @@ def manage_short_positions():
             continue
         current_price = bars["current_price"]
 
-        # v5.13.0 PR 2 \u2014 Tiger Sovereign Sentinel Loop (short side
-        # mirror). Alarm A: -$500 / -1%/min. Alarm B: 5m close ABOVE
-        # 9-EMA fires. Alarms run in parallel; sole exit path as of
-        # v5.13.10.
+        # v7.17.0: v10 ORB exit cutover (short side mirror).
+        _v10_handled_s = False
+        if _orb_rt.is_live_mode_on():
+            try:
+                _ts_arr = bars.get("timestamps") or []
+                _bucket = _to_et_min(int(_ts_arr[-1])) if _ts_arr else 600
+                _highs = bars.get("highs") or []
+                _lows = bars.get("lows") or []
+                _bar_h = float(_highs[-1] if _highs and _highs[-1] is not None else current_price)
+                _bar_l = float(_lows[-1] if _lows and _lows[-1] is not None else current_price)
+                _v10_res = _orb_rt.check_exit_by_ticker(
+                    portfolio_id="main", ticker=ticker,
+                    bar_high=_bar_h, bar_low=_bar_l,
+                    bar_close=float(current_price),
+                    bar_bucket_min=_bucket,
+                )
+                if _v10_res.exit:
+                    logger.info(
+                        "[V79-ORB-EXIT] short %s reason=%s exit_price=%.4f",
+                        ticker, _v10_res.reason, _v10_res.price,
+                    )
+                    tg.close_short_position(
+                        ticker, _v10_res.price,
+                        reason=f"V10_{_v10_res.reason.upper()}",
+                    )
+                    _v10_handled_s = True
+                elif _v10_res.reason != "no_open_v10_position":
+                    _v10_handled_s = True
+            except Exception as _e:
+                logger.warning("[V79-ORB-EXIT] short %s error: %s", ticker, _e)
+        if _v10_handled_s:
+            continue
+
+        # Legacy Tiger Sovereign Sentinel (short side mirror).
         _sentinel_reason_s = _run_sentinel(
             ticker,
             _SENTINEL_SIDE_SHORT,
