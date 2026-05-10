@@ -83,6 +83,12 @@ class LiveAdapter:
         # ticket_id -> OrbPosition. Keyed on ticket so multiple positions
         # per ticker per day work (within max_trades_per_day cap).
         self._open_positions: dict[str, _exits.OrbPosition] = {}
+        # ticker -> active ticket_id. Reverse lookup so the per-tick exit
+        # path in broker/positions.py can find the v10 position state
+        # given just a ticker. Note: at most one open v10 position per
+        # (portfolio, ticker) per day under v10 semantics (max_trades is
+        # serial, not parallel).
+        self._ticker_to_ticket: dict[str, str] = {}
         # Per-ticker last seen 5-min close (for fast detect_breakout calls)
         self._last_5m_close: dict[str, float] = {}
 
@@ -93,6 +99,7 @@ class LiveAdapter:
         separately by the caller (typically once for all adapters).
         """
         self._open_positions.clear()
+        self._ticker_to_ticket.clear()
         self._last_5m_close.clear()
 
     # --- bar feed ---
@@ -156,6 +163,7 @@ class LiveAdapter:
 
         pos = admission.position
         self._open_positions[pos.risk_ticket_id] = pos
+        self._ticker_to_ticket[ticker] = pos.risk_ticket_id
         return EntryResult(
             ok=True,
             side=s,
@@ -195,7 +203,35 @@ class LiveAdapter:
         # Exit triggered: release ticket + drop from open map
         self.engine.on_exit(pos, decision)
         self._open_positions.pop(ticket_id, None)
+        # Drop from ticker map only if it points to this ticket (defensive
+        # against a re-entry having overwritten the mapping in between)
+        if self._ticker_to_ticket.get(ticker) == ticket_id:
+            del self._ticker_to_ticket[ticker]
         return ExitResult(exit=True, reason=decision.reason, price=decision.price)
+
+    def check_exit_by_ticker(self, ticker: str, *,
+                             bar_high: float, bar_low: float,
+                             bar_close: float,
+                             bar_bucket_min: int) -> ExitResult:
+        """Per-bar exit evaluation by ticker (no ticket_id needed).
+
+        Convenience for callers (broker/positions.py:manage_positions)
+        that don't track v10 ticket ids on their position dicts. Looks
+        up the active ticket via the ticker_to_ticket reverse map.
+
+        Returns ExitResult.exit=False with reason "no_open_v10_position"
+        if there's no v10 position open for `ticker`. This is the
+        common case under v10/legacy coexistence -- legacy positions
+        still in tg.positions don't have a v10 ticket.
+        """
+        ticket_id = self._ticker_to_ticket.get(ticker)
+        if ticket_id is None:
+            return ExitResult(exit=False, reason="no_open_v10_position")
+        return self.check_exit(
+            ticker, ticket_id,
+            bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+            bar_bucket_min=bar_bucket_min,
+        )
 
     # --- introspection ---
 
