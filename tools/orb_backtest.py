@@ -185,7 +185,11 @@ class ORBConfig:
     # notional. Audit found 25x leverage on a $100k account; these cap it.
     max_trade_notional_pct: float = 25.0    # one trade caps at 25% account
     max_concurrent_notional_mult: float = 2.0  # all-trades concurrent <= 2x acct
-    daily_loss_kill_pct: float = 5.0  # halt new entries after -5% intraday
+    # v9 risk-budget caps -- user constraint: max daily loss = $500
+    # (= 0.5% of $100k). Both caps below default to $500.
+    max_concurrent_risk_dollars: float = 500.0  # sum of open risk_dollars cap
+    daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
+    risk_per_trade_pct_default = 0.25  # see env override below
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -204,7 +208,10 @@ class ORBConfig:
             range_max_pct=_envf("ORB_RANGE_MAX_PCT", 0.015),
             volume_mult=_envf("ORB_VOLUME_MULT", 0.0),
             max_trades_per_day=_envi("ORB_MAX_TRADES_PER_DAY", 1),
-            risk_per_trade_pct=_envf("ORB_RISK_PER_TRADE_PCT", 1.0),
+            # v9: risk per trade default tightened from 1.0% to 0.25%
+            # ($250 risk on a $100k account) so that a single stop fire
+            # is well within the $500/day loss cap.
+            risk_per_trade_pct=_envf("ORB_RISK_PER_TRADE_PCT", 0.25),
             account=_envf("ORB_ACCOUNT", 100_000.0),
             blocklist=bl,
             entry_slippage_bps=_envf("ORB_ENTRY_SLIPPAGE_BPS", 5.0),
@@ -214,7 +221,14 @@ class ORBConfig:
             max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
             max_concurrent_notional_mult=_envf(
                 "ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
-            daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 5.0),
+            # v9 risk budget: total open risk_dollars must stay <= this
+            # cap. With $500 default and $250/trade risk, max 2 open
+            # positions can stop simultaneously (= $500 worst case).
+            max_concurrent_risk_dollars=_envf(
+                "ORB_MAX_CONCURRENT_RISK_DOLLARS", 500.0),
+            # v9: daily loss kill tightened from 5.0% to 0.5% to match
+            # user constraint of $500/day max loss.
+            daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 0.5),
         )
 
 
@@ -402,6 +416,8 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             "or_high": round(or_high, 4),
             "or_low": round(or_low, 4),
             "or_range_pct": round(or_range_pct, 6),
+            "stop_price": round(stop, 4),
+            "risk_dollars": round(risk * shares, 2),
         })
         trades_today += 1
 
@@ -449,41 +465,63 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             except Exception as e:
                 print(f"WARN {date} {tk}: {e}", file=sys.stderr)
 
-        # v8 realism -- portfolio-level concurrent-notional cap + daily
-        # loss kill switch. Sort all candidate entries chronologically;
-        # walk forward; reject any entry that would push concurrent open
-        # notional above ORB_MAX_CONCURRENT_NOTIONAL_MULT * account or
-        # where cumulative day P&L is already <= -daily_loss_kill_pct.
-        max_concurrent = cfg.account * cfg.max_concurrent_notional_mult
+        # v9 portfolio-level constraints (re-baseline to $500/day cap):
+        #   1. Concurrent risk-dollars cap: sum of open risk_dollars
+        #      <= ORB_MAX_CONCURRENT_RISK_DOLLARS (default $500).
+        #      This bounds the worst-case stop-cascade loss to that cap.
+        #   2. Concurrent notional cap (legacy from v8, still in force).
+        #   3. Daily loss kill: halt new entries after cumulative
+        #      realized day P&L <= -daily_loss_kill_pct of account.
+        max_notional = cfg.account * cfg.max_concurrent_notional_mult
+        max_risk_budget = cfg.max_concurrent_risk_dollars
         kill_threshold = -cfg.account * cfg.daily_loss_kill_pct / 100.0
         events = []
         for idx, p in enumerate(candidate_pairs):
             ent_ts = p["entry_ts"]
             ext_ts = p["exit_ts"]
             notional = p["entry_price"] * p["shares"]
-            events.append((ent_ts, "entry", idx, p, notional))
-            events.append((ext_ts, "exit", idx, p, notional))
-        # Sort by ts, then "exit" before "entry" at same ts to free room
+            # Risk-dollars per trade = entry-stop distance * shares.
+            # We don't carry the stop forward into pairs explicitly, but
+            # the executed pnl_dollars on stop-out exits is exactly the
+            # at-risk amount minus slippage. Use shares * |entry - stop|
+            # if available; fall back to abs(pnl_dollars) cap on stops.
+            # Cleaner: store a derived risk_dollars on each pair.
+            risk = p.get("risk_dollars")
+            if risk is None:
+                # Reconstruct from the raw inputs we have: it's roughly
+                # the shares * stop distance from entry. We don't have
+                # the stop preserved, so fall back to risk_per_trade_pct
+                # of account as upper bound.
+                risk = cfg.account * cfg.risk_per_trade_pct / 100.0
+            events.append((ent_ts, "entry", idx, p, notional, risk))
+            events.append((ext_ts, "exit", idx, p, notional, risk))
+        # Sort by ts; "exit" before "entry" at same ts to free room
         events.sort(key=lambda e: (e[0], 0 if e[1] == "exit" else 1))
 
         accepted_idx: set[int] = set()
         rejected_idx: set[int] = set()
         open_notional = 0.0
+        open_risk = 0.0
         cum_pnl = 0.0
         kill_active = False
-        for ts, kind, idx, p, notional in events:
+        for ts, kind, idx, p, notional, risk in events:
             if kind == "entry":
                 if kill_active:
                     rejected_idx.add(idx)
                     continue
-                if open_notional + notional > max_concurrent:
+                if open_notional + notional > max_notional:
+                    rejected_idx.add(idx)
+                    continue
+                if open_risk + risk > max_risk_budget:
                     rejected_idx.add(idx)
                     continue
                 accepted_idx.add(idx)
                 open_notional += notional
+                open_risk += risk
             else:  # exit
                 if idx in accepted_idx:
                     open_notional -= notional
+                    open_risk -= risk
                     cum_pnl += p["pnl_dollars"]
                     if cum_pnl <= kill_threshold:
                         kill_active = True
