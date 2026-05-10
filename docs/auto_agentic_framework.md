@@ -78,6 +78,17 @@ Operating rules for autonomous, quality work in this session and future sessions
 **20. Times in Central Time.** All future report timestamps + ETAs in CT.
 *Established by: "I am in central time zone for future reports"*
 
+**27. Periodic timed progress updates.** During long-running work (sweeps, GHA matrices, multi-step compute jobs), surface a progress update every ~5 minutes with elapsed/expected/ETA in CT. Format:
+
+```
+Progress: <step or job name>
+Elapsed: 5m of ~55m expected
+ETA:     10:30am CT
+```
+
+Add brief context if helpful (e.g. variants completed, top-3 results so far, current step). Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" without a recent timestamped signal.
+*Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT"*
+
 ---
 
 ## V. Cost / infrastructure
