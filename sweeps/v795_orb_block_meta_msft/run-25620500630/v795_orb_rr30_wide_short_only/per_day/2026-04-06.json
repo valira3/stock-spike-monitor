@@ -1,0 +1,114 @@
+{
+  "date": "2026-04-06",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-06T10:05:00-05:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "price": 359.3901
+    },
+    {
+      "ts": "2026-04-06T10:40:00-05:00",
+      "ticker": "META",
+      "side": "short",
+      "price": 574.8363
+    },
+    {
+      "ts": "2026-04-06T10:10:00-05:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "price": 145.1187
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-06T15:55:00-05:00",
+      "ticker": "TSLA",
+      "side": "short",
+      "exit_price": 352.7582,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-04-06T15:55:00-05:00",
+      "ticker": "META",
+      "side": "short",
+      "exit_price": 572.8182,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-04-06T15:55:00-05:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "exit_price": 145.4163,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "TSLA",
+      "side": "short",
+      "entry_ts": "2026-04-06T10:05:00-05:00",
+      "exit_ts": "2026-04-06T15:55:00-05:00",
+      "entry_price": 359.3901,
+      "exit_price": 352.7582,
+      "shares": 117,
+      "pnl_per_share": 6.632,
+      "pnl_dollars": 775.9396,
+      "exit_reason": "eod",
+      "or_high": 367.72,
+      "or_low": 361.4424,
+      "or_range_pct": 0.017219
+    },
+    {
+      "ticker": "META",
+      "side": "short",
+      "entry_ts": "2026-04-06T10:40:00-05:00",
+      "exit_ts": "2026-04-06T15:55:00-05:00",
+      "entry_price": 574.8363,
+      "exit_price": 572.8182,
+      "shares": 121,
+      "pnl_per_share": 2.0181,
+      "pnl_dollars": 244.1884,
+      "exit_reason": "eod",
+      "or_high": 582.79,
+      "or_low": 576.6,
+      "or_range_pct": 0.010678
+    },
+    {
+      "ticker": "ORCL",
+      "side": "short",
+      "entry_ts": "2026-04-06T10:10:00-05:00",
+      "exit_ts": "2026-04-06T15:55:00-05:00",
+      "entry_price": 145.1187,
+      "exit_price": 145.4163,
+      "shares": 285,
+      "pnl_per_share": -0.2976,
+      "pnl_dollars": -84.8256,
+      "exit_reason": "eod",
+      "or_high": 148.55,
+      "or_low": 145.35,
+      "or_range_pct": 0.021776
+    }
+  ],
+  "summary": {
+    "entries": 3,
+    "exits": 3,
+    "wins": 2,
+    "losses": 1,
+    "total_pnl": 935.3024,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
