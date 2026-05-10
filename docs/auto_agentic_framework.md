@@ -43,6 +43,9 @@ Operating rules for autonomous, quality work in this session and future sessions
 **11. Account for compounding** in P&L projections. Position sizes scale with running balance day-to-day. Report both arithmetic ("constant base") and geometric ("compounding") returns.
 *Established by: "Are we accounting for compounding? Ie, all losses and wins compound to the next day's base portfolio"*
 
+**11b. Compounding is the DEFAULT.** Every variant comparison, ranking, and screen runs with `ORB_COMPOUND_DAILY=1` set as the baseline. Constant-base numbers are reported as a secondary frame only. Position sizing scales with the running account balance so a losing streak naturally de-leverages and a winning streak naturally compounds — this is the actual deployable behavior, not the arithmetic projection. Any leaderboard, top-N table, or "deploy this" recommendation MUST be ranked by compounded P&L unless explicitly noted otherwise.
+*Established by: "Apply compounding rules to all variants (and add this to the rules so we always follow it)"*
+
 ---
 
 ## III. Risk management
