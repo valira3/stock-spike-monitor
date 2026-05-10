@@ -1,0 +1,122 @@
+{
+  "date": "2026-04-10",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-10T10:05:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 261.3256
+    },
+    {
+      "ts": "2026-04-10T10:10:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 261.2556
+    },
+    {
+      "ts": "2026-04-10T10:15:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 261.7208
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-10T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 260.1349,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-04-10T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 260.1349,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-04-10T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 260.1349,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-04-10T10:05:00-05:00",
+      "exit_ts": "2026-04-10T15:55:00-05:00",
+      "entry_price": 261.3256,
+      "exit_price": 260.1349,
+      "shares": 229,
+      "pnl_per_share": -1.1907,
+      "pnl_dollars": -272.6772,
+      "exit_reason": "eod",
+      "or_high": 260.73,
+      "or_low": 259.07,
+      "or_range_pct": 0.006387,
+      "stop_price": 258.8087,
+      "risk_dollars": 576.38
+    },
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-04-10T10:10:00-05:00",
+      "exit_ts": "2026-04-10T15:55:00-05:00",
+      "entry_price": 261.2556,
+      "exit_price": 260.1349,
+      "shares": 229,
+      "pnl_per_share": -1.1207,
+      "pnl_dollars": -256.6392,
+      "exit_reason": "eod",
+      "or_high": 260.73,
+      "or_low": 259.07,
+      "or_range_pct": 0.006387,
+      "stop_price": 258.8087,
+      "risk_dollars": 560.32
+    },
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-04-10T10:15:00-05:00",
+      "exit_ts": "2026-04-10T15:55:00-05:00",
+      "entry_price": 261.7208,
+      "exit_price": 260.1349,
+      "shares": 229,
+      "pnl_per_share": -1.5859,
+      "pnl_dollars": -363.1774,
+      "exit_reason": "eod",
+      "or_high": 260.73,
+      "or_low": 259.07,
+      "or_range_pct": 0.006387,
+      "stop_price": 258.8083,
+      "risk_dollars": 666.97
+    }
+  ],
+  "rejected_concurrent_cap": 26,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 3,
+    "exits": 3,
+    "wins": 0,
+    "losses": 3,
+    "total_pnl": -892.4938,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

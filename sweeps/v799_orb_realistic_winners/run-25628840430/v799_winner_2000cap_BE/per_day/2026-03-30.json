@@ -1,0 +1,92 @@
+{
+  "date": "2026-03-30",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-30T10:20:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "price": 272.7363
+    },
+    {
+      "ts": "2026-03-30T10:25:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "price": 272.7862
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-30T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "exit_price": 273.2789,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-03-30T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "exit_price": 273.2789,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "GOOG",
+      "side": "short",
+      "entry_ts": "2026-03-30T10:20:00-05:00",
+      "exit_ts": "2026-03-30T15:55:00-05:00",
+      "entry_price": 272.7363,
+      "exit_price": 273.2789,
+      "shares": 219,
+      "pnl_per_share": -0.5426,
+      "pnl_dollars": -118.8314,
+      "exit_reason": "eod",
+      "or_high": 276.26,
+      "or_low": 273.02,
+      "or_range_pct": 0.011797,
+      "stop_price": 276.5327,
+      "risk_dollars": 831.43
+    },
+    {
+      "ticker": "GOOG",
+      "side": "short",
+      "entry_ts": "2026-03-30T10:25:00-05:00",
+      "exit_ts": "2026-03-30T15:55:00-05:00",
+      "entry_price": 272.7862,
+      "exit_price": 273.2789,
+      "shares": 219,
+      "pnl_per_share": -0.4926,
+      "pnl_dollars": -107.8879,
+      "exit_reason": "eod",
+      "or_high": 276.26,
+      "or_low": 273.02,
+      "or_range_pct": 0.011797,
+      "stop_price": 276.5328,
+      "risk_dollars": 820.5
+    }
+  ],
+  "rejected_concurrent_cap": 17,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 0,
+    "losses": 2,
+    "total_pnl": -226.7193,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

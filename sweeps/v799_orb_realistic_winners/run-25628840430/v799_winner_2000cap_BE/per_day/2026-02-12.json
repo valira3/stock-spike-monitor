@@ -1,0 +1,92 @@
+{
+  "date": "2026-02-12",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-12T10:05:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 270.9773
+    },
+    {
+      "ts": "2026-02-12T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 191.0153
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-12T12:40:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 263.6149,
+      "reason": "target"
+    },
+    {
+      "ts": "2026-02-12T15:50:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 186.9489,
+      "reason": "target"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-02-12T10:05:00-05:00",
+      "exit_ts": "2026-02-12T12:40:00-05:00",
+      "entry_price": 270.9773,
+      "exit_price": 263.6149,
+      "shares": 199,
+      "pnl_per_share": 7.3624,
+      "pnl_dollars": 1465.1212,
+      "exit_reason": "target",
+      "or_high": 275.72,
+      "or_low": 271.55,
+      "or_range_pct": 0.015239,
+      "stop_price": 270.9773,
+      "risk_dollars": 997.72
+    },
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-02-12T10:05:00-05:00",
+      "exit_ts": "2026-02-12T15:50:00-05:00",
+      "entry_price": 191.0153,
+      "exit_price": 186.9489,
+      "shares": 314,
+      "pnl_per_share": 4.0664,
+      "pnl_dollars": 1276.8615,
+      "exit_reason": "target",
+      "or_high": 193.61,
+      "or_low": 191.22,
+      "or_range_pct": 0.012421,
+      "stop_price": 191.0153,
+      "risk_dollars": 874.71
+    }
+  ],
+  "rejected_concurrent_cap": 33,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 2741.9827,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
