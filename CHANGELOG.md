@@ -4,6 +4,82 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.28.0 (2026-05-10) -- Docs refresh: CLAUDE.md + ARCHITECTURE.md v10 lead-in
+
+Twentieth PR in v10 rollout. Pure docs — no code change. Closes the
+stale-docs gap surfaced during the renames/architecture/dead-code
+audit:
+
+### A. `CLAUDE.md` rewritten
+
+- Removed stale references to `entry_gate_v5.py` and `bison_v5.py`
+  (both deleted pre-v7.24.0).
+- New "Current strategy: v10 ORB anchor (as of v7.27.0)" lead-in
+  describing the live decision path through `orb/live_runtime.py` →
+  `engine.py` → `state.py` → `risk_book.py` → `day_gates.py` →
+  `exits.py`.
+- New "Retired" section enumerating dead code that's still on disk
+  but no longer drives decisions (`tiger_buffalo_v5.py`, `_pmtx*`,
+  `.pmtx-*`).
+- Version examples bumped from `v5.x.y` to `v7.x.y`.
+- New "Common gotchas" entries for `ORB_LIVE_MODE` kill switch and
+  `ORB_PORTFOLIO_FIRE` per-portfolio fire flag.
+- New tests section mentions `tests/strategy/` as the fast lane
+  (231+ tests) and the CLI smoke `python -m tools.orb_session_sim`.
+
+### B. `ARCHITECTURE.md` v10 lead-in prepended
+
+A new "v10 Current Architecture (read this first)" section now sits
+at the top of the document covering:
+
+- Per-tick flow ASCII diagram (`scan_loop` → `bootstrap` →
+  `ensure_session_started` → `refresh_equity_from_books` → per-ticker
+  feed_bar → `_orb_long_entry` / `_orb_short_entry` per-portfolio →
+  broker fire path).
+- Per-portfolio independence (RiskBook + FSM isolation).
+- Shared market state (`OrWindow`, `DayGateResult`).
+- Risk-per-trade math (2% × equity, RR=2.5, BE-after-1R, EOD).
+- Verification mechanisms table (unit tests / scenario simulator /
+  day-replay harness / dashboard contract).
+- UI surface (banner / projection / ticker matrix / legacy hide).
+- Telegram /status block.
+- All `ORB_*` env flags with defaults + effects.
+- Rollback paths (`ORB_LIVE_MODE=0`, `ORB_PORTFOLIO_FIRE=0`).
+
+The original 3,950-line historical document is preserved beneath a
+new "Historical context (pre-v10)" delimiter so the legacy V570-STRIKE
+flow stays readable for archeology + rollback.
+
+### Scope notes
+
+This PR is doc-only. The aggressive cleanup the user asked for
+(`tiger_buffalo_v5.py` retirement, `v5_10_*.py` / `v5_13_2_snapshot.py`
+renames, dead test file deletion) is split into follow-up PRs because
+each is a real refactor:
+
+- **PR21**: extract `load_track` + `DIR_LONG`/`DIR_SHORT` from
+  `tiger_buffalo_v5.py` into `paper_state.py`; retire ~750 LOC of
+  legacy Tiger Sovereign gates.
+- **PR22**: rename `v5_10_1_integration.py` →
+  `snapshot_glue.py`/`volume_baseline.py`; rename
+  `v5_10_6_snapshot.py` → `snapshot_analytics.py`; rename
+  `v5_13_2_snapshot.py` → `dashboard_state.py`. ~2,710 LOC + 4
+  importer updates.
+- **PR23+**: revisit root-level `test_v5_5_*.py` files (mixed
+  pass/fail; passing ones cover `volume_profile` which is live).
+
+### Files
+
+- `bot_version.py` — 7.27.0 → 7.28.0
+- `trade_genius.py` — BOT_VERSION mirror → 7.28.0
+- `CLAUDE.md` — rewritten
+- `ARCHITECTURE.md` — v10 lead-in prepended
+- `CHANGELOG.md` — this entry
+
+No tests changed (231 strategy tests still pass).
+
+---
+
 ## v7.27.0 (2026-05-10) -- v10 Ticker Matrix UI + legacy Permit Matrix hide
 
 Nineteenth PR in v10 rollout. Adds a v10-native per-ticker matrix to
