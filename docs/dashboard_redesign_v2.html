@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TradeGenius dashboard — proposed redesign v2 (high-fi mockup)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     TradeGenius — proposed v2 dashboard mockup
+     Static high-fidelity HTML/CSS. Open in a browser to view.
+     All values are mock data; no backend.
+  ============================================================ */
+  :root {
+    --bg: #07090d;
+    --panel: #0d1117;
+    --panel-2: #11161e;
+    --border: #1f2937;
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --text-muted: #6b7280;
+    --green: #22c55e;
+    --green-strong: #16a34a;
+    --red: #ef4444;
+    --red-strong: #dc2626;
+    --amber: #f59e0b;
+    --blue: #3b82f6;
+    --purple: #8b5cf6;
+    --emerald: #10b981;
+    --mono: 'JetBrains Mono', 'Menlo', monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #03050a;
+    color: var(--text);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .page {
+    max-width: 1700px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  .page-title {
+    font-size: 22px; font-weight: 700;
+    margin: 0 0 6px;
+  }
+  .page-subtitle {
+    color: var(--text-dim); font-size: 13px;
+    margin: 0 0 28px;
+  }
+  .frames {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 32px;
+    align-items: start;
+  }
+  .frame {
+    background: var(--bg);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+  }
+  .frame-label {
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    background: #050709;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .frame-label .size { color: var(--text-muted); font-weight: 400; }
+
+  /* ===== Dashboard chrome ===== */
+  .dash { background: var(--bg); }
+  .brand-row {
+    padding: 12px 18px;
+    display: flex; align-items: center; gap: 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .brand-logo {
+    width: 26px; height: 26px;
+    background: linear-gradient(135deg, #f59e0b, #dc2626);
+    border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .brand-name { font-weight: 700; }
+  .brand-version { color: var(--text-dim); font-size: 11px; padding: 2px 8px; background: #1a2030; border-radius: 4px; }
+  .brand-portfolio { color: var(--text-dim); font-size: 12px; }
+  .live-pill {
+    margin-left: auto;
+    padding: 3px 10px;
+    background: var(--green-strong);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    letter-spacing: 0.04em;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .live-pill::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .health-pill {
+    padding: 3px 10px; font-size: 11px;
+    background: #1a2030; border-radius: 4px; color: var(--text-dim);
+  }
+  .clock {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* ===== Kill-switch banner (only when active) ===== */
+  .kill-banner {
+    background: linear-gradient(90deg, rgba(239, 68, 68, 0.18) 0%, rgba(245, 158, 11, 0.12) 100%);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 10px;
+    margin: 12px 16px 0;
+    padding: 14px 18px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .kill-icon {
+    font-size: 24px;
+    color: var(--red);
+  }
+  .kill-text { flex: 1; }
+  .kill-title {
+    font-size: 13px; font-weight: 700;
+    color: #fca5a5;
+    letter-spacing: 0.04em;
+    margin: 0 0 2px;
+  }
+  .kill-detail {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .kill-actions { display: flex; gap: 8px; }
+  .kill-btn {
+    padding: 6px 14px;
+    font-size: 12px; font-weight: 600;
+    background: var(--red-strong); color: #fff;
+    border: 0; border-radius: 6px;
+    cursor: pointer;
+  }
+  .kill-btn.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+
+  /* ===== Main grid ===== */
+  .main {
+    padding: 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .main.full { grid-template-columns: 1fr; }
+
+  /* ===== Card ===== */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+  }
+  .card-title {
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim);
+  }
+  .card-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .card-body { padding: 14px 16px; }
+
+  /* ===== Positions card ===== */
+  .pos {
+    padding: 12px 0;
+    border-bottom: 1px solid #161c25;
+  }
+  .pos:first-child { padding-top: 0; }
+  .pos:last-child { padding-bottom: 0; border-bottom: 0; }
+  .pos-head {
+    display: flex; align-items: baseline; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .pos-ticker {
+    font-family: var(--mono); font-weight: 700; font-size: 16px;
+  }
+  .pos-side {
+    font-size: 10px; padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--green-strong); color: #fff;
+    font-weight: 700; letter-spacing: 0.04em;
+  }
+  .pos-side.short { background: var(--red-strong); }
+  .pos-qty {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--text-dim);
+  }
+  .pos-pnl {
+    margin-left: auto;
+    font-family: var(--mono); font-weight: 600;
+  }
+  .pos-pnl.up { color: var(--green); }
+  .pos-pnl.down { color: var(--red); }
+  .pos-bar {
+    position: relative;
+    height: 8px;
+    background: #1a2030;
+    border-radius: 4px;
+    margin: 6px 0 8px;
+    overflow: hidden;
+  }
+  .pos-bar-track {
+    display: flex; align-items: center;
+    height: 100%;
+  }
+  .pos-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, rgba(239,68,68,0.5) 0%, #0d1117 50%, rgba(34,197,94,0.7) 100%);
+    border-radius: 4px;
+  }
+  .pos-bar-marker {
+    position: absolute;
+    top: -2px;
+    width: 2px;
+    height: 12px;
+    background: var(--text);
+  }
+  .pos-bar-marker::after {
+    content: attr(data-label);
+    position: absolute;
+    top: -16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .pos-meta {
+    display: flex; gap: 18px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+  }
+  .pos-meta b { color: var(--text-dim); font-weight: 500; }
+
+  /* ===== Today summary card ===== */
+  .today-row {
+    display: flex; justify-content: space-between;
+    padding: 8px 0;
+    font-family: var(--mono);
+    border-bottom: 1px solid #161c25;
+  }
+  .today-row:last-child { border-bottom: 0; }
+  .today-row .label {
+    color: var(--text-dim); font-size: 12px; font-family: 'Inter', sans-serif;
+  }
+  .today-row .value { font-weight: 600; font-size: 14px; }
+  .today-row .value.up { color: var(--green); }
+  .today-row .value.down { color: var(--red); }
+  .today-row .value .delta-chip {
+    font-size: 10px;
+    margin-left: 8px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--amber);
+    font-weight: 700;
+  }
+  .gauge {
+    margin-top: 4px;
+  }
+  .gauge-bar {
+    height: 6px; background: #1a2030; border-radius: 3px; overflow: hidden;
+    margin-top: 4px;
+  }
+  .gauge-fill {
+    height: 100%; border-radius: 3px;
+    background: linear-gradient(90deg, var(--green) 0%, var(--green) 50%, var(--amber) 75%, var(--red) 100%);
+  }
+
+  /* ===== v10 strip (compact) ===== */
+  .v10-strip {
+    display: flex; gap: 0;
+    align-items: stretch;
+    border-top: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(34,197,94,0.05), transparent);
+  }
+  .v10-cell {
+    flex: 1;
+    padding: 10px 16px;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    gap: 2px;
+  }
+  .v10-cell:last-child { border-right: 0; }
+  .v10-cell .lbl {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+  .v10-cell .val {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+  }
+  .v10-cell .val.green { color: var(--green); }
+  .v10-mode-pill {
+    display: inline-flex; padding: 2px 8px;
+    font-size: 10px; font-weight: 700;
+    background: var(--green-strong); color: #fff;
+    border-radius: 3px; letter-spacing: 0.04em;
+  }
+
+  /* ===== Ticker matrix ===== */
+  .tm-summary {
+    display: flex; gap: 12px;
+    font-size: 11px; color: var(--text-dim);
+    font-family: var(--mono);
+  }
+  .tm-summary b { color: var(--text); }
+  table.tm {
+    width: 100%; border-collapse: collapse;
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  table.tm th {
+    text-align: left; padding: 8px 12px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: #050709;
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+  table.tm td {
+    padding: 9px 12px;
+    border-bottom: 1px solid #161c25;
+  }
+  table.tm tr:last-child td { border-bottom: 0; }
+  .tm-ticker { font-weight: 700; }
+  .phase {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .phase.armed   { background: #14532d; color: #86efac; }
+  .phase.in_pos  { background: var(--green-strong); color: #fff; }
+  .phase.warmup  { background: #1e3a5f; color: #93c5fd; }
+  .phase.locked  { background: #3b3a1f; color: #fcd34d; }
+  .phase.closed  { background: #1f2937; color: var(--text-dim); }
+  .phase.blocked { background: #7f1d1d; color: #fca5a5; }
+  .tm-or { color: var(--text-dim); font-size: 11px; }
+  .tm-reason { color: var(--text-muted); font-style: italic; font-size: 11px; }
+
+  /* ===== Activity feed ===== */
+  .activity-row {
+    display: flex; gap: 12px;
+    padding: 8px 16px;
+    font-family: var(--mono); font-size: 11.5px;
+    border-bottom: 1px solid #161c25;
+    align-items: center;
+  }
+  .activity-row:last-child { border-bottom: 0; }
+  .activity-time { color: var(--text-muted); width: 70px; }
+  .activity-ticker { width: 64px; font-weight: 700; }
+  .activity-kind {
+    width: 100px;
+    font-size: 10px; font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 3px;
+    text-align: center;
+  }
+  .activity-kind.entry { background: var(--green-strong); color: #fff; }
+  .activity-kind.exit { background: var(--blue); color: #fff; }
+  .activity-kind.reject { background: #6b7280; color: #fff; }
+  .activity-kind.block { background: var(--red-strong); color: #fff; }
+  .activity-kind.lock { background: #1e3a5f; color: #93c5fd; }
+  .activity-kind.session { background: #6b21a8; color: #f3e8ff; }
+  .activity-detail { color: var(--text-dim); flex: 1; }
+
+  /* ===== Index strip (demoted) ===== */
+  .idx-strip {
+    margin-top: 16px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    background: #050709;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted);
+    display: flex; gap: 20px; flex-wrap: wrap;
+  }
+  .idx-strip span.up { color: var(--green); }
+  .idx-strip span.down { color: var(--red); }
+
+  /* ===== MOBILE FRAME ===== */
+  .frame.mobile {
+    width: 420px;
+  }
+  .frame.mobile .dash {
+    width: 390px;
+    margin: 16px auto;
+    border-radius: 18px;
+    border: 8px solid #1a1f2e;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 2px #060810, 0 12px 36px rgba(0,0,0,0.5);
+  }
+  .frame.mobile .dash .brand-row { padding: 10px 14px; font-size: 12px; gap: 8px; }
+  .frame.mobile .dash .brand-version { display: none; }
+  .frame.mobile .dash .health-pill { display: none; }
+  .frame.mobile .dash .main {
+    grid-template-columns: 1fr; padding: 12px; gap: 12px;
+  }
+  .frame.mobile .v10-strip { flex-direction: column; }
+  .frame.mobile .v10-cell { border-right: 0; border-bottom: 1px solid var(--border); }
+  .frame.mobile .v10-cell:last-child { border-bottom: 0; }
+  .frame.mobile table.tm { display: none; }
+  .frame.mobile .tm-mobile { display: block; }
+  .frame.mobile .pos-meta { flex-wrap: wrap; gap: 10px; }
+  .frame.mobile .activity-row {
+    flex-wrap: wrap; padding: 8px 14px;
+  }
+  .frame.mobile .activity-detail { width: 100%; padding-left: 70px; }
+  .tm-mobile { display: none; }
+  .tm-mobile-card {
+    padding: 12px 16px;
+    border-bottom: 1px solid #161c25;
+  }
+  .tm-mobile-card:last-child { border-bottom: 0; }
+  .tm-mobile-card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .tm-mobile-card-head .ticker {
+    font-family: var(--mono); font-weight: 700; font-size: 13px;
+  }
+  .tm-mobile-card-line {
+    font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .tm-mobile-card-line b { color: var(--text); font-weight: 500; }
+
+  /* Section explainer in body */
+  .sec-callout {
+    margin: 24px 0 12px;
+    padding: 12px 16px;
+    background: #0a0d14;
+    border-left: 3px solid var(--blue);
+    border-radius: 4px;
+  }
+  .sec-callout-title {
+    font-size: 12px; font-weight: 600;
+    color: var(--blue);
+    margin: 0 0 4px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .sec-callout-body {
+    font-size: 13px; color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1 class="page-title">TradeGenius dashboard — proposed redesign v2</h1>
+  <p class="page-subtitle">
+    High-fidelity static mockup. Renders both <b>desktop</b> (1280+) and
+    <b>mobile</b> (390px iPhone) side-by-side. All data is illustrative.
+  </p>
+
+  <div class="frames">
+
+    <!-- ============================================
+         DESKTOP FRAME
+    ============================================ -->
+    <div class="frame desktop">
+      <div class="frame-label">
+        <span>Desktop · 1280px width</span>
+        <span class="size">main view · paused state shown</span>
+      </div>
+      <div class="dash">
+
+        <!-- Brand -->
+        <div class="brand-row">
+          <span class="brand-logo">🐯</span>
+          <span class="brand-name">TradeGenius</span>
+          <span class="brand-version">v7.39.0</span>
+          <span class="brand-portfolio">main · paper</span>
+          <span class="live-pill">LIVE</span>
+          <span class="health-pill">0 errors · 3 warns</span>
+          <span class="clock">14:38:21 ET</span>
+        </div>
+
+        <!-- Kill banner (only when active) -->
+        <div class="kill-banner">
+          <span class="kill-icon">⚠</span>
+          <div class="kill-text">
+            <div class="kill-title">TRADING PAUSED · DAILY-LOSS KILL ACTIVE</div>
+            <div class="kill-detail">
+              Triggered at 12:42 ET · realized P&amp;L −$2,140 below −$2,000 threshold ·
+              new entries blocked · existing positions still managed to exit
+            </div>
+          </div>
+          <div class="kill-actions">
+            <button class="kill-btn secondary">View details</button>
+            <button class="kill-btn">Override (admin)</button>
+          </div>
+        </div>
+
+        <!-- Hero zone: positions + today -->
+        <div class="main">
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Open positions</span>
+              <span class="card-count">· 2</span>
+            </div>
+            <div class="card-body">
+              <div class="pos">
+                <div class="pos-head">
+                  <span class="pos-ticker">AAPL</span>
+                  <span class="pos-side">LONG</span>
+                  <span class="pos-qty">742 sh · entry $101.00</span>
+                  <span class="pos-pnl up">+$520 (+0.7%)</span>
+                </div>
+                <div class="pos-bar">
+                  <div class="pos-bar-track">
+                    <div class="pos-bar-fill" style="width: 68%;"></div>
+                  </div>
+                  <div class="pos-bar-marker" data-label="1R" style="left: 50%;"></div>
+                </div>
+                <div class="pos-meta">
+                  <span><b>stop</b> $99.45</span>
+                  <span><b>last</b> $101.70</span>
+                  <span><b>1R</b> $102.55</span>
+                  <span><b>target</b> $104.87</span>
+                </div>
+              </div>
+              <div class="pos">
+                <div class="pos-head">
+                  <span class="pos-ticker">MSFT</span>
+                  <span class="pos-side">LONG</span>
+                  <span class="pos-qty">142 sh · entry $282.50</span>
+                  <span class="pos-pnl down">−$80 (−0.2%)</span>
+                </div>
+                <div class="pos-bar">
+                  <div class="pos-bar-track">
+                    <div class="pos-bar-fill" style="width: 38%;"></div>
+                  </div>
+                  <div class="pos-bar-marker" data-label="1R" style="left: 50%;"></div>
+                </div>
+                <div class="pos-meta">
+                  <span><b>stop</b> $279.10</span>
+                  <span><b>last</b> $281.94</span>
+                  <span><b>1R</b> $285.90</span>
+                  <span><b>target</b> $291.00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Today</span>
+              <span class="card-count">session live · 14:38 ET</span>
+            </div>
+            <div class="card-body">
+              <div class="today-row">
+                <span class="label">Equity (paper)</span>
+                <span class="value">$102,481</span>
+              </div>
+              <div class="today-row">
+                <span class="label">Paper P&amp;L</span>
+                <span class="value up">+$1,247</span>
+              </div>
+              <div class="today-row">
+                <span class="label">Broker P&amp;L (Alpaca)</span>
+                <span class="value up">+$1,202 <span class="delta-chip">−$45 vs paper</span></span>
+              </div>
+              <div class="today-row">
+                <span class="label">Daily P&amp;L vs kill</span>
+                <span class="value down" style="position:relative;">
+                  −$2,140 / −$2,000  ⚠
+                </span>
+              </div>
+              <div class="gauge">
+                <div class="gauge-bar">
+                  <div class="gauge-fill" style="width:107%;"></div>
+                </div>
+              </div>
+              <div class="today-row" style="margin-top:14px;">
+                <span class="label">Trades used</span>
+                <span class="value">7 / 15  <span style="color:var(--text-muted);font-size:11px;">(main 3 · val 2 · gene 2)</span></span>
+              </div>
+              <div class="gauge">
+                <div class="gauge-bar">
+                  <div class="gauge-fill" style="width:47%;"></div>
+                </div>
+              </div>
+              <div class="today-row">
+                <span class="label">Concurrent risk</span>
+                <span class="value">$1,200 / $6,000  <span style="color:var(--text-muted);font-size:11px;">(20%)</span></span>
+              </div>
+              <div class="gauge">
+                <div class="gauge-bar">
+                  <div class="gauge-fill" style="width:20%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- v10 status strip (compact) -->
+        <div class="v10-strip">
+          <div class="v10-cell">
+            <span class="lbl">Mode</span>
+            <span class="val"><span class="v10-mode-pill">LIVE</span></span>
+          </div>
+          <div class="v10-cell">
+            <span class="lbl">VIX D-1</span>
+            <span class="val green">18.5 / 22 · PASS</span>
+          </div>
+          <div class="v10-cell">
+            <span class="lbl">Day status</span>
+            <span class="val">BLOCKED · daily_kill</span>
+          </div>
+          <div class="v10-cell">
+            <span class="lbl">OR locked</span>
+            <span class="val">9 of 12 tickers</span>
+          </div>
+          <div class="v10-cell">
+            <span class="lbl">Last admit</span>
+            <span class="val">AAPL · 14:35 ET</span>
+          </div>
+        </div>
+
+        <!-- Ticker matrix -->
+        <div class="main full">
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">v10 ORB ticker matrix</span>
+              <span class="tm-summary">
+                <span>· 12 tickers</span>
+                <span><b>3</b> armed</span>
+                <span><b>2</b> in pos</span>
+                <span><b>1</b> blocked</span>
+              </span>
+            </div>
+            <table class="tm">
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Phase</th>
+                  <th>OR (low / high / width)</th>
+                  <th>Trades</th>
+                  <th>Reason / note</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="tm-ticker">AAPL</td><td><span class="phase in_pos">IN POS</span></td><td class="tm-or">99.50 / 100.50 / 1.00%</td><td>1 / 5</td><td class="tm-reason">open ticket · BE armed</td></tr>
+                <tr><td class="tm-ticker">MSFT</td><td><span class="phase in_pos">IN POS</span></td><td class="tm-or">280.00 / 284.00 / 1.43%</td><td>1 / 5</td><td class="tm-reason">open ticket</td></tr>
+                <tr><td class="tm-ticker">GOOG</td><td><span class="phase armed">ARMED</span></td><td class="tm-or">175.10 / 177.20 / 1.20%</td><td>0 / 5</td><td class="tm-reason">awaiting breakout</td></tr>
+                <tr><td class="tm-ticker">AMZN</td><td><span class="phase armed">ARMED</span></td><td class="tm-or">190.50 / 192.80 / 1.20%</td><td>0 / 5</td><td class="tm-reason">awaiting breakout</td></tr>
+                <tr><td class="tm-ticker">TSLA</td><td><span class="phase armed">ARMED</span></td><td class="tm-or">218.00 / 221.30 / 1.50%</td><td>2 / 5</td><td class="tm-reason">re-entry eligible</td></tr>
+                <tr><td class="tm-ticker">NVDA</td><td><span class="phase blocked">BLOCKED GAP</span></td><td class="tm-or">—</td><td>0 / 5</td><td class="tm-reason">gap 2.1% &gt; 1.5% threshold</td></tr>
+                <tr><td class="tm-ticker">META</td><td><span class="phase blocked">BLOCKED LIST</span></td><td class="tm-or">485.00 / 491.20 / 1.27%</td><td>0 / 5</td><td class="tm-reason">long side blocklisted</td></tr>
+                <tr><td class="tm-ticker">AMD</td><td><span class="phase closed">CLOSED</span></td><td class="tm-or">142.00 / 144.30 / 1.61%</td><td>5 / 5</td><td class="tm-reason">daily cap reached</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Activity feed -->
+        <div class="main full">
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Recent activity</span>
+              <span class="card-count">last 10 events</span>
+            </div>
+            <div>
+              <div class="activity-row"><span class="activity-time">14:38:21</span><span class="activity-ticker">AAPL</span><span class="activity-kind entry">ENTRY long</span><span class="activity-detail">742 sh @ 101.00 · stop 99.45 · target 104.87</span></div>
+              <div class="activity-row"><span class="activity-time">14:35:00</span><span class="activity-ticker">MSFT</span><span class="activity-kind entry">ENTRY long</span><span class="activity-detail">142 sh @ 282.50 · stop 279.10 · target 291.00</span></div>
+              <div class="activity-row"><span class="activity-time">14:32:17</span><span class="activity-ticker">GOOG</span><span class="activity-kind reject">REJECT</span><span class="activity-detail">risk_cap (would-be $2,301 &gt; $2,000)</span></div>
+              <div class="activity-row"><span class="activity-time">12:42:00</span><span class="activity-ticker">—</span><span class="activity-kind block">KILL</span><span class="activity-detail">daily-loss kill triggered · realized −$2,140 ≤ threshold −$2,000</span></div>
+              <div class="activity-row"><span class="activity-time">12:38:00</span><span class="activity-ticker">TSLA</span><span class="activity-kind exit">EXIT stop</span><span class="activity-detail">200 sh @ 215.40 · pnl −$640</span></div>
+              <div class="activity-row"><span class="activity-time">11:14:00</span><span class="activity-ticker">AMD</span><span class="activity-kind exit">EXIT target</span><span class="activity-detail">340 sh @ 147.20 · pnl +$1,020</span></div>
+              <div class="activity-row"><span class="activity-time">10:00:00</span><span class="activity-ticker">NVDA</span><span class="activity-kind block">GATE</span><span class="activity-detail">blocked_gap · 2.1% gap up &gt; 1.5% threshold</span></div>
+              <div class="activity-row"><span class="activity-time">10:00:00</span><span class="activity-ticker">·</span><span class="activity-kind lock">OR LOCK</span><span class="activity-detail">9 tickers locked · 3 blocked (gap, range, blocklist)</span></div>
+              <div class="activity-row"><span class="activity-time">09:30:01</span><span class="activity-ticker">—</span><span class="activity-kind session">SESSION START</span><span class="activity-detail">date 2026-05-10 · VIX_d1 18.50 · main $100k</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Index strip (demoted to footer) -->
+        <div class="idx-strip">
+          <span>SPY 5821.45 <span class="up">▲0.42%</span></span>
+          <span>QQQ 489.21 <span class="up">▲0.63%</span></span>
+          <span>IWM 218.40 <span class="down">▼0.15%</span></span>
+          <span>VIX 18.50 <span class="down">▼1.20%</span></span>
+          <span>DXY 105.20 <span class="down">▼0.10%</span></span>
+          <span>TNX 4.42 <span class="up">▲0.20%</span></span>
+        </div>
+
+      </div>
+    </div>
+
+
+    <!-- ============================================
+         MOBILE FRAME
+    ============================================ -->
+    <div class="frame mobile">
+      <div class="frame-label">
+        <span>Mobile · iPhone 13 (390px)</span>
+        <span class="size">main view · same data</span>
+      </div>
+      <div class="dash">
+        <!-- Brand -->
+        <div class="brand-row">
+          <span class="brand-logo">🐯</span>
+          <span class="brand-name">TradeGenius</span>
+          <span class="live-pill">LIVE</span>
+          <span class="clock" style="margin-left:auto;">14:38</span>
+        </div>
+
+        <!-- Kill banner -->
+        <div class="kill-banner" style="margin:10px 12px 0;padding:10px 14px;gap:10px;">
+          <span class="kill-icon" style="font-size:18px;">⚠</span>
+          <div class="kill-text">
+            <div class="kill-title" style="font-size:11.5px;">PAUSED · DAILY-LOSS KILL</div>
+            <div class="kill-detail" style="font-size:11px;">realized −$2,140 / −$2,000</div>
+          </div>
+        </div>
+
+        <!-- Mobile main: vertical stack -->
+        <div class="main">
+
+          <!-- Positions first -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Open positions</span>
+              <span class="card-count">· 2</span>
+            </div>
+            <div class="card-body">
+              <div class="pos">
+                <div class="pos-head">
+                  <span class="pos-ticker">AAPL</span>
+                  <span class="pos-side">LONG</span>
+                  <span class="pos-pnl up" style="margin-left:auto;">+$520</span>
+                </div>
+                <div class="pos-bar">
+                  <div class="pos-bar-track"><div class="pos-bar-fill" style="width:68%;"></div></div>
+                  <div class="pos-bar-marker" data-label="1R" style="left:50%;"></div>
+                </div>
+                <div class="pos-meta">
+                  <span><b>742 sh</b> @ 101.00</span>
+                  <span><b>last</b> $101.70</span>
+                </div>
+                <div class="pos-meta" style="margin-top:4px;">
+                  <span><b>stop</b> $99.45</span>
+                  <span><b>target</b> $104.87</span>
+                </div>
+              </div>
+              <div class="pos">
+                <div class="pos-head">
+                  <span class="pos-ticker">MSFT</span>
+                  <span class="pos-side">LONG</span>
+                  <span class="pos-pnl down" style="margin-left:auto;">−$80</span>
+                </div>
+                <div class="pos-bar">
+                  <div class="pos-bar-track"><div class="pos-bar-fill" style="width:38%;"></div></div>
+                  <div class="pos-bar-marker" data-label="1R" style="left:50%;"></div>
+                </div>
+                <div class="pos-meta">
+                  <span><b>142 sh</b> @ 282.50</span>
+                  <span><b>last</b> $281.94</span>
+                </div>
+                <div class="pos-meta" style="margin-top:4px;">
+                  <span><b>stop</b> $279.10</span>
+                  <span><b>target</b> $291.00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Today summary -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Today</span>
+              <span class="card-count">14:38 ET</span>
+            </div>
+            <div class="card-body">
+              <div class="today-row"><span class="label">Equity</span><span class="value">$102,481</span></div>
+              <div class="today-row"><span class="label">P&amp;L paper</span><span class="value up">+$1,247</span></div>
+              <div class="today-row"><span class="label">P&amp;L broker</span><span class="value up">+$1,202 <span class="delta-chip">−$45</span></span></div>
+              <div class="today-row"><span class="label">Daily kill</span><span class="value down">−$2,140 / −$2,000</span></div>
+              <div class="gauge"><div class="gauge-bar"><div class="gauge-fill" style="width:107%;"></div></div></div>
+              <div class="today-row" style="margin-top:10px;"><span class="label">Trades</span><span class="value">7 / 15</span></div>
+              <div class="gauge"><div class="gauge-bar"><div class="gauge-fill" style="width:47%;"></div></div></div>
+              <div class="today-row"><span class="label">Risk</span><span class="value">$1.2k / $6k</span></div>
+              <div class="gauge"><div class="gauge-bar"><div class="gauge-fill" style="width:20%;"></div></div></div>
+            </div>
+          </div>
+
+          <!-- v10 strip stacked on mobile -->
+          <div class="card" style="padding:0;">
+            <div class="v10-strip">
+              <div class="v10-cell"><span class="lbl">Mode</span><span class="val"><span class="v10-mode-pill">LIVE</span></span></div>
+              <div class="v10-cell"><span class="lbl">VIX D-1</span><span class="val green">18.5 / 22 · PASS</span></div>
+              <div class="v10-cell"><span class="lbl">Day</span><span class="val">BLOCKED · daily_kill</span></div>
+              <div class="v10-cell"><span class="lbl">OR locked</span><span class="val">9 / 12</span></div>
+            </div>
+          </div>
+
+          <!-- Ticker matrix mobile card stack -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">v10 Ticker Matrix</span>
+              <span class="card-count">12 · 3a · 2p · 1b</span>
+            </div>
+            <div class="tm-mobile">
+              <div class="tm-mobile-card">
+                <div class="tm-mobile-card-head">
+                  <span class="ticker">AAPL</span>
+                  <span class="phase in_pos">IN POS</span>
+                </div>
+                <div class="tm-mobile-card-line">OR <b>99.50–100.50</b> · width 1.00%</div>
+                <div class="tm-mobile-card-line">trades <b>1 / 5</b> · open ticket · BE armed</div>
+              </div>
+              <div class="tm-mobile-card">
+                <div class="tm-mobile-card-head">
+                  <span class="ticker">MSFT</span>
+                  <span class="phase in_pos">IN POS</span>
+                </div>
+                <div class="tm-mobile-card-line">OR <b>280–284</b> · width 1.43%</div>
+                <div class="tm-mobile-card-line">trades <b>1 / 5</b> · open ticket</div>
+              </div>
+              <div class="tm-mobile-card">
+                <div class="tm-mobile-card-head">
+                  <span class="ticker">GOOG</span>
+                  <span class="phase armed">ARMED</span>
+                </div>
+                <div class="tm-mobile-card-line">OR <b>175.10–177.20</b> · width 1.20%</div>
+                <div class="tm-mobile-card-line">trades <b>0 / 5</b> · awaiting breakout</div>
+              </div>
+              <div class="tm-mobile-card">
+                <div class="tm-mobile-card-head">
+                  <span class="ticker">NVDA</span>
+                  <span class="phase blocked">BLOCK GAP</span>
+                </div>
+                <div class="tm-mobile-card-line">OR <b>—</b></div>
+                <div class="tm-mobile-card-line">gap 2.1% &gt; 1.5% threshold</div>
+              </div>
+              <div class="tm-mobile-card">
+                <div class="tm-mobile-card-head">
+                  <span class="ticker">AMD</span>
+                  <span class="phase closed">CLOSED</span>
+                </div>
+                <div class="tm-mobile-card-line">OR <b>142.00–144.30</b> · width 1.61%</div>
+                <div class="tm-mobile-card-line">trades <b>5 / 5</b> · daily cap reached</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Activity feed -->
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">Recent activity</span>
+              <span class="card-count">10</span>
+            </div>
+            <div>
+              <div class="activity-row">
+                <span class="activity-time">14:38</span>
+                <span class="activity-ticker">AAPL</span>
+                <span class="activity-kind entry">ENTRY</span>
+                <span class="activity-detail">742 sh @ 101.00</span>
+              </div>
+              <div class="activity-row">
+                <span class="activity-time">14:35</span>
+                <span class="activity-ticker">MSFT</span>
+                <span class="activity-kind entry">ENTRY</span>
+                <span class="activity-detail">142 sh @ 282.50</span>
+              </div>
+              <div class="activity-row">
+                <span class="activity-time">14:32</span>
+                <span class="activity-ticker">GOOG</span>
+                <span class="activity-kind reject">REJECT</span>
+                <span class="activity-detail">risk_cap</span>
+              </div>
+              <div class="activity-row">
+                <span class="activity-time">12:42</span>
+                <span class="activity-ticker">—</span>
+                <span class="activity-kind block">KILL</span>
+                <span class="activity-detail">daily kill</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="idx-strip" style="padding:8px 12px;flex-wrap:wrap;gap:10px;">
+          <span>SPY <span class="up">▲0.42</span></span>
+          <span>QQQ <span class="up">▲0.63</span></span>
+          <span>VIX <span class="down">▼1.20</span></span>
+          <span>DXY <span class="down">▼0.10</span></span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Design notes -->
+  <div class="sec-callout">
+    <div class="sec-callout-title">Design rationale</div>
+    <div class="sec-callout-body">
+      Operator's first-glance answer ("what am I holding right now?") now resolves
+      <b>above the fold</b> on both desktop and mobile. Risk + trades + daily-kill are
+      visual gauges — at a glance the operator sees the daily-kill bar at 107% (red, breached),
+      while the trades gauge is at 47% and risk at 20%. The kill-switch banner only renders
+      when active and is impossible to miss. The legacy market-index marquee is demoted to
+      a small secondary footer. Mobile ticker matrix becomes a card stack (no horizontal
+      scroll). Position progress bars give an instant sense of where each trade is in the
+      RR=2.5 risk/reward arc; the <code>1R</code> marker on the bar makes BE-arm threshold
+      obvious. Broker P&amp;L sits next to paper P&amp;L with a delta chip whenever they
+      diverge.
+    </div>
+  </div>
+
+  <div class="sec-callout">
+    <div class="sec-callout-title">Color + state legend</div>
+    <div class="sec-callout-body">
+      <span class="phase warmup">WARMUP</span> blue · ticker waiting for OR lock<br>
+      <span class="phase locked">OR LOCKED</span> amber · transient state<br>
+      <span class="phase armed">ARMED</span> green · eligible for breakout admission<br>
+      <span class="phase in_pos">IN POS</span> bright green · position currently open<br>
+      <span class="phase closed">CLOSED</span> gray · position exited, may re-enter<br>
+      <span class="phase blocked">BLOCKED</span> red · gated out (VIX / earnings / gap / blocklist / range / daily kill)
+    </div>
+  </div>
+</div>
+</body>
+</html>
