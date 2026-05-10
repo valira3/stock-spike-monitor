@@ -1,0 +1,27 @@
+{
+  "max_parallel": 1,
+  "variants": [
+    {"vid": "v10_anchor_keystone",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "2.5",
+       "ORB_STOP_BUFFER_BPS": "5",
+       "ORB_RANGE_MIN_PCT": "0.008",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "2.00",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "2000",
+       "ORB_DAILY_LOSS_KILL_PCT": "2.0",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "75",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_COMPOUND_DAILY": "1",
+       "ORB_SKIP_GAP_ABOVE_PCT": "1.5",
+       "ORB_SKIP_EARNINGS_WINDOW": "1",
+       "ORB_EARNINGS_DAYS_BEFORE": "1",
+       "ORB_SKIP_VIX_ABOVE": "22",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"}
+  ]
+}
