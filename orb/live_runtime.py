@@ -274,6 +274,30 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
     )
 
 
+def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
+                         bar_high: float, bar_low: float, bar_close: float,
+                         bar_bucket_min: int) -> ExitResult:
+    """Per-portfolio exit decision by ticker (no ticket_id required).
+
+    Convenience for callers (broker/positions.py:manage_positions) that
+    don't track v10 ticket ids on their position dicts. Returns
+    `exit=False, reason="no_open_v10_position"` when there's no v10
+    position open for this (portfolio, ticker) -- the common case
+    during the v10/legacy coexistence window where some open positions
+    in tg.positions are still legacy and have no v10 ticket.
+    """
+    if not is_live_mode_on() or _adapters is None:
+        return ExitResult(exit=False, reason="live_mode_off")
+    a = _adapters.get(portfolio_id)
+    if a is None:
+        return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
+    return a.check_exit_by_ticker(
+        ticker,
+        bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+        bar_bucket_min=bar_bucket_min,
+    )
+
+
 def snapshot() -> dict:
     """JSON-shaped state for /api/state. Returns minimal stub if not
     bootstrapped."""

@@ -4,6 +4,63 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.16.0 (2026-05-10) -- v10 ORB exit-by-ticker API for broker wiring
+
+Eighth PR in v10 rollout. Adds the `check_exit_by_ticker` API on
+`LiveAdapter` + `live_runtime` so PR9 can wire the v10 exit path into
+`broker/positions.py:manage_positions` cleanly. No production
+behavior change in this PR -- API only.
+
+### A. Changes
+
+  - `orb/live_adapter.py`: new `_ticker_to_ticket` reverse map; updated
+    on entry admission and exit; cleared on session reset. New method
+    `LiveAdapter.check_exit_by_ticker(ticker, ohlc, bucket_min)` which
+    looks up the active ticket and delegates to `check_exit`.
+
+  - `orb/live_runtime.py`: new `check_exit_by_ticker(portfolio_id,
+    ticker, ...)` mirroring the existing `check_exit` runtime wrapper.
+    Returns `exit=False, reason="no_open_v10_position"` when there's
+    no v10 position open for the (portfolio, ticker) -- the common
+    case during v10/legacy coexistence where some open positions in
+    `tg.positions` are still legacy and have no v10 ticket.
+
+### B. Why ticker-keyed lookup
+
+`broker/positions.py:manage_positions` iterates `tg.positions` keyed
+by ticker. To call `check_exit` it would need a ticket_id, but
+nothing on the legacy position dict tracks v10 tickets. Adding
+ticker-keyed lookup avoids a more-invasive change to the position
+dict format or the executor layer.
+
+At most one open v10 position per (portfolio, ticker) per day under
+v10 semantics (max_trades_per_day is serial, not parallel), so the
+reverse map is unambiguous.
+
+### C. Tests (`tests/strategy/test_orb_exit_by_ticker.py`)
+
+8 new tests:
+  - no-op when no open position
+  - target / stop exit via ticker lookup
+  - no-exit-in-range
+  - ticker map cleared after exit (re-entry tracking)
+  - kill-switch (`ORB_LIVE_MODE=0`)
+  - unknown portfolio
+  - multi-portfolio independence (main has open, val/gene don't)
+
+### D. Test totals
+
+  v7.x strategy tests: **174/174 passing** + 4 skipped.
+
+### Effect
+
+No production behavior change. New API surface only. PR9
+(v7.17.0) wires `check_exit_by_ticker` into
+`broker/positions.py:manage_positions / manage_short_positions`,
+replacing the legacy Tiger Sentinel `_run_sentinel` path.
+
+---
+
 ## v7.15.0 (2026-05-10) -- v10 ORB entry route swap (live)
 
 Seventh PR in v10 rollout. Replaces the legacy Tiger Sovereign entry
