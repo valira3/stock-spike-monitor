@@ -1855,9 +1855,23 @@ def snapshot() -> dict[str, Any]:
                 "ws_state": "CONNECTING",
             }
 
+        # v7.19.0: v10 ORB live-runtime snapshot. Failure-tolerant -- a
+        # runtime exception cannot break /api/state. The block contains
+        # everything the dashboard frontend needs to surface v10 state:
+        # config, day-level gate status, per-ticker OR windows, per-
+        # portfolio per-ticker FSM phase, per-portfolio risk-book state.
+        v10_block: dict = {"available": False}
+        try:
+            import orb.live_runtime as _v10_rt
+            v10_block = _v10_rt.snapshot()
+            v10_block["available"] = True
+        except Exception as _e_v10:
+            v10_block = {"available": False, "error": str(_e_v10)[:120]}
+
         return {
             "ok": True,
             "version": version,
+            "v10": v10_block,
             "v610_flags": v610_flags,
             "v620_flags": v620_flags,
             "v630_flags": v630_flags,
@@ -2419,6 +2433,63 @@ async def h_version(request):
     except Exception:
         version = "?"
     return web.json_response({"version": version})
+
+
+# ─────────────────────────────────────────────────────────────
+# v7.19.0 — v10 ORB projection card
+# ─────────────────────────────────────────────────────────────
+# Static reference numbers from docs/v10_strategy_keystone.md plus a
+# live-computed account-growth field. Cached at module level since the
+# values are static; the live-growth field is recomputed each request
+# from the main book's current_equity vs PAPER_STARTING_CAPITAL.
+_V10_PROJECTION_KEYSTONE = {
+    "in_sample_cagr_pct": 43.0,
+    "honest_cagr_low_pct": 5.5,
+    "honest_cagr_mid_pct": 30.0,
+    "honest_cagr_high_pct": 70.4,
+    "sharpe_ann": 2.85,
+    "max_drawdown_pct": 5.03,
+    "win_rate_pct": 57.0,
+    "trades_per_124d": 114,
+    "worst_day_dollars": -2030.0,
+    "starting_balance": 100000.0,
+    "in_sample_ending_balance": 119224.81,
+    "in_sample_period_days": 124,
+}
+
+
+async def h_v10_projection(request):
+    """Return v10 projection numbers + live growth vs starting balance.
+
+    Source: docs/v10_strategy_keystone.md (canonical reference).
+    """
+    from aiohttp import web
+
+    payload = dict(_V10_PROJECTION_KEYSTONE)
+    try:
+        m = _ssm()
+        # Live growth vs starting capital
+        from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+        book = PORTFOLIOS.get(PORTFOLIO_MAIN)
+        if book is not None:
+            current_equity = float(book.current_equity())
+            payload["live_balance"] = current_equity
+            payload["live_growth_pct"] = (
+                100.0 * (current_equity - payload["starting_balance"])
+                / payload["starting_balance"]
+                if payload["starting_balance"] > 0 else 0.0
+            )
+    except Exception as e:
+        payload["live_error"] = str(e)[:120]
+    # Live runtime status (bootstrapped, session_date, etc.)
+    try:
+        import orb.live_runtime as _v10_rt
+        payload["live_mode"] = _v10_rt.is_live_mode_on()
+        payload["bootstrapped"] = _v10_rt._bootstrapped
+    except Exception:
+        payload["live_mode"] = False
+        payload["bootstrapped"] = False
+    return web.json_response(payload)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4280,6 +4351,7 @@ def _build_app():
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/ws_state", h_ws_state)
     app.router.add_get("/api/version", h_version)
+    app.router.add_get("/api/v10/projection", h_v10_projection)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.
     app.router.add_get("/api/executor/{name}", h_executor)
