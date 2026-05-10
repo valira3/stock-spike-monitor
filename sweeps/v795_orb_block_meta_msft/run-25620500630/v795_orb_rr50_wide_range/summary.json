@@ -1,0 +1,43 @@
+{
+  "variant": "v795_orb_rr50_wide_range",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "earnings_layer": "none",
+  "days_planned": 83,
+  "days_ran": 83,
+  "days_resumed_skip": 0,
+  "days_ok": 83,
+  "days_failed": 0,
+  "net_pnl": 19526.44,
+  "entries": 672,
+  "exits": 672,
+  "wins": 344,
+  "losses": 328,
+  "win_rate_pct": 51.19,
+  "wall_min": 0,
+  "config": {
+    "strategy": "orb_classical",
+    "or_minutes": 15,
+    "rr": 5.0,
+    "stop_buffer_bps": 5.0,
+    "time_cutoff_et": "12:00",
+    "eod_cutoff_et": "15:55",
+    "range_min_pct": 0.003,
+    "range_max_pct": 0.025,
+    "volume_mult": 0.0,
+    "max_trades_per_day": 1,
+    "risk_per_trade_pct": 1.0,
+    "account": 100000.0,
+    "blocklist": {}
+  }
+}
