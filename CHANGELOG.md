@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.13.0 (2026-05-10) -- v10 ORB pre-wiring helpers
+
+Fifth PR in v10 rollout. Per the pre-PR Manager Agent review (rule #0)
++ integration architect subagent verdict, the original "PR5 = wire
+engine/scan.py to live_runtime" is too large for a single safe diff.
+The exit path alone (Tiger Sentinel A/B/C + V730 cooldown + Bison
+ratchet) is a project on its own. Splitting:
+
+  * THIS PR (v7.13.0): low-risk foundation helpers
+  * PR6 (v7.14.0):     scan.py call-site swap (route-only, entries)
+  * PR7 (v7.15.0):     exit cutover (Sentinel/V730/Bison removal)
+  * PR8 (v7.16.0):     broker/orders sizing replacement
+  * PR9 (v7.17.0):     dashboard backend + frontend
+  * PR10 (v7.18.0):    dead-code retirement
+
+### A. New helper: `PortfolioBook.current_equity(prices)`
+
+Factored out of `trade_genius.py:7293`. Returns
+`paper_cash + long_mv - short_liability` for the calling book.
+Independent across books -- v10 ORB's compounding logic needs a
+per-portfolio sizing base; previously this was inlined inside the
+report path only.
+
+### B. New helper: `engine.timing.minutes_since_et_midnight(ts)`
+
+Pure function: UTC timestamp -> ET minutes-since-midnight (DST-aware
+via `zoneinfo("America/New_York")`). Used by `orb.live_runtime.feed_bar`
+in PR6 to compute the bar-bucket integer the OR window expects.
+Accepts both timezone-aware datetime and Unix-timestamp inputs.
+
+### C. Tests (`tests/strategy/test_orb_helpers.py`)
+
+15 new tests:
+  - `minutes_since_et_midnight`: DST summer + standard time, Unix
+    timestamp + datetime inputs, naive-as-UTC, OR-close at 10:00 ET,
+    EOD at 15:55 ET, invalid type raises
+  - `PortfolioBook.current_equity`: no positions, long with mark price,
+    long with entry-price fallback, short subtracts liability, combined
+    long+short, missing-shares treated as zero, returns float, two
+    independent books
+
+### D. Test totals
+
+  v7.x strategy tests: **149/149 passing** (134 + 15 new).
+
+### E. Manager Agent re-cadence (rule #0 fix)
+
+The Manager went silent during PRs 1-3. Per the user's directive,
+this PR establishes:
+  * Persistent Monitor with `[V570-MANAGER]` heartbeat tag
+  * 2-min poll, 10-min beat, deviation alerts
+  * Pre-PR architect subagent for risk-significant PRs
+
+### Effect
+
+No production behavior change. Two new helpers; both pure functions
+called nowhere yet. PR6 wires them into `engine/scan.py`.
+
+---
+
 ## v7.12.0 (2026-05-10) -- v10 ORB live-runtime singleton
 
 Fourth PR in the v10 ORB rollout. Adds `orb/live_runtime.py`: the
