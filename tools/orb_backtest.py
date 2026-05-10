@@ -196,6 +196,18 @@ class ORBConfig:
     require_volume_confirm: bool = False # skip signals where signal-bar vol < 1x mean
     volume_confirm_mult: float = 1.0     # multiplier on prior-day-mean vol for confirm
     require_ema_align: bool = False      # only long if signal close > 200-EMA on 5m
+    # v10 industry-standard levers
+    atr_stop_mult: float = 0.0           # if > 0, use entry +- atr_stop_mult * atr instead of OR-low
+    require_adx_above: float = 0.0       # if > 0, skip if 14-bar ADX on 5m < this threshold
+    skip_gap_pct: float = 0.0            # if > 0, skip days where |open-prev_close|/prev_close > this
+    require_vwap_align: bool = False     # only long > session VWAP, short < session VWAP
+    skip_first_5min: bool = False        # only fire on candles 09:50+ (skip 09:45 candle)
+    trailing_stop_pct: float = 0.0       # if > 0, after BE trail by trailing_stop_pct * (entry-stop) behind extreme
+    # v11 daily compounding -- account grows with cumulative P&L day-to-day,
+    # and position sizing scales with the latest balance. Risk caps + per-
+    # trade notional caps also scale with account. When OFF (default for
+    # backwards compatibility), each day uses the static account value.
+    compound_daily: bool = False
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -240,10 +252,93 @@ class ORBConfig:
             require_volume_confirm=_envs("ORB_REQUIRE_VOLUME_CONFIRM", "0") == "1",
             volume_confirm_mult=_envf("ORB_VOLUME_CONFIRM_MULT", 1.0),
             require_ema_align=_envs("ORB_REQUIRE_EMA_ALIGN", "0") == "1",
+            # v10 industry levers
+            atr_stop_mult=_envf("ORB_ATR_STOP_MULT", 0.0),
+            require_adx_above=_envf("ORB_REQUIRE_ADX_ABOVE", 0.0),
+            skip_gap_pct=_envf("ORB_SKIP_GAP_PCT", 0.0),
+            require_vwap_align=_envs("ORB_REQUIRE_VWAP_ALIGN", "0") == "1",
+            skip_first_5min=_envs("ORB_SKIP_FIRST_5MIN", "0") == "1",
+            trailing_stop_pct=_envf("ORB_TRAILING_STOP_PCT", 0.0),
+            compound_daily=_envs("ORB_COMPOUND_DAILY", "0") == "1",
         )
 
 
 SESSION_START_ET = _et_to_minutes("09:30")
+
+
+# ---------- v10 industry-standard indicators ----------
+def atr_5m(candles: list[Bar1m], lookback: int = 14) -> float:
+    """ATR over the last `lookback` 5m candles. Returns 0 if insufficient data."""
+    if len(candles) < 2:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        h, l = candles[i].high, candles[i].low
+        pc = candles[i - 1].close
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if not trs:
+        return 0.0
+    use = trs[-lookback:]
+    return sum(use) / len(use)
+
+
+def adx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
+    """Approximate ADX(14) on 5m candles. Returns 0 if insufficient data.
+
+    Standard Wilder formula:
+      +DM = if up_move > down_move and up_move > 0: up_move else 0
+      -DM = if down_move > up_move and down_move > 0: down_move else 0
+      TR  = max(h-l, |h-pc|, |l-pc|)
+      +DI = 100 * smoothed(+DM) / smoothed(TR)
+      -DI = 100 * smoothed(-DM) / smoothed(TR)
+      DX  = 100 * |+DI - -DI| / (+DI + -DI)
+      ADX = smoothed(DX) over `lookback`
+
+    Uses simple-MA smoothing (Wilder uses EMA) for code brevity. Close enough
+    as a directional-strength filter.
+    """
+    if len(candles) < lookback + 1:
+        return 0.0
+    pdms, ndms, trs = [], [], []
+    for i in range(1, len(candles)):
+        up = candles[i].high - candles[i - 1].high
+        dn = candles[i - 1].low - candles[i].low
+        pdm = up if (up > dn and up > 0) else 0.0
+        ndm = dn if (dn > up and dn > 0) else 0.0
+        tr = max(
+            candles[i].high - candles[i].low,
+            abs(candles[i].high - candles[i - 1].close),
+            abs(candles[i].low - candles[i - 1].close),
+        )
+        pdms.append(pdm); ndms.append(ndm); trs.append(tr)
+    if len(trs) < lookback:
+        return 0.0
+    p = pdms[-lookback:]
+    n = ndms[-lookback:]
+    t = trs[-lookback:]
+    sum_t = sum(t)
+    if sum_t <= 0:
+        return 0.0
+    pdi = 100 * sum(p) / sum_t
+    ndi = 100 * sum(n) / sum_t
+    if pdi + ndi <= 0:
+        return 0.0
+    dx = 100 * abs(pdi - ndi) / (pdi + ndi)
+    return dx  # using single DX as ADX proxy when only one window
+
+
+def session_vwap_at(bars_1m: list[Bar1m], at_bucket: int) -> float:
+    """Cumulative VWAP from session open through `at_bucket` (inclusive)."""
+    pv, vol = 0.0, 0.0
+    for b in bars_1m:
+        if b.bucket > at_bucket:
+            break
+        if b.bucket < SESSION_START_ET:
+            continue
+        typical = (b.high + b.low + b.close) / 3.0
+        pv += typical * b.volume
+        vol += b.volume
+    return pv / vol if vol > 0 else 0.0
 
 
 # ---------- backtest one ticker-day ----------
@@ -328,6 +423,25 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                 if side == "short" and sig.close >= ema_proxy:
                     continue
 
+        # v10: skip first 5min after OR (i==0). Often noisy.
+        if cfg.skip_first_5min and i == 0:
+            continue
+
+        # v10: ADX trend filter -- skip choppy days
+        if cfg.require_adx_above > 0:
+            adx_val = adx_5m(candles_5m[: i + 1], lookback=14)
+            if adx_val < cfg.require_adx_above:
+                continue
+
+        # v10: VWAP alignment -- long only above session VWAP
+        if cfg.require_vwap_align:
+            vwap = session_vwap_at(rth, sig.bucket + 4)  # signal bar's last 1m
+            if vwap > 0:
+                if side == "long" and sig.close <= vwap:
+                    continue
+                if side == "short" and sig.close >= vwap:
+                    continue
+
         entry_candle = candles_5m[i + 1]
         # Entry at next 5-min candle open with adverse slippage.
         raw_entry = entry_candle.open
@@ -335,12 +449,28 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         slip = raw_entry * slip_bps / 10000.0
         entry_price = raw_entry + slip if side == "long" else raw_entry - slip
 
-        # Stop: opposite side of OR with buffer adder.
+        # Stop: opposite side of OR with buffer adder. v10: optional ATR
+        # override -- entry +- atr_stop_mult * ATR for volatility-adaptive
+        # stops. ATR computed on candles up to and including signal bar.
         stop_buf = entry_price * cfg.stop_buffer_bps / 10000.0
-        if side == "long":
-            stop = or_low - stop_buf
+        if cfg.atr_stop_mult > 0:
+            atr = atr_5m(candles_5m[: i + 1], lookback=14)
+            if atr > 0:
+                if side == "long":
+                    stop = entry_price - cfg.atr_stop_mult * atr
+                else:
+                    stop = entry_price + cfg.atr_stop_mult * atr
+            else:
+                # fallback to OR stop if ATR not yet warm
+                if side == "long":
+                    stop = or_low - stop_buf
+                else:
+                    stop = or_high + stop_buf
         else:
-            stop = or_high + stop_buf
+            if side == "long":
+                stop = or_low - stop_buf
+            else:
+                stop = or_high + stop_buf
 
         risk = abs(entry_price - stop)
         if risk <= 0.001:
@@ -402,6 +532,13 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                         partial_pnl_dollars = (one_r_long - entry_price) * half
                         remaining_shares -= half
                         partial_taken = True
+                # v10 lever: trailing stop after BE -- ratchet stop up by
+                # trailing_stop_pct of initial risk behind highest high
+                # since entry. trailing_stop_pct=0 disables.
+                if cfg.trailing_stop_pct > 0 and be_moved:
+                    new_stop = fb.high - cfg.trailing_stop_pct * risk
+                    if new_stop > stop:
+                        stop = new_stop
                 # Target hit: bar.high >= target -> fill at max(open, target)
                 if fb.high >= target:
                     fill = max(fb.open, target)
@@ -425,6 +562,11 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                 if cfg.move_to_be_after_1r and (not be_moved) and fb.low <= one_r_short:
                     stop = entry_price
                     be_moved = True
+                # v10 lever: trailing stop after BE (short side mirror)
+                if cfg.trailing_stop_pct > 0 and be_moved:
+                    new_stop = fb.low + cfg.trailing_stop_pct * risk
+                    if new_stop < stop:
+                        stop = new_stop
                 # v9 lever: partial profit at 1R (short)
                 if (cfg.partial_profit_at_1r and (not partial_taken)
                         and fb.low <= one_r_short):
@@ -520,12 +662,24 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
 
     total_pnl = 0.0
     total_entries = 0
+    # v11 compounding: track running account if enabled. cfg.account is
+    # mutated between days so position sizing scales with new balance.
+    starting_account = cfg.account
+    running_account = starting_account
+    daily_account_history = []
     total_wins = 0
     total_losses = 0
     days_ok = 0
     days_failed = 0
 
     for date in dates:
+        # v11 compounding: at the start of each day, set cfg.account to
+        # the running balance so position sizes (and risk caps) scale
+        # with the latest balance. After the day's P&L is finalized,
+        # update running_account.
+        if cfg.compound_daily:
+            cfg.account = running_account
+
         candidate_pairs: list[dict] = []
         for tk in tickers:
             try:
@@ -608,6 +762,15 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         losses = sum(1 for p in day_pairs if p["pnl_dollars"] <= 0)
         day_pnl = sum(p["pnl_dollars"] for p in day_pairs)
         total_pnl += day_pnl
+        # v11 compounding: update running balance with this day's P&L.
+        if cfg.compound_daily:
+            running_account += day_pnl
+            daily_account_history.append({
+                "date": date,
+                "open_balance": round(cfg.account, 2),
+                "day_pnl": round(day_pnl, 2),
+                "close_balance": round(running_account, 2),
+            })
         total_entries += n_entries
         total_wins += wins
         total_losses += losses
@@ -651,6 +814,10 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "losses": total_losses,
         "win_rate_pct": round(100 * total_wins / closed, 2) if closed else None,
         "wall_min": 0,
+        # v11 compounding fields
+        "starting_account": round(starting_account, 2),
+        "ending_account": round(running_account, 2) if cfg.compound_daily else round(starting_account + total_pnl, 2),
+        "compound_daily": cfg.compound_daily,
         "config": {
             "strategy": "orb_classical",
             "or_minutes": cfg.or_minutes,
