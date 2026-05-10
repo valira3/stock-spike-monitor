@@ -266,6 +266,14 @@ class ORBConfig:
     # session close is fully observable.
     skip_vix_above: float = 0.0          # 0 = off; e.g. 25 to skip if VIX(D-1) > 25
     vix_csv_path: str = "data/external/vix-daily.csv"
+    # v17 vol-targeted sizing -- per Quantpedia: scale risk by inverse of
+    # current ATR relative to a target. When ATR is HIGH (volatile), risk
+    # less; when LOW (calm), risk more. Equalizes dollar-risk-per-ATR
+    # across tickers and across regimes. CLEAN look-ahead: ATR is computed
+    # from candles strictly prior to + including the signal bar.
+    vol_target_atr_pct: float = 0.0      # target ATR as % of price; 0 = off
+    vol_target_min_scale: float = 0.5    # cap downscale (less risk per trade)
+    vol_target_max_scale: float = 2.0    # cap upscale (more risk per trade)
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -331,6 +339,9 @@ class ORBConfig:
             earnings_days_after=_envi("ORB_EARNINGS_DAYS_AFTER", 0),
             skip_vix_above=_envf("ORB_SKIP_VIX_ABOVE", 0.0),
             vix_csv_path=_envs("ORB_VIX_CSV_PATH", "data/external/vix-daily.csv"),
+            vol_target_atr_pct=_envf("ORB_VOL_TARGET_ATR_PCT", 0.0),
+            vol_target_min_scale=_envf("ORB_VOL_TARGET_MIN_SCALE", 0.5),
+            vol_target_max_scale=_envf("ORB_VOL_TARGET_MAX_SCALE", 2.0),
         )
 
 
@@ -650,6 +661,18 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
 
         # Position sizing: risk ORB_RISK_PER_TRADE_PCT of account.
         risk_dollars = current_account * cfg.risk_per_trade_pct / 100.0
+        # v17 vol-targeted sizing: when ATR is high (volatile regime), scale
+        # risk DOWN; when ATR is low (calm regime), scale UP. CLEAN: ATR is
+        # computed from prior bars (slice [:i+1] is up to and including the
+        # signal bar; entry fires on bar i+1's open).
+        if cfg.vol_target_atr_pct > 0 and sig.close > 0:
+            atr_now = atr_5m(candles_5m[:i + 1], lookback=14)
+            atr_pct = atr_now / sig.close * 100.0
+            if atr_pct > 0:
+                scale = cfg.vol_target_atr_pct / atr_pct
+                scale = max(cfg.vol_target_min_scale,
+                            min(cfg.vol_target_max_scale, scale))
+                risk_dollars *= scale
         shares = max(1, int(risk_dollars / risk))
 
         # v8 realism cap: single-trade notional must not exceed
