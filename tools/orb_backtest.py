@@ -177,10 +177,15 @@ class ORBConfig:
     risk_per_trade_pct: float = 1.0
     account: float = 100_000.0
     blocklist: dict = field(default_factory=dict)
-    entry_slippage_bps: float = 1.5
-    exit_slippage_bps: float = 1.5
+    entry_slippage_bps: float = 5.0   # v8 realism: was 1.5; ORB-time fills wider
+    exit_slippage_bps: float = 5.0    # v8 realism: was 1.5
     stop_kick_bps: float = 5.0
     short_pen_bps: float = 1.0
+    # v8 realism caps -- prevent phantom leverage / unrealistic concurrent
+    # notional. Audit found 25x leverage on a $100k account; these cap it.
+    max_trade_notional_pct: float = 25.0    # one trade caps at 25% account
+    max_concurrent_notional_mult: float = 2.0  # all-trades concurrent <= 2x acct
+    daily_loss_kill_pct: float = 5.0  # halt new entries after -5% intraday
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -202,10 +207,14 @@ class ORBConfig:
             risk_per_trade_pct=_envf("ORB_RISK_PER_TRADE_PCT", 1.0),
             account=_envf("ORB_ACCOUNT", 100_000.0),
             blocklist=bl,
-            entry_slippage_bps=_envf("ORB_ENTRY_SLIPPAGE_BPS", 1.5),
-            exit_slippage_bps=_envf("ORB_EXIT_SLIPPAGE_BPS", 1.5),
+            entry_slippage_bps=_envf("ORB_ENTRY_SLIPPAGE_BPS", 5.0),
+            exit_slippage_bps=_envf("ORB_EXIT_SLIPPAGE_BPS", 5.0),
             stop_kick_bps=_envf("ORB_STOP_KICK_BPS", 5.0),
             short_pen_bps=_envf("ORB_SHORT_PENALTY_BPS", 1.0),
+            max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
+            max_concurrent_notional_mult=_envf(
+                "ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+            daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 5.0),
         )
 
 
@@ -290,6 +299,17 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # Position sizing: risk ORB_RISK_PER_TRADE_PCT of account.
         risk_dollars = cfg.account * cfg.risk_per_trade_pct / 100.0
         shares = max(1, int(risk_dollars / risk))
+
+        # v8 realism cap: single-trade notional must not exceed
+        # ORB_MAX_TRADE_NOTIONAL_PCT of the account (default 25%).
+        # Without this, tight stops produce phantom leverage -- the
+        # audit found one trade at $157k notional on a $100k account.
+        # Real Reg T DTBP is 4x but per-trade discipline limits to
+        # ~25% notional to keep diversification.
+        max_notional = cfg.account * cfg.max_trade_notional_pct / 100.0
+        if entry_price > 0:
+            shares_cap = max(1, int(max_notional / entry_price))
+            shares = min(shares, shares_cap)
 
         # Walk forward from entry_candle.bucket through 1-min bars to find
         # exit. 1-min granularity for accurate intra-bar stop/target checks.
@@ -418,16 +438,60 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     days_failed = 0
 
     for date in dates:
-        day_pairs: list[dict] = []
+        candidate_pairs: list[dict] = []
         for tk in tickers:
             try:
                 bars = load_day_bars(corpus_dir, date, tk)
                 if not bars:
                     continue
                 pairs = run_ticker_day(date, tk, bars, cfg)
-                day_pairs.extend(pairs)
+                candidate_pairs.extend(pairs)
             except Exception as e:
                 print(f"WARN {date} {tk}: {e}", file=sys.stderr)
+
+        # v8 realism -- portfolio-level concurrent-notional cap + daily
+        # loss kill switch. Sort all candidate entries chronologically;
+        # walk forward; reject any entry that would push concurrent open
+        # notional above ORB_MAX_CONCURRENT_NOTIONAL_MULT * account or
+        # where cumulative day P&L is already <= -daily_loss_kill_pct.
+        max_concurrent = cfg.account * cfg.max_concurrent_notional_mult
+        kill_threshold = -cfg.account * cfg.daily_loss_kill_pct / 100.0
+        events = []
+        for idx, p in enumerate(candidate_pairs):
+            ent_ts = p["entry_ts"]
+            ext_ts = p["exit_ts"]
+            notional = p["entry_price"] * p["shares"]
+            events.append((ent_ts, "entry", idx, p, notional))
+            events.append((ext_ts, "exit", idx, p, notional))
+        # Sort by ts, then "exit" before "entry" at same ts to free room
+        events.sort(key=lambda e: (e[0], 0 if e[1] == "exit" else 1))
+
+        accepted_idx: set[int] = set()
+        rejected_idx: set[int] = set()
+        open_notional = 0.0
+        cum_pnl = 0.0
+        kill_active = False
+        for ts, kind, idx, p, notional in events:
+            if kind == "entry":
+                if kill_active:
+                    rejected_idx.add(idx)
+                    continue
+                if open_notional + notional > max_concurrent:
+                    rejected_idx.add(idx)
+                    continue
+                accepted_idx.add(idx)
+                open_notional += notional
+            else:  # exit
+                if idx in accepted_idx:
+                    open_notional -= notional
+                    cum_pnl += p["pnl_dollars"]
+                    if cum_pnl <= kill_threshold:
+                        kill_active = True
+
+        day_pairs = [
+            p for i, p in enumerate(candidate_pairs) if i in accepted_idx
+        ]
+        rejected = len(candidate_pairs) - len(day_pairs)
 
         n_entries = len(day_pairs)
         wins = sum(1 for p in day_pairs if p["pnl_dollars"] > 0)
@@ -449,6 +513,8 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                        "side": p["side"], "exit_price": p["exit_price"],
                        "reason": p["exit_reason"]} for p in day_pairs],
             "pnl_pairs": day_pairs,
+            "rejected_concurrent_cap": rejected,
+            "kill_switch_fired": kill_active,
             "summary": {
                 "entries": n_entries, "exits": n_entries,
                 "wins": wins, "losses": losses,
