@@ -114,7 +114,16 @@ def is_in_cooldown(
         return (False, None)
     if not ticker or not side:
         return (False, None)
-    now = _parse_utc(now_utc) or datetime.now(timezone.utc)
+    # v7.8.4: route the now=None fallback through tg._now_utc so the replay
+    # clock applies. Defensive -- production callers pass an explicit ts.
+    now = _parse_utc(now_utc)
+    if now is None:
+        try:
+            import sys as _sys
+            _tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+            now = _tg._now_utc() if _tg is not None else datetime.now(timezone.utc)
+        except Exception:
+            now = datetime.now(timezone.utc)
     key = (ticker.upper(), _normalize_side(side))
     with _LOCK:
         fire_ts = _FIRES.get(key)

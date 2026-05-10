@@ -4,6 +4,50 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.4-experimental (2026-05-09) — V770 cooldown caller + 6 more freezegun-leak patches
+
+Continuation of the v7.8.3 freezegun-leak hunt. Patches the remaining
+high-impact direct-`datetime.now()` reads on the entry/exit decision
+path plus four defensive fallback sites.
+
+### High-impact (decision-affecting)
+
+1. `broker/orders.py:962` — V770 post-ditch cooldown gate was passing
+   `datetime.now(timezone.utc)` directly into `_v770_is_in_cooldown`,
+   so the gate fired against real wall clock instead of replay clock
+   when V770 was enabled. Now routes through `tg._now_utc()`.
+2. `broker/orders.py:1830` — `record_post_loss_cooldown` was being
+   called without `exit_ts_utc`, so the loss-streak-kill window inside
+   the helper fell back to wall clock. Now passes `tg._now_utc()`.
+3. `trade_genius.py:4942` — `record_post_loss_cooldown` fallback when
+   caller still passes `exit_ts_utc=None` now uses `_now_utc()` instead
+   of `datetime.now(timezone.utc)`. Belt-and-braces with patch #2.
+
+### Defensive (caller-side patched, but utilities hardened)
+
+4. `engine/v770_flags.py:117` — `is_in_cooldown(now_utc=None)` fallback
+   routes through `tg._now_utc` via `sys.modules` lookup.
+5. `engine/v780_flags.py:103` — `is_before_open_delay(now_utc=None)`
+   fallback routes through `tg._now_utc` via `sys.modules` lookup.
+6. `engine/timing.py:47` — `_to_et(now=None)` fallback routes through
+   `tg._now_et`.
+7. `broker/lifecycle.py:82` — `_eod_align_to_spec(now=None)` fallback
+   routes through `tg._now_et`.
+8. `volume_bucket.py:274` — `VolumeBucketBaseline.refresh(today=None)`
+   fallback routes through `tg._now_utc().date()`.
+
+All defensive patches preserve the `datetime.now(...)` final fallback
+when `trade_genius` is not yet importable (boot ordering).
+
+### Verification plan
+
+Goal: drop `REPLAY_USE_FREEZEGUN=1` default (5x slowdown) once leak
+hunt is complete. Until then, keep freezegun on by default; this PR
+narrows the leak surface so the next byte-match check (frozen vs
+unfrozen single-day repro) should be much closer to identical.
+
+---
+
 ## v7.8.3-experimental (2026-05-09) — Railway parallel + freezegun-leak source patches
 
 Combines two independent improvements:

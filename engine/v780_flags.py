@@ -100,7 +100,15 @@ def is_before_open_delay(now_utc=None) -> Tuple[bool, Optional[str]]:
     if not V780_OPENING_DELAY_ENABLED:
         return (False, None)
     if now_utc is None:
-        dt_utc = datetime.now(timezone.utc)
+        # v7.8.4: route the now=None fallback through tg._now_utc so the
+        # replay clock applies. Defensive -- production callers pass an
+        # explicit ts.
+        try:
+            import sys as _sys
+            _tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+            dt_utc = _tg._now_utc() if _tg is not None else datetime.now(timezone.utc)
+        except Exception:
+            dt_utc = datetime.now(timezone.utc)
     elif isinstance(now_utc, datetime):
         dt_utc = now_utc if now_utc.tzinfo else now_utc.replace(tzinfo=timezone.utc)
     else:

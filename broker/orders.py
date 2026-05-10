@@ -958,8 +958,15 @@ def check_breakout(ticker, side):
     # opposite side is intentionally still allowed.
     try:
         if V770_POST_DITCH_COOLDOWN_ENABLED:
+            # v7.8.4: route through tg._now_utc so backtest replay clock
+            # applies. Was wall-clock leak; cooldown gate fired against
+            # real-world UTC instead of replay time.
+            try:
+                _v770_now_utc = tg._now_utc()
+            except Exception:
+                _v770_now_utc = datetime.now(timezone.utc)
             _v770_blocked, _v770_remain = _v770_is_in_cooldown(
-                ticker, side_label, datetime.now(timezone.utc)
+                ticker, side_label, _v770_now_utc
             )
             if _v770_blocked:
                 tg._v561_log_skip(
@@ -1825,9 +1832,19 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     # minutes. No-op for winners and for losses when the operator has set
     # POST_LOSS_COOLDOWN_MIN=0. record_post_loss_cooldown handles its own
     # logging and side normalization.
+    # v7.8.4: pass exit_ts_utc=tg._now_utc() so the loss-streak-kill window
+    # honours BacktestClock under replay (the fallback inside
+    # record_post_loss_cooldown otherwise leaks wall clock).
     try:
         _cooldown_side = "long" if cfg.side.is_long else "short"
-        tg.record_post_loss_cooldown(ticker, _cooldown_side, float(pnl_val))
+        try:
+            _cooldown_exit_ts = tg._now_utc()
+        except Exception:
+            _cooldown_exit_ts = None
+        tg.record_post_loss_cooldown(
+            ticker, _cooldown_side, float(pnl_val),
+            exit_ts_utc=_cooldown_exit_ts,
+        )
     except Exception:
         # Cooldown is a guardrail \u2014 never let it block an exit from settling.
         pass
