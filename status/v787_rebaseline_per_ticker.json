@@ -2,11 +2,11 @@
   "trigger": "v787_rebaseline_per_ticker",
   "phase": "running",
   "started_at": "2026-05-10T02:22:13.494072+00:00",
-  "updated_at": "2026-05-10T02:32:06.332835+00:00",
+  "updated_at": "2026-05-10T02:32:07.745434+00:00",
   "variants_total": 6,
-  "variants_completed": 3,
-  "variants_succeeded": 3,
+  "variants_completed": 4,
+  "variants_succeeded": 4,
   "variants_failed": 0,
-  "latest_vid": "v787_pure_100bp",
+  "latest_vid": "v787_baseline_prod",
   "latest_rc": 0
 }
