@@ -1,0 +1,23 @@
+[
+  {
+    "kind": "session_start",
+    "date": "2026-01-15"
+  },
+  {
+    "kind": "admit",
+    "ticker": "AAPL",
+    "pid": "main",
+    "side": "long",
+    "shares": 742,
+    "stop": 99.4503,
+    "target": 104.8744,
+    "reason_no": ""
+  },
+  {
+    "kind": "exit",
+    "ticker": "AAPL",
+    "reason": "eod",
+    "price": 101.5,
+    "bucket": 955
+  }
+]
