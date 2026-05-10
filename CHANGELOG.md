@@ -4,6 +4,90 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.25.0 (2026-05-10) -- v10 ORB scenario simulator + day-replay harness
+
+Seventeenth PR in v10 rollout. Adds the multi-layered verification
+mechanism the user asked for at the start of the cutover: a
+deterministic, in-process simulator that drives the LIVE production
+runtime through synthetic scenarios + an archive-replay harness that
+replays real archived bars through the same code path.
+
+### A. `tools/orb_session_sim.py` -- scenario simulator
+
+New module with a `SessionSimulator` context-managed driver. Exposes:
+  - `feed_or(...)` -- push a 30-bar OR window
+  - `feed_bar(...)` -- push one 1-min bar
+  - `try_long`/`try_short(...)` -- attempt entry
+  - `walk_to_target` / `walk_to_stop` / `force_eod` -- exit helpers
+
+CLI mode: `python -m tools.orb_session_sim --scenario golden_long -v`
+runs a built-in scenario for ad-hoc rule probing. Returns non-zero
+exit code on rule violation.
+
+### B. `tests/strategy/test_orb_session_sim.py` -- 15 end-to-end scenarios
+
+Each scenario asserts ONE rule by driving the live runtime end-to-end:
+  1. Long breakout target hit
+  2. Short breakout target hit
+  3. Long stop hit
+  4. Short stop hit
+  5. Long BE-after-1R (two-bar arming + fire)
+  6. EOD flatten on open long position
+  7. OR width too narrow blocks entry
+  8. OR width too wide blocks entry
+  9. VIX>22 day kill
+ 10. Gap>1.5% ticker block
+ 11. Blocklist (META long-only) blocks long
+ 12. Concurrent risk cap blocks second simultaneous breakout
+ 13. Multi-portfolio independence (main + val admit independently)
+ 14. Re-entry after close on same ticker
+ 15. Simulator history records steps
+
+These are the "multi-layered certain mechanism" tests the user asked
+for. They prove the production code path (not just isolated units)
+honors the v10 keystone rules.
+
+### C. `tools/orb_replay_day.py` -- archive replay harness
+
+Reads `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` files (the format produced
+by `bar_archive.py`) and drives the live runtime end-to-end. Emits a
+deterministic JSONL ledger of admit / reject / exit / summary events.
+Used for:
+  - **Regression diff**: snapshot today's ledger; after a v10 code
+    change, replay yesterday and diff. Any unintentional change in
+    admissions/exits surfaces as a ledger diff.
+  - **Probing**: replay a specific archived day to study an edge case.
+  - **Smoke**: post-deploy run on the previous day to confirm the
+    live code path still produces the same ledger.
+
+CLI: `python -m tools.orb_replay_day --date 2026-05-09 \
+        --tickers AAPL,MSFT --out /tmp/ledger.jsonl --vix-d1 18.5`
+
+### D. `tests/strategy/test_orb_replay_day.py` -- 4 harness tests
+
+Builds a synthetic JSONL archive in `tmp_path`, replays through the
+live runtime, and asserts the emitted ledger contains the expected
+admit + exit events. Verifies: admit-then-exit-target,
+no-archive-emits-error, summary-present, write-ledger-round-trip.
+
+### Tests
+
+210 strategy tests pass (was 192 -> +18 new across the two harnesses).
+Local runtime: `python -m tools.orb_session_sim --scenario golden_long
+-v` returns 0.
+
+### Files
+
+- `bot_version.py` -- 7.24.0 -> 7.25.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.25.0
+- `tools/orb_session_sim.py` -- new (scenario simulator + CLI)
+- `tools/orb_replay_day.py` -- new (archive replay harness + CLI)
+- `tests/strategy/test_orb_session_sim.py` -- 15 scenario tests
+- `tests/strategy/test_orb_replay_day.py` -- 4 harness tests
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.24.0 (2026-05-10) -- v10 ORB bootstrap timing + intraday equity refresh
 
 Sixteenth PR in v10 rollout. Closes two of the gaps flagged in
