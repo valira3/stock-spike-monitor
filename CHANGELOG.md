@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.13.1 (2026-05-10) -- fix: telegram deploy banner showed stale release notes
+
+Hotfix for a bug spotted by Val on Telegram: the deploy banner header
+correctly read "v7.12.0 deployed" but the body still quoted the v7.8.9
+release notes. Root cause: `CURRENT_MAIN_NOTE` was a hardcoded constant
+in `trade_genius.py:119` that nobody updated when `BOT_VERSION` bumped.
+
+### A. Fix: auto-derive `CURRENT_MAIN_NOTE` from `CHANGELOG.md`
+
+`trade_genius._derive_current_main_note()` now parses the most recent
+`## vX.Y.Z (...) -- title` heading at module import time and builds a
+release note as `v{ver}: {title}` + 1-2 body lines, wrapped to 34 chars
+per CLAUDE.md's Telegram mobile rule. Falls back to `v{BOT_VERSION}
+deployed` on any parse error so a malformed CHANGELOG never crashes
+the bot.
+
+### B. Test (`tests/strategy/test_orb_release_note.py`)
+
+3 new tests:
+  - `_derive_current_main_note()` first line starts with `v{BOT_VERSION}`
+  - every line is <= 34 chars (Telegram mobile rule)
+  - falls back to `v{BOT_VERSION} deployed` when CHANGELOG is missing
+
+This regression test would have caught the original bug.
+
+### Effect
+
+Telegram deploy banner now correctly shows the deployed version's
+release notes. v7.13.1 banner will read:
+
+  🚀 v7.13.1 deployed
+  v7.13.1: fix: telegram deploy
+  banner showed stale release...
+
+---
+
 ## v7.13.0 (2026-05-10) -- v10 ORB pre-wiring helpers
 
 Fifth PR in v10 rollout. Per the pre-PR Manager Agent review (rule #0)

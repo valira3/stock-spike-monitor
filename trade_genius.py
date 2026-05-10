@@ -109,18 +109,83 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.13.0"
+BOT_VERSION = "7.13.1"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
 # history lives in CHANGELOG.md (the previous in-code rolling tail was
-# removed). The Telegram 34-char mobile-width rule still applies to every
+# removed). The Telegram 34-char mobile-width rule applies to every
 # line of CURRENT_MAIN_NOTE.
-CURRENT_MAIN_NOTE = (
-    "v7.8.9: freezegun OFF by\n"
-    "default (5x faster sweeps).\n"
-    "Final Report v3 published."
-)
+#
+# v7.13.1: auto-derived from CHANGELOG.md instead of being hardcoded.
+# Previously a bug (caught on 2026-05-10): the deploy banner showed
+# "v7.12.0 deployed" but the body still quoted the v7.8.9 release notes
+# because CURRENT_MAIN_NOTE was a frozen string that nobody updated when
+# BOT_VERSION bumped. Now we parse the most recent "## vX.Y.Z" heading
+# from CHANGELOG.md at import time and use its title + first body line.
+def _derive_current_main_note() -> str:
+    """Read CHANGELOG.md and build a Telegram-shaped release note.
+
+    Format: "v{ver}: {title}" + first 1-2 body lines (each <=34 chars).
+    Falls back to "v{BOT_VERSION} deployed" on any parse error so a
+    malformed CHANGELOG never crashes the bot.
+    """
+    fallback = f"v{BOT_VERSION} deployed"
+    try:
+        from pathlib import Path as _P
+        changelog = _P(__file__).resolve().parent / "CHANGELOG.md"
+        if not changelog.is_file():
+            return fallback
+        import re as _re
+        heading_re = _re.compile(r"^##\s+v(\S+)\s*\([^)]*\)\s*--\s*(.+?)\s*$")
+        lines = changelog.read_text().splitlines()
+        i = 0
+        title = None
+        version_str = None
+        while i < len(lines):
+            m = heading_re.match(lines[i])
+            if m:
+                version_str = m.group(1).strip()
+                title = m.group(2).strip()
+                break
+            i += 1
+        if not title or not version_str:
+            return fallback
+        # Title is the canonical short summary
+        body_lines = [f"v{version_str}: {title}"]
+        # Pull the first non-empty body paragraph (skip blank lines + sub-headings)
+        for j in range(i + 1, min(i + 60, len(lines))):
+            ln = lines[j].rstrip()
+            if not ln:
+                continue
+            if ln.startswith("#"):  # next heading -- stop
+                break
+            if ln.startswith("###"):
+                continue
+            # Only take regular paragraph text; skip code fences etc.
+            if ln.startswith("```"):
+                continue
+            body_lines.append(ln)
+            if len(body_lines) >= 3:
+                break
+        # Wrap each line to 34 chars (Telegram mobile rule)
+        wrapped: list[str] = []
+        for ln in body_lines:
+            while len(ln) > 34:
+                cut = ln.rfind(" ", 0, 34)
+                if cut <= 0:
+                    cut = 34
+                wrapped.append(ln[:cut].rstrip())
+                ln = ln[cut:].lstrip()
+            if ln:
+                wrapped.append(ln)
+        # Cap at 5 wrapped lines so the deploy banner stays compact
+        return "\n".join(wrapped[:5])
+    except Exception:
+        return fallback
+
+
+CURRENT_MAIN_NOTE = _derive_current_main_note()
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
 # Backwards-compat alias \u2014 any remaining references default to main.
