@@ -1,0 +1,643 @@
+{
+  "date": "2026-03-02",
+  "version": "7.8.9-experimental",
+  "minutes_processed": 381,
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-02T09:38:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 179.61113763000003
+    },
+    {
+      "ts": "2026-03-02T09:41:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "price": 646.44195175
+    },
+    {
+      "ts": "2026-03-02T09:44:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 396.58447875
+    },
+    {
+      "ts": "2026-03-02T09:45:00-05:00",
+      "ticker": "MSFT",
+      "side": "long",
+      "price": 396.18941950000004
+    },
+    {
+      "ts": "2026-03-02T09:46:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 207.53112500000003
+    },
+    {
+      "ts": "2026-03-02T10:16:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 264.39965400000006
+    },
+    {
+      "ts": "2026-03-02T10:23:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "price": 653.9580790000001
+    },
+    {
+      "ts": "2026-03-02T10:43:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 181.155669275
+    },
+    {
+      "ts": "2026-03-02T10:44:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 400.86012000000005
+    },
+    {
+      "ts": "2026-03-02T11:23:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 264.89972900000004
+    },
+    {
+      "ts": "2026-03-02T11:36:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 306.2359285
+    },
+    {
+      "ts": "2026-03-02T11:58:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 209.44141150000002
+    },
+    {
+      "ts": "2026-03-02T12:22:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 183.39250475000003
+    },
+    {
+      "ts": "2026-03-02T10:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 262.18943625
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-02T10:21:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "price": 650.23587178,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 646.44195175,
+      "shares": 14
+    },
+    {
+      "ts": "2026-03-02T10:26:00-05:00",
+      "ticker": "MSFT",
+      "side": "long",
+      "price": 398.16622362,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 396.18941950000004,
+      "shares": 12
+    },
+    {
+      "ts": "2026-03-02T10:28:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 180.51678776999998,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 179.61113763000003,
+      "shares": 54
+    },
+    {
+      "ts": "2026-03-02T10:42:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 399.986139905,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 396.58447875,
+      "shares": 24
+    },
+    {
+      "ts": "2026-03-02T10:53:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 262.0795375,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 264.39965400000006,
+      "shares": 18
+    },
+    {
+      "ts": "2026-03-02T11:07:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 264.5482625,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 262.18943625,
+      "shares": 38
+    },
+    {
+      "ts": "2026-03-02T11:48:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 182.82118893499998,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 181.155669275,
+      "shares": 27
+    },
+    {
+      "ts": "2026-03-02T11:56:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 209.130476775,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 207.53112500000003,
+      "shares": 48
+    },
+    {
+      "ts": "2026-03-02T11:56:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 403.419306895,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 400.86012000000005,
+      "shares": 12
+    },
+    {
+      "ts": "2026-03-02T12:01:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "price": 658.09915732,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 653.9580790000001,
+      "shares": 14
+    },
+    {
+      "ts": "2026-03-02T15:08:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 207.59497549999998,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 209.44141150000002,
+      "shares": 23
+    },
+    {
+      "ts": "2026-03-02T15:09:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 181.781765,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 183.39250475000003,
+      "shares": 54
+    }
+  ],
+  "orders": [],
+  "cancellations": [],
+  "closes_raw": [
+    {
+      "ts": "2026-03-02T10:21:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "exit_price": 650.23587178,
+      "exit_price_pre_slippage": 650.6588,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 646.44195175,
+      "shares": 14,
+      "entry_ts_utc": "2026-05-10T03:41:20.167800+00:00"
+    },
+    {
+      "ts": "2026-03-02T10:26:00-05:00",
+      "ticker": "MSFT",
+      "side": "long",
+      "exit_price": 398.16622362,
+      "exit_price_pre_slippage": 398.4252,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 396.18941950000004,
+      "shares": 12,
+      "entry_ts_utc": "2026-05-10T03:41:20.293367+00:00"
+    },
+    {
+      "ts": "2026-03-02T10:28:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 180.51678776999998,
+      "exit_price_pre_slippage": 180.6342,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 179.61113763000003,
+      "shares": 54,
+      "entry_ts_utc": "2026-05-10T03:41:20.069289+00:00"
+    },
+    {
+      "ts": "2026-03-02T10:42:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 399.986139905,
+      "exit_price_pre_slippage": 400.2463,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 396.58447875,
+      "shares": 24,
+      "entry_ts_utc": "2026-05-10T03:41:20.260067+00:00"
+    },
+    {
+      "ts": "2026-03-02T10:53:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 262.0795375,
+      "exit_price_pre_slippage": 262.25,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 264.39965400000006,
+      "shares": 18,
+      "entry_ts_utc": "2026-05-10T03:41:21.221063+00:00"
+    },
+    {
+      "ts": "2026-03-02T11:07:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 264.5482625,
+      "exit_price_pre_slippage": 264.35,
+      "slippage_bps_applied": 7.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 262.18943625,
+      "shares": 38,
+      "entry_ts_utc": "2026-05-10T03:41:22.566802+00:00"
+    },
+    {
+      "ts": "2026-03-02T11:48:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 182.82118893499998,
+      "exit_price_pre_slippage": 182.9401,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 181.155669275,
+      "shares": 27,
+      "entry_ts_utc": "2026-05-10T03:41:22.133719+00:00"
+    },
+    {
+      "ts": "2026-03-02T11:56:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 209.130476775,
+      "exit_price_pre_slippage": 209.2665,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 207.53112500000003,
+      "shares": 48,
+      "entry_ts_utc": "2026-05-10T03:41:20.337674+00:00"
+    },
+    {
+      "ts": "2026-03-02T11:56:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 403.419306895,
+      "exit_price_pre_slippage": 403.6817,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 400.86012000000005,
+      "shares": 12,
+      "entry_ts_utc": "2026-05-10T03:41:22.178497+00:00"
+    },
+    {
+      "ts": "2026-03-02T12:01:00-05:00",
+      "ticker": "META",
+      "side": "long",
+      "exit_price": 658.09915732,
+      "exit_price_pre_slippage": 658.5272,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 653.9580790000001,
+      "shares": 14,
+      "entry_ts_utc": "2026-05-10T03:41:21.451714+00:00"
+    },
+    {
+      "ts": "2026-03-02T15:08:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 207.59497549999998,
+      "exit_price_pre_slippage": 207.73,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 209.44141150000002,
+      "shares": 23,
+      "entry_ts_utc": "2026-05-10T03:41:24.941144+00:00"
+    },
+    {
+      "ts": "2026-03-02T15:09:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 181.781765,
+      "exit_price_pre_slippage": 181.9,
+      "slippage_bps_applied": 6.5,
+      "reason": "STOP_INTRABAR",
+      "entry_price": 183.39250475000003,
+      "shares": 54,
+      "entry_ts_utc": "2026-05-10T03:41:25.913376+00:00"
+    }
+  ],
+  "telegram_messages": [
+    {
+      "chat": "",
+      "message": "Opening Range Collected (2026-03-02):\n  AAPL  OR_H=263.12  OR_L=260.20  PDC=260.90\n  MSFT  OR_H=395.10  OR_L=390.63  PDC=387.85\n  NVDA  OR_H=179.27  OR_L=174.62  PDC=174.19\n  TSLA  OR_H=395.15  OR_L=388.25  PDC=389.80\n  META  OR_H=645.12  OR_L=634.50  PDC=633.60\n  GOOG  OR_H=305.24  OR_L=301.06  PDC=304.82\n  AMZN  OR_H=207.34  OR_L=203.46  PDC=205.17\n  AVGO  OR_H=312.03  OR_L=307.20  PDC=308.10\n  NFLX  OR_H=97.75  OR_L=95.20  PDC=93.35\n  ORCL  OR_H=143.79  OR_L=141.18  PDC=140.48\n  SPY  OR_H=681.63  OR_L=678.02  PDC=677.66\n  QQQ  OR_H=603.87  OR_L=597.99  PDC=596.95"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY NVDA  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $179.58  (limit $179.60)\nShares : 54   Cost: $9,697.55\nStop   : $178.15  (OR_High-$0.90)\nOR High: $179.27\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (603.49 vs 599.77)\n  QQQ 5m close > 09:30 AVWAP \u2713  (603.49 vs 602.23)\nTime   : 08:38 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY META  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $646.35  (limit $646.37)\nShares : 14   Cost: $9,048.83\nStop   : $641.17  (OR_High-$0.90)\nOR High: $645.12\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (602.80 vs 600.37)\n  QQQ 5m close > 09:30 AVWAP \u2713  (602.80 vs 602.43)\nTime   : 08:41 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY TSLA  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $396.52  (limit $396.54)\nShares : 24   Cost: $9,516.60\nStop   : $393.35  (OR_High-$0.90)\nOR High: $395.15\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (602.80 vs 600.37)\n  QQQ 5m close > 09:30 AVWAP \u2713  (602.80 vs 602.59)\nTime   : 08:44 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY MSFT  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $396.13  (limit $396.15)\nShares : 12   Cost: $4,753.56\nStop   : $392.96  (OR_High-$0.90)\nOR High: $395.10\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (603.60 vs 601.02)\n  QQQ 5m close > 09:30 AVWAP \u2713  (603.60 vs 602.67)\nTime   : 08:45 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY AMZN  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $207.50  (limit $207.52)\nShares : 48   Cost: $9,960.00\nStop   : $205.84  (OR_High-$0.90)\nOR High: $207.34\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (603.60 vs 601.02)\n  QQQ 5m close > 09:30 AVWAP \u2713  (603.60 vs 602.75)\nTime   : 08:46 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY AAPL  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $264.36  (limit $264.38)\nShares : 18   Cost: $4,758.48\nStop   : $262.25  (OR_High-$0.90)\nOR High: $263.12\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (605.87 vs 603.93)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.87 vs 603.95)\nTime   : 09:16 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT META\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 14\nEntry  : $646.44  \u2192  $650.24\nCost   : $9,050.19  \u2192  $9,103.30\nP&L    : $+53.11  (+0.6%)\nReason : STOP_INTRABAR\nIn: 08:41:00   Out: 09:21 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY META  #2\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $653.86  (limit $653.88)\nShares : 14   Cost: $9,154.04\nStop   : $648.63  (OR_High-$0.90)\nOR High: $645.12\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (605.41 vs 604.23)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.41 vs 604.11)\nTime   : 09:23 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT MSFT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 12\nEntry  : $396.19  \u2192  $398.17\nCost   : $4,754.27  \u2192  $4,777.99\nP&L    : $+23.72  (+0.5%)\nReason : STOP_INTRABAR\nIn: 08:45:00   Out: 09:26 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT NVDA\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 54\nEntry  : $179.61  \u2192  $180.52\nCost   : $9,699.00  \u2192  $9,747.91\nP&L    : $+48.91  (+0.5%)\nReason : STOP_INTRABAR\nIn: 08:38:00   Out: 09:28 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT TSLA\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 24\nEntry  : $396.58  \u2192  $399.99\nCost   : $9,518.03  \u2192  $9,599.67\nP&L    : $+81.64  (+0.9%)\nReason : STOP_INTRABAR\nIn: 08:44:00   Out: 09:42 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY NVDA  #2\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $181.13  (limit $181.15)\nShares : 27   Cost: $4,890.47\nStop   : $179.68  (OR_High-$0.90)\nOR High: $179.27\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (605.54 vs 604.68)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.54 vs 604.31)\nTime   : 09:43 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY TSLA  #2\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $400.80  (limit $400.82)\nShares : 12   Cost: $4,809.60\nStop   : $397.59  (OR_High-$0.90)\nOR High: $395.15\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (605.54 vs 604.68)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.54 vs 604.33)\nTime   : 09:44 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 18\nEntry  : $264.40  \u2192  $262.08\nCost   : $4,759.19  \u2192  $4,717.43\nP&L    : $-41.76  (-0.9%)\nReason : STOP_INTRABAR\nIn: 09:16:00   Out: 09:53 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83e\ude78 SHORT ENTRY #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker   : AAPL\nEntry    : $262.25 (limit)\nShares   : 38   Proceeds: $9,965.69\nStop     : $264.35 (PDC+$0.90)\nOR Low   : $260.20\nSignal   : Wounded Buffalo \u2193\n  1m close < OR Low \u2713\n  2nd 1m close < OR Low \u2713\n  QQQ 5m close < 9-EMA \u2713  (604.85 vs 605.05)\n  QQQ 5m close < 09:30 AVWAP \u2717  (604.85 vs 604.50)\nTime     : 09:55 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c SHORT CLOSED\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTicker : AAPL\nShares : 38\nEntry  : $262.19  (total $9,963.20)\nCover  : $264.55  (total $10,052.83)\nP&L    : $-89.64  (-0.9%)\nReason : STOP_INTRABAR\nIn: 09:55:00   Out: 10:07 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY AAPL  #2\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $264.86  (limit $264.88)\nShares : 36   Cost: $9,534.96\nStop   : $262.74  (OR_High-$0.90)\nOR High: $263.12\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2717  (605.87 vs 605.89)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.87 vs 604.88)\nTime   : 10:23 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY GOOG  #1\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $306.19  (limit $306.21)\nShares : 32   Cost: $9,798.08\nStop   : $303.74  (OR_High-$0.90)\nOR High: $305.24\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2717  (605.21 vs 605.47)\n  QQQ 5m close > 09:30 AVWAP \u2713  (605.21 vs 604.87)\nTime   : 10:36 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT NVDA\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 27\nEntry  : $181.16  \u2192  $182.82\nCost   : $4,891.20  \u2192  $4,936.17\nP&L    : $+44.97  (+0.9%)\nReason : STOP_INTRABAR\nIn: 09:43:00   Out: 10:48 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT AMZN\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 48\nEntry  : $207.53  \u2192  $209.13\nCost   : $9,961.49  \u2192  $10,038.26\nP&L    : $+76.77  (+0.8%)\nReason : STOP_INTRABAR\nIn: 08:46:00   Out: 10:56 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT TSLA\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 12\nEntry  : $400.86  \u2192  $403.42\nCost   : $4,810.32  \u2192  $4,841.03\nP&L    : $+30.71  (+0.6%)\nReason : STOP_INTRABAR\nIn: 09:44:00   Out: 10:56 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY AMZN  #2\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $209.41  (limit $209.43)\nShares : 23   Cost: $4,816.43\nStop   : $207.73  (OR_High-$0.90)\nOR High: $207.34\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (607.89 vs 606.78)\n  QQQ 5m close > 09:30 AVWAP \u2713  (607.89 vs 605.28)\nTime   : 10:58 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u2705 EXIT META\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 14\nEntry  : $653.96  \u2192  $658.10\nCost   : $9,155.41  \u2192  $9,213.39\nP&L    : $+57.98  (+0.6%)\nReason : STOP_INTRABAR\nIn: 09:23:00   Out: 11:01 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\ud83d\udcc8 LONG ENTRY NVDA  #3\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nPrice  : $183.37  (limit $183.39)\nShares : 54   Cost: $9,901.71\nStop   : $181.90  (OR_High-$0.90)\nOR High: $179.27\nSignal : ORB Breakout \u2191\n  1m close > OR High \u2713\n  2nd 1m close > OR High \u2713\n  QQQ 5m close > 9-EMA \u2713  (608.99 vs 607.92)\n  QQQ 5m close > 09:30 AVWAP \u2713  (608.99 vs 605.71)\nTime   : 11:22 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c EXIT AMZN\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 23\nEntry  : $209.44  \u2192  $207.59\nCost   : $4,817.15  \u2192  $4,774.68\nP&L    : $-42.47  (-0.9%)\nReason : STOP_INTRABAR\nIn: 10:58:00   Out: 14:08 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c EXIT NVDA\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 54\nEntry  : $183.39  \u2192  $181.78\nCost   : $9,903.20  \u2192  $9,816.22\nP&L    : $-86.98  (-0.9%)\nReason : STOP_INTRABAR\nIn: 11:22:00   Out: 14:09 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c EXIT AAPL\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 36\nEntry  : $264.90  \u2192  $264.11\nCost   : $9,536.39  \u2192  $9,507.96\nP&L    : $-28.43  (-0.3%)\nReason : \ud83d\udd14 End of Day\nIn: 10:23:00   Out: 14:50 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "\u274c EXIT GOOG\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nShares : 32\nEntry  : $306.24  \u2192  $305.95\nCost   : $9,799.55  \u2192  $9,790.40\nP&L    : $-9.15  (-0.1%)\nReason : \ud83d\udd14 End of Day\nIn: 10:36:00   Out: 14:50 CDT\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+    },
+    {
+      "chat": "",
+      "message": "EOD CLOSE Complete\n  Trades: 14  W/L: 8/6\n  Day P&L: $+119.38\n  Cash: $100,502.22"
+    }
+  ],
+  "alerts": [],
+  "errors": [],
+  "pnl_pairs": [
+    {
+      "ticker": "META",
+      "side": "long",
+      "entry_ts": "2026-03-02T09:41:00-05:00",
+      "exit_ts": "2026-03-02T10:21:00-05:00",
+      "entry_price": 646.44195175,
+      "exit_price": 650.23587178,
+      "shares": 14,
+      "pnl_per_share": 3.7939,
+      "pnl_dollars": 53.1149
+    },
+    {
+      "ticker": "MSFT",
+      "side": "long",
+      "entry_ts": "2026-03-02T09:45:00-05:00",
+      "exit_ts": "2026-03-02T10:26:00-05:00",
+      "entry_price": 396.18941950000004,
+      "exit_price": 398.16622362,
+      "shares": 12,
+      "pnl_per_share": 1.9768,
+      "pnl_dollars": 23.7216
+    },
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-03-02T09:38:00-05:00",
+      "exit_ts": "2026-03-02T10:28:00-05:00",
+      "entry_price": 179.61113763000003,
+      "exit_price": 180.51678776999998,
+      "shares": 54,
+      "pnl_per_share": 0.9057,
+      "pnl_dollars": 48.9051
+    },
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-03-02T09:44:00-05:00",
+      "exit_ts": "2026-03-02T10:42:00-05:00",
+      "entry_price": 396.58447875,
+      "exit_price": 399.986139905,
+      "shares": 24,
+      "pnl_per_share": 3.4017,
+      "pnl_dollars": 81.6399
+    },
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-03-02T10:16:00-05:00",
+      "exit_ts": "2026-03-02T10:53:00-05:00",
+      "entry_price": 264.39965400000006,
+      "exit_price": 262.0795375,
+      "shares": 18,
+      "pnl_per_share": -2.3201,
+      "pnl_dollars": -41.7621
+    },
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-03-02T10:55:00-05:00",
+      "exit_ts": "2026-03-02T11:07:00-05:00",
+      "entry_price": 262.18943625,
+      "exit_price": 264.5482625,
+      "shares": 38,
+      "pnl_per_share": -2.3588,
+      "pnl_dollars": -89.6354
+    },
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-03-02T10:43:00-05:00",
+      "exit_ts": "2026-03-02T11:48:00-05:00",
+      "entry_price": 181.155669275,
+      "exit_price": 182.82118893499998,
+      "shares": 27,
+      "pnl_per_share": 1.6655,
+      "pnl_dollars": 44.969
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-03-02T09:46:00-05:00",
+      "exit_ts": "2026-03-02T11:56:00-05:00",
+      "entry_price": 207.53112500000003,
+      "exit_price": 209.130476775,
+      "shares": 48,
+      "pnl_per_share": 1.5994,
+      "pnl_dollars": 76.7689
+    },
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-03-02T10:44:00-05:00",
+      "exit_ts": "2026-03-02T11:56:00-05:00",
+      "entry_price": 400.86012000000005,
+      "exit_price": 403.419306895,
+      "shares": 12,
+      "pnl_per_share": 2.5592,
+      "pnl_dollars": 30.7102
+    },
+    {
+      "ticker": "META",
+      "side": "long",
+      "entry_ts": "2026-03-02T10:23:00-05:00",
+      "exit_ts": "2026-03-02T12:01:00-05:00",
+      "entry_price": 653.9580790000001,
+      "exit_price": 658.09915732,
+      "shares": 14,
+      "pnl_per_share": 4.1411,
+      "pnl_dollars": 57.9751
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-03-02T11:58:00-05:00",
+      "exit_ts": "2026-03-02T15:08:00-05:00",
+      "entry_price": 209.44141150000002,
+      "exit_price": 207.59497549999998,
+      "shares": 23,
+      "pnl_per_share": -1.8464,
+      "pnl_dollars": -42.468
+    },
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-03-02T12:22:00-05:00",
+      "exit_ts": "2026-03-02T15:09:00-05:00",
+      "entry_price": 183.39250475000003,
+      "exit_price": 181.781765,
+      "shares": 54,
+      "pnl_per_share": -1.6107,
+      "pnl_dollars": -86.9799
+    }
+  ],
+  "summary": {
+    "entries": 14,
+    "exits": 12,
+    "wins": 8,
+    "losses": 4,
+    "total_pnl": 156.9593,
+    "total_pnl_per_share": 11.9073,
+    "pairs_missing_shares": 0
+  },
+  "_clean_state_run": true,
+  "_universe_used": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL",
+    "SPY",
+    "QQQ"
+  ]
+}
