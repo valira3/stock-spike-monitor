@@ -1,0 +1,95 @@
+{
+  "date": "2026-01-16",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-16T10:20:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 187.9522
+    },
+    {
+      "ts": "2026-01-16T10:25:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 188.297
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-16T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 186.722,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-16T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 186.722,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-01-16T10:20:00-05:00",
+      "exit_ts": "2026-01-16T15:55:00-05:00",
+      "entry_price": 187.9522,
+      "exit_price": 186.722,
+      "shares": 399,
+      "pnl_per_share": 1.2302,
+      "pnl_dollars": 490.8478,
+      "exit_reason": "eod",
+      "or_high": 190.44,
+      "or_low": 188.685,
+      "or_range_pct": 0.009258,
+      "stop_price": 190.534,
+      "risk_dollars": 1030.14
+    },
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-01-16T10:25:00-05:00",
+      "exit_ts": "2026-01-16T15:55:00-05:00",
+      "entry_price": 188.297,
+      "exit_price": 186.722,
+      "shares": 398,
+      "pnl_per_share": 1.575,
+      "pnl_dollars": 626.8452,
+      "exit_reason": "eod",
+      "or_high": 190.44,
+      "or_low": 188.685,
+      "or_range_pct": 0.009258,
+      "stop_price": 190.5341,
+      "risk_dollars": 890.4
+    }
+  ],
+  "rejected_concurrent_cap": 17,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 1117.693,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
