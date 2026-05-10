@@ -25,6 +25,7 @@ State owned by trade_genius referenced inside the loop: `positions`,
 from __future__ import annotations
 
 import logging
+import os
 import sys as _sys
 import time
 from datetime import datetime, timezone
@@ -701,6 +702,59 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
         return float(getattr(tg, "paper_cash", 100_000.0))
 
 
+def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
+                                price: float, shares: int) -> None:
+    """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
+
+    Production-safe rollout: gated on ORB_PORTFOLIO_FIRE env flag.
+    Default "0" (off): the admission is logged as deferred, matching
+    pre-v7.26 behavior. Set to "1" after the 5-day paper-fire
+    observation window confirms admissions look correct.
+
+    With the flag off, Val/Gene continue to mirror Main via the legacy
+    signal bus (executors.base.TradeGeniusBase._on_signal). With the
+    flag on, the executor fires on its OWN admission too. Within-minute
+    coid idempotency catches dupes; across-minute fires are independent.
+    """
+    if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
+        logger.info(
+            "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
+            "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
+            pid, side, ticker,
+        )
+        return
+    try:
+        from executors.bootstrap import get_executor
+        ex = get_executor(pid)
+    except Exception as e:
+        logger.warning(
+            "[V79-ORB-FIRE] %s %s %s get_executor raised: %s",
+            pid, side, ticker, e,
+        )
+        return
+    if ex is None:
+        logger.info(
+            "[V79-ORB-FIRE] %s %s %s -- no executor instance "
+            "(keys unset); admission tracked only",
+            pid, side, ticker,
+        )
+        return
+    try:
+        if side == "long":
+            ok = ex.fire_long(ticker, float(price), int(shares))
+        else:
+            ok = ex.fire_short(ticker, float(price), int(shares))
+        logger.info(
+            "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
+            pid, side, ticker, int(shares), ok,
+        )
+    except Exception as e:
+        logger.warning(
+            "[V79-ORB-FIRE] %s %s %s fire raised: %s",
+            pid, side, ticker, e,
+        )
+
+
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     bars_for_mtm: dict | None) -> None:
     """v10 ORB long-entry path -- per-portfolio fanout.
@@ -767,10 +821,9 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
                 else:
-                    logger.info(
-                        "[V79-ORB-ADMIT] %s long %s -- broker fire deferred "
-                        "(awaiting per-portfolio executor wiring)",
-                        pid, ticker,
+                    _v10_dispatch_executor_fire(
+                        pid=pid, side="long", ticker=ticker,
+                        price=result.price, shares=result.shares,
                     )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
@@ -827,10 +880,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
                 else:
-                    logger.info(
-                        "[V79-ORB-ADMIT] %s short %s -- broker fire deferred "
-                        "(awaiting per-portfolio executor wiring)",
-                        pid, ticker,
+                    _v10_dispatch_executor_fire(
+                        pid=pid, side="short", ticker=ticker,
+                        price=result.price, shares=result.shares,
                     )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(

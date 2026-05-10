@@ -85,3 +85,22 @@ def install_globals(
     trade_genius.gene_executor = gene
     telegram_commands.val_executor = val
     telegram_commands.gene_executor = gene
+
+
+def get_executor(portfolio_id: str):
+    """v7.26.0 -- look up the TradeGeniusBase instance by portfolio_id.
+
+    Returns None for "main" (main is trade_genius itself, not a
+    TradeGeniusBase subclass), None when the executor wasn't built (env
+    flags off / no Alpaca keys), and the instance otherwise.
+
+    Used by engine/scan.py to route per-portfolio v10 admissions through
+    `executor.fire_long` / `executor.fire_short`.
+    """
+    if not portfolio_id or portfolio_id == "main":
+        return None
+    try:
+        import trade_genius
+    except Exception:
+        return None
+    return getattr(trade_genius, f"{portfolio_id}_executor", None)
