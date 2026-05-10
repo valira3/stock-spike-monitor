@@ -1,0 +1,198 @@
+{
+  "date": "2026-01-22",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-22T09:50:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 248.4179
+    },
+    {
+      "ts": "2026-01-22T10:05:00-05:00",
+      "ticker": "MSFT",
+      "side": "short",
+      "price": 445.8485
+    },
+    {
+      "ts": "2026-01-22T10:20:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 435.5853
+    },
+    {
+      "ts": "2026-01-22T10:10:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "price": 331.0376
+    },
+    {
+      "ts": "2026-01-22T09:50:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "price": 231.6521
+    },
+    {
+      "ts": "2026-01-22T09:50:00-05:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "price": 177.294
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-22T14:12:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 251.0924,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-01-22T11:57:00-05:00",
+      "ticker": "MSFT",
+      "side": "short",
+      "exit_price": 450.0901,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-01-22T14:13:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 448.2134,
+      "reason": "target"
+    },
+    {
+      "ts": "2026-01-22T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "short",
+      "exit_price": 330.9027,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-22T11:00:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "exit_price": 234.7317,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-01-22T13:24:00-05:00",
+      "ticker": "ORCL",
+      "side": "short",
+      "exit_price": 180.1537,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-01-22T09:50:00-05:00",
+      "exit_ts": "2026-01-22T14:12:00-05:00",
+      "entry_price": 248.4179,
+      "exit_price": 251.0924,
+      "shares": 402,
+      "pnl_per_share": -2.6745,
+      "pnl_dollars": -1075.1519,
+      "exit_reason": "stop",
+      "or_high": 250.78,
+      "or_low": 248.8,
+      "or_range_pct": 0.007927
+    },
+    {
+      "ticker": "MSFT",
+      "side": "short",
+      "entry_ts": "2026-01-22T10:05:00-05:00",
+      "exit_ts": "2026-01-22T11:57:00-05:00",
+      "entry_price": 445.8485,
+      "exit_price": 450.0901,
+      "shares": 256,
+      "pnl_per_share": -4.2416,
+      "pnl_dollars": -1085.857,
+      "exit_reason": "stop",
+      "or_high": 449.5299,
+      "or_low": 446.0,
+      "or_range_pct": 0.007883
+    },
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-01-22T10:20:00-05:00",
+      "exit_ts": "2026-01-22T14:13:00-05:00",
+      "entry_price": 435.5853,
+      "exit_price": 448.2134,
+      "shares": 315,
+      "pnl_per_share": 12.628,
+      "pnl_dollars": 3977.8328,
+      "exit_reason": "target",
+      "or_high": 435.55,
+      "or_low": 432.6293,
+      "or_range_pct": 0.006728
+    },
+    {
+      "ticker": "GOOG",
+      "side": "short",
+      "entry_ts": "2026-01-22T10:10:00-05:00",
+      "exit_ts": "2026-01-22T15:55:00-05:00",
+      "entry_price": 331.0376,
+      "exit_price": 330.9027,
+      "shares": 230,
+      "pnl_per_share": 0.1349,
+      "pnl_dollars": 31.0304,
+      "exit_reason": "eod",
+      "or_high": 335.21,
+      "or_low": 331.4,
+      "or_range_pct": 0.011431
+    },
+    {
+      "ticker": "AMZN",
+      "side": "short",
+      "entry_ts": "2026-01-22T09:50:00-05:00",
+      "exit_ts": "2026-01-22T11:00:00-05:00",
+      "entry_price": 231.6521,
+      "exit_price": 234.7317,
+      "shares": 344,
+      "pnl_per_share": -3.0797,
+      "pnl_dollars": -1059.4066,
+      "exit_reason": "stop",
+      "or_high": 234.44,
+      "or_low": 232.36,
+      "or_range_pct": 0.008912
+    },
+    {
+      "ticker": "ORCL",
+      "side": "short",
+      "entry_ts": "2026-01-22T09:50:00-05:00",
+      "exit_ts": "2026-01-22T13:24:00-05:00",
+      "entry_price": 177.294,
+      "exit_price": 180.1537,
+      "shares": 367,
+      "pnl_per_share": -2.8597,
+      "pnl_dollars": -1049.5083,
+      "exit_reason": "stop",
+      "or_high": 179.93,
+      "or_low": 177.83,
+      "or_range_pct": 0.01174
+    }
+  ],
+  "summary": {
+    "entries": 6,
+    "exits": 6,
+    "wins": 2,
+    "losses": 4,
+    "total_pnl": -261.0606,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
