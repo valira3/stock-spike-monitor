@@ -4,6 +4,79 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.18.0 (2026-05-10) -- v10 ORB sizing handoff to broker.orders
+
+Tenth PR in v10 rollout. Closes a gap between v10's per-trade risk
+sizing and the legacy `paper_shares_for` notional sizing: when v10
+admits an entry, it now stashes the computed shares; broker/orders
+consumes the stash on the next sizing call.
+
+### A. Why this matters
+
+Before this PR, the v10 entry route in `engine/scan.py:_orb_long_entry`
+called `callbacks.execute_entry(ticker, result.price)` which routed
+through `broker/lifecycle.execute_entry` -> `broker/orders.execute_breakout`.
+Inside execute_breakout, `paper_shares_for(current_price)` was called
+to compute shares -- but that's the LEGACY dollar-per-entry path,
+not v10's `risk_per_trade_pct * equity / risk_per_share` math.
+
+So we'd correctly identify the v10 entry signal + apply v10 risk caps
+in `LiveAdapter.try_enter`, then DISCARD the share count and let
+broker/orders compute its own (different) number. Production positions
+were sized by the legacy formula, not v10's.
+
+### B. Fix: shared stash via orb.live_runtime
+
+  - New `stash_v10_size(portfolio_id, ticker, shares)`,
+    `consume_v10_size(portfolio_id, ticker)`,
+    `peek_v10_size(...)` in orb/live_runtime.py.
+  - In `engine/scan.py:_orb_long_entry/_orb_short_entry`, after a
+    successful v10 admission: `stash_v10_size("main", ticker, result.shares)`.
+  - In `broker/orders.paper_shares_for(price, ticker=None)` -- new
+    optional `ticker` kwarg. When `ORB_LIVE_MODE=1` AND ticker is
+    provided AND a v10 size is stashed, use it. Otherwise fall through
+    to the legacy path (PortfolioConfig.dollars_per_entry).
+  - In `broker/orders.execute_breakout`: pass `ticker=ticker` to
+    `paper_shares_for` so the handoff fires.
+
+### C. Tests (`tests/strategy/test_orb_size_handoff.py`)
+
+10 new tests:
+  - stash + consume + peek mechanics
+  - one-shot semantics (consume pops)
+  - independent per (portfolio_id, ticker)
+  - re-entry overwrites
+  - paper_shares_for uses v10 stash when live mode on
+  - paper_shares_for falls back to legacy when:
+    * stash empty
+    * ORB_LIVE_MODE=0 (kill switch -> stash NOT consumed)
+    * no ticker passed (legacy callers unaffected)
+  - invalid price returns 0
+
+### D. Test totals
+
+  v7.x strategy tests: **184/184 passing** + 4 skipped.
+
+### Effect
+
+**v10 ORB now controls position sizing end-to-end.** Combined with
+PR7 (entry routing) and PR9 (exit routing), v10 owns the FULL trade
+lifecycle for any position it admits:
+
+  - Entry detection (PR7)
+  - Risk admission (PR4-5)
+  - Position sizing (THIS PR)
+  - Exit decisions (PR9)
+
+Kill switch `ORB_LIVE_MODE=0` reverts ALL of these to legacy.
+
+### Look-ahead audit per rule #7b
+
+Sizing reads only the v10 admission's already-computed shares. No new
+data sources, no future bars.
+
+---
+
 ## v7.17.0 (2026-05-10) -- v10 ORB exit cutover wired into broker/positions.py
 
 Ninth PR in v10 rollout. Wires the v10 `check_exit_by_ticker` API
