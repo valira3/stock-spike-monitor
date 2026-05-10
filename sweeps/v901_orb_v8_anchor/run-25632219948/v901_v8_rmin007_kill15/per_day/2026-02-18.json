@@ -1,0 +1,95 @@
+{
+  "date": "2026-02-18",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-18T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 189.8049
+    },
+    {
+      "ts": "2026-02-18T10:10:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 189.3396
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-18T14:57:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 187.0678,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-02-18T14:57:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 187.0681,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-02-18T10:05:00-05:00",
+      "exit_ts": "2026-02-18T14:57:00-05:00",
+      "entry_price": 189.8049,
+      "exit_price": 187.0678,
+      "shares": 395,
+      "pnl_per_share": -2.737,
+      "pnl_dollars": -1081.1199,
+      "exit_reason": "stop",
+      "or_high": 189.19,
+      "or_low": 187.35,
+      "or_range_pct": 0.009773,
+      "stop_price": 187.2551,
+      "risk_dollars": 1007.15
+    },
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-02-18T10:10:00-05:00",
+      "exit_ts": "2026-02-18T14:57:00-05:00",
+      "entry_price": 189.3396,
+      "exit_price": 187.0681,
+      "shares": 396,
+      "pnl_per_share": -2.2715,
+      "pnl_dollars": -899.5329,
+      "exit_reason": "stop",
+      "or_high": 189.19,
+      "or_low": 187.35,
+      "or_range_pct": 0.009773,
+      "stop_price": 187.2553,
+      "risk_dollars": 825.38
+    }
+  ],
+  "rejected_concurrent_cap": 28,
+  "kill_switch_fired": true,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 0,
+    "losses": 2,
+    "total_pnl": -1980.6528,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
