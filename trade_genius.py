@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.20.0"
+BOT_VERSION = "7.21.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7382,6 +7382,45 @@ def _status_text_sync():
         lines.append("SPY PDC: $%.2f" % spy_pdc_s)
     if qqq_pdc_s > 0:
         lines.append("QQQ PDC: $%.2f" % qqq_pdc_s)
+
+    # v7.21.0: v10 ORB strategy status block. Tells the operator at a
+    # glance whether the v10 strategy is live, whether today's day
+    # gates passed, and how much risk is in flight. iPhone-friendly
+    # (every line <= 34 chars per CLAUDE.md Telegram rule).
+    try:
+        import orb.live_runtime as _v10rt
+        if _v10rt._bootstrapped:
+            snap = _v10rt.snapshot()
+            lines.append(sep)
+            lines.append("\U0001f9ec v10 ORB Status")
+            mode = "LIVE" if snap.get("live_mode") else "LEGACY"
+            lines.append("  Mode:    %s" % mode)
+            ds = snap.get("day_status", {})
+            vix = ds.get("vix_d1_close")
+            thr = ds.get("vix_threshold", 22.0)
+            if vix is not None:
+                pass_str = "PASS" if vix <= thr else "FAIL"
+                lines.append("  VIX(D-1): %.2f/%.0f %s" % (vix, thr, pass_str))
+            if ds.get("block_day"):
+                reason = (ds.get("block_reason") or "?")[:20]
+                lines.append("  Day:     BLOCKED %s" % reason)
+            else:
+                lines.append("  Day:     OK")
+            # Trades + risk used (sum across portfolios)
+            day_states = snap.get("day_states", []) or []
+            total_trades = sum(s.get("trades_today", 0) for s in day_states)
+            cfg = snap.get("config", {}) or {}
+            max_t = cfg.get("max_trades_per_day", 5)
+            lines.append("  Trades:  %d/%d" % (total_trades, max_t))
+            rb = snap.get("risk_books", {}) or {}
+            risk_used = sum((b.get("open_risk") or 0) for b in rb.values())
+            risk_max = sum((b.get("max_risk_dollars") or 0) for b in rb.values())
+            lines.append(
+                "  Risk:    $%d/$%d" % (round(risk_used), round(risk_max))
+            )
+    except Exception:
+        # Defensive: never break /status because of v10 surface
+        pass
 
     return "\n".join(lines)
 

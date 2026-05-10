@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.21.0 (2026-05-10) -- Telegram /status v10 block + UI audit
+
+Thirteenth PR in v10 rollout. Adds v10 ORB strategy state to the
+Telegram /status command output. Reaffirms the v7.13.1 deploy-banner
+auto-derivation regression test.
+
+### A. New v10 block in /status output
+
+`trade_genius._status_text_sync` now appends a "v10 ORB Status"
+section (when the runtime is bootstrapped) showing:
+
+  - Mode (LIVE / LEGACY based on ORB_LIVE_MODE)
+  - VIX(D-1) value vs threshold + PASS/FAIL
+  - Day OK / BLOCKED reason
+  - Trades used / max (across all 3 portfolios)
+  - Risk used / max ($)
+
+Every line <=34 chars per CLAUDE.md Telegram mobile rule. Fail-open:
+runtime exception silently omits the block (never breaks /status).
+
+### B. UI audit (Telegram surfaces inventoried)
+
+  - /status -- updated this PR
+  - /version -- already correct (uses BOT_VERSION + auto-derived
+    CURRENT_MAIN_NOTE since v7.13.1)
+  - /help -- generic; no v10 references needed
+  - /dayreport -- per-trade P&L; v10 trades already tagged with
+    V10_TARGET / V10_STOP / V10_BE_STOP exit reasons via PR9
+  - /strategy, /algo, /mode -- legacy Tiger Sovereign content; will
+    be rewritten or retired in PR14 (dead-code retirement)
+  - Daily brief (07:00 ET cron) -- legacy; will be revisited
+
+### C. Tests (`tests/strategy/test_telegram_v10_status.py`)
+
+4 new tests (skipped in sandbox due to telegram-token stubbing;
+will run in production CI where credentials are real):
+  - /status includes v10 block when bootstrapped
+  - /status omits v10 block when runtime not bootstrapped
+  - Every v10 block line <= 34 chars (mobile rule)
+  - CURRENT_MAIN_NOTE first line starts with v{BOT_VERSION}
+    (v7.13.1 regression coverage reaffirmed)
+
+### Effect
+
+Telegram operators now see v10 strategy state in /status. The deploy
+banner correctly reflects v7.21.0 (auto-derived from CHANGELOG).
+
+---
+
 ## v7.20.0 (2026-05-10) -- v10 ORB dashboard frontend MVP
 
 Twelfth PR in v10 rollout. Adds the highest-value v10 frontend
