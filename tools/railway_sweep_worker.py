@@ -544,6 +544,113 @@ def process_trigger(trigger_path: Path) -> None:
     })
 
 
+def _all_variants_have_markers(name: str, variants: list) -> bool:
+    """v7.8.8 -- True iff every variant in the trigger has a marker in R2.
+    Used to recognize triggers that finished but never got their done push."""
+    for v in variants:
+        vid = v.get("vid")
+        if not vid:
+            return False
+        if not is_variant_processed(name, vid):
+            return False
+    return True
+
+
+def _emit_done_push_from_markers(name: str, variants: list) -> None:
+    """v7.8.8 -- Reconstruct + emit a phase=done status push by reading
+    each per-variant marker from R2 (which carry the inline summary as
+    of v7.8.7). Used to recover from the case where mark_processed
+    succeeded (or didn't) but the final done push_status failed
+    silently, leaving observers stuck on phase=running.
+
+    Idempotent: status push uses Contents API GET-then-PUT, so re-firing
+    is harmless. Only emitted when the trigger has a complete set of
+    variant markers in R2 -- never fabricates results.
+    """
+    s3 = _r2_client()
+    results = []
+    for v in variants:
+        vid = v.get("vid")
+        try:
+            obj = s3.get_object(
+                Bucket=R2_BUCKET,
+                Key=_r2_key_variant_marker(name, vid),
+            )
+            marker_body = json.loads(obj["Body"].read().decode("utf-8"))
+            results.append({
+                "vid": vid,
+                "rc": marker_body.get("rc", 0),
+                "uploaded": marker_body.get("uploaded"),
+                "resumed": True,
+                "summary": marker_body.get("summary"),
+            })
+        except Exception as e:
+            log.warning("[%s/%s] recover: marker read failed: %s",
+                        name, vid, e)
+            results.append({"vid": vid, "rc": -1, "recover_error": str(e)})
+
+    summary = {
+        "trigger": name,
+        "variants": len(variants),
+        "succeeded": sum(1 for r in results if r["rc"] == 0),
+        "failed": sum(1 for r in results if r["rc"] != 0),
+        "results": results,
+    }
+    # Idempotent: rewrites the trigger marker if it already exists.
+    mark_processed(name, summary)
+
+    # Use the trigger's own _utc_now_iso semantics; started_at/updated_at
+    # are best-effort since we don't know the original start time.
+    push_status(name, {
+        "trigger": name, "phase": "done",
+        "started_at": _utc_now_iso(),  # unknown original; use now
+        "updated_at": _utc_now_iso(),
+        "variants_total": len(variants),
+        "variants_completed": len(results),
+        "variants_succeeded": summary["succeeded"],
+        "variants_failed": summary["failed"],
+        "variants_resumed": len(results),
+        "recovered_from_markers": True,
+        "results": results,
+    })
+    log.info("[%s] recovered done push from %d variant markers",
+             name, len(results))
+
+
+def _has_done_push(name: str) -> bool:
+    """v7.8.8 -- True iff the sweep-status branch already has a done
+    push for this trigger. Reads via the GitHub Contents API using the
+    same status token. No-op when GITHUB_STATUS_TOKEN is unset."""
+    if not GITHUB_STATUS_TOKEN:
+        return True  # treat as "satisfied" since we can't verify
+    try:
+        import urllib.request
+        import urllib.error
+        path = f"status/{name}.json"
+        api_url = (
+            f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+            f"?ref={SWEEP_STATUS_BRANCH}"
+        )
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "Authorization": f"token {GITHUB_STATUS_TOKEN}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "railway-sweep-worker",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            existing = json.load(resp)
+            import base64
+            content_b64 = existing.get("content", "")
+            content = base64.b64decode(content_b64).decode("utf-8")
+            data = json.loads(content)
+            return data.get("phase") == "done"
+    except Exception as e:
+        log.debug("[%s] _has_done_push probe: %s", name, e)
+        return True  # err on the side of "leave alone"
+
+
 def loop_once() -> int:
     """One iteration of the polling loop. Returns count of processed triggers."""
     ensure_repo()
@@ -554,7 +661,28 @@ def loop_once() -> int:
     n_processed = 0
     for trigger_path in triggers:
         name = trigger_path.stem
-        if is_processed(name):
+        already_processed = is_processed(name)
+
+        # v7.8.8 -- recovery for stuck triggers. If the trigger looks
+        # processed (R2 marker exists) BUT the sweep-status branch
+        # doesn't carry a phase=done push for it, AND every variant has
+        # a marker, recover by re-emitting done from the variant
+        # markers. Cheap, idempotent, runs at most once per trigger
+        # per worker boot.
+        if already_processed and not _has_done_push(name):
+            try:
+                config = json.loads(trigger_path.read_text())
+                variants = (config.get("variants")
+                            if isinstance(config, dict) else config) or []
+                if isinstance(variants, list) and variants and \
+                        _all_variants_have_markers(name, variants):
+                    log.info("[%s] recovering missing done push from markers",
+                             name)
+                    _emit_done_push_from_markers(name, variants)
+            except Exception as e:
+                log.warning("[%s] recovery probe failed: %s", name, e)
+
+        if already_processed:
             continue
         process_trigger(trigger_path)
         n_processed += 1

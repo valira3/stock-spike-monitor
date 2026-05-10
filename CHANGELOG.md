@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.8-experimental (2026-05-10) — Worker auto-recovers missing phase=done push
+
+Bug fix for an observed stuck-state in the v787 sweep: all 6 variants
+completed and pushed `running` updates to sweep-status, but the
+`phase=done` push never landed (worker died/hung/timed-out between the
+last running push and the done push). Without this fix, observers
+were stuck on `phase=running 6/6` forever, the trigger marker may or
+may not be in R2, and there's no automatic path to surface the
+results.
+
+### What changes
+
+`tools/railway_sweep_worker.py` -- `loop_once()` now probes each trigger
+on every poll iteration:
+
+  - If the trigger marker IS in R2 (so `process_trigger` would skip)
+    AND the sweep-status branch DOES NOT carry a `phase=done` push for
+    that trigger AND every variant has a `_variant_done.marker` in R2
+    (so we have the inline summaries),
+  - Then `_emit_done_push_from_markers` reconstructs the full results
+    array by reading each variant's R2 marker (which carries the
+    inline summary as of v7.8.7) and emits a recovery `phase=done`
+    push, also (re-)writing the trigger marker idempotently.
+
+The recovery push is flagged `recovered_from_markers: True` in the
+payload so observers can distinguish it from a fresh done push.
+
+### Safety
+
+- Read-only against R2 except for the trigger marker re-write (which
+  is idempotent -- same body content as a normal done push).
+- Never fabricates results -- only fires when the full set of variant
+  markers is present.
+- Idempotent against sweep-status: GitHub Contents API GET-then-PUT
+  with sha so repeated calls just rewrite the same content.
+- Best-effort: if the recovery probe itself fails for any reason,
+  the worker logs a warning and continues normally.
+
+### Effect on the stuck v787 sweep
+
+Once Railway redeploys with this code, the next worker poll iteration
+will see v787 as a recovery candidate and emit the missing done push,
+unblocking the analysis pipeline without re-running any variant.
+
+---
+
 ## v7.8.7-experimental (2026-05-10) — Status push inlines summary.json
 
 Closes the last observability gap on top of v7.8.6. The status branch
