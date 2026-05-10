@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.22.0 (2026-05-10) -- v10 retirement plan (docs only; no code change)
+
+Fourteenth PR in v10 rollout. Honest scoping: the planned dead-code
+retirement is too risky to bundle into a single mid-session PR
+because legacy modules are imported by 20+ files. This PR ships the
+retirement *plan* + checklist instead, so the actual cleanup is
+mechanical when Val is ready.
+
+### A. New doc: `docs/v10_retirement_plan.md`
+
+Enumerates:
+  - Why retire (4 reasons)
+  - Retirement criteria (5 checklist items, including 5-day paper-fire
+    observation as the gating criterion)
+  - 6 phases of deletion (top-level modules, in-file paths, globals,
+    Telegram, dashboard, tests)
+  - Proposed PR order (PR15-19)
+  - Operational guardrails (kill-switch lifetime, paper-trade between
+    PRs, roll-back plan)
+  - "What stays" inventory (don't accidentally delete the right code)
+  - Live-mode validation checklist (gating: 5+ trading days, 10+
+    v10 entries observed, 5+ v10 exits per reason, Sharpe > 1.5)
+
+### B. Why this isn't a code-deletion PR
+
+20+ files import legacy modules:
+  - tiger_buffalo_v5.py
+  - eye_of_tiger.py
+  - qqq_regime.py
+  - v5_10_1_integration.py
+  - v5_10_6_snapshot.py / v5_13_2_snapshot.py
+
+Deleting them mid-session without a paper-fire validation window risks
+breaking production. The retirement criteria explicitly require live
+v10 observation BEFORE deletion proceeds. This PR documents that gate
+clearly so the operator (Val) controls when retirement starts.
+
+### C. Test totals
+
+Unchanged at **187/187 passing** + 4 skipped.
+
+### Effect
+
+No code change. Documentation only. Future retirement PRs (15-19) will
+each carry an explicit reference to the relevant phase in this plan.
+
+---
+
 ## v7.21.0 (2026-05-10) -- Telegram /status v10 block + UI audit
 
 Thirteenth PR in v10 rollout. Adds v10 ORB strategy state to the
