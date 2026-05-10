@@ -152,6 +152,40 @@ def mark_processed(trigger_name: str, summary: dict) -> None:
     log.info("marked %s processed in R2", trigger_name)
 
 
+# v7.8.6 -- per-variant resumability. A Railway redeploy (triggered by
+# any new commit to main) kills the worker mid-sweep; on restart the
+# trigger-level _processed.marker is missing so the entire sweep
+# restarts from variant 0, wasting up to ~30 min and ~$3 per
+# interruption. Per-variant markers let us skip already-uploaded
+# variants on resume, so the worst case becomes "lose the variant
+# that was running at SIGTERM" instead of "lose everything".
+def _r2_key_variant_marker(trigger_name: str, vid: str) -> str:
+    return f"sweep-results/railway/{trigger_name}/{vid}/_variant_done.marker"
+
+
+def is_variant_processed(trigger_name: str, vid: str) -> bool:
+    if not vid:
+        return False
+    s3 = _r2_client()
+    try:
+        s3.head_object(Bucket=R2_BUCKET,
+                       Key=_r2_key_variant_marker(trigger_name, vid))
+        return True
+    except Exception:
+        return False
+
+
+def mark_variant_processed(trigger_name: str, vid: str, info: dict) -> None:
+    if not vid:
+        return
+    s3 = _r2_client()
+    body = json.dumps(info, indent=2, default=str).encode("utf-8")
+    s3.put_object(Bucket=R2_BUCKET,
+                  Key=_r2_key_variant_marker(trigger_name, vid),
+                  Body=body, ContentType="application/json")
+    log.info("[%s/%s] variant marker written to R2", trigger_name, vid)
+
+
 def upload_variant_results(trigger_name: str, vid: str, output_dir: Path) -> int:
     """Upload all files under output_dir/<vid>/ to R2 under the
     sweep-results/railway/<trigger>/<vid>/ prefix. Returns count."""
@@ -232,6 +266,14 @@ def run_variant(variant: dict, trigger_name: str, output_root: Path) -> dict:
                 "stderr_tail": proc.stderr[-2000:]}
 
     n_uploaded = upload_variant_results(trigger_name, vid, output_root)
+    # v7.8.6 -- per-variant marker so a redeploy mid-sweep can resume.
+    # Written ONLY after a clean upload, never on failure paths.
+    mark_variant_processed(trigger_name, vid, {
+        "vid": vid,
+        "rc": 0,
+        "uploaded": n_uploaded,
+        "completed_at": _utc_now_iso(),
+    })
     log.info("[%s/%s] done, uploaded %d files", trigger_name, vid, n_uploaded)
     return {"vid": vid, "rc": 0, "uploaded": n_uploaded}
 
@@ -363,42 +405,72 @@ def process_trigger(trigger_path: Path) -> None:
     #                                              vars in ~53 min)
     parallel_variants = max(1, int(os.environ.get(
         "RAILWAY_PARALLEL_VARIANTS", str(RAILWAY_WORKERS))))
-    parallel_variants = min(parallel_variants, len(variants))
-    log.info("[%s] running %d variants with parallel_variants=%d",
-             name, len(variants), parallel_variants)
 
+    # v7.8.6 -- resume from R2 markers. Variants whose marker exists
+    # have already uploaded their results to R2 in a prior worker run
+    # (interrupted by a Railway redeploy). Skip those and only schedule
+    # the variants that still need to run.
     results = []
-    import concurrent.futures as _cf
-    with _cf.ThreadPoolExecutor(max_workers=parallel_variants) as ex:
-        futures = {
-            ex.submit(run_variant, v, name, output_root): v
-            for v in variants
-        }
-        completed = 0
-        for fut in _cf.as_completed(futures):
-            completed += 1
-            try:
-                r = fut.result()
-            except Exception as e:
-                v = futures[fut]
-                log.error("[%s/%s] threw: %s",
-                          name, v.get("vid", "?"), e)
-                r = {"vid": v.get("vid"), "rc": -99, "exc": str(e)}
-            results.append(r)
-            log.info("[%s] %d/%d variants complete (latest: %s)",
-                     name, completed, len(variants), r.get("vid"))
-            # v7.8.6 -- per-variant status push.
-            push_status(name, {
-                "trigger": name, "phase": "running",
-                "started_at": started_at,
-                "updated_at": _utc_now_iso(),
-                "variants_total": len(variants),
-                "variants_completed": completed,
-                "variants_succeeded": sum(1 for x in results if x["rc"] == 0),
-                "variants_failed": sum(1 for x in results if x["rc"] != 0),
-                "latest_vid": r.get("vid"),
-                "latest_rc": r.get("rc"),
-            })
+    to_run = []
+    for v in variants:
+        vid = v.get("vid")
+        if vid and is_variant_processed(name, vid):
+            log.info("[%s/%s] resume: variant marker already in R2; skipping",
+                     name, vid)
+            results.append({"vid": vid, "rc": 0, "resumed": True})
+        else:
+            to_run.append(v)
+
+    if results:
+        push_status(name, {
+            "trigger": name, "phase": "started",
+            "started_at": started_at, "updated_at": _utc_now_iso(),
+            "variants_total": len(variants),
+            "variants_completed": len(results),
+            "variants_succeeded": len(results),
+            "variants_failed": 0,
+            "variants_resumed": len(results),
+        })
+
+    if not to_run:
+        log.info("[%s] all %d variants already in R2; finalizing",
+                 name, len(variants))
+    else:
+        parallel_variants = min(parallel_variants, len(to_run))
+        log.info("[%s] running %d new variants (resumed=%d) parallel=%d",
+                 name, len(to_run), len(results), parallel_variants)
+
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=parallel_variants) as ex:
+            futures = {
+                ex.submit(run_variant, v, name, output_root): v
+                for v in to_run
+            }
+            completed = len(results)  # account for resumed variants
+            for fut in _cf.as_completed(futures):
+                completed += 1
+                try:
+                    r = fut.result()
+                except Exception as e:
+                    v = futures[fut]
+                    log.error("[%s/%s] threw: %s",
+                              name, v.get("vid", "?"), e)
+                    r = {"vid": v.get("vid"), "rc": -99, "exc": str(e)}
+                results.append(r)
+                log.info("[%s] %d/%d variants complete (latest: %s)",
+                         name, completed, len(variants), r.get("vid"))
+                # Per-variant status push.
+                push_status(name, {
+                    "trigger": name, "phase": "running",
+                    "started_at": started_at,
+                    "updated_at": _utc_now_iso(),
+                    "variants_total": len(variants),
+                    "variants_completed": completed,
+                    "variants_succeeded": sum(1 for x in results if x["rc"] == 0),
+                    "variants_failed": sum(1 for x in results if x["rc"] != 0),
+                    "latest_vid": r.get("vid"),
+                    "latest_rc": r.get("rc"),
+                })
 
     summary = {
         "trigger": name,

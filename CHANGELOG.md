@@ -4,23 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v7.8.6-experimental (2026-05-10) — Railway sweep-status feedback branch
+## v7.8.6-experimental (2026-05-10) — Railway sweep-status feedback + per-variant resumability
 
-Adds an optional progress-feedback channel from the Railway sweep
-worker to a dedicated `sweep-status` branch in this repo. No bot
+Two independent improvements to the Railway sweep worker. No bot
 behavior change.
 
-### Why
+### A. Sweep-status feedback branch (optional)
 
-The Railway worker writes results only to R2. Observers without R2
-credentials (e.g. another Claude Code session) had no way to detect
-sweep completion -- they had to wait for the user to relay R2 output
-manually. This added latency to every iteration loop.
-
-### What changes
-
-`tools/railway_sweep_worker.py` -- when `GITHUB_STATUS_TOKEN` is set,
-the worker pushes a tiny JSON status snapshot to
+When `GITHUB_STATUS_TOKEN` is set, `tools/railway_sweep_worker.py`
+pushes a tiny JSON status snapshot to
 `sweep-status/status/<trigger_name>.json` via the GitHub Contents API
 on three events:
 
@@ -34,7 +26,7 @@ scope. Errors are logged-and-swallowed -- status push is best-effort
 and must never block sweep execution. To revoke, just unset
 `GITHUB_STATUS_TOKEN`.
 
-### Setup required (one-time, manual)
+**Setup required (one-time, manual)**:
 
 1. Generate a fine-grained PAT with **Contents: Write** on this repo.
 2. Add it as `GITHUB_STATUS_TOKEN` env var in the Railway sweep-worker
@@ -43,6 +35,22 @@ and must never block sweep execution. To revoke, just unset
 
 If the env var is unset, status-push is a no-op -- the worker behaves
 exactly as before.
+
+### B. Per-variant resumability
+
+Problem: a Railway redeploy (triggered by ANY new commit to main)
+kills the worker mid-sweep. Before this PR, the trigger-level
+`_processed.marker` was the only resume signal, and it only writes
+when ALL variants finish, so any redeploy mid-sweep restarted from
+variant 0 -- wasted up to ~30 min and ~$3 per interruption.
+
+Now each variant writes its own marker
+(`sweep-results/railway/<trigger>/<vid>/_variant_done.marker`) after
+a clean upload. On worker restart, `process_trigger` checks each
+variant's marker and SKIPS the ones already in R2. Worst case under
+SIGTERM is "lose the variant currently running" instead of "lose
+everything". Variants pre-completed in R2 are reflected in the
+status branch as `variants_resumed`.
 
 ---
 
