@@ -1,0 +1,52 @@
+{
+  "variant": "v799_winner_within_1500cap_BE",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "earnings_layer": "none",
+  "days_planned": 83,
+  "days_ran": 83,
+  "days_resumed_skip": 0,
+  "days_ok": 83,
+  "days_failed": 0,
+  "net_pnl": 7276.52,
+  "entries": 174,
+  "exits": 174,
+  "wins": 95,
+  "losses": 79,
+  "win_rate_pct": 54.6,
+  "wall_min": 0,
+  "config": {
+    "strategy": "orb_classical",
+    "or_minutes": 30,
+    "rr": 1.5,
+    "stop_buffer_bps": 10.0,
+    "time_cutoff_et": "12:00",
+    "eod_cutoff_et": "15:55",
+    "range_min_pct": 0.003,
+    "range_max_pct": 0.025,
+    "volume_mult": 0.0,
+    "max_trades_per_day": 5,
+    "risk_per_trade_pct": 0.75,
+    "account": 100000.0,
+    "blocklist": {
+      "META": [
+        "LONG",
+        "SHORT"
+      ],
+      "MSFT": [
+        "LONG",
+        "SHORT"
+      ]
+    }
+  }
+}
