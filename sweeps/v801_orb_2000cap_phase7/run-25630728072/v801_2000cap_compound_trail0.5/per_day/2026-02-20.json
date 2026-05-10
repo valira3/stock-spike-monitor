@@ -1,0 +1,92 @@
+{
+  "date": "2026-02-20",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-20T10:05:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 261.0955
+    },
+    {
+      "ts": "2026-02-20T10:15:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "price": 261.1606
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-20T12:10:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 263.0854,
+      "reason": "be_stop"
+    },
+    {
+      "ts": "2026-02-20T12:11:00-05:00",
+      "ticker": "AAPL",
+      "side": "long",
+      "exit_price": 263.0528,
+      "reason": "be_stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-02-20T10:05:00-05:00",
+      "exit_ts": "2026-02-20T12:10:00-05:00",
+      "entry_price": 261.0955,
+      "exit_price": 263.0854,
+      "shares": 316,
+      "pnl_per_share": 1.9899,
+      "pnl_dollars": 628.8065,
+      "exit_reason": "be_stop",
+      "or_high": 260.25,
+      "or_low": 258.16,
+      "or_range_pct": 0.008063,
+      "stop_price": 263.217,
+      "risk_dollars": 968.87
+    },
+    {
+      "ticker": "AAPL",
+      "side": "long",
+      "entry_ts": "2026-02-20T10:15:00-05:00",
+      "exit_ts": "2026-02-20T12:11:00-05:00",
+      "entry_price": 261.1606,
+      "exit_price": 263.0528,
+      "shares": 316,
+      "pnl_per_share": 1.8922,
+      "pnl_dollars": 597.9336,
+      "exit_reason": "be_stop",
+      "or_high": 260.25,
+      "or_low": 258.16,
+      "or_range_pct": 0.008063,
+      "stop_price": 263.1844,
+      "risk_dollars": 989.46
+    }
+  ],
+  "rejected_concurrent_cap": 33,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 1226.7401,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

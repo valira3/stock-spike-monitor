@@ -1,0 +1,62 @@
+{
+  "date": "2026-02-06",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-06T10:40:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 205.1425
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-06T13:15:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 208.6881,
+      "reason": "be_stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-02-06T10:40:00-05:00",
+      "exit_ts": "2026-02-06T13:15:00-05:00",
+      "entry_price": 205.1425,
+      "exit_price": 208.6881,
+      "shares": 391,
+      "pnl_per_share": 3.5455,
+      "pnl_dollars": 1386.3054,
+      "exit_reason": "be_stop",
+      "or_high": 204.88,
+      "or_low": 200.31,
+      "or_range_pct": 0.022557,
+      "stop_price": 208.7925,
+      "risk_dollars": 1929.62
+    }
+  ],
+  "rejected_concurrent_cap": 10,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 1386.3054,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
