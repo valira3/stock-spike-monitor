@@ -44,7 +44,15 @@ def _to_et(now: datetime | None = None) -> datetime:
     ``_now_et`` helper in trade_genius.py). ``None`` means *right now*.
     """
     if now is None:
-        return datetime.now(tz=ET)
+        # v7.8.4: route the now=None fallback through tg._now_et so the
+        # replay clock applies. Defensive -- current callers always pass
+        # an explicit datetime, but new callers may not.
+        try:
+            import sys as _sys
+            _tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+            return _tg._now_et() if _tg is not None else datetime.now(tz=ET)
+        except Exception:
+            return datetime.now(tz=ET)
     if now.tzinfo is None:
         # treat as ET — same convention as test fixtures
         return now.replace(tzinfo=ET)

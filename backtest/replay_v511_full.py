@@ -624,6 +624,7 @@ def install_record_only_layers(
 
     _SLIPPAGE_STOP_REASONS = (
         "STOP",
+        "STOP_INTRABAR",
         "sentinel_a_stop_price",
         "sentinel_a_hard_loss",
         "sentinel_f_chandelier_exit",
@@ -655,6 +656,39 @@ def install_record_only_layers(
         # LONG exit (sell) hits the bid -> get less.
         # SHORT exit (cover/buy) hits the ask -> pay more.
         return price * (1.0 - factor) if side == "long" else price * (1.0 + factor)
+
+    # v7.8.5 -- entry slippage. The replay previously filled entries at
+    # current_price = bar close, a bias-free midpoint with no spread
+    # cost. In reality LONG entries hit the ask (pay more) and SHORT
+    # entries hit the bid (receive less). Without this, every variant
+    # over-counts P&L symmetrically with the exit slippage layer was
+    # under-counting it. Defaults to the same base as exit slippage so
+    # combined entry+exit cost is ~3bp round-trip per leg, matching
+    # observed Alpaca paper fills on these mega-cap tickers.
+    def _entry_slippage_bps(side):
+        try:
+            base = float(os.environ.get(
+                "BACKTEST_ENTRY_SLIPPAGE_BPS",
+                os.environ.get("BACKTEST_SLIPPAGE_BPS", "1.5"),
+            ))
+            short_pen = float(os.environ.get("BACKTEST_SLIPPAGE_SHORT_PENALTY_BPS", "1.0"))
+        except ValueError:
+            return 0.0
+        return base + (short_pen if side == "short" else 0.0)
+
+    def _apply_entry_slippage(price, side, bps):
+        if price is None or bps == 0.0:
+            return price
+        factor = bps / 10000.0
+        # LONG entry (buy) hits the ask -> pay more.
+        # SHORT entry (sell) hits the bid -> receive less.
+        return price * (1.0 + factor) if side == "long" else price * (1.0 - factor)
+
+    # Expose the entry-slippage helpers via the tg module so the
+    # RecordOnlyCallbacks (which lives outside install_layers' closure)
+    # can adjust pos["entry_price"] post-fill.
+    tg._harness_apply_entry_slippage = _apply_entry_slippage
+    tg._harness_entry_slippage_bps = _entry_slippage_bps
 
     _orig_close_long = getattr(tg, "close_position", None)
     _orig_close_short = getattr(tg, "close_short_position", None)
@@ -724,6 +758,70 @@ def install_record_only_layers(
         tg.close_position = _wrapped_close_position
     if _orig_close_short is not None:
         tg.close_short_position = _wrapped_close_short_position
+
+    # v7.8.5 -- intra-bar stop trigger modeling. The engine evaluates
+    # the stop as `bar.close <= stop_price` (LONG) using current_price,
+    # which is the close of the just-closed 1m bar. In production the
+    # stop fires intra-bar at the moment price first crosses the level,
+    # filling at min(open, stop_price) for LONG (or max for SHORT).
+    # Without this, the harness MISSES stops whenever a wick pierces
+    # the stop and the close recovers above it, leaving positions open
+    # to be exited at much worse prices on a subsequent bar.
+    #
+    # check_intra_bar_stops runs at the start of every tick, BEFORE the
+    # engine's manage_positions sees the bar. It scans both long and
+    # short positions and synthesizes a STOP_INTRABAR close at the
+    # realistic intra-bar fill (clamped to the bar range). The exit
+    # slippage layer then adds the stop-kick bps on top.
+    def _check_intra_bar_stops_for_side(side: str, positions_dict) -> int:
+        injected = 0
+        for ticker in list(positions_dict.keys()):
+            try:
+                pos = positions_dict.get(ticker)
+                if pos is None:
+                    continue
+                stop = pos.get("stop")
+                if stop is None:
+                    continue
+                stop = float(stop)
+                bars = _harness_fetch_1min_bars(ticker)
+                if not bars:
+                    continue
+                highs = bars.get("highs") or []
+                lows = bars.get("lows") or []
+                opens = bars.get("opens") or []
+                if not highs or not lows or not opens:
+                    continue
+                bar_high = highs[-1]
+                bar_low = lows[-1]
+                bar_open = opens[-1]
+                if bar_high is None or bar_low is None or bar_open is None:
+                    continue
+                bar_high = float(bar_high)
+                bar_low = float(bar_low)
+                bar_open = float(bar_open)
+                if side == "long" and bar_low <= stop:
+                    fill = min(stop, bar_open)
+                    fill = max(bar_low, fill)
+                    fill = min(bar_high, fill)
+                    tg.close_position(ticker, fill, "STOP_INTRABAR")
+                    injected += 1
+                elif side == "short" and bar_high >= stop:
+                    fill = max(stop, bar_open)
+                    fill = min(bar_high, fill)
+                    fill = max(bar_low, fill)
+                    tg.close_short_position(ticker, fill, "STOP_INTRABAR")
+                    injected += 1
+            except Exception as _intra_err:
+                logger.debug(
+                    "_check_intra_bar_stops %s/%s: %s", ticker, side, _intra_err
+                )
+        return injected
+
+    # Expose the helper so the per-tick driver loop can call it before
+    # scan_loop() runs. Stored on tg so the driver can reach it via
+    # the same module reference the rest of the layers use.
+    tg._harness_check_intra_bar_stops = _check_intra_bar_stops_for_side
 
     # Broker order surface \u2014 trade_genius.client is the Alpaca shim
     # (paper book). When `SSM_SMOKE_TEST=1` it's likely a stub; we
@@ -961,6 +1059,24 @@ class RecordOnlyCallbacks:
         # snapshot price the gate observed.
         pos = self.tg.positions.get(ticker)
         if pos is not None:
+            # v7.8.5 -- apply entry slippage post-fill so pos["entry_price"]
+            # reflects the realistic ask-side fill (LONG buys at ask -> pays
+            # more). All downstream P&L math reads pos["entry_price"], so
+            # adjusting here covers manage_positions, sentinel, and the
+            # broker_layer.closes recorded by the exit wrappers.
+            try:
+                _slip = getattr(self.tg, "_harness_apply_entry_slippage", None)
+                _slip_bps_fn = getattr(self.tg, "_harness_entry_slippage_bps", None)
+                if _slip is not None and _slip_bps_fn is not None:
+                    bps = _slip_bps_fn("long")
+                    if bps > 0.0:
+                        orig = float(pos["entry_price"])
+                        new = _slip(orig, "long", bps)
+                        pos["entry_price_pre_slippage"] = orig
+                        pos["entry_price"] = float(new)
+                        pos["entry_slippage_bps"] = bps
+            except Exception as _slip_err:
+                logger.debug("execute_entry slippage(%s): %s", ticker, _slip_err)
             self.entries.append(
                 {
                     "ts": self.clock.now.isoformat(),
@@ -977,6 +1093,19 @@ class RecordOnlyCallbacks:
             logger.debug("execute_short_entry(%s) raised: %s", ticker, e)
         pos = self.tg.short_positions.get(ticker)
         if pos is not None:
+            try:
+                _slip = getattr(self.tg, "_harness_apply_entry_slippage", None)
+                _slip_bps_fn = getattr(self.tg, "_harness_entry_slippage_bps", None)
+                if _slip is not None and _slip_bps_fn is not None:
+                    bps = _slip_bps_fn("short")
+                    if bps > 0.0:
+                        orig = float(pos["entry_price"])
+                        new = _slip(orig, "short", bps)
+                        pos["entry_price_pre_slippage"] = orig
+                        pos["entry_price"] = float(new)
+                        pos["entry_slippage_bps"] = bps
+            except Exception as _slip_err:
+                logger.debug("execute_short_entry slippage(%s): %s", ticker, _slip_err)
             self.short_entries.append(
                 {
                     "ts": self.clock.now.isoformat(),
@@ -1292,8 +1421,14 @@ def run_replay(
     # replay loop must invoke it explicitly. Without this, any position
     # still open at end_dt is left in tg.positions and persisted to
     # paper_state as 'stuck-EOD'. Aligns with broker.lifecycle.EOD_FLUSH_ET
-    # (15:49 ET, HH:MM precision).
-    eod_trigger_hhmm = (15, 49)
+    # (15:49:59 ET).
+    #
+    # v7.8.5: trigger at sim 15:50 ET (was 15:49). _eod_align_to_spec
+    # short-circuits when sim now >= EOD_FLUSH_ET; under freezegun the
+    # production-default 15:49 trigger meant a real-wall-clock 59-second
+    # time.sleep() per simulated day -- ~80 minutes wasted on an 80-day
+    # sweep and a 600s subprocess-timeout risk in lever_sweep_runner.
+    eod_trigger_hhmm = (15, 50)
     while cur <= end_dt:
         clock.now = cur
         if _have_freezer and _freezer is not None:
@@ -1335,6 +1470,18 @@ def run_replay(
         _cache = getattr(_tg, "_cycle_bar_cache", None)
         if _cache is not None and hasattr(_cache, "clear"):
             _cache.clear()
+        # v7.8.5 -- intra-bar stop trigger modeling. Inject STOP_INTRABAR
+        # closes for any open position whose just-closed bar's wick
+        # pierced the stop level, BEFORE the engine's manage_positions
+        # sees the bar. Without this, the engine misses stops on
+        # wick-and-recover bars and exits later at much worse prices.
+        _intra_check = getattr(_tg, "_harness_check_intra_bar_stops", None)
+        if _intra_check is not None:
+            try:
+                _intra_check("long", _tg.positions)
+                _intra_check("short", _tg.short_positions)
+            except Exception as _intra_err:
+                logger.debug("intra-bar stop check failed: %s", _intra_err)
         try:
             _engine_scan.scan_loop(cb)
         except Exception as e:

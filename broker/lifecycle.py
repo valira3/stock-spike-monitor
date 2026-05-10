@@ -79,7 +79,14 @@ def _eod_align_to_spec(now: _datetime | None = None, sleep_fn=_time.sleep) -> fl
     fake ``sleep_fn`` and ``now`` to test without waiting.
     """
     if now is None:
-        now = _datetime.now(tz=_ET)
+        # v7.8.4: route the now=None fallback through tg._now_et so the
+        # replay clock applies. Defensive -- production callers pass an
+        # explicit datetime, but new callers may not.
+        try:
+            _tg_mod = _tg()
+            now = _tg_mod._now_et() if _tg_mod is not None else _datetime.now(tz=_ET)
+        except Exception:
+            now = _datetime.now(tz=_ET)
     elif now.tzinfo is None:
         now = now.replace(tzinfo=_ET)
     else:

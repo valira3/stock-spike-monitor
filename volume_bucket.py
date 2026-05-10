@@ -271,7 +271,15 @@ class VolumeBucketBaseline:
         `lookback_days` trading days strictly before `today`.
         """
         if today is None:
-            today = datetime.utcnow().date()
+            # v7.8.4: route the today=None fallback through tg._now_utc
+            # so the replay clock applies. Defensive -- production callers
+            # pass an explicit date.
+            try:
+                import sys as _sys
+                _tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
+                today = _tg._now_utc().date() if _tg is not None else datetime.utcnow().date()
+            except Exception:
+                today = datetime.utcnow().date()
         days = _trading_days_back(today, self.lookback_days)
 
         sums: dict[str, dict[str, float]] = {}

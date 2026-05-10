@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.8.3-experimental"
+BOT_VERSION = "7.8.5-experimental"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -117,9 +117,9 @@ BOT_VERSION = "7.8.3-experimental"
 # removed). The Telegram 34-char mobile-width rule still applies to every
 # line of CURRENT_MAIN_NOTE.
 CURRENT_MAIN_NOTE = (
-    "v7.8.3: parallel Railway +\n"
-    "5 freezegun-leak source\n"
-    "patches. Faster + cleaner."
+    "v7.8.5: backtest harness fix:\n"
+    "intra-bar stop trigger +\n"
+    "entry slippage. Re-baseline."
 )
 
 MAIN_RELEASE_NOTE = CURRENT_MAIN_NOTE
@@ -4939,7 +4939,10 @@ def record_post_loss_cooldown(
                 _loss_streak_log
             except NameError:
                 _loss_streak_log = []
-            _now_ts = exit_ts_utc if exit_ts_utc else _dt_streak.datetime.now(_dt_streak.timezone.utc)
+            # v7.8.4: route fallback through _now_utc() so the loss-streak
+            # window honours BacktestClock under replay. Was wall-clock leak
+            # when caller passed exit_ts_utc=None (the default).
+            _now_ts = exit_ts_utc if exit_ts_utc else _now_utc()
             if isinstance(_now_ts, str):
                 _now_ts = _dt_streak.datetime.fromisoformat(_now_ts.replace("Z", "+00:00"))
             _loss_streak_log.append(_now_ts)
