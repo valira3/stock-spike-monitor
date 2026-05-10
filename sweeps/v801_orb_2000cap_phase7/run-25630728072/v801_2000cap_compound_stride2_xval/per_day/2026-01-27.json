@@ -1,0 +1,92 @@
+{
+  "date": "2026-01-27",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-01-27T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 188.155
+    },
+    {
+      "ts": "2026-01-27T10:15:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "price": 240.5902
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-01-27T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 188.6606,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-01-27T15:55:00-05:00",
+      "ticker": "AMZN",
+      "side": "long",
+      "exit_price": 244.5577,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-01-27T10:05:00-05:00",
+      "exit_ts": "2026-01-27T15:55:00-05:00",
+      "entry_price": 188.155,
+      "exit_price": 188.6606,
+      "shares": 409,
+      "pnl_per_share": 0.5056,
+      "pnl_dollars": 206.7871,
+      "exit_reason": "eod",
+      "or_high": 187.79,
+      "or_low": 185.7,
+      "or_range_pct": 0.011192,
+      "stop_price": 185.6059,
+      "risk_dollars": 1042.59
+    },
+    {
+      "ticker": "AMZN",
+      "side": "long",
+      "entry_ts": "2026-01-27T10:15:00-05:00",
+      "exit_ts": "2026-01-27T15:55:00-05:00",
+      "entry_price": 240.5902,
+      "exit_price": 244.5577,
+      "shares": 320,
+      "pnl_per_share": 3.9674,
+      "pnl_dollars": 1269.576,
+      "exit_reason": "eod",
+      "or_high": 240.27,
+      "or_low": 238.08,
+      "or_range_pct": 0.009156,
+      "stop_price": 240.5902,
+      "risk_dollars": 841.77
+    }
+  ],
+  "rejected_concurrent_cap": 13,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 2,
+    "losses": 0,
+    "total_pnl": 1476.3631,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

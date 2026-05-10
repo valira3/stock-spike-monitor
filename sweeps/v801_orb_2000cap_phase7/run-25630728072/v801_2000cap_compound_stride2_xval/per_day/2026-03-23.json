@@ -1,0 +1,122 @@
+{
+  "date": "2026-03-23",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-23T10:25:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 178.109
+    },
+    {
+      "ts": "2026-03-23T11:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 175.4946
+    },
+    {
+      "ts": "2026-03-23T10:20:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 303.2616
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-23T11:52:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 175.6053,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-03-23T15:55:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 175.8955,
+      "reason": "eod"
+    },
+    {
+      "ts": "2026-03-23T11:35:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "exit_price": 299.9781,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-03-23T10:25:00-05:00",
+      "exit_ts": "2026-03-23T11:52:00-05:00",
+      "entry_price": 178.109,
+      "exit_price": 175.6053,
+      "shares": 469,
+      "pnl_per_share": -2.5037,
+      "pnl_dollars": -1174.2567,
+      "exit_reason": "stop",
+      "or_high": 177.93,
+      "or_low": 175.8701,
+      "or_range_pct": 0.011644,
+      "stop_price": 175.781,
+      "risk_dollars": 1091.82
+    },
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-03-23T11:55:00-05:00",
+      "exit_ts": "2026-03-23T15:55:00-05:00",
+      "entry_price": 175.4946,
+      "exit_price": 175.8955,
+      "shares": 476,
+      "pnl_per_share": -0.4008,
+      "pnl_dollars": -190.797,
+      "exit_reason": "eod",
+      "or_high": 177.93,
+      "or_low": 175.8701,
+      "or_range_pct": 0.011644,
+      "stop_price": 178.0177,
+      "risk_dollars": 1201.0
+    },
+    {
+      "ticker": "GOOG",
+      "side": "long",
+      "entry_ts": "2026-03-23T10:20:00-05:00",
+      "exit_ts": "2026-03-23T11:35:00-05:00",
+      "entry_price": 303.2616,
+      "exit_price": 299.9781,
+      "shares": 275,
+      "pnl_per_share": -3.2835,
+      "pnl_dollars": -902.9526,
+      "exit_reason": "stop",
+      "or_high": 303.0,
+      "or_low": 300.43,
+      "or_range_pct": 0.008518,
+      "stop_price": 300.2784,
+      "risk_dollars": 820.38
+    }
+  ],
+  "rejected_concurrent_cap": 15,
+  "kill_switch_fired": true,
+  "summary": {
+    "entries": 3,
+    "exits": 3,
+    "wins": 0,
+    "losses": 3,
+    "total_pnl": -2268.0063,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

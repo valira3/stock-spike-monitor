@@ -1,0 +1,62 @@
+{
+  "date": "2026-02-12",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-12T10:05:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "price": 270.9773
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-12T15:55:00-05:00",
+      "ticker": "AAPL",
+      "side": "short",
+      "exit_price": 262.2423,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "AAPL",
+      "side": "short",
+      "entry_ts": "2026-02-12T10:05:00-05:00",
+      "exit_ts": "2026-02-12T15:55:00-05:00",
+      "entry_price": 270.9773,
+      "exit_price": 262.2423,
+      "shares": 284,
+      "pnl_per_share": 8.7351,
+      "pnl_dollars": 2480.7585,
+      "exit_reason": "eod",
+      "or_high": 275.72,
+      "or_low": 271.55,
+      "or_range_pct": 0.015239,
+      "stop_price": 270.9773,
+      "risk_dollars": 1385.4
+    }
+  ],
+  "rejected_concurrent_cap": 34,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 1,
+    "losses": 0,
+    "total_pnl": 2480.7585,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
