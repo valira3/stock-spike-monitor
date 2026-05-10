@@ -1,0 +1,202 @@
+name: Pull RTH bars (Alpaca, universe expand)
+
+# Pulls 09:30-16:00 ET 1m bars for arbitrary tickers across a date range
+# and commits to a 'data-extensions/rth-expand' branch in the layout
+# data/<DATE>/<TICKER>.jsonl that orb_backtest.py already reads.
+#
+# Why: Phase 13 #6 (universe expand from 12 -> 25 mega-caps) needs RTH
+# bars for 13 new tickers (BRK-B, JPM, V, JNJ, WMT, XOM, MA, HD, PG, COST,
+# ABBV, CVX, KO) over the existing corpus window. This workflow fills
+# them. After running, merge data-extensions/rth-expand into a feature
+# branch for the backtest (or read from both refs).
+#
+# Triggers:
+#   1. workflow_dispatch (UI/manual) with explicit start/end/tickers.
+#   2. on:push to .github/rth-trigger/*.json on main.
+#
+# Cost: ~5-10 min runner time for 13 tickers x 124 days.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD inclusive)'
+        required: false
+        default: '2025-11-03'
+      end_date:
+        description: 'End date (YYYY-MM-DD inclusive)'
+        required: false
+        default: '2026-05-01'
+      tickers:
+        description: 'Comma-separated tickers (default: 13 expansion mega-caps)'
+        required: false
+        default: 'BRK.B,JPM,V,JNJ,WMT,XOM,MA,HD,PG,COST,ABBV,CVX,KO'
+      target_branch:
+        description: 'Target branch to commit to'
+        required: false
+        default: 'data-extensions/rth-expand'
+  push:
+    branches: [main]
+    paths:
+      - '.github/rth-trigger/**.json'
+
+permissions:
+  contents: write
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Alpaca SDK
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py
+
+      - name: Resolve params
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "start=${{ inputs.start_date }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end_date }}" >> "$GITHUB_OUTPUT"
+            echo "tickers=${{ inputs.tickers }}" >> "$GITHUB_OUTPUT"
+            echo "target_branch=${{ inputs.target_branch }}" >> "$GITHUB_OUTPUT"
+          else
+            CHANGED=$(git diff --name-only HEAD^ HEAD -- '.github/rth-trigger/*.json' | tail -1)
+            if [ -z "$CHANGED" ]; then exit 1; fi
+            START=$(jq -r '.start_date' "$CHANGED")
+            END=$(jq -r '.end_date' "$CHANGED")
+            TICKERS=$(jq -r '.tickers' "$CHANGED")
+            BRANCH=$(jq -r '.target_branch // "data-extensions/rth-expand"' "$CHANGED")
+            echo "start=$START" >> "$GITHUB_OUTPUT"
+            echo "end=$END" >> "$GITHUB_OUTPUT"
+            echo "tickers=$TICKERS" >> "$GITHUB_OUTPUT"
+            echo "target_branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull RTH bars
+        env:
+          ALPACA_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          ALPACA_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          START_DATE: ${{ steps.params.outputs.start }}
+          END_DATE: ${{ steps.params.outputs.end }}
+          TICKERS: ${{ steps.params.outputs.tickers }}
+        run: |
+          python <<'EOF'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+          from alpaca.data.historical import StockHistoricalDataClient
+          from alpaca.data.requests import StockBarsRequest
+          from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+          from alpaca.data.enums import DataFeed
+
+          KEY = os.environ["ALPACA_KEY"]
+          SECRET = os.environ["ALPACA_SECRET"]
+          tickers = [t.strip() for t in os.environ["TICKERS"].split(",") if t.strip()]
+          start = datetime.strptime(os.environ["START_DATE"], "%Y-%m-%d").date()
+          end = datetime.strptime(os.environ["END_DATE"], "%Y-%m-%d").date()
+
+          client = StockHistoricalDataClient(KEY, SECRET)
+
+          def session_bounds_utc(d):
+              # 09:30-16:00 ET; widened to UTC 14:30-21:00 to cover EST and EDT.
+              # Filter by et_bucket downstream.
+              start_utc = datetime(d.year, d.month, d.day, 13, 30, tzinfo=timezone.utc)
+              end_utc = datetime(d.year, d.month, d.day, 21, 0, tzinfo=timezone.utc)
+              return start_utc, end_utc
+
+          def et_bucket(ts_utc):
+              # Crude UTC->ET; backtest uses et_bucket as a coarse session label.
+              et = ts_utc.astimezone(timezone(timedelta(hours=-5)))
+              return f"{et.hour:02d}{et.minute:02d}"
+
+          d = start
+          dates = []
+          while d <= end:
+              if d.weekday() < 5:
+                  dates.append(d)
+              d += timedelta(days=1)
+
+          total_bars = 0
+          total_files = 0
+          out_root = Path("data")
+          for d in dates:
+              start_utc, end_utc = session_bounds_utc(d)
+              for sym in tickers:
+                  fp = out_root / d.strftime("%Y-%m-%d") / f"{sym}.jsonl"
+                  fp.parent.mkdir(parents=True, exist_ok=True)
+                  if fp.exists():
+                      continue
+                  try:
+                      req = StockBarsRequest(
+                          symbol_or_symbols=sym,
+                          timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                          start=start_utc,
+                          end=end_utc,
+                          feed=DataFeed.SIP,
+                      )
+                      resp = client.get_stock_bars(req)
+                      bars = resp.data.get(sym, [])
+                  except Exception as e:
+                      print(f"  {sym} {d}: FAIL {e}", file=sys.stderr)
+                      continue
+                  if not bars:
+                      continue
+                  with open(fp, "w") as fh:
+                      for b in bars:
+                          ts = b.timestamp
+                          row = {
+                              "ts": ts.isoformat(),
+                              "et_bucket": et_bucket(ts),
+                              "open": float(b.open),
+                              "high": float(b.high),
+                              "low": float(b.low),
+                              "close": float(b.close),
+                              "total_volume": float(b.volume) if b.volume else 0.0,
+                              "iex_volume": None,
+                              "bar_vwap": float(b.vwap) if b.vwap else None,
+                              "trade_count": int(b.trade_count) if b.trade_count else None,
+                              "feed_source": "sip",
+                          }
+                          fh.write(json.dumps(row) + "\n")
+                          total_bars += 1
+                  total_files += 1
+              if dates.index(d) % 10 == 0:
+                  print(f"  {d}: {total_files} files, {total_bars} bars", flush=True)
+
+          print(f"DONE: {total_files} files, {total_bars} bars across {len(dates)} dates")
+          EOF
+
+      - name: Commit to target branch
+        env:
+          TARGET_BRANCH: ${{ steps.params.outputs.target_branch }}
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "rth-bars-bot"
+          if git ls-remote --heads origin "$TARGET_BRANCH" | grep -q .; then
+            git fetch origin "$TARGET_BRANCH" --depth=1
+            git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+            git checkout main -- data/
+          else
+            git checkout -B "$TARGET_BRANCH"
+          fi
+          git add data/
+          git commit -m "rth bars: ${{ steps.params.outputs.tickers }} ${{ steps.params.outputs.start }}..${{ steps.params.outputs.end }}" || { echo "no changes"; exit 0; }
+          for i in 1 2 3 4 5; do
+            if git push -f origin "$TARGET_BRANCH"; then exit 0; fi
+            sleep $((2**i))
+          done
+          exit 1
