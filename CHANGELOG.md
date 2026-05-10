@@ -4,6 +4,48 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.6-experimental (2026-05-10) — Railway sweep-status feedback branch
+
+Adds an optional progress-feedback channel from the Railway sweep
+worker to a dedicated `sweep-status` branch in this repo. No bot
+behavior change.
+
+### Why
+
+The Railway worker writes results only to R2. Observers without R2
+credentials (e.g. another Claude Code session) had no way to detect
+sweep completion -- they had to wait for the user to relay R2 output
+manually. This added latency to every iteration loop.
+
+### What changes
+
+`tools/railway_sweep_worker.py` -- when `GITHUB_STATUS_TOKEN` is set,
+the worker pushes a tiny JSON status snapshot to
+`sweep-status/status/<trigger_name>.json` via the GitHub Contents API
+on three events:
+
+1. Trigger started (`phase=started`).
+2. Each variant completed (`phase=running`, with running tallies).
+3. Trigger fully done (`phase=done`, with full results array).
+
+The worker hard-codes the target branch in the API call so this code
+path can ONLY land on `sweep-status` even if the token has broader
+scope. Errors are logged-and-swallowed -- status push is best-effort
+and must never block sweep execution. To revoke, just unset
+`GITHUB_STATUS_TOKEN`.
+
+### Setup required (one-time, manual)
+
+1. Generate a fine-grained PAT with **Contents: Write** on this repo.
+2. Add it as `GITHUB_STATUS_TOKEN` env var in the Railway sweep-worker
+   service (separate from the existing read-only `GITHUB_TOKEN`).
+3. The `sweep-status` branch already exists (created from main).
+
+If the env var is unset, status-push is a no-op -- the worker behaves
+exactly as before.
+
+---
+
 ## v7.8.5-experimental (2026-05-10) — Backtest harness: intra-bar stops + entry slippage + 3 wall-clock fixes
 
 Backtest-quality audit by a defensive subagent flagged 4 HIGH-severity

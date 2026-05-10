@@ -26,6 +26,7 @@
    | `RAILWAY_PARALLEL_VARIANTS` | `6` (number of variants run simultaneously — set per CPU sizing below) |
    | `SWEEP_WORKERS` | `4` (per-variant inner concurrency — set per CPU sizing below) |
    | `RAILWAY_POLL_INTERVAL_SEC` | `60` |
+   | `GITHUB_STATUS_TOKEN` *(optional)* | fine-grained PAT, **Contents: Write** on this repo. Enables status push to the `sweep-status` branch (worker hard-codes the branch in the API call). Unset = feature disabled. |
 
    **Sizing for your plan**: total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`, should ≤ vCPU count.
 

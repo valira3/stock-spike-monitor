@@ -85,6 +85,21 @@ RAILWAY_WORKERS = int(_env("RAILWAY_WORKERS", "4"))
 RAILWAY_POLL_INTERVAL_SEC = int(_env("RAILWAY_POLL_INTERVAL_SEC", "60"))
 RAILWAY_DRY_RUN = _env("RAILWAY_DRY_RUN", "0") == "1"
 
+# v7.8.6 -- optional status feedback. When GITHUB_STATUS_TOKEN is set,
+# the worker pushes a tiny JSON status file to the SWEEP_STATUS_BRANCH
+# (default "sweep-status") via the GitHub Contents API on three events:
+# trigger started, each variant completed, trigger fully done. The
+# status branch lets observers (e.g. another Claude Code session) see
+# progress without R2 access.
+#
+# Token scope: Contents:Write on this repo. The worker hard-codes the
+# target branch in the API call so this code path can ONLY land on
+# sweep-status even if the token has broader scope. To revoke, just
+# unset GITHUB_STATUS_TOKEN.
+GITHUB_STATUS_TOKEN = _env("GITHUB_STATUS_TOKEN", "")
+GITHUB_REPO = _env("GITHUB_REPO", "valira3/stock-spike-monitor")
+SWEEP_STATUS_BRANCH = _env("SWEEP_STATUS_BRANCH", "sweep-status")
+
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     log.debug("run: %s (cwd=%s)", " ".join(cmd), cwd)
@@ -221,19 +236,111 @@ def run_variant(variant: dict, trigger_name: str, output_root: Path) -> dict:
     return {"vid": vid, "rc": 0, "uploaded": n_uploaded}
 
 
+def push_status(trigger_name: str, status: dict) -> None:
+    """Push a JSON status snapshot to SWEEP_STATUS_BRANCH/status/<trigger>.json.
+
+    No-op when GITHUB_STATUS_TOKEN is unset (default). Errors are
+    logged-and-swallowed -- status push is best-effort and must never
+    block sweep execution.
+
+    Uses the GitHub Contents API directly (PUT /contents/{path}) which
+    handles both create and update. We GET first to fetch the existing
+    SHA when present.
+    """
+    if not GITHUB_STATUS_TOKEN:
+        return
+    try:
+        import base64
+        import urllib.request
+        import urllib.error
+
+        path = f"status/{trigger_name}.json"
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+        ref_qs = f"?ref={SWEEP_STATUS_BRANCH}"
+
+        sha = None
+        try:
+            req = urllib.request.Request(
+                api_url + ref_qs,
+                headers={
+                    "Authorization": f"token {GITHUB_STATUS_TOKEN}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "railway-sweep-worker",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                existing = json.load(resp)
+                sha = existing.get("sha")
+        except urllib.error.HTTPError as he:
+            if he.code != 404:
+                log.warning("[status] get_sha %s: HTTP %d", path, he.code)
+
+        body = {
+            "message": f"sweep-status: {trigger_name} {status.get('phase', '')}".strip(),
+            "content": base64.b64encode(
+                json.dumps(status, indent=2, default=str).encode()
+            ).decode(),
+            "branch": SWEEP_STATUS_BRANCH,
+        }
+        if sha:
+            body["sha"] = sha
+
+        req = urllib.request.Request(
+            api_url,
+            data=json.dumps(body).encode(),
+            method="PUT",
+            headers={
+                "Authorization": f"token {GITHUB_STATUS_TOKEN}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "railway-sweep-worker",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            log.info("[status] pushed %s (phase=%s)",
+                     path, status.get("phase"))
+    except Exception as e:
+        log.warning("[status] push failed for %s: %s", trigger_name, e)
+
+
+def _utc_now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
 def process_trigger(trigger_path: Path) -> None:
     name = trigger_path.stem
     log.info("processing trigger %s", name)
+    started_at = _utc_now_iso()
     try:
         config = json.loads(trigger_path.read_text())
     except Exception as e:
         log.error("could not parse %s: %s", trigger_path, e)
+        push_status(name, {
+            "trigger": name, "phase": "parse_error",
+            "started_at": started_at, "updated_at": _utc_now_iso(),
+            "error": str(e),
+        })
         return
 
     variants = config.get("variants") if isinstance(config, dict) else config
     if not isinstance(variants, list):
         log.error("trigger %s has no variants list", name)
+        push_status(name, {
+            "trigger": name, "phase": "config_error",
+            "started_at": started_at, "updated_at": _utc_now_iso(),
+            "error": "no variants list in trigger JSON",
+        })
         return
+
+    push_status(name, {
+        "trigger": name, "phase": "started",
+        "started_at": started_at, "updated_at": _utc_now_iso(),
+        "variants_total": len(variants),
+        "variants_completed": 0,
+        "variants_succeeded": 0,
+        "variants_failed": 0,
+    })
 
     output_root = Path(f"/tmp/railway_output/{name}")
     if output_root.exists():
@@ -280,6 +387,18 @@ def process_trigger(trigger_path: Path) -> None:
             results.append(r)
             log.info("[%s] %d/%d variants complete (latest: %s)",
                      name, completed, len(variants), r.get("vid"))
+            # v7.8.6 -- per-variant status push.
+            push_status(name, {
+                "trigger": name, "phase": "running",
+                "started_at": started_at,
+                "updated_at": _utc_now_iso(),
+                "variants_total": len(variants),
+                "variants_completed": completed,
+                "variants_succeeded": sum(1 for x in results if x["rc"] == 0),
+                "variants_failed": sum(1 for x in results if x["rc"] != 0),
+                "latest_vid": r.get("vid"),
+                "latest_rc": r.get("rc"),
+            })
 
     summary = {
         "trigger": name,
@@ -289,6 +408,26 @@ def process_trigger(trigger_path: Path) -> None:
         "results": results,
     }
     mark_processed(name, summary)
+    # v7.8.6 -- final status push with the full summary, so observers
+    # can detect completion without a separate R2 read.
+    push_status(name, {
+        "trigger": name, "phase": "done",
+        "started_at": started_at,
+        "updated_at": _utc_now_iso(),
+        "variants_total": len(variants),
+        "variants_completed": len(results),
+        "variants_succeeded": summary["succeeded"],
+        "variants_failed": summary["failed"],
+        "results": [
+            {
+                "vid": r.get("vid"),
+                "rc": r.get("rc"),
+                "uploaded": r.get("uploaded"),
+                "stderr_tail": r.get("stderr_tail"),
+            }
+            for r in results
+        ],
+    })
 
 
 def loop_once() -> int:
