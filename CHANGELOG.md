@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.8.6-experimental (2026-05-10) — Railway sweep-status feedback + per-variant resumability
+
+Two independent improvements to the Railway sweep worker. No bot
+behavior change.
+
+### A. Sweep-status feedback branch (optional)
+
+When `GITHUB_STATUS_TOKEN` is set, `tools/railway_sweep_worker.py`
+pushes a tiny JSON status snapshot to
+`sweep-status/status/<trigger_name>.json` via the GitHub Contents API
+on three events:
+
+1. Trigger started (`phase=started`).
+2. Each variant completed (`phase=running`, with running tallies).
+3. Trigger fully done (`phase=done`, with full results array).
+
+The worker hard-codes the target branch in the API call so this code
+path can ONLY land on `sweep-status` even if the token has broader
+scope. Errors are logged-and-swallowed -- status push is best-effort
+and must never block sweep execution. To revoke, just unset
+`GITHUB_STATUS_TOKEN`.
+
+**Setup required (one-time, manual)**:
+
+1. Generate a fine-grained PAT with **Contents: Write** on this repo.
+2. Add it as `GITHUB_STATUS_TOKEN` env var in the Railway sweep-worker
+   service (separate from the existing read-only `GITHUB_TOKEN`).
+3. The `sweep-status` branch already exists (created from main).
+
+If the env var is unset, status-push is a no-op -- the worker behaves
+exactly as before.
+
+### B. Per-variant resumability
+
+Problem: a Railway redeploy (triggered by ANY new commit to main)
+kills the worker mid-sweep. Before this PR, the trigger-level
+`_processed.marker` was the only resume signal, and it only writes
+when ALL variants finish, so any redeploy mid-sweep restarted from
+variant 0 -- wasted up to ~30 min and ~$3 per interruption.
+
+Now each variant writes its own marker
+(`sweep-results/railway/<trigger>/<vid>/_variant_done.marker`) after
+a clean upload. On worker restart, `process_trigger` checks each
+variant's marker and SKIPS the ones already in R2. Worst case under
+SIGTERM is "lose the variant currently running" instead of "lose
+everything". Variants pre-completed in R2 are reflected in the
+status branch as `variants_resumed`.
+
+---
+
 ## v7.8.5-experimental (2026-05-10) — Backtest harness: intra-bar stops + entry slippage + 3 wall-clock fixes
 
 Backtest-quality audit by a defensive subagent flagged 4 HIGH-severity
