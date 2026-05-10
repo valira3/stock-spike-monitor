@@ -1,0 +1,95 @@
+{
+  "date": "2026-04-07",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-07T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "price": 175.0199
+    },
+    {
+      "ts": "2026-04-07T10:05:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "price": 210.2838
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-07T15:45:00-05:00",
+      "ticker": "NVDA",
+      "side": "short",
+      "exit_price": 177.2723,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-04-07T13:35:00-05:00",
+      "ticker": "AMZN",
+      "side": "short",
+      "exit_price": 212.839,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "short",
+      "entry_ts": "2026-04-07T10:05:00-05:00",
+      "exit_ts": "2026-04-07T15:45:00-05:00",
+      "entry_price": 175.0199,
+      "exit_price": 177.2723,
+      "shares": 471,
+      "pnl_per_share": -2.2524,
+      "pnl_dollars": -1060.8664,
+      "exit_reason": "stop",
+      "or_high": 176.99,
+      "or_low": 175.25,
+      "or_range_pct": 0.00988,
+      "stop_price": 177.0775,
+      "risk_dollars": 969.12
+    },
+    {
+      "ticker": "AMZN",
+      "side": "short",
+      "entry_ts": "2026-04-07T10:05:00-05:00",
+      "exit_ts": "2026-04-07T13:35:00-05:00",
+      "entry_price": 210.2838,
+      "exit_price": 212.839,
+      "shares": 392,
+      "pnl_per_share": -2.5553,
+      "pnl_dollars": -1001.6594,
+      "exit_reason": "stop",
+      "or_high": 212.5,
+      "or_low": 210.56,
+      "or_range_pct": 0.009171,
+      "stop_price": 212.6051,
+      "risk_dollars": 909.98
+    }
+  ],
+  "rejected_concurrent_cap": 22,
+  "kill_switch_fired": false,
+  "regime": null,
+  "regime_skip_day": false,
+  "regime_skip_reason": "",
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 0,
+    "losses": 2,
+    "total_pnl": -2062.5258,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
