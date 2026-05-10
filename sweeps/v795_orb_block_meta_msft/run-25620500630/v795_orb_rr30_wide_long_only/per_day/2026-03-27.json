@@ -1,0 +1,58 @@
+{
+  "date": "2026-03-27",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-27T11:30:00-05:00",
+      "ticker": "ORCL",
+      "side": "long",
+      "price": 141.1212
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-27T15:55:00-05:00",
+      "ticker": "ORCL",
+      "side": "long",
+      "exit_price": 139.949,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "ORCL",
+      "side": "long",
+      "entry_ts": "2026-03-27T11:30:00-05:00",
+      "exit_ts": "2026-03-27T15:55:00-05:00",
+      "entry_price": 141.1212,
+      "exit_price": 139.949,
+      "shares": 464,
+      "pnl_per_share": -1.1722,
+      "pnl_dollars": -543.8825,
+      "exit_reason": "eod",
+      "or_high": 141.0,
+      "or_low": 139.04,
+      "or_range_pct": 0.013998
+    }
+  ],
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -543.8825,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

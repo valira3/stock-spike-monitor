@@ -1,0 +1,86 @@
+{
+  "date": "2026-02-05",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-05T09:50:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 176.7865
+    },
+    {
+      "ts": "2026-02-05T09:55:00-05:00",
+      "ticker": "NFLX",
+      "side": "long",
+      "price": 83.1475
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-05T10:02:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 173.4838,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-02-05T10:32:00-05:00",
+      "ticker": "NFLX",
+      "side": "long",
+      "exit_price": 81.1856,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-02-05T09:50:00-05:00",
+      "exit_ts": "2026-02-05T10:02:00-05:00",
+      "entry_price": 176.7865,
+      "exit_price": 173.4838,
+      "shares": 313,
+      "pnl_per_share": -3.3027,
+      "pnl_dollars": -1033.7592,
+      "exit_reason": "stop",
+      "or_high": 175.76,
+      "or_low": 173.685,
+      "or_range_pct": 0.011876
+    },
+    {
+      "ticker": "NFLX",
+      "side": "long",
+      "entry_ts": "2026-02-05T09:55:00-05:00",
+      "exit_ts": "2026-02-05T10:32:00-05:00",
+      "entry_price": 83.1475,
+      "exit_price": 81.1856,
+      "shares": 523,
+      "pnl_per_share": -1.9618,
+      "pnl_dollars": -1026.047,
+      "exit_reason": "stop",
+      "or_high": 83.115,
+      "or_low": 81.28,
+      "or_range_pct": 0.022324
+    }
+  ],
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 0,
+    "losses": 2,
+    "total_pnl": -2059.8062,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}

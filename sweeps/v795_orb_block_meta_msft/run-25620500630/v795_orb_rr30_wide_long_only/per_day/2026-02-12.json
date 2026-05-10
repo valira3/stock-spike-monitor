@@ -1,0 +1,58 @@
+{
+  "date": "2026-02-12",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-12T10:25:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 313.157
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-02-12T10:44:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "exit_price": 310.1117,
+      "reason": "stop"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "GOOG",
+      "side": "long",
+      "entry_ts": "2026-02-12T10:25:00-05:00",
+      "exit_ts": "2026-02-12T10:44:00-05:00",
+      "entry_price": 313.157,
+      "exit_price": 310.1117,
+      "shares": 351,
+      "pnl_per_share": -3.0452,
+      "pnl_dollars": -1068.8823,
+      "exit_reason": "stop",
+      "or_high": 312.67,
+      "or_low": 310.47,
+      "or_range_pct": 0.007061
+    }
+  ],
+  "summary": {
+    "entries": 1,
+    "exits": 1,
+    "wins": 0,
+    "losses": 1,
+    "total_pnl": -1068.8823,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
