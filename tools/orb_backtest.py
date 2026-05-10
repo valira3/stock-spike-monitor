@@ -177,10 +177,25 @@ class ORBConfig:
     risk_per_trade_pct: float = 1.0
     account: float = 100_000.0
     blocklist: dict = field(default_factory=dict)
-    entry_slippage_bps: float = 1.5
-    exit_slippage_bps: float = 1.5
+    entry_slippage_bps: float = 5.0   # v8 realism: was 1.5; ORB-time fills wider
+    exit_slippage_bps: float = 5.0    # v8 realism: was 1.5
     stop_kick_bps: float = 5.0
     short_pen_bps: float = 1.0
+    # v8 realism caps -- prevent phantom leverage / unrealistic concurrent
+    # notional. Audit found 25x leverage on a $100k account; these cap it.
+    max_trade_notional_pct: float = 25.0    # one trade caps at 25% account
+    max_concurrent_notional_mult: float = 2.0  # all-trades concurrent <= 2x acct
+    # v9 risk-budget caps -- user constraint: max daily loss = $500
+    # (= 0.5% of $100k). Both caps below default to $500.
+    max_concurrent_risk_dollars: float = 500.0  # sum of open risk_dollars cap
+    daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
+    risk_per_trade_pct_default = 0.25  # see env override below
+    # v9 levers (un-tested, hypothesis-driven)
+    move_to_be_after_1r: bool = False    # bump stop to entry after 1R reached
+    partial_profit_at_1r: bool = False   # take half off at 1R, ride rest to RR
+    require_volume_confirm: bool = False # skip signals where signal-bar vol < 1x mean
+    volume_confirm_mult: float = 1.0     # multiplier on prior-day-mean vol for confirm
+    require_ema_align: bool = False      # only long if signal close > 200-EMA on 5m
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -199,13 +214,32 @@ class ORBConfig:
             range_max_pct=_envf("ORB_RANGE_MAX_PCT", 0.015),
             volume_mult=_envf("ORB_VOLUME_MULT", 0.0),
             max_trades_per_day=_envi("ORB_MAX_TRADES_PER_DAY", 1),
-            risk_per_trade_pct=_envf("ORB_RISK_PER_TRADE_PCT", 1.0),
+            # v9: risk per trade default tightened from 1.0% to 0.25%
+            # ($250 risk on a $100k account) so that a single stop fire
+            # is well within the $500/day loss cap.
+            risk_per_trade_pct=_envf("ORB_RISK_PER_TRADE_PCT", 0.25),
             account=_envf("ORB_ACCOUNT", 100_000.0),
             blocklist=bl,
-            entry_slippage_bps=_envf("ORB_ENTRY_SLIPPAGE_BPS", 1.5),
-            exit_slippage_bps=_envf("ORB_EXIT_SLIPPAGE_BPS", 1.5),
+            entry_slippage_bps=_envf("ORB_ENTRY_SLIPPAGE_BPS", 5.0),
+            exit_slippage_bps=_envf("ORB_EXIT_SLIPPAGE_BPS", 5.0),
             stop_kick_bps=_envf("ORB_STOP_KICK_BPS", 5.0),
             short_pen_bps=_envf("ORB_SHORT_PENALTY_BPS", 1.0),
+            max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
+            max_concurrent_notional_mult=_envf(
+                "ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+            # v9 risk budget: total open risk_dollars must stay <= this
+            # cap. With $500 default and $250/trade risk, max 2 open
+            # positions can stop simultaneously (= $500 worst case).
+            max_concurrent_risk_dollars=_envf(
+                "ORB_MAX_CONCURRENT_RISK_DOLLARS", 500.0),
+            # v9: daily loss kill tightened from 5.0% to 0.5% to match
+            # user constraint of $500/day max loss.
+            daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 0.5),
+            move_to_be_after_1r=_envs("ORB_MOVE_TO_BE_AFTER_1R", "0") == "1",
+            partial_profit_at_1r=_envs("ORB_PARTIAL_PROFIT_AT_1R", "0") == "1",
+            require_volume_confirm=_envs("ORB_REQUIRE_VOLUME_CONFIRM", "0") == "1",
+            volume_confirm_mult=_envf("ORB_VOLUME_CONFIRM_MULT", 1.0),
+            require_ema_align=_envs("ORB_REQUIRE_EMA_ALIGN", "0") == "1",
         )
 
 
@@ -268,6 +302,32 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         if side.upper() in blocked_sides:
             continue
 
+        # v9 lever: volume confirmation -- require signal candle's
+        # volume >= mult * mean(prior candles_5m). Skip if too quiet.
+        if cfg.require_volume_confirm:
+            prior = candles_5m[max(0, i - 12):i]  # last hour of 5m bars
+            if prior:
+                avg_vol = sum(c.volume for c in prior) / len(prior)
+                if sig.volume < cfg.volume_confirm_mult * avg_vol:
+                    continue
+
+        # v9 lever: 200-EMA alignment -- require signal close above
+        # (long) or below (short) the EMA(200) of all signal-eligible
+        # 5m candles up to and including the signal bar. We approximate
+        # 200-period EMA on the post-OR + pre-signal candles using the
+        # simple mean as a proxy when fewer than 200 candles available
+        # (this is a single-day backtest; EMA(200) is unreasonable on
+        # one day's data, but a daily directional filter using prior-
+        # day VWAP would be a better implementation -- not done here).
+        if cfg.require_ema_align:
+            ref_candles = candles_5m[: i + 1]
+            if ref_candles:
+                ema_proxy = sum(c.close for c in ref_candles) / len(ref_candles)
+                if side == "long" and sig.close <= ema_proxy:
+                    continue
+                if side == "short" and sig.close >= ema_proxy:
+                    continue
+
         entry_candle = candles_5m[i + 1]
         # Entry at next 5-min candle open with adverse slippage.
         raw_entry = entry_candle.open
@@ -291,6 +351,17 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         risk_dollars = cfg.account * cfg.risk_per_trade_pct / 100.0
         shares = max(1, int(risk_dollars / risk))
 
+        # v8 realism cap: single-trade notional must not exceed
+        # ORB_MAX_TRADE_NOTIONAL_PCT of the account (default 25%).
+        # Without this, tight stops produce phantom leverage -- the
+        # audit found one trade at $157k notional on a $100k account.
+        # Real Reg T DTBP is 4x but per-trade discipline limits to
+        # ~25% notional to keep diversification.
+        max_notional = cfg.account * cfg.max_trade_notional_pct / 100.0
+        if entry_price > 0:
+            shares_cap = max(1, int(max_notional / entry_price))
+            shares = min(shares, shares_cap)
+
         # Walk forward from entry_candle.bucket through 1-min bars to find
         # exit. 1-min granularity for accurate intra-bar stop/target checks.
         entry_bkt = entry_candle.bucket
@@ -300,6 +371,13 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         exit_price = None
         exit_reason = None
         exit_bkt = None
+        # v9 levers state -- only mutate the vars below (stop, target,
+        # remaining_shares) inside the loop based on cfg toggles.
+        be_moved = False  # has stop been bumped to break-even after 1R?
+        partial_taken = False  # has 50% been booked at 1R?
+        partial_pnl_dollars = 0.0  # P&L from the partial take, added to final
+        remaining_shares = shares
+        one_r_long = entry_price + risk if side == "long" else entry_price - risk
         for fb in forward_1m:
             # First check stop/target intra-bar (high/low pierce).
             if side == "long":
@@ -309,9 +387,21 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     fill = max(fb.low, fill)
                     fill = min(fb.high, fill)
                     exit_price = fill
-                    exit_reason = "stop"
+                    exit_reason = "stop" if not be_moved else "be_stop"
                     exit_bkt = fb.bucket
                     break
+                # v9 lever: move stop to break-even after 1R reached.
+                if cfg.move_to_be_after_1r and (not be_moved) and fb.high >= one_r_long:
+                    stop = entry_price  # BE
+                    be_moved = True
+                # v9 lever: take partial profit at 1R (sell 50%).
+                if (cfg.partial_profit_at_1r and (not partial_taken)
+                        and fb.high >= one_r_long):
+                    half = remaining_shares // 2
+                    if half > 0:
+                        partial_pnl_dollars = (one_r_long - entry_price) * half
+                        remaining_shares -= half
+                        partial_taken = True
                 # Target hit: bar.high >= target -> fill at max(open, target)
                 if fb.high >= target:
                     fill = max(fb.open, target)
@@ -327,9 +417,22 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     fill = max(fb.low, fill)
                     fill = min(fb.high, fill)
                     exit_price = fill
-                    exit_reason = "stop"
+                    exit_reason = "stop" if not be_moved else "be_stop"
                     exit_bkt = fb.bucket
                     break
+                # v9 lever: move stop to BE after 1R (short side mirror)
+                one_r_short = entry_price - risk
+                if cfg.move_to_be_after_1r and (not be_moved) and fb.low <= one_r_short:
+                    stop = entry_price
+                    be_moved = True
+                # v9 lever: partial profit at 1R (short)
+                if (cfg.partial_profit_at_1r and (not partial_taken)
+                        and fb.low <= one_r_short):
+                    half = remaining_shares // 2
+                    if half > 0:
+                        partial_pnl_dollars = (entry_price - one_r_short) * half
+                        remaining_shares -= half
+                        partial_taken = True
                 if fb.low <= target:
                     fill = min(fb.open, target)
                     fill = max(fb.low, fill)
@@ -366,7 +469,10 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             exit_price += slip
 
         pnl_per_share = (exit_price - entry_price) if side == "long" else (entry_price - exit_price)
-        pnl_dollars = pnl_per_share * shares
+        # v9 partial-profit: book the partial-fill P&L on the half taken
+        # at 1R, then remaining_shares ride to final exit.
+        runner_shares = remaining_shares if cfg.partial_profit_at_1r else shares
+        pnl_dollars = pnl_per_share * runner_shares + partial_pnl_dollars
 
         pairs.append({
             "ticker": ticker,
@@ -382,6 +488,8 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             "or_high": round(or_high, 4),
             "or_low": round(or_low, 4),
             "or_range_pct": round(or_range_pct, 6),
+            "stop_price": round(stop, 4),
+            "risk_dollars": round(risk * shares, 2),
         })
         trades_today += 1
 
@@ -418,16 +526,82 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     days_failed = 0
 
     for date in dates:
-        day_pairs: list[dict] = []
+        candidate_pairs: list[dict] = []
         for tk in tickers:
             try:
                 bars = load_day_bars(corpus_dir, date, tk)
                 if not bars:
                     continue
                 pairs = run_ticker_day(date, tk, bars, cfg)
-                day_pairs.extend(pairs)
+                candidate_pairs.extend(pairs)
             except Exception as e:
                 print(f"WARN {date} {tk}: {e}", file=sys.stderr)
+
+        # v9 portfolio-level constraints (re-baseline to $500/day cap):
+        #   1. Concurrent risk-dollars cap: sum of open risk_dollars
+        #      <= ORB_MAX_CONCURRENT_RISK_DOLLARS (default $500).
+        #      This bounds the worst-case stop-cascade loss to that cap.
+        #   2. Concurrent notional cap (legacy from v8, still in force).
+        #   3. Daily loss kill: halt new entries after cumulative
+        #      realized day P&L <= -daily_loss_kill_pct of account.
+        max_notional = cfg.account * cfg.max_concurrent_notional_mult
+        max_risk_budget = cfg.max_concurrent_risk_dollars
+        kill_threshold = -cfg.account * cfg.daily_loss_kill_pct / 100.0
+        events = []
+        for idx, p in enumerate(candidate_pairs):
+            ent_ts = p["entry_ts"]
+            ext_ts = p["exit_ts"]
+            notional = p["entry_price"] * p["shares"]
+            # Risk-dollars per trade = entry-stop distance * shares.
+            # We don't carry the stop forward into pairs explicitly, but
+            # the executed pnl_dollars on stop-out exits is exactly the
+            # at-risk amount minus slippage. Use shares * |entry - stop|
+            # if available; fall back to abs(pnl_dollars) cap on stops.
+            # Cleaner: store a derived risk_dollars on each pair.
+            risk = p.get("risk_dollars")
+            if risk is None:
+                # Reconstruct from the raw inputs we have: it's roughly
+                # the shares * stop distance from entry. We don't have
+                # the stop preserved, so fall back to risk_per_trade_pct
+                # of account as upper bound.
+                risk = cfg.account * cfg.risk_per_trade_pct / 100.0
+            events.append((ent_ts, "entry", idx, p, notional, risk))
+            events.append((ext_ts, "exit", idx, p, notional, risk))
+        # Sort by ts; "exit" before "entry" at same ts to free room
+        events.sort(key=lambda e: (e[0], 0 if e[1] == "exit" else 1))
+
+        accepted_idx: set[int] = set()
+        rejected_idx: set[int] = set()
+        open_notional = 0.0
+        open_risk = 0.0
+        cum_pnl = 0.0
+        kill_active = False
+        for ts, kind, idx, p, notional, risk in events:
+            if kind == "entry":
+                if kill_active:
+                    rejected_idx.add(idx)
+                    continue
+                if open_notional + notional > max_notional:
+                    rejected_idx.add(idx)
+                    continue
+                if open_risk + risk > max_risk_budget:
+                    rejected_idx.add(idx)
+                    continue
+                accepted_idx.add(idx)
+                open_notional += notional
+                open_risk += risk
+            else:  # exit
+                if idx in accepted_idx:
+                    open_notional -= notional
+                    open_risk -= risk
+                    cum_pnl += p["pnl_dollars"]
+                    if cum_pnl <= kill_threshold:
+                        kill_active = True
+
+        day_pairs = [
+            p for i, p in enumerate(candidate_pairs) if i in accepted_idx
+        ]
+        rejected = len(candidate_pairs) - len(day_pairs)
 
         n_entries = len(day_pairs)
         wins = sum(1 for p in day_pairs if p["pnl_dollars"] > 0)
@@ -449,6 +623,8 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                        "side": p["side"], "exit_price": p["exit_price"],
                        "reason": p["exit_reason"]} for p in day_pairs],
             "pnl_pairs": day_pairs,
+            "rejected_concurrent_cap": rejected,
+            "kill_switch_fired": kill_active,
             "summary": {
                 "entries": n_entries, "exits": n_entries,
                 "wins": wins, "losses": losses,
@@ -522,6 +698,16 @@ def main(argv: list[str]) -> int:
     cfg = ORBConfig.from_env()
 
     dates = discover_dates(corpus, args.year_prefix, tickers)
+    # v8 -- honor DATES_STRIDE env var for cross-validation sweeps. The
+    # GHA matrix wrapper passes stride from the trigger JSON via this env
+    # var. Without this, STRIDE=2/4/8 variants silently ran on the full
+    # corpus, producing byte-identical results to STRIDE=1 -- making
+    # cross-validation impossible.
+    stride = max(1, int(os.environ.get("DATES_STRIDE", "1")))
+    if stride > 1:
+        dates = dates[::stride]
+        print(f"ORB: DATES_STRIDE={stride} -> {len(dates)} dates",
+              file=sys.stderr, flush=True)
     if args.max_dates > 0:
         dates = dates[:args.max_dates]
     if not dates:
@@ -529,7 +715,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(f"ORB: {len(dates)} dates, {len(tickers)} tickers, "
-          f"OR={cfg.or_minutes}m, RR={cfg.rr}, "
+          f"OR={cfg.or_minutes}m, RR={cfg.rr}, stride={stride}, "
           f"range=[{cfg.range_min_pct:.3f},{cfg.range_max_pct:.3f}]")
 
     summary = run(corpus, Path(args.out), dates, tickers, cfg, args.vid)

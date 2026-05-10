@@ -1,0 +1,111 @@
+{
+  "max_parallel": 6,
+  "variants": [
+    {"vid": "v799_winner_within_1500cap_anchor",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "0.75",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "1500",
+       "ORB_DAILY_LOSS_KILL_PCT": "1.5",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "50",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v799_winner_within_1500cap_BE",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "0.75",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "1500",
+       "ORB_DAILY_LOSS_KILL_PCT": "1.5",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "50",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v799_winner_within_1500cap_BE_stride2_xval",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "0.75",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "1500",
+       "ORB_DAILY_LOSS_KILL_PCT": "1.5",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "50",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "2"},
+
+    {"vid": "v799_winner_2000cap_BE",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "1.00",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "2000",
+       "ORB_DAILY_LOSS_KILL_PCT": "2.0",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "60",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v799_winner_3000cap_BE",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "1.50",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "3000",
+       "ORB_DAILY_LOSS_KILL_PCT": "3.0",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "75",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"},
+
+    {"vid": "v799_baseline_500cap_BE_lowrisk_ref",
+     "env": {
+       "ORB_MODE": "1",
+       "ORB_OR_MINUTES": "30",
+       "ORB_RR": "1.5",
+       "ORB_STOP_BUFFER_BPS": "10",
+       "ORB_RANGE_MIN_PCT": "0.003",
+       "ORB_RANGE_MAX_PCT": "0.025",
+       "ORB_MAX_TRADES_PER_DAY": "5",
+       "ORB_RISK_PER_TRADE_PCT": "0.25",
+       "ORB_MAX_CONCURRENT_RISK_DOLLARS": "500",
+       "ORB_DAILY_LOSS_KILL_PCT": "0.5",
+       "ORB_MAX_TRADE_NOTIONAL_PCT": "25",
+       "ORB_MOVE_TO_BE_AFTER_1R": "1",
+       "ORB_TICKER_SIDE_BLOCKLIST": "{\"META\":[\"LONG\",\"SHORT\"],\"MSFT\":[\"LONG\",\"SHORT\"]}"
+     },
+     "stride": "1"}
+  ]
+}
