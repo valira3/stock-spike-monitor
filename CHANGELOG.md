@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.40.0 (2026-05-10) -- Dashboard kill-switch banner (across all portfolios)
+
+PR33 of the dashboard-redesign loop. First user-facing change after
+keystoning v7.39.0 to `docs/dashboard_keystone_v7_39/` as the
+reference baseline.
+
+### What
+
+A new full-width amber-red banner renders **above** the main grid on
+every portfolio panel (Main / Val / Gene) whenever ANY kill state is
+active. Zero pixels when everything is normal.
+
+### Kill conditions surfaced
+
+| Source | Title | Detail |
+|---|---|---|
+| `s.gates.scan_paused` | SCAN PAUSED | Operator-paused scan loop |
+| `s.gates.trading_halted` | TRADING HALTED | Legacy daily-loss halt |
+| `s.v10.live_mode === false` | V10 ORB DISABLED | `ORB_LIVE_MODE=0` kill switch |
+| `s.v10.day_status.block_day` | DAY BLOCKED | VIX kill / missing VIX / etc. |
+| Per-portfolio `risk_books[pid].daily_kill_triggered` | DAILY-LOSS KILL ACTIVE | v10 daily-loss kill; per-portfolio chip with `realized / threshold` dollars |
+
+Multiple conditions concatenate into one banner separated by ` · `.
+
+### Per-portfolio coverage
+
+Each tab panel has its own banner host so the kill alert shows on the
+panel currently in view:
+  - Main panel: `<section id="ks-banner-main">` in `index.html`
+  - Val / Gene panels: `[data-f="ks-banner"]` injected into the
+    `execSkeleton()` template, populated by `renderExecutor` reading
+    `window.__tgLastState` (the most recent main `/api/state`).
+
+This means an operator viewing Val sees the kill state even if it
+fired on Main, since the daily-kill cascade is per-portfolio but
+operator awareness must be global.
+
+### Mobile (≤ 720 px)
+
+The banner wraps: action buttons drop to a full-width row beneath the
+text. Per-portfolio chips stay legible. Verified at 390 px (iPhone 13).
+
+### Design tokens
+
+- Color: `rgba(239,68,68,0.4)` border, gradient `rgba(239,68,68,0.18) → rgba(245,158,11,0.12)` background.
+- `⚠` icon (22 px) + UPPERCASE title in `#fca5a5` red.
+- Subtle outer glow `0 0 24px rgba(239,68,68,0.08)` to draw the eye.
+- Action buttons styled as ghost buttons (transparent + 1px border).
+
+### Tests
+
+No new strategy tests (this is pure frontend). Smoke verification via
+Playwright headless render against 5 mocked states:
+  1. Daily-kill + paused combined (Main + Gene chips)
+  2. VIX day-block (`vix_high (25.30 > 22.00)`)
+  3. `ORB_LIVE_MODE=0`
+  4. Clean state → banner hidden (zero pixels)
+  5. Mobile (390 px) → banner wraps cleanly
+
+Screenshots in `docs/dashboard_redesign_v2/pr33_screenshots/` for
+review.
+
+### Files
+
+- `bot_version.py` -- 7.39.0 -> 7.40.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.40.0
+- `dashboard_static/index.html` -- new `<section id="ks-banner-main">`
+- `dashboard_static/app.css` -- `.killswitch-banner` styles + mobile
+  breakpoint
+- `dashboard_static/app.js` -- `renderKillSwitchBanner(s, target)` +
+  window export + wire-up in renderAll + renderExecutor
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.39.0 (2026-05-10) -- Tier 2: spec-as-code FSM reference engine
 
 Thirty-first PR in v10 rollout. Completes the Tier 2 accuracy-

@@ -2025,3 +2025,97 @@ body.v10-live .legacy-v10-hidden {
     display: none;
   }
 }
+
+/* ============================================================
+   v7.40.0 -- kill-switch banner
+   Renders above the main grid when scan_paused / trading_halted /
+   any portfolio daily_kill_triggered / day_block / ORB_LIVE_MODE=0.
+   Zero pixels via .hide when no kill state is active.
+   Per-portfolio detail is shown so an operator can see WHICH
+   portfolios are halted without switching tabs.
+============================================================ */
+.killswitch-banner {
+  margin: 12px 16px 0;
+  padding: 14px 18px;
+  background: linear-gradient(90deg,
+              rgba(239, 68, 68, 0.18) 0%,
+              rgba(245, 158, 11, 0.12) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont,
+               'Segoe UI', Roboto, sans-serif;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.05),
+              0 0 24px rgba(239, 68, 68, 0.08);
+}
+.killswitch-banner.hide {
+  display: none;
+}
+.killswitch-banner .ks-icon {
+  font-size: 22px;
+  color: #ef4444;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.killswitch-banner .ks-text {
+  flex: 1;
+  min-width: 0;
+}
+.killswitch-banner .ks-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fca5a5;
+  letter-spacing: 0.04em;
+  margin: 0 0 3px;
+  text-transform: uppercase;
+}
+.killswitch-banner .ks-detail {
+  font-size: 12.5px;
+  color: #d1d5db;
+  line-height: 1.45;
+}
+.killswitch-banner .ks-detail .ks-portfolio-chip {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 1px 7px;
+  margin: 0 4px 0 0;
+  border-radius: 3px;
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  font-weight: 600;
+}
+.killswitch-banner .ks-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.killswitch-banner .ks-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid #1f2937;
+  color: #9ca3af;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.killswitch-banner .ks-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #e5e7eb;
+}
+@media (max-width: 720px) {
+  .killswitch-banner {
+    margin: 10px 12px 0;
+    padding: 10px 14px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .killswitch-banner .ks-icon { font-size: 18px; }
+  .killswitch-banner .ks-title { font-size: 11.5px; }
+  .killswitch-banner .ks-detail { font-size: 11.5px; }
+  .killswitch-banner .ks-actions { width: 100%; margin-top: 4px; }
+}
