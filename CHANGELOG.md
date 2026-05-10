@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.37.0 (2026-05-10) -- Tier 2: golden ledger snapshot regression
+
+Twenty-ninth PR in v10 rollout. Each named scenario produces a
+deterministic ledger when driven through `orb.live_runtime`. We
+check those ledgers into the repo as JSON "golden" files and diff
+against them on every test run.
+
+Any v10 code change that alters the admit/exit timing/price/size/
+reason fails the test with a JSON diff. The author must either:
+
+  1. Acknowledge the change is intentional -- regenerate via
+     `REGEN_GOLDENS=1 pytest tests/strategy/test_orb_golden_ledger.py`
+     and commit the new golden alongside the code change. The PR
+     diff makes the strategy-level intent visible.
+  2. Fix the regression -- the test caught unintentional drift.
+
+### 6 named scenarios captured
+
+| Scenario | Ledger length | Key events |
+|---|---|---|
+| `golden_long_target` | 3 | session_start, admit long, exit target |
+| `short_target` | 3 | session_start, admit short, exit target |
+| `long_stop` | 3 | session_start, admit long, exit stop |
+| `long_eod` | 3 | session_start, admit long, exit eod |
+| `vix_kill_blocks_entry` | 1 | session_start (VIX=25, no admit) |
+| `gap_skip` | 1 | session_start (2% gap, no admit) |
+
+### Normalized ledger schema
+
+Each event dict carries:
+  - `kind`: `session_start` / `admit` / `reject` / `exit`
+  - For admits: `ticker`, `pid`, `side`, `shares`, `stop`, `target`
+  - For exits: `ticker`, `reason`, `price`, `bucket`
+  - Float fields rounded to 4 decimals for cross-platform stability
+  - `feed_bar` steps are excluded (high-volume, low-info)
+
+### Sample (golden_long_target.golden.json)
+
+```json
+[
+  {"kind": "session_start", "date": "2026-01-15"},
+  {"kind": "admit", "ticker": "AAPL", "pid": "main", "side": "long",
+   "shares": 742, "stop": 99.4503, "target": 104.8744, "reason_no": ""},
+  {"kind": "exit", "ticker": "AAPL", "reason": "target",
+   "price": 104.8744, "bucket": 605}
+]
+```
+
+### Why this catches what other tests don't
+
+The unit tests + property tests verify the LOCAL math (per
+admission). The simulator scenarios verify the LIVE PATH end-to-end.
+Goldens verify the **byte-level reproducibility** of strategy
+output: if you re-run today's `golden_long_target` and the shares
+went from 742 to 741, the test fails -- even if the math is still
+"correct," something changed in the rounding or sizing pipeline.
+
+Catches regression classes the other layers miss:
+  - Subtle rounding changes (3 decimal -> 4 decimal in some path)
+  - Bucket-counting drift (signal fires 1 bucket earlier)
+  - Reason-string changes ("be_stop" -> "stop" when BE was armed)
+  - Sequencing changes (admit happens BEFORE feed_bar or AFTER)
+
+### Tests
+
+**338 strategy tests pass** (was 332, +6 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.36.0 -> 7.37.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.37.0
+- `tests/strategy/test_orb_golden_ledger.py` -- new (6 parametrized tests)
+- `tests/strategy/goldens/` -- new directory with 6 baseline JSON files
+- `tests/strategy/goldens/README.md` -- regen workflow docs
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.36.0 (2026-05-10) -- Tier 2: random-seed property tests
 
 Twenty-eighth PR in v10 rollout. Tier-2 accuracy verification via
