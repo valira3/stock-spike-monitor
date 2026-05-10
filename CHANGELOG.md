@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.35.0 (2026-05-10) -- Tier 1A: backtest <-> live parity test
+
+Twenty-seventh PR in v10 rollout. Closes the deepest accuracy
+verification gap: two independent implementations of the v10
+keystone -- the historical `tools/orb_backtest.py` (~1500 LOC) and
+the live `orb/*` runtime -- must produce the SAME admit/exit
+decisions on the SAME synthetic bars.
+
+If they diverge, one of them is wrong.
+
+### What the test does
+
+1. Constructs a synthetic 1-min bar list for a single ticker-day
+   with a clean OR window + breakout + walk-to-exit.
+2. Drives the backtest via `run_ticker_day("2026-01-15", "AAPL",
+   bars_1m, cfg)` using an `ORBConfig` that mirrors the v10
+   keystone exactly (rr=2.5, range=[0.8, 2.5]%, max_trades=5,
+   risk=2%, notional=75%, concurrent_risk=$2k, daily_kill=2%,
+   BE-after-1R on) with all "lever" features OFF
+   (volume_confirm/ema_align/adx/rvol/regime/earnings_csv all
+   disabled) and slippage zeroed so prices match.
+3. Drives the live engine through SessionSimulator with the same
+   bars + matching equity.
+4. Asserts the strategy-level fields agree: `side`,
+   `exit_reason`, `entry_price` (within 1 cent), `exit_price`
+   (within 1 cent), `shares` (within 5), P&L sign.
+
+### 5 parity scenarios
+
+| Test | Verifies |
+|---|---|
+| `test_long_target_parity` | Long breakout -> target hit, both engines produce same trade record |
+| `test_short_target_parity` | Short mirror |
+| `test_long_stop_parity` | Stop hit, P&L negative in both |
+| `test_sizing_match` | Both engines compute the same share count within 5 |
+| `test_or_range_too_narrow_both_skip` | 0.5% OR width below 0.8% min -> no trades from either engine |
+
+### Finding from the test
+
+The two engines DISAGREE on what `stop_price` reports in the trade
+record:
+  - Backtest reports the CURRENT stop (potentially BE-shifted after 1R)
+  - Live engine reports the ORIGINAL stop in the position struct
+
+Both are correct interpretations of "stop"; just a semantic
+difference in the bookkeeping field. Strategy decisions match.
+Documented in the test docstring; not a strategy bug.
+
+### Infrastructure
+
+`SessionSimulator.feed_bar_raw(ticker, bucket, open, high, low,
+close, volume)` -- new helper that accepts unwrapped values rather
+than a Bar dataclass. Lets parity tests share bar generation with
+the backtest's `Bar1m` schema. Monkey-patched onto SessionSimulator
+at import time so it's only available when the parity test module
+is loaded.
+
+### Tests
+
+**326 strategy tests pass** (was 321, +5 new). 8 sandbox-skipped.
+
+### Deferred to PR28+
+
+Tier 2 items remain queued:
+  - PR28: Hypothesis property tests (random scenarios + invariants)
+  - PR29: golden ledger snapshot regression
+  - PR30: boundary-value matrix sweep
+  - PR31: spec-as-code reference for FSM (not just geometry)
+
+### Files
+
+- `bot_version.py` -- 7.34.0 -> 7.35.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.35.0
+- `tests/strategy/test_orb_backtest_parity.py` -- new (5 tests)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.34.0 (2026-05-10) -- Tier-1 accuracy verification (pricing-math + leaks + reference engine)
 
 Twenty-sixth PR in v10 rollout. Adds three layers of accuracy
