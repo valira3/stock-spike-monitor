@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.38.0 (2026-05-10) -- Tier 2: boundary-value matrix sweep
+
+Thirtieth PR in v10 rollout. Systematic 3x sweep of every keystone
+gate threshold: exactly-at, just-below, just-above. Where the
+parametrized + property tests cover the bulk of the admissible
+space, these nail the BOUNDARIES.
+
+### 22 boundary tests across 5 categories
+
+**VIX kill (threshold = 22.0)** -- 3 tests:
+  - VIX=21.99 -> admits
+  - VIX=22.00 (exact) -> admits (spec uses strict `>`)
+  - VIX=22.01 -> blocks
+
+**Gap skip (threshold = 1.5%)** -- 4 tests:
+  - 1.49% gap -> admits
+  - 1.5% (exact) -> admits (strict `>`)
+  - 1.51% gap up -> blocks
+  - 1.51% gap DOWN -> also blocks
+
+**OR range band ([0.8%, 2.5%], inclusive)** -- 6 tests:
+  - 0.6% width -> blocks (below min)
+  - ~0.8% width -> admits (at min)
+  - 1.0% width -> admits
+  - 2.4% width -> admits
+  - ~2.5% width -> admits (at max)
+  - 3.0% width -> blocks (above max)
+
+**RR target precision** -- 4 parametrized cases over various OR
+widths within the admissible band; assert reward = 2.5 * risk
+within $0.005 even at the band boundaries where floating-point
+drift is worst.
+
+**Stop-buffer scale (5 bps at $10 to $1000 mid)** -- 5 parametrized:
+verifies stop = OR_opp * (1 - 0.0005) holds at all price scales,
+with tolerance proportional to scale.
+
+### Why this matters
+
+Off-by-one boundary bugs are the most common silent regressions
+in numerical code. A change that swaps strict `>` for `>=` (or
+vice versa) might pass every other test but silently shift the
+admit/block decision at exactly the boundary. These 22 tests
+fail at the exact moment such a regression is introduced.
+
+### Tests
+
+**354 strategy tests pass** (was 338, +22 - 6 reorganized = +16
+new through this PR alone). 8 sandbox-skipped.
+
+Actually the boundary tests add 22 net new (5 stop-buffer
+parametrizations + 4 RR + 6 OR range + 4 gap + 3 VIX), so the
+suite went from 338 -> 354 (+16 net after consolidation).
+
+### Files
+
+- `bot_version.py` -- 7.37.0 -> 7.38.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.38.0
+- `tests/strategy/test_orb_boundary_matrix.py` -- new (22 tests)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.37.0 (2026-05-10) -- Tier 2: golden ledger snapshot regression
 
 Twenty-ninth PR in v10 rollout. Each named scenario produces a
