@@ -216,6 +216,20 @@ class ORBConfig:
     regime_ticker: str = ""              # "SPY" | "QQQ" | "" (off)
     regime_dir_align: bool = False       # only allow trades aligned with index OR direction
     regime_min_or_bps: float = 0.0       # skip day if |index 30m-OR move| < this (bps); 0 = off
+    # v13 RVOL gate -- Zarattini, Barbon & Aziz (SSRN 2023, "Beat the Market:
+    # An Effective ORB Strategy"). Filters per-ticker per-day signals using
+    # the ratio of today's OR-window volume to the same window's 20-day
+    # rolling mean. CLEAN look-ahead: OR_volume is a fully-closed window
+    # (09:30 to 09:30+OR_minutes) that is known by the time the first entry
+    # signal can fire (after OR window closes). Baseline uses prior sessions
+    # only.
+    require_rvol_above: float = 0.0      # skip ticker on day if rvol < this; 0 = off
+    rvol_lookback_days: int = 20         # baseline window in prior sessions
+    # v14 prior-day filters -- look-ahead clean (consume only data with
+    # timestamp < session start of `date`).
+    skip_gap_above_pct: float = 0.0      # skip ticker on day if |today_open - prev_close|/prev_close > this; 0 = off
+    require_prior_nr_n: int = 0          # require prior session range = min of last N daily ranges (Crabel NR_N); 0 = off
+    skip_prior_wr_n: int = 0             # skip if prior session range = max of last N daily ranges (wide-range exhaustion); 0 = off
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -271,6 +285,11 @@ class ORBConfig:
             regime_ticker=_envs("ORB_REGIME_TICKER", "").upper(),
             regime_dir_align=_envs("ORB_REGIME_DIR_ALIGN", "0") == "1",
             regime_min_or_bps=_envf("ORB_REGIME_MIN_OR_BPS", 0.0),
+            require_rvol_above=_envf("ORB_REQUIRE_RVOL_ABOVE", 0.0),
+            rvol_lookback_days=_envi("ORB_RVOL_LOOKBACK_DAYS", 20),
+            skip_gap_above_pct=_envf("ORB_SKIP_GAP_ABOVE_PCT", 0.0),
+            require_prior_nr_n=_envi("ORB_REQUIRE_PRIOR_NR_N", 0),
+            skip_prior_wr_n=_envi("ORB_SKIP_PRIOR_WR_N", 0),
         )
 
 
@@ -754,6 +773,113 @@ def _bucket_to_iso(date: str, minutes: int) -> str:
     return f"{date}T{h:02d}:{m:02d}:00-05:00"  # ET (DST-naive)
 
 
+# ---------- v14 prior-day filters: gap + NR_N (Crabel) ----------
+def compute_daily_session_stats(corpus_dir: Path, dates: list[str],
+                                tickers: list[str]) -> dict:
+    """Return {(date, ticker): (session_high, session_low, session_close)}.
+
+    Session = regular-trading-hours bars (09:30-16:00 ET). Used by the
+    overnight-gap filter (today_open vs prev_close) and the NR_N filter
+    (prior-session range vs N-day window of prior ranges).
+
+    Look-ahead audit: each tuple uses ONLY data with timestamps within the
+    given date's session. The CALLER must only consume tuples for dates
+    strictly prior to the decision date, never the same date.
+    """
+    SESSION_END = _et_to_minutes("16:00")
+    out: dict[tuple[str, str], tuple[float, float, float]] = {}
+    for date in dates:
+        for tk in tickers:
+            try:
+                bars = load_day_bars(corpus_dir, date, tk)
+            except Exception:
+                continue
+            if not bars:
+                continue
+            rth = [b for b in bars
+                   if SESSION_START_ET <= b.bucket < SESSION_END]
+            if not rth:
+                continue
+            session_high = max(b.high for b in rth)
+            session_low = min(b.low for b in rth)
+            session_close = rth[-1].close
+            out[(date, tk)] = (session_high, session_low, session_close)
+    return out
+
+
+def overnight_gap_pct(daily_stats: dict, dates: list[str], date: str,
+                      ticker: str, today_first_open: float) -> float | None:
+    """Return |today_open - prev_close| / prev_close * 100, or None if missing.
+
+    Look-ahead: prev_close is from the strictly prior session date.
+    today_first_open is the 09:30 open bar (causally available at OR start).
+    """
+    try:
+        idx = dates.index(date)
+    except ValueError:
+        return None
+    if idx == 0:
+        return None
+    prev_date = dates[idx - 1]
+    stats = daily_stats.get((prev_date, ticker))
+    if stats is None:
+        return None
+    _, _, prev_close = stats
+    if prev_close <= 0 or today_first_open <= 0:
+        return None
+    return abs(today_first_open - prev_close) / prev_close * 100.0
+
+
+def is_prior_nr_n(daily_stats: dict, dates: list[str], date: str,
+                  ticker: str, n: int) -> bool | None:
+    """True if the PRIOR session's range was the MIN of the last N prior
+    sessions' ranges (Crabel NR_N). None if insufficient history.
+
+    Look-ahead: uses only sessions strictly before `date`.
+    """
+    try:
+        idx = dates.index(date)
+    except ValueError:
+        return None
+    if idx < n:
+        return None
+    ranges = []
+    for d in dates[idx - n:idx]:
+        s = daily_stats.get((d, ticker))
+        if s is None:
+            return None
+        h, lo, _ = s
+        ranges.append(h - lo)
+    if not ranges:
+        return None
+    prior_range = ranges[-1]  # range of (idx-1) -- the most recent prior session
+    return prior_range == min(ranges) and prior_range > 0
+
+
+def is_prior_wr_n(daily_stats: dict, dates: list[str], date: str,
+                  ticker: str, n: int) -> bool | None:
+    """True if the PRIOR session's range was the MAX of last N prior
+    sessions' ranges (wide-range exhaustion). None if insufficient.
+    """
+    try:
+        idx = dates.index(date)
+    except ValueError:
+        return None
+    if idx < n:
+        return None
+    ranges = []
+    for d in dates[idx - n:idx]:
+        s = daily_stats.get((d, ticker))
+        if s is None:
+            return None
+        h, lo, _ = s
+        ranges.append(h - lo)
+    if not ranges:
+        return None
+    prior_range = ranges[-1]
+    return prior_range == max(ranges) and prior_range > 0
+
+
 # ---------- v12 SPY/QQQ regime gate ----------
 def compute_regime(corpus_dir: Path, date: str, ticker: str,
                    or_minutes: int) -> dict | None:
@@ -794,6 +920,64 @@ def compute_regime(corpus_dir: Path, date: str, ticker: str,
     return {"direction": direction, "or_bps": or_bps}
 
 
+# ---------- v13 RVOL gate (Zarattini SSRN 2023) ----------
+def compute_or_volumes(corpus_dir: Path, dates: list[str],
+                       tickers: list[str], or_minutes: int) -> dict:
+    """Return {(date, ticker): or_window_volume} for every date x ticker.
+
+    The OR window is [09:30, 09:30 + or_minutes). Fully closed by the time
+    the first ORB entry signal can fire (next 5-min candle's open after the
+    OR window). CLEAN look-ahead: OR_volume(date, ticker) is causally
+    available at decision time on `date`.
+
+    Used by the RVOL gate to compute today's OR_volume / mean(prior_N
+    OR_volumes for same ticker).
+    """
+    or_end = SESSION_START_ET + or_minutes
+    out: dict[tuple[str, str], float] = {}
+    for date in dates:
+        for tk in tickers:
+            try:
+                bars = load_day_bars(corpus_dir, date, tk)
+            except Exception:
+                continue
+            if not bars:
+                continue
+            v = sum(b.volume for b in bars
+                    if SESSION_START_ET <= b.bucket < or_end)
+            out[(date, tk)] = v
+    return out
+
+
+def rvol_for(or_volumes: dict, dates: list[str], date: str, ticker: str,
+             lookback: int) -> float | None:
+    """RVOL = today's OR_volume / mean(prior `lookback` sessions' OR_volume).
+
+    Returns None if today's volume is missing OR fewer than half the
+    lookback baseline samples are available (insufficient history). The
+    baseline uses ONLY prior sessions for the same ticker -- no
+    look-ahead. Returns 0.0 if today's volume is 0 (filtered out).
+    """
+    today_v = or_volumes.get((date, ticker))
+    if today_v is None or today_v <= 0:
+        return None
+    try:
+        idx = dates.index(date)
+    except ValueError:
+        return None
+    prior = []
+    for d in dates[max(0, idx - lookback):idx]:
+        v = or_volumes.get((d, ticker))
+        if v is not None and v > 0:
+            prior.append(v)
+    if len(prior) < max(5, lookback // 2):
+        return None  # insufficient history -- fail-open (don't gate)
+    baseline = sum(prior) / len(prior)
+    if baseline <= 0:
+        return None
+    return today_v / baseline
+
+
 # ---------- driver ----------
 def discover_dates(corpus_dir: Path, year_prefix: str, tickers: list[str]) -> list[str]:
     out = []
@@ -831,6 +1015,33 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     regime_days_skipped_flat = 0
     regime_days_skipped_low_or = 0
     regime_signals_dropped = 0
+    # v13 RVOL gate: pre-compute OR-window volumes for every date x ticker
+    # ONCE so per-day RVOL lookups are O(lookback). The OR window is fully
+    # closed at OR_END (e.g. 10:00) -- well before the earliest possible
+    # entry fill time (10:05+). No look-ahead.
+    or_volumes: dict = {}
+    rvol_signals_dropped = 0
+    rvol_insufficient_history = 0
+    if cfg.require_rvol_above > 0:
+        # Include both per-ticker volumes and the regime ticker so future
+        # variants can RVOL-gate on SPY/QQQ too if needed. Caching is cheap.
+        rvol_universe = list(tickers)
+        if cfg.regime_ticker and cfg.regime_ticker not in rvol_universe:
+            rvol_universe.append(cfg.regime_ticker)
+        or_volumes = compute_or_volumes(
+            corpus_dir, dates, rvol_universe, cfg.or_minutes)
+    # v14 prior-day filters: pre-compute per-ticker per-day session stats
+    # (high/low/close) ONCE so per-day lookups are O(1). Used by
+    # overnight-gap and NR_N/WR_N filters. CLEAN look-ahead: each filter
+    # only consumes stats from dates strictly prior to the decision date.
+    daily_stats: dict = {}
+    gap_signals_dropped = 0
+    nr_signals_dropped = 0
+    wr_signals_dropped = 0
+    if (cfg.skip_gap_above_pct > 0 or cfg.require_prior_nr_n > 0
+            or cfg.skip_prior_wr_n > 0):
+        daily_stats = compute_daily_session_stats(
+            corpus_dir, dates, list(tickers))
 
     for date in dates:
         # v11 compounding: at the start of each day, snapshot the running
@@ -895,6 +1106,91 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             kept = [p for p in candidate_pairs
                     if str(p["side"]).lower() == allowed_side]
             regime_signals_dropped += len(candidate_pairs) - len(kept)
+            candidate_pairs = kept
+
+        # v13 RVOL gate (Zarattini): drop per-ticker signals where today's
+        # OR-window volume is below `require_rvol_above` x prior-N-day mean
+        # for the same ticker. Fail-open on missing/insufficient history.
+        # CLEAN look-ahead: today's OR_volume is fully observable at OR
+        # close; entries fire AFTER OR close.
+        if cfg.require_rvol_above > 0 and candidate_pairs:
+            ticker_rvols: dict = {}
+            kept = []
+            for p in candidate_pairs:
+                tk = p["ticker"]
+                if tk not in ticker_rvols:
+                    rv = rvol_for(or_volumes, dates, date, tk,
+                                  cfg.rvol_lookback_days)
+                    ticker_rvols[tk] = rv
+                rv = ticker_rvols[tk]
+                if rv is None:
+                    rvol_insufficient_history += 1
+                    kept.append(p)  # fail-open
+                elif rv < cfg.require_rvol_above:
+                    rvol_signals_dropped += 1
+                else:
+                    p["rvol"] = round(rv, 3)  # diagnostic
+                    kept.append(p)
+            candidate_pairs = kept
+
+        # v14 overnight-gap filter: drop ticker on day if today's 09:30
+        # open is gapped > X% from prior session close. Uses only prior
+        # session data. Fail-open on missing data.
+        if cfg.skip_gap_above_pct > 0 and candidate_pairs:
+            kept = []
+            ticker_open: dict = {}
+            for p in candidate_pairs:
+                tk = p["ticker"]
+                if tk not in ticker_open:
+                    # Get the 09:30 open bar from this day's bars
+                    bars = load_day_bars(corpus_dir, date, tk)
+                    open_bar = next((b for b in bars
+                                     if b.bucket == SESSION_START_ET), None)
+                    ticker_open[tk] = open_bar.open if open_bar else None
+                today_open = ticker_open[tk]
+                if today_open is None:
+                    kept.append(p)  # fail-open
+                    continue
+                gap = overnight_gap_pct(daily_stats, dates, date, tk, today_open)
+                if gap is None:
+                    kept.append(p)  # fail-open (no prior day)
+                elif gap > cfg.skip_gap_above_pct:
+                    gap_signals_dropped += 1
+                else:
+                    kept.append(p)
+            candidate_pairs = kept
+
+        # v14 NR_N / WR_N filters (Crabel): require prior session was a
+        # narrow-range-N (compression precedes expansion) OR drop signals
+        # after a wide-range-N (range exhausted). Fail-open on missing.
+        if cfg.require_prior_nr_n > 0 and candidate_pairs:
+            kept = []
+            ticker_ok: dict = {}
+            for p in candidate_pairs:
+                tk = p["ticker"]
+                if tk not in ticker_ok:
+                    is_nr = is_prior_nr_n(daily_stats, dates, date, tk,
+                                          cfg.require_prior_nr_n)
+                    ticker_ok[tk] = is_nr if is_nr is not None else True
+                if not ticker_ok[tk]:
+                    nr_signals_dropped += 1
+                else:
+                    kept.append(p)
+            candidate_pairs = kept
+
+        if cfg.skip_prior_wr_n > 0 and candidate_pairs:
+            kept = []
+            ticker_block: dict = {}
+            for p in candidate_pairs:
+                tk = p["ticker"]
+                if tk not in ticker_block:
+                    is_wr = is_prior_wr_n(daily_stats, dates, date, tk,
+                                          cfg.skip_prior_wr_n)
+                    ticker_block[tk] = bool(is_wr)
+                if ticker_block[tk]:
+                    wr_signals_dropped += 1
+                else:
+                    kept.append(p)
             candidate_pairs = kept
 
         # v9 portfolio-level constraints (re-baseline to $500/day cap):
@@ -1037,6 +1333,18 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "regime_days_skipped_flat": regime_days_skipped_flat,
         "regime_days_skipped_low_or": regime_days_skipped_low_or,
         "regime_signals_dropped": regime_signals_dropped,
+        # v13 RVOL gate diagnostics
+        "require_rvol_above": cfg.require_rvol_above,
+        "rvol_lookback_days": cfg.rvol_lookback_days,
+        "rvol_signals_dropped": rvol_signals_dropped,
+        "rvol_insufficient_history": rvol_insufficient_history,
+        # v14 prior-day filter diagnostics
+        "skip_gap_above_pct": cfg.skip_gap_above_pct,
+        "require_prior_nr_n": cfg.require_prior_nr_n,
+        "skip_prior_wr_n": cfg.skip_prior_wr_n,
+        "gap_signals_dropped": gap_signals_dropped,
+        "nr_signals_dropped": nr_signals_dropped,
+        "wr_signals_dropped": wr_signals_dropped,
         "config": {
             "strategy": "orb_classical",
             "or_minutes": cfg.or_minutes,
