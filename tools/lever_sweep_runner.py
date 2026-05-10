@@ -207,7 +207,42 @@ def run_one_day(args):
         return {"date": date_str, "rc": -2, "ok": False, "stderr": str(e)}
 
 
+def run_orb_mode() -> int:
+    """ORB_MODE=1 short-circuit: run tools/orb_backtest.py instead of
+    the v15 per-day backtest. ORB is a fundamentally different strategy
+    (Opening Range Breakout) so it needs its own engine. The output
+    schema (summary.json + per_day/*.json) is identical to the v15 path,
+    so the GHA matrix's commit-to-sweep-results step works unchanged
+    and the manager / stability analyzer pick up ORB variants alongside
+    v15 variants.
+
+    All ORB_* env vars (ORB_OR_MINUTES, ORB_RR, etc.) are passed
+    through to the tool. See tools/orb_backtest.py for the full set.
+    """
+    out_dir = ROOT / VID
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"ORB_MODE=1 -- routing variant {VID} to tools/orb_backtest.py",
+          flush=True)
+    cmd = [
+        PYTHON, "-m", "tools.orb_backtest",
+        "--corpus", str(BARS),
+        "--out", str(out_dir),
+        "--vid", VID,
+    ]
+    proc = subprocess.run(cmd, cwd=str(REPO),
+                          env=os.environ.copy(),
+                          capture_output=False,
+                          timeout=900)
+    if proc.returncode != 0:
+        print(f"ERROR: orb_backtest exited rc={proc.returncode}",
+              file=sys.stderr, flush=True)
+        return proc.returncode
+    return 0
+
+
 def main() -> int:
+    if os.environ.get("ORB_MODE", "0") == "1":
+        return run_orb_mode()
     PER_DAY.mkdir(parents=True, exist_ok=True)
     extras = {**PROD_BASE, **(V15_FULL_FLAGS if V15_FLAGS_ENABLED else {})}
     # Env-set values win over PROD_BASE defaults.
