@@ -29,7 +29,19 @@
 
    **Sizing for your plan**: total active processes = `RAILWAY_PARALLEL_VARIANTS × SWEEP_WORKERS`, should ≤ vCPU count.
 
-   On 24 vCPU / 24 GB Hobby Pro:
+   **Per-replica caps are 24 vCPU / 24 GB on every plan, including Pro.**
+   The Pro plan increases the *number* of replicas you can spin up
+   (up to 42), not the size of any single replica. The sweep worker
+   runs as a single replica with intra-process parallelism via
+   ProcessPoolExecutor, so the practical sizing ceiling is **24 active
+   processes** (e.g. `PARALLEL_VARIANTS=6 SWEEP_WORKERS=4`).
+
+   To go beyond 24 active processes you would need to add multi-
+   replica orchestration to `tools/railway_sweep_worker.py` (split
+   the variant queue across N replicas with a shared lock). That
+   isn't built today — file an issue if you want it.
+
+   On 24 vCPU / 24 GB single replica (Hobby Pro AND Pro single-service):
 
    | Use case | Recommended config | Active procs | 5-var STRIDE=1 wall |
    |---|---|---:|---:|
