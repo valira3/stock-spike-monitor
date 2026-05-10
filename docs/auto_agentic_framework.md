@@ -31,6 +31,16 @@ Operating rules for autonomous, quality work in this session and future sessions
 **7. Audit-driven realism.** Phantom leverage, look-ahead bias, over-leverage, fee/slippage gaps — all need to be hunted before relying on backtest numbers. Realistic execution constraints baked into the harness.
 *Established by: "Update the strategy to be realistic"*
 
+**7b. No look-ahead, ever.** A backtest may NEVER use information that would not have been available in real time at the moment of the decision. Concretely:
+- A signal/filter computed at time T may only consume data with timestamps ≤ T.
+- Day-skip filters must use data available BEFORE the day's first entry would fire — prior-day close, overnight futures, pre-market quotes, prior session ATR/RVOL/etc. Same-day OR-derived signals may gate entries that fire AFTER the OR window closes, but never before.
+- Indicators that are computed once per day (e.g. session VWAP, daily range) must be reset at session open and built incrementally, never end-of-day-back-dated.
+- Forward-fill from "next available bar" is forbidden. If data is missing at T, the strategy sees nothing — not the next print.
+- Cross-validation/STRIDE samples must not leak across train/test boundaries (a feature engineered on day D may not implicitly use day D+1 data).
+
+Every new lever ships with a one-line claim of which timestamp's data it consumes. Audits explicitly test: "if I removed all data after T, does this signal compute the same value?" If the answer is no, it's look-ahead.
+*Established by: "remember that when we are running backtests, we can not know the future. So the run should never assume any indicators that would not be known at the time"*
+
 **8. Industry research-grounded.** New levers should come from peer-reviewed or community-replicated literature (ATR stops, ADX, VWAP, Kelly sizing, etc.) not handwaved hypotheses. Spawn a research subagent for this.
 *Established by: "Identify any other potential levers we can use (again refer to industry research)"*
 
