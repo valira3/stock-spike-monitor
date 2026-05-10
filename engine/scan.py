@@ -796,9 +796,15 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             pid, side, ticker, int(shares), ok,
         )
     except Exception as e:
-        logger.warning(
-            "[V79-ORB-FIRE] %s %s %s fire raised: %s",
-            pid, side, ticker, e,
+        # v7.32.0: ERROR-level (was WARNING) since this is an executor
+        # bug (not a broker error -- those are escalated via the
+        # error_callback path above) and the position is in flight but
+        # unexecuted. include_exc_info=True so the traceback hits the
+        # log even when callbacks is None.
+        logger.error(
+            "[V79-ORB-FIRE] %s %s %s fire raised %s: %s",
+            pid, side, ticker, type(e).__name__, e,
+            exc_info=True,
         )
         if callbacks is not None:
             try:

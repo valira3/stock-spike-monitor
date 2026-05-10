@@ -244,11 +244,21 @@ def ensure_session_started(*, date_iso: str,
 
 
 def reset_session() -> None:
-    """Manual session reset (e.g. on shutdown / EOD)."""
+    """Manual session reset (e.g. on shutdown / EOD).
+
+    v7.32.0: also clears `_pending_v10_sizes`. Stale stashed sizes
+    from a prior session were persisting across the reset; if the
+    same (portfolio, ticker) admitted a fresh trade the next day,
+    broker.orders.paper_shares_for could consume the wrong size.
+    """
     global _session_date
-    _session_date = ""
-    if _adapters is not None:
-        _adapters.reset_all_sessions()
+    with _bootstrap_lock:
+        _session_date = ""
+        adapters = _adapters
+    if adapters is not None:
+        adapters.reset_all_sessions()
+    with _sizes_lock:
+        _pending_v10_sizes.clear()
 
 
 # v7.24.0: intraday equity refresh.
@@ -322,10 +332,17 @@ def feed_bar(*, ticker: str,
              bar_bucket_min: int) -> None:
     """Forward a 1-min bar to the OR window. No-op if not bootstrapped
     or live mode is off.
+
+    v7.32.0: snapshot the _engine reference under the bootstrap lock
+    so a concurrent bootstrap can't race the check-then-deref.
     """
-    if not is_live_mode_on() or _engine is None:
+    if not is_live_mode_on():
         return
-    _engine.on_bar_arrival(
+    with _bootstrap_lock:
+        engine = _engine
+    if engine is None:
+        return
+    engine.on_bar_arrival(
         ticker=ticker,
         bar_high=bar_high, bar_low=bar_low,
         bar_open=bar_open, bar_close=bar_close,
@@ -339,10 +356,18 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
                 equity: float, signal_iso: str = "",
                 ) -> EntryResult:
     """Per-portfolio entry decision. Returns no-op EntryResult if the
-    runtime isn't ready or live mode is off."""
-    if not is_live_mode_on() or _adapters is None:
+    runtime isn't ready or live mode is off.
+
+    v7.32.0: snapshot _adapters under the bootstrap lock; see
+    feed_bar() docstring.
+    """
+    if not is_live_mode_on():
         return EntryResult(ok=False, reason_no="live_mode_off")
-    a = _adapters.get(portfolio_id)
+    with _bootstrap_lock:
+        adapters = _adapters
+    if adapters is None:
+        return EntryResult(ok=False, reason_no="live_mode_off")
+    a = adapters.get(portfolio_id)
     if a is None:
         return EntryResult(ok=False, reason_no=f"no_adapter:{portfolio_id}")
     return a.check_entry(
@@ -356,10 +381,17 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
                bar_high: float, bar_low: float, bar_close: float,
                bar_bucket_min: int) -> ExitResult:
     """Per-portfolio exit decision. Returns no-op ExitResult if
-    runtime isn't ready or live mode is off."""
-    if not is_live_mode_on() or _adapters is None:
+    runtime isn't ready or live mode is off.
+
+    v7.32.0: snapshot _adapters under the bootstrap lock.
+    """
+    if not is_live_mode_on():
         return ExitResult(exit=False, reason="live_mode_off")
-    a = _adapters.get(portfolio_id)
+    with _bootstrap_lock:
+        adapters = _adapters
+    if adapters is None:
+        return ExitResult(exit=False, reason="live_mode_off")
+    a = adapters.get(portfolio_id)
     if a is None:
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
     return a.check_exit(
@@ -424,9 +456,13 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
     during the v10/legacy coexistence window where some open positions
     in tg.positions are still legacy and have no v10 ticket.
     """
-    if not is_live_mode_on() or _adapters is None:
+    if not is_live_mode_on():
         return ExitResult(exit=False, reason="live_mode_off")
-    a = _adapters.get(portfolio_id)
+    with _bootstrap_lock:
+        adapters = _adapters
+    if adapters is None:
+        return ExitResult(exit=False, reason="live_mode_off")
+    a = adapters.get(portfolio_id)
     if a is None:
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
     return a.check_exit_by_ticker(
@@ -438,26 +474,39 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
 
 def snapshot() -> dict:
     """JSON-shaped state for /api/state. Returns minimal stub if not
-    bootstrapped."""
-    if _engine is None:
+    bootstrapped.
+
+    v7.32.0: snapshot _engine under the bootstrap lock to avoid a
+    partial-init read race."""
+    with _bootstrap_lock:
+        engine = _engine
+        session_date = _session_date
+    if engine is None:
         return {
             "bootstrapped": False,
             "live_mode": is_live_mode_on(),
             "session_date": "",
         }
-    snap = _engine.snapshot()
+    snap = engine.snapshot()
     snap["bootstrapped"] = True
     snap["live_mode"] = is_live_mode_on()
-    snap["session_date"] = _session_date
+    snap["session_date"] = session_date
     return snap
 
 
 # --- diagnostic helpers (for tests + manual ops) ---
 
 def _reset_for_testing() -> None:
-    """Tear down the singleton. ONLY for tests."""
+    """Tear down the singleton. ONLY for tests.
+
+    v7.32.0: acquires _bootstrap_lock + _sizes_lock so an aggressive
+    parallel test runner can't observe a half-reset state.
+    """
     global _engine, _adapters, _bootstrapped, _session_date
-    _engine = None
-    _adapters = None
-    _bootstrapped = False
-    _session_date = ""
+    with _bootstrap_lock:
+        _engine = None
+        _adapters = None
+        _bootstrapped = False
+        _session_date = ""
+    with _sizes_lock:
+        _pending_v10_sizes.clear()
