@@ -282,20 +282,29 @@ def atr_5m(candles: list[Bar1m], lookback: int = 14) -> float:
     return sum(use) / len(use)
 
 
-def adx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
-    """Approximate ADX(14) on 5m candles. Returns 0 if insufficient data.
+def dx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
+    """Single-window DX (directional-index) on 5m candles. Returns 0 if
+    insufficient data.
 
-    Standard Wilder formula:
+    This is NOT true ADX -- it's the underlying DX computed from simple-MA
+    smoothed +DM/-DM/TR over a single `lookback` window:
+
       +DM = if up_move > down_move and up_move > 0: up_move else 0
       -DM = if down_move > up_move and down_move > 0: down_move else 0
       TR  = max(h-l, |h-pc|, |l-pc|)
-      +DI = 100 * smoothed(+DM) / smoothed(TR)
-      -DI = 100 * smoothed(-DM) / smoothed(TR)
+      +DI = 100 * sum(+DM, lookback) / sum(TR, lookback)
+      -DI = 100 * sum(-DM, lookback) / sum(TR, lookback)
       DX  = 100 * |+DI - -DI| / (+DI + -DI)
-      ADX = smoothed(DX) over `lookback`
 
-    Uses simple-MA smoothing (Wilder uses EMA) for code brevity. Close enough
-    as a directional-strength filter.
+    Used as a directional-strength proxy filter (formerly mis-named adx_5m).
+    For the proper Wilder-smoothed ADX (DX averaged over `lookback` periods),
+    see `adx_5m()` below.
+
+    Reference fixture (synthetic strong-uptrend 15-bar series):
+      candles where each bar's high/low/close trends up by 1.0 each step ->
+      dx_5m(..., lookback=14) returns 100.0 (pure directional move, all +DM,
+      no -DM); adx_5m(..., lookback=14) on the same series returns ~100.0
+      after Wilder smoothing converges.
     """
     if len(candles) < lookback + 1:
         return 0.0
@@ -323,8 +332,89 @@ def adx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
     ndi = 100 * sum(n) / sum_t
     if pdi + ndi <= 0:
         return 0.0
-    dx = 100 * abs(pdi - ndi) / (pdi + ndi)
-    return dx  # using single DX as ADX proxy when only one window
+    return 100 * abs(pdi - ndi) / (pdi + ndi)
+
+
+def adx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
+    """Proper Wilder-smoothed ADX(`lookback`) on 5m candles. Returns 0 if
+    insufficient data.
+
+    Algorithm (Wilder 1978):
+      1. Compute per-bar +DM, -DM, TR (same as dx_5m).
+      2. Wilder-smooth +DM, -DM, TR over `lookback` bars:
+           initial smoothed = sum of first `lookback` values
+           subsequent       = prev - (prev / lookback) + current
+      3. +DI = 100 * smoothed(+DM) / smoothed(TR);  -DI similarly.
+      4. DX = 100 * |+DI - -DI| / (+DI + -DI) for each smoothed bar.
+      5. ADX = Wilder-smoothed average of DX over `lookback` periods:
+           initial ADX = mean of first `lookback` DX values
+           subsequent  = (prev_ADX * (lookback - 1) + current_DX) / lookback
+
+    Requires at least 2 * `lookback` bars to produce a non-zero value.
+
+    Reference fixture (synthetic strong-uptrend series, lookback=14):
+      A series with each bar 1.0 higher than the prior on H/L/C produces
+      DX = 100.0 every period (all up-moves, zero -DM), so the Wilder
+      ADX of that series converges to 100.0 once warm.
+    """
+    n_needed = 2 * lookback
+    if len(candles) < n_needed + 1:
+        return 0.0
+    pdms: list[float] = []
+    ndms: list[float] = []
+    trs: list[float] = []
+    for i in range(1, len(candles)):
+        up = candles[i].high - candles[i - 1].high
+        dn = candles[i - 1].low - candles[i].low
+        pdm = up if (up > dn and up > 0) else 0.0
+        ndm = dn if (dn > up and dn > 0) else 0.0
+        tr = max(
+            candles[i].high - candles[i].low,
+            abs(candles[i].high - candles[i - 1].close),
+            abs(candles[i].low - candles[i - 1].close),
+        )
+        pdms.append(pdm)
+        ndms.append(ndm)
+        trs.append(tr)
+    if len(trs) < n_needed:
+        return 0.0
+    # Wilder smoothing of +DM, -DM, TR -- produce smoothed series so we can
+    # compute a DX value at each step after the initial warmup.
+    s_pdm = sum(pdms[:lookback])
+    s_ndm = sum(ndms[:lookback])
+    s_tr = sum(trs[:lookback])
+    dx_series: list[float] = []
+    # First DX value uses the initial sums.
+    if s_tr > 0:
+        pdi = 100 * s_pdm / s_tr
+        ndi = 100 * s_ndm / s_tr
+        if pdi + ndi > 0:
+            dx_series.append(100 * abs(pdi - ndi) / (pdi + ndi))
+        else:
+            dx_series.append(0.0)
+    else:
+        dx_series.append(0.0)
+    # Subsequent Wilder-smoothed updates.
+    for i in range(lookback, len(trs)):
+        s_pdm = s_pdm - (s_pdm / lookback) + pdms[i]
+        s_ndm = s_ndm - (s_ndm / lookback) + ndms[i]
+        s_tr = s_tr - (s_tr / lookback) + trs[i]
+        if s_tr <= 0:
+            dx_series.append(0.0)
+            continue
+        pdi = 100 * s_pdm / s_tr
+        ndi = 100 * s_ndm / s_tr
+        if pdi + ndi <= 0:
+            dx_series.append(0.0)
+        else:
+            dx_series.append(100 * abs(pdi - ndi) / (pdi + ndi))
+    if len(dx_series) < lookback:
+        return 0.0
+    # Wilder-smooth DX into ADX.
+    adx = sum(dx_series[:lookback]) / lookback
+    for i in range(lookback, len(dx_series)):
+        adx = (adx * (lookback - 1) + dx_series[i]) / lookback
+    return adx
 
 
 def session_vwap_at(bars_1m: list[Bar1m], at_bucket: int) -> float:
@@ -343,8 +433,16 @@ def session_vwap_at(bars_1m: list[Bar1m], at_bucket: int) -> float:
 
 # ---------- backtest one ticker-day ----------
 def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
-                   cfg: ORBConfig) -> list[dict]:
-    """Returns a list of pnl_pair dicts (matches lever_sweep_runner schema)."""
+                   cfg: ORBConfig, current_account: float | None = None
+                   ) -> list[dict]:
+    """Returns a list of pnl_pair dicts (matches lever_sweep_runner schema).
+
+    `current_account` is the running balance to use for sizing / notional
+    caps when daily compounding is active. When None, falls back to
+    cfg.account (so cfg is not mutated for the non-compounding path).
+    """
+    if current_account is None:
+        current_account = cfg.account
     if not bars_1m:
         return []
 
@@ -427,9 +525,11 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         if cfg.skip_first_5min and i == 0:
             continue
 
-        # v10: ADX trend filter -- skip choppy days
+        # v10: ADX trend filter -- skip choppy days. Uses single-window DX
+        # (directional-strength proxy) rather than full Wilder ADX, matching
+        # the historical behavior under this lever's threshold calibration.
         if cfg.require_adx_above > 0:
-            adx_val = adx_5m(candles_5m[: i + 1], lookback=14)
+            adx_val = dx_5m(candles_5m[: i + 1], lookback=14)
             if adx_val < cfg.require_adx_above:
                 continue
 
@@ -478,7 +578,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         target = entry_price + cfg.rr * risk if side == "long" else entry_price - cfg.rr * risk
 
         # Position sizing: risk ORB_RISK_PER_TRADE_PCT of account.
-        risk_dollars = cfg.account * cfg.risk_per_trade_pct / 100.0
+        risk_dollars = current_account * cfg.risk_per_trade_pct / 100.0
         shares = max(1, int(risk_dollars / risk))
 
         # v8 realism cap: single-trade notional must not exceed
@@ -487,7 +587,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # audit found one trade at $157k notional on a $100k account.
         # Real Reg T DTBP is 4x but per-trade discipline limits to
         # ~25% notional to keep diversification.
-        max_notional = cfg.account * cfg.max_trade_notional_pct / 100.0
+        max_notional = current_account * cfg.max_trade_notional_pct / 100.0
         if entry_price > 0:
             shares_cap = max(1, int(max_notional / entry_price))
             shares = min(shares, shares_cap)
@@ -662,8 +762,11 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
 
     total_pnl = 0.0
     total_entries = 0
-    # v11 compounding: track running account if enabled. cfg.account is
-    # mutated between days so position sizing scales with new balance.
+    # v11 compounding: track running account if enabled. We use a local
+    # `current_account` for sizing / caps and pass it explicitly into
+    # run_ticker_day; cfg.account is NEVER mutated so cfg stays reusable
+    # across run() calls and summary.config.account preserves the configured
+    # starting balance.
     starting_account = cfg.account
     running_account = starting_account
     daily_account_history = []
@@ -671,14 +774,15 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     total_losses = 0
     days_ok = 0
     days_failed = 0
+    tickers_failed = 0
+    failures: list[dict] = []
 
     for date in dates:
-        # v11 compounding: at the start of each day, set cfg.account to
-        # the running balance so position sizes (and risk caps) scale
-        # with the latest balance. After the day's P&L is finalized,
-        # update running_account.
-        if cfg.compound_daily:
-            cfg.account = running_account
+        # v11 compounding: at the start of each day, snapshot the running
+        # balance into `current_account` so position sizes (and risk caps)
+        # scale with the latest balance. After the day's P&L is finalized,
+        # update running_account. cfg is never mutated.
+        current_account = running_account if cfg.compound_daily else starting_account
 
         candidate_pairs: list[dict] = []
         for tk in tickers:
@@ -686,10 +790,22 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 bars = load_day_bars(corpus_dir, date, tk)
                 if not bars:
                     continue
-                pairs = run_ticker_day(date, tk, bars, cfg)
+                pairs = run_ticker_day(date, tk, bars, cfg, current_account)
                 candidate_pairs.extend(pairs)
+            except (RuntimeError, AssertionError):
+                # Genuine bugs -- re-raise rather than silently dropping.
+                raise
             except Exception as e:
-                print(f"WARN {date} {tk}: {e}", file=sys.stderr)
+                tickers_failed += 1
+                if len(failures) < 10:
+                    failures.append({
+                        "date": date,
+                        "ticker": tk,
+                        "error_class": type(e).__name__,
+                        "error_msg": str(e),
+                    })
+                print(f"WARN {date} {tk}: {type(e).__name__}: {e}",
+                      file=sys.stderr)
 
         # v9 portfolio-level constraints (re-baseline to $500/day cap):
         #   1. Concurrent risk-dollars cap: sum of open risk_dollars
@@ -698,27 +814,24 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         #   2. Concurrent notional cap (legacy from v8, still in force).
         #   3. Daily loss kill: halt new entries after cumulative
         #      realized day P&L <= -daily_loss_kill_pct of account.
-        max_notional = cfg.account * cfg.max_concurrent_notional_mult
+        max_notional = current_account * cfg.max_concurrent_notional_mult
         max_risk_budget = cfg.max_concurrent_risk_dollars
-        kill_threshold = -cfg.account * cfg.daily_loss_kill_pct / 100.0
+        kill_threshold = -current_account * cfg.daily_loss_kill_pct / 100.0
         events = []
         for idx, p in enumerate(candidate_pairs):
             ent_ts = p["entry_ts"]
             ext_ts = p["exit_ts"]
             notional = p["entry_price"] * p["shares"]
-            # Risk-dollars per trade = entry-stop distance * shares.
-            # We don't carry the stop forward into pairs explicitly, but
-            # the executed pnl_dollars on stop-out exits is exactly the
-            # at-risk amount minus slippage. Use shares * |entry - stop|
-            # if available; fall back to abs(pnl_dollars) cap on stops.
-            # Cleaner: store a derived risk_dollars on each pair.
-            risk = p.get("risk_dollars")
-            if risk is None:
-                # Reconstruct from the raw inputs we have: it's roughly
-                # the shares * stop distance from entry. We don't have
-                # the stop preserved, so fall back to risk_per_trade_pct
-                # of account as upper bound.
-                risk = cfg.account * cfg.risk_per_trade_pct / 100.0
+            # Risk-dollars per trade is always written by run_ticker_day
+            # (= shares * |entry - stop|). Assert it's present so any
+            # future schema drift fails loudly instead of silently
+            # falling back to a wrong risk-budget proxy.
+            assert "risk_dollars" in p, (
+                f"pnl_pair missing required 'risk_dollars' field: "
+                f"{p.get('ticker')} @ {p.get('entry_ts')} -- "
+                f"run_ticker_day must always populate this field"
+            )
+            risk = p["risk_dollars"]
             events.append((ent_ts, "entry", idx, p, notional, risk))
             events.append((ext_ts, "exit", idx, p, notional, risk))
         # Sort by ts; "exit" before "entry" at same ts to free room
@@ -767,7 +880,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             running_account += day_pnl
             daily_account_history.append({
                 "date": date,
-                "open_balance": round(cfg.account, 2),
+                "open_balance": round(current_account, 2),
                 "day_pnl": round(day_pnl, 2),
                 "close_balance": round(running_account, 2),
             })
@@ -807,6 +920,12 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "days_resumed_skip": 0,
         "days_ok": days_ok,
         "days_failed": days_failed,
+        # H2 fix: surface per-ticker failures so they don't get silently
+        # swallowed. tickers_failed counts every ticker-day that raised
+        # a non-bug exception inside run_ticker_day; failures preserves
+        # the first 10 examples for triage.
+        "tickers_failed": tickers_failed,
+        "failures": failures,
         "net_pnl": round(total_pnl, 2),
         "entries": total_entries,
         "exits": total_entries,
