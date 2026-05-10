@@ -31,8 +31,11 @@ for backtest parity.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -148,10 +151,28 @@ def evaluate_day(cfg: DayGateConfig,
     if cfg.skip_vix_above > 0:
         if vix_close_d1 is None:
             if cfg.fail_closed_on_missing_vix:
+                # v7.31.0: observability -- a missing VIX in production
+                # blocks the whole day. Without this WARNING-level
+                # forensic, the operator only sees an INFO-level
+                # [V79-ORB-RESET] line and may not notice the data feed
+                # broke. The refresh-data-feeds.yml GHA cron at 07:00 ET
+                # populates data/external/vix-daily.csv; this fires when
+                # that workflow failed silently.
+                logger.warning(
+                    "[V79-ORB-VIX] missing VIX D-1 close + "
+                    "fail_closed=True -> day blocked. "
+                    "Check data/external/vix-daily.csv and the "
+                    "refresh-data-feeds.yml GHA cron."
+                )
                 result.block_day = True
                 result.block_reason = "missing_vix"
                 return result
             # Fail open: no VIX block, continue to per-ticker.
+            logger.warning(
+                "[V79-ORB-VIX] missing VIX D-1 close + "
+                "fail_closed=False -> day NOT blocked (backtest parity). "
+                "This should NOT happen in production."
+            )
         elif vix_close_d1 > cfg.skip_vix_above:
             result.block_day = True
             result.block_reason = f"vix_high ({vix_close_d1:.2f} > {cfg.skip_vix_above:.2f})"

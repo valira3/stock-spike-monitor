@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.31.0 (2026-05-10) -- VIX observability + missing-coverage tests (MEDIUM gaps)
+
+Twenty-third PR in v10 rollout. Closes the remaining MEDIUM gaps from
+the deep production audit: VIX missing-feed observability + the five
+untested branches the audit flagged.
+
+### A. VIX missing-feed observability (`orb/day_gates.py`)
+
+`OrbConfig.fail_closed_on_missing_vix=True` (the production default)
+correctly blocks the day when VIX_D-1 is None, but the only log line
+was an INFO-level `[V79-ORB-RESET]` -- easy to miss when the
+`refresh-data-feeds.yml` GHA cron breaks. v7.31.0 adds a
+WARNING-level `[V79-ORB-VIX]` forensic that distinguishes a
+data-feed outage from a strategy decision and points at the file +
+cron to investigate.
+
+Also emits a warning on the fail-OPEN path (which should never run in
+production) so accidentally setting `fail_closed=False` in prod is
+visible.
+
+### B. Missing-coverage tests (9 new)
+
+`tests/strategy/test_orb_coverage_gaps.py` closes five untested
+branches the audit identified plus two VIX observability cases:
+
+1. **refresh_equity_from_books integration** (2 tests): drop in MTM
+   shrinks `RiskBook.max_notional`; an admission that fit at 100k
+   equity rejects at 50k.
+2. **Multi-portfolio admit-and-reject same tick** (1): Main admits
+   while Val rejects (own risk cap exhausted) -- isolation holds.
+3. **Zero-equity admission** (2): notional cap rejects all admissions
+   at 0 equity; pathological 0+0 admit still works as a lower bound.
+4. **Data corruption** (1): inverted bar (high < low) into
+   `exits.evaluate` does not raise.
+5. **EOD with no open positions** (1): `check_exit_by_ticker` returns
+   a clean no-op rather than raising when nothing is open.
+6. **VIX observability** (2): `[V79-ORB-VIX]` warning fires on both
+   fail-closed and fail-open paths.
+
+**269 strategy tests pass** (was 260, +9 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.30.0 -> 7.31.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.31.0
+- `orb/day_gates.py` -- `[V79-ORB-VIX]` warning on missing VIX paths
+- `tests/strategy/test_orb_coverage_gaps.py` -- new (9 tests)
+- `CHANGELOG.md` -- this entry
+
+### Audit closure summary
+
+This PR completes the batch (PR21 → PR22 → PR23) that addresses the
+deep production audit findings:
+
+| # | Finding | Closed by |
+|---|---|---|
+| CRIT 1 | Daily-loss kill not implemented | PR21 (v7.29.0) |
+| CRIT 2 | Kill switch inconsistent | PR22 (v7.30.0) |
+| CRIT 3 | Thread races (sizes / bootstrap) | PR22 (v7.30.0) |
+| CRIT 4 | Broker fire errors not escalated | PR22 (v7.30.0) |
+| CRIT 5 | manage_positions mid-iteration exception | DEFERRED (separate from v10 dispatch path) |
+| MED 1 | VIX missing CSV observability | PR23 (v7.31.0) |
+| MED 2 | Earnings calendar stale | DEFERRED (needs calendar metadata) |
+| MED 3 | refresh_equity_from_books test gap | PR23 (v7.31.0) |
+| TESTS | 5 untested branches | PR23 (v7.31.0) |
+
+Re-audit scheduled after merge.
+
+---
+
 ## v7.30.0 (2026-05-10) -- Kill-switch consistency + thread safety + error escalation (CRITICAL batch)
 
 Twenty-second PR in v10 rollout. Closes three CRITICAL findings from
