@@ -1,6 +1,108 @@
 # TradeGenius — System Architecture
 
-> **Version:** v6.14.8 · May 2026 -- Volume baseline pre-market refresh + self-heal.
+> **Current version:** v7.27.0 · May 2026 — v10 ORB anchor strategy live; legacy Tiger Sovereign hidden via `body.v10-live`.
+
+## v10 Current Architecture (read this first)
+
+Production runs the **v10 ORB anchor** strategy. The decision path below replaces the legacy Tiger Sovereign / V570-STRIKE / V560-GATE flow described in the historical sections later in this document. The legacy code is still on disk for rollback (set `ORB_LIVE_MODE=0`); physical deletion is gated on a 5-day paper-fire observation window per `docs/v10_retirement_plan.md`.
+
+### Per-tick flow (engine/scan.py)
+
+```
+scan_loop
+  → orb.live_runtime.bootstrap()                  # idempotent; main bootstrap is in trade_genius.main()
+  → orb.live_runtime.ensure_session_started(...)  # once per session, fed VIX_d1 + per-portfolio equity
+  → orb.live_runtime.refresh_equity_from_books()  # per-cycle MTM refresh (v7.24.0)
+  for each ticker in scan universe:
+      _per_ticker_tick → feed_bar(bar)            # → orb.engine.on_bar_arrival → OR window state
+      _orb_long_entry / _orb_short_entry:
+          for each portfolio_id (main / val / gene):
+              check_entry(portfolio_id, ...) → check FSM phase, range band, day-block,
+                                                detect breakout, RiskBook.try_admit
+              if ok and pid == "main":
+                  callbacks.execute_entry(...)    # legacy main-bound broker path
+              elif ok and ORB_PORTFOLIO_FIRE=1:
+                  executors.bootstrap.get_executor(pid).fire_long/short(...)  # direct Alpaca submit
+  broker/positions.py wraps manage_positions / manage_short_positions:
+      _run_sentinel:
+          live_runtime.check_exit_by_ticker(pid, ticker, ...) → exit on target / stop / be_stop / eod
+```
+
+### Per-portfolio independence
+
+Each portfolio (Main / Val / Gene) has its own:
+
+- `RiskBook` — concurrent risk + notional caps, thread-safe (`orb/risk_book.py`).
+- `TickerDayState` FSM — `WARMUP → OR_LOCKED → ARMED → IN_POS → CLOSED` + `BLOCKED_VIX/EARNINGS/GAP/BLOCKLIST/RANGE/OR_INSUFFICIENT` (`orb/state.py`).
+- Compounding equity — refreshed at session start AND per-scan-cycle from `PortfolioBook.current_equity()` (`v7.24.0`).
+
+Cross-portfolio coordination is none by design: Val rejecting on its risk cap doesn't prevent Main from admitting and vice versa.
+
+### Shared market state
+
+- `OrWindow` per ticker — accepts bars from 09:30 to 09:59 ET, locks at 10:00 ET. Shared across portfolios because the OR is a market fact.
+- `DayGateResult` — VIX kill (`vix > 22`), per-ticker earnings ±1d, per-ticker gap > 1.5%, per-ticker blocklist (default `META: ["long"]`, `MSFT: ["long"]`). Computed once per session.
+
+### Risk per trade
+
+- 2.0% of portfolio equity (`risk_per_trade_pct=2.0`).
+- Capped by single-trade notional (≤ 75% of equity).
+- Capped by concurrent risk ($2,000 default `max_concurrent_risk_dollars`).
+- Capped by concurrent notional (equity × 2.0 default `max_concurrent_notional_mult`).
+- RR=2.5 target, stop = OR opposite ± 5 bps buffer.
+- Move stop to BE after 1R hit (`move_to_be_after_1r=True`).
+- EOD flatten at 15:55 ET.
+
+### Verification mechanisms
+
+| Layer | Module | What it asserts |
+|---|---|---|
+| Unit tests | `tests/strategy/test_orb_*.py` | Individual component contracts (state, risk_book, day_gates, exits, engine, live_adapter, live_runtime). |
+| Scenario simulator | `tools/orb_session_sim.py` + `tests/strategy/test_orb_session_sim.py` | 15 end-to-end scenarios drive the LIVE runtime synthetically (golden long/short, stops, BE-after-1R, EOD, range bands, VIX kill, gap, earnings, blocklist, concurrent risk cap, multi-portfolio independence, re-entry). |
+| Day-replay harness | `tools/orb_replay_day.py` + `tests/strategy/test_orb_replay_day.py` | Replays archived `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` through the live runtime; emits a deterministic JSONL ledger for regression diff. |
+| Dashboard contract | `tests/strategy/test_v10_ticker_matrix_snapshot.py` | Pins the shape of `live_runtime.snapshot()` so the `renderV10TickerMatrix(s)` frontend doesn't silently break. |
+
+Local: `pytest tests/strategy/` runs all 231 tests in ~2s.
+
+### UI
+
+- **v10 Day Status banner** (`#v10-day-status`) — top of dashboard. Shows VIX, day-status, trades used, risk used, plus per-portfolio chip strip. Sets `body.v10-live` when bootstrapped + live-mode on.
+- **v10 Projection** (`#v10-projection`) — in-sample CAGR / Sharpe / max-DD / win-rate from the projection ledger.
+- **v10 Ticker Matrix** (`#v10-ticker-matrix-section`, v7.27.0) — per-(portfolio × ticker) row with phase chip, OR low/high/width%, trades used/max, block reason. The canonical operator view of v10 state.
+- **Legacy hidden under `body.v10-live`** — Permit Matrix card + Weather Check banner. Pre-v10 they were the operator view; under v10 they collapse via CSS. Physical removal pending.
+
+### Telegram
+
+- `/status` includes a v10 ORB Status block (v7.21.0) with per-portfolio breakdown rows (v7.23.0), each line ≤ 34 chars per mobile rule.
+
+### Env flags
+
+| Env | Default | Effect |
+|---|---|---|
+| `ORB_LIVE_MODE` | `1` | `0` reverts to legacy strategy entirely (kill switch). |
+| `ORB_PORTFOLIO_FIRE` | `0` | `1` enables Val/Gene to fire on their own admissions via `fire_long`/`fire_short` (v7.26.0). |
+| `ORB_OR_MINUTES` | `30` | OR window length. |
+| `ORB_RR` | `2.5` | Target reward/risk multiple. |
+| `ORB_RISK_PER_TRADE_PCT` | `2.0` | Per-trade risk budget as % of equity. |
+| `ORB_MAX_CONCURRENT_RISK_DOLLARS` | `2000.0` | Hard cap on open risk across positions per portfolio. |
+| `ORB_MAX_TRADES_PER_DAY` | `5` | Per-portfolio per-ticker daily cap. |
+| `ORB_SKIP_VIX_ABOVE` | `22.0` | VIX D-1 close above this kills the day. |
+| `ORB_SKIP_GAP_ABOVE_PCT` | `1.5` | Per-ticker gap (% of D-1 close) above this skips the day. |
+| `ORB_TICKER_SIDE_BLOCKLIST` | `{"META":["long"], "MSFT":["long"]}` | JSON map of ticker → blocked sides. |
+
+### Rollback paths
+
+- Strategy: set `ORB_LIVE_MODE=0` on Railway, redeploy. Scan loop falls back to the legacy V570-STRIKE entry path; UI legacy view re-appears (`body.v10-live` not set).
+- Per-portfolio fire: set `ORB_PORTFOLIO_FIRE=0`. Val/Gene revert to mirroring Main via the legacy signal bus.
+- A single-PR revert is always available since each v10 PR (PR1–PR19) was a focused, atomic merge.
+
+---
+
+## Historical context (pre-v10)
+
+The sections below describe the legacy Tiger Sovereign / V570-STRIKE flow that was the production path through v7.8.x. Most details below are preserved for archeology and for the rollback path; the live decision path is the v10 flow above.
+
+> **Version:** v6.14.8 · May 2026 — Volume baseline pre-market refresh + self-heal.
 >
 > **v6.14.0 volume gate plumbing (issue #354):** The Section II.1 55-day
 > Institutional Oomph baseline never populated correctly from production
