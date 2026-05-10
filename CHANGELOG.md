@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.36.0 (2026-05-10) -- Tier 2: random-seed property tests
+
+Twenty-eighth PR in v10 rollout. Tier-2 accuracy verification via
+fuzz-style property testing. Each test draws random scenarios from
+the keystone-admissible parameter space and asserts an invariant
+holds on every one. Where the parametrized tests in PR26 cover
+specific points, these cover the wider space.
+
+Uses stdlib `random` with deterministic seeds so any failure is
+reproducible (Hypothesis would have been the natural fit but the
+strategy-tests CI image installs only `pytest` + `tzdata` to keep
+runs fast; stdlib `random` adds no dependency).
+
+### Invariants tested (6 tests, ~210 random scenarios)
+
+| Test | N | Invariant |
+|---|---|---|
+| `test_admission_geometry_invariants` | 50 | Long: stop<entry<target; Short: target<entry<stop; RR=2.5 within $0.01 |
+| `test_notional_cap_invariant` | 50 | `notional <= 75% * equity` |
+| `test_risk_dollars_cap_invariant` | 50 | `risk_dollars <= 2% * equity` |
+| `test_no_leaks_after_full_round_trip` | 50 | After admit+target close: `open_count==0`, `open_risk==0` |
+| `test_or_outside_band_always_rejects` | 30 | OR widths outside [0.8%, 2.5%] always reject |
+| `test_eod_always_flattens` | 30 | EOD bar at 15:55 ET always closes any open position |
+
+### Parameter space
+
+Each scenario draws:
+  - `side` ∈ {long, short}
+  - `mid` ∈ [$30, $500]
+  - `or_width_pct` ∈ [1.0%, 2.4%] (admissible band)
+  - `entry` = breakout 0.1-0.8% beyond OR
+  - `equity` ∈ [$25k, $500k] (below the band where $2k concurrent-risk
+    cap rejects single trades)
+
+All 6 tests PASS at 332 scenarios -- no random parameter combination
+inside the admissible band produces an invariant violation.
+
+### Why this matters
+
+Hand-curated tests verify specific points; property tests verify the
+WHOLE admissible space. The class of bug they catch: arithmetic that
+works for "nice" values (round numbers, default equity) but breaks
+on irregular geometry. Specifically these tests would catch:
+
+  - Off-by-one rounding in shares calc on weird equity/price combos
+  - Cap-clamp logic that bumps over the threshold at floating-point
+    edges
+  - State leaks that only manifest after specific bar sequences
+  - Wrong side of OR for stop placement on uncommon widths
+
+### Tests
+
+**332 strategy tests pass** (was 326, +6 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.35.0 -> 7.36.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.36.0
+- `tests/strategy/test_orb_property_random.py` -- new (6 tests)
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.35.0 (2026-05-10) -- Tier 1A: backtest <-> live parity test
 
 Twenty-seventh PR in v10 rollout. Closes the deepest accuracy
