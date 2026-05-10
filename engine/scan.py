@@ -35,6 +35,16 @@ import volume_profile
 
 from engine.callbacks import EngineCallbacks
 from engine.extended_universe import effective_scan_tickers
+from engine.timing import minutes_since_et_midnight
+
+# v7.14.0: v10 ORB live-runtime shadow integration.
+# The runtime sees every bar + builds OR window state + evaluates day
+# gates IN PRODUCTION but does NOT execute trades yet. Entry routing
+# stays on the legacy path. This lets us observe v10 state via the
+# dashboard before flipping the live execution switch in PR7
+# (v7.15.0). The kill-switch flag is ORB_LIVE_MODE (see
+# orb/live_runtime.py).
+import orb.live_runtime as _orb_runtime  # noqa: E402
 
 logger = logging.getLogger("trade_genius")
 
@@ -365,6 +375,64 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception:
         _session = "rth"
     _scan_universe = effective_scan_tickers(_session)
+
+    # v7.14.0: bootstrap + session-start the v10 ORB runtime in shadow
+    # mode. Failure-tolerant: a runtime exception cannot break the
+    # legacy scan loop. The actual entry/exit routing stays on the
+    # legacy path until PR7 (v7.15.0).
+    try:
+        if not _orb_runtime._bootstrapped:
+            _orb_runtime.bootstrap()
+            logger.info("[V79-ORB-WIRED] live=%s bootstrap=ok",
+                        _orb_runtime.is_live_mode_on())
+    except Exception as _e:
+        logger.warning("[V79-ORB-WIRED] bootstrap failed: %s", _e)
+    try:
+        _date_iso = now_et.strftime("%Y-%m-%d")
+        if _orb_runtime._session_date != _date_iso:
+            # Build the inputs ensure_session_started needs. All values
+            # are causally clean: VIX is the prior session's close,
+            # ticker_open_today is the live 09:30 print, and pdc is
+            # cached from the prior session's last bar.
+            _vix_d1 = None
+            try:
+                from tools.orb_vix_loader import (
+                    load_vix_closes, vix_close_for,
+                )
+                _vix_csv = "data/external/vix-daily.csv"
+                _vix_dict = load_vix_closes(_vix_csv)
+                _vix_d1 = vix_close_for(_vix_dict, [_date_iso], _date_iso)
+            except Exception:
+                _vix_d1 = None
+            _opens = {tk: getattr(tg, "_session_open", {}).get(tk)
+                      for tk in _scan_universe}
+            _pdc = {tk: tg.pdc.get(tk) if hasattr(tg, "pdc") else None
+                    for tk in _scan_universe}
+            try:
+                from engine.portfolio_book import (
+                    PORTFOLIOS, ALL_PORTFOLIO_IDS,
+                )
+                _eq = {}
+                for pid in ALL_PORTFOLIO_IDS:
+                    book = PORTFOLIOS.get(pid)
+                    if book is not None:
+                        try:
+                            _eq[pid] = book.current_equity()
+                        except Exception:
+                            _eq[pid] = float(getattr(book, "paper_cash", 0.0))
+            except Exception:
+                _eq = {"main": float(getattr(tg, "paper_cash", 100_000.0))}
+            _orb_runtime.ensure_session_started(
+                date_iso=_date_iso,
+                tickers=list(_scan_universe),
+                vix_close_d1=_vix_d1,
+                ticker_open_today=_opens,
+                ticker_prev_close=_pdc,
+                equity_per_portfolio=_eq,
+            )
+    except Exception as _e:
+        logger.warning("[V79-ORB-RESET] failed: %s", _e)
+
     for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
 
@@ -445,6 +513,32 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         "bar_vwap": None,
                     }
                     tg._v512_archive_minute_bar(ticker, canon_bar)
+                    # v7.14.0: shadow-mode feed to v10 ORB runtime.
+                    # Failure-tolerant: a runtime exception must NOT
+                    # break the legacy minute-bar archive path.
+                    try:
+                        _bar_open = canon_bar["open"]
+                        _bar_high = canon_bar["high"]
+                        _bar_low = canon_bar["low"]
+                        _bar_close = canon_bar["close"]
+                        _bar_vol = canon_bar.get("iex_volume") or 0.0
+                        if (_bar_open is not None and _bar_high is not None
+                                and _bar_low is not None
+                                and _bar_close is not None and ts_val is not None):
+                            _bucket_min = minutes_since_et_midnight(int(ts_val))
+                            _orb_runtime.feed_bar(
+                                ticker=ticker,
+                                bar_high=float(_bar_high),
+                                bar_low=float(_bar_low),
+                                bar_open=float(_bar_open),
+                                bar_close=float(_bar_close),
+                                bar_volume=float(_bar_vol or 0.0),
+                                bar_bucket_min=_bucket_min,
+                            )
+                    except Exception as _orb_e:
+                        logger.warning(
+                            "[V79-ORB-FEED] %s: %s", ticker, _orb_e,
+                        )
                     # v5.26.2 \u2014 per-minute forensic indicator snapshot.
                     # Pulls the same DI/ADX/RSI streams the gate stack will
                     # read on this tick; written to /data/forensics/<date>/
