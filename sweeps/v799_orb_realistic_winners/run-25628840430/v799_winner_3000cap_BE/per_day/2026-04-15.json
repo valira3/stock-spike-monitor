@@ -1,0 +1,92 @@
+{
+  "date": "2026-04-15",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-04-15T10:10:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 198.8094
+    },
+    {
+      "ts": "2026-04-15T10:05:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "price": 372.241
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-04-15T14:00:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 195.8651,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-04-15T11:24:00-05:00",
+      "ticker": "TSLA",
+      "side": "long",
+      "exit_price": 387.2172,
+      "reason": "target"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-04-15T10:10:00-05:00",
+      "exit_ts": "2026-04-15T14:00:00-05:00",
+      "entry_price": 198.8094,
+      "exit_price": 195.8651,
+      "shares": 377,
+      "pnl_per_share": -2.9442,
+      "pnl_dollars": -1109.973,
+      "exit_reason": "stop",
+      "or_high": 198.68,
+      "or_low": 196.26,
+      "or_range_pct": 0.012255,
+      "stop_price": 196.0612,
+      "risk_dollars": 1036.06
+    },
+    {
+      "ticker": "TSLA",
+      "side": "long",
+      "entry_ts": "2026-04-15T10:05:00-05:00",
+      "exit_ts": "2026-04-15T11:24:00-05:00",
+      "entry_price": 372.241,
+      "exit_price": 387.2172,
+      "shares": 148,
+      "pnl_per_share": 14.9762,
+      "pnl_dollars": 2216.4772,
+      "exit_reason": "target",
+      "or_high": 371.53,
+      "or_low": 362.5,
+      "or_range_pct": 0.024604,
+      "stop_price": 372.241,
+      "risk_dollars": 1496.76
+    }
+  ],
+  "rejected_concurrent_cap": 15,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 1,
+    "losses": 1,
+    "total_pnl": 1106.5042,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
