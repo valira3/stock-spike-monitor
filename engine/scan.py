@@ -619,38 +619,160 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                 eot_glue.record_latest_1m_close(ticker, _bars_for_mtm.get("closes") or [])
         except Exception as _e:
             logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
+        # v7.15.0: entry routing switch.
+        #
+        # When ORB_LIVE_MODE=1 (default), the v10 ORB runtime owns the
+        # entry decision; the legacy Tiger Sovereign callbacks.check_entry
+        # path is bypassed.
+        #
+        # When ORB_LIVE_MODE=0, the runtime is bootstrapped (so OR
+        # window state still builds for dashboard observation) but the
+        # legacy path takes over execution -- emergency rollback.
         paper_holds = callbacks.has_long(ticker)
         if not paper_holds:
-            ok, bars = callbacks.check_entry(ticker)
-            if ok and bars:
-                px = bars["current_price"]
-                try:
-                    callbacks.execute_entry(ticker, px)
-                except Exception as e:
-                    callbacks.report_error(
-                        executor="main",
-                        code="PAPER_ENTRY_EXCEPTION",
-                        severity="error",
-                        summary=f"Paper entry exception: {ticker}",
-                        detail=f"{type(e).__name__}: {str(e)[:200]}",
-                    )
+            if _orb_runtime.is_live_mode_on():
+                _orb_long_entry(callbacks, tg, ticker, _bars_for_mtm)
+            else:
+                # Legacy fallback path
+                ok, bars = callbacks.check_entry(ticker)
+                if ok and bars:
+                    px = bars["current_price"]
+                    try:
+                        callbacks.execute_entry(ticker, px)
+                    except Exception as e:
+                        callbacks.report_error(
+                            executor="main",
+                            code="PAPER_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"Paper entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
     except Exception as e:
         logger.error("Entry check error %s: %s", ticker, e)
     try:
         paper_short_holds = callbacks.has_short(ticker)
         if not paper_short_holds:
-            ok, bars = callbacks.check_short_entry(ticker)
-            if ok and bars:
-                px = bars["current_price"]
-                try:
-                    callbacks.execute_short_entry(ticker, px)
-                except Exception as e:
-                    callbacks.report_error(
-                        executor="main",
-                        code="PAPER_SHORT_ENTRY_EXCEPTION",
-                        severity="error",
-                        summary=f"Paper short entry exception: {ticker}",
-                        detail=f"{type(e).__name__}: {str(e)[:200]}",
-                    )
+            if _orb_runtime.is_live_mode_on():
+                _orb_short_entry(callbacks, tg, ticker, _bars_for_mtm)
+            else:
+                ok, bars = callbacks.check_short_entry(ticker)
+                if ok and bars:
+                    px = bars["current_price"]
+                    try:
+                        callbacks.execute_short_entry(ticker, px)
+                    except Exception as e:
+                        callbacks.report_error(
+                            executor="main",
+                            code="PAPER_SHORT_ENTRY_EXCEPTION",
+                            severity="error",
+                            summary=f"Paper short entry exception: {ticker}",
+                            detail=f"{type(e).__name__}: {str(e)[:200]}",
+                        )
     except Exception as e:
         logger.error("Short entry check error %s: %s", ticker, e)
+
+
+# v7.15.0: per-side ORB entry helpers. Factored out of _per_ticker_tick
+# so each side is independently testable and the logic is symmetric.
+def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
+    """Get current equity for `portfolio_id`. Falls back to paper_cash
+    on PortfolioBook lookup failure."""
+    try:
+        from engine.portfolio_book import PORTFOLIOS
+        book = PORTFOLIOS.get(portfolio_id)
+        if book is None:
+            return float(getattr(tg, "paper_cash", 100_000.0))
+        return book.current_equity()
+    except Exception:
+        return float(getattr(tg, "paper_cash", 100_000.0))
+
+
+def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
+                    bars_for_mtm: dict | None) -> None:
+    """v10 ORB long-entry path. Uses the live runtime to decide.
+
+    Logs every decision (admit / reject) with [V79-ORB-ENTRY] /
+    [V79-ORB-REJECT] tags. Per-portfolio fanout: each enabled portfolio
+    gets an independent admission attempt against its own RiskBook.
+    """
+    try:
+        from engine.bars import compute_5m_ohlc_and_ema9
+        _5m = compute_5m_ohlc_and_ema9(bars_for_mtm)
+        if not _5m or not _5m.get("closes"):
+            return  # no closed 5m bar yet
+        five_min_close = _5m["closes"][-1]
+        next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        equity = _resolve_portfolio_equity(tg, "main")
+        result = _orb_runtime.check_entry(
+            portfolio_id="main", ticker=ticker, side="long",
+            five_min_close=float(five_min_close), next_open=float(next_open),
+            equity=equity,
+        )
+        if result.ok:
+            logger.info(
+                "[V79-ORB-ENTRY] long %s portfolio=main "
+                "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
+                ticker, result.price, result.stop, result.target,
+                result.shares, result.ticket_id[:8],
+            )
+            try:
+                callbacks.execute_entry(ticker, result.price)
+            except Exception as e:
+                callbacks.report_error(
+                    executor="main",
+                    code="ORB_LONG_ENTRY_EXCEPTION",
+                    severity="error",
+                    summary=f"ORB long entry exception: {ticker}",
+                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+                )
+        elif result.reason_no and result.reason_no != "no_signal":
+            # Diagnostic log for non-trivial rejections (skip the chatty
+            # "no_signal" case to keep logs readable)
+            logger.debug(
+                "[V79-ORB-REJECT] long %s reason=%s",
+                ticker, result.reason_no,
+            )
+    except Exception as e:
+        logger.warning("[V79-ORB] long entry error %s: %s", ticker, e)
+
+
+def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
+                     bars_for_mtm: dict | None) -> None:
+    """v10 ORB short-entry path. Mirrors _orb_long_entry."""
+    try:
+        from engine.bars import compute_5m_ohlc_and_ema9
+        _5m = compute_5m_ohlc_and_ema9(bars_for_mtm)
+        if not _5m or not _5m.get("closes"):
+            return
+        five_min_close = _5m["closes"][-1]
+        next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        equity = _resolve_portfolio_equity(tg, "main")
+        result = _orb_runtime.check_entry(
+            portfolio_id="main", ticker=ticker, side="short",
+            five_min_close=float(five_min_close), next_open=float(next_open),
+            equity=equity,
+        )
+        if result.ok:
+            logger.info(
+                "[V79-ORB-ENTRY] short %s portfolio=main "
+                "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
+                ticker, result.price, result.stop, result.target,
+                result.shares, result.ticket_id[:8],
+            )
+            try:
+                callbacks.execute_short_entry(ticker, result.price)
+            except Exception as e:
+                callbacks.report_error(
+                    executor="main",
+                    code="ORB_SHORT_ENTRY_EXCEPTION",
+                    severity="error",
+                    summary=f"ORB short entry exception: {ticker}",
+                    detail=f"{type(e).__name__}: {str(e)[:200]}",
+                )
+        elif result.reason_no and result.reason_no != "no_signal":
+            logger.debug(
+                "[V79-ORB-REJECT] short %s reason=%s",
+                ticker, result.reason_no,
+            )
+    except Exception as e:
+        logger.warning("[V79-ORB] short entry error %s: %s", ticker, e)

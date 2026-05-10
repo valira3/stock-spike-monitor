@@ -4,6 +4,83 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.15.0 (2026-05-10) -- v10 ORB entry route swap (live)
+
+Seventh PR in v10 rollout. Replaces the legacy Tiger Sovereign entry
+detection path in `engine/scan.py:_per_ticker_tick` with a routing
+switch driven by `ORB_LIVE_MODE` (default `1`). When v10 mode is on,
+the v10 ORB runtime makes entry decisions; the legacy
+`callbacks.check_entry / check_short_entry` path is bypassed.
+
+### A. Changes in `engine/scan.py`
+
+  1. New helpers (factored out of `_per_ticker_tick` for testability):
+     - `_resolve_portfolio_equity(tg, portfolio_id="main")` -- get current
+       equity for a portfolio; falls back to paper_cash on missing book
+     - `_orb_long_entry(callbacks, tg, ticker, bars_for_mtm)` -- v10
+       long-entry path (compute 5m close + next_open, ask runtime,
+       execute on admit)
+     - `_orb_short_entry(callbacks, tg, ticker, bars_for_mtm)` -- mirror
+
+  2. Routing switch in `_per_ticker_tick`:
+     ```
+     if _orb_runtime.is_live_mode_on():
+         _orb_long_entry(callbacks, tg, ticker, _bars_for_mtm)
+     else:
+         <legacy callbacks.check_entry path>
+     ```
+     Mirror for short.
+
+### B. Forensic logs
+
+  - `[V79-ORB-ENTRY] long/short {ticker} portfolio=main price=X stop=Y
+    target=Z shares=N ticket=...` on admission
+  - `[V79-ORB-REJECT] {side} {ticker} reason=...` (debug) on non-trivial
+    rejection (no_signal cases are skipped to keep logs readable)
+
+### C. Tests (`tests/strategy/test_orb_entry_route.py`)
+
+8 new tests:
+  - long-entry helper smoke (admit on synthetic bars)
+  - graceful no-op on missing / empty bars_for_mtm
+  - graceful handling of compute_5m_ohlc_and_ema9 raising
+  - short-entry helper graceful no-op
+  - portfolio-equity resolution path (book exists vs missing)
+  - kill-switch (`ORB_LIVE_MODE=0` -> check_entry returns
+    `reason_no=live_mode_off`)
+
+### D. Test totals
+
+  v7.x strategy tests: **166/166 passing** + 4 skipped.
+
+### Effect
+
+**v10 ORB now owns entry decisions when ORB_LIVE_MODE=1 (default).**
+Production behavior changes: instead of Tiger Sovereign V570/V560
+gates firing entries, the v10 anchor strategy fires them through the
+live_runtime.
+
+Exit path is STILL on the legacy Tiger Sentinel A/B/C alarms; PR8
+(v7.16.0) handles the exit cutover.
+
+### Rollback
+
+Set `ORB_LIVE_MODE=0` in the environment to revert to legacy entry
+behavior immediately. The v10 runtime stays bootstrapped for
+dashboard observability; only the entry decision flips back.
+
+### Look-ahead audit per rule #7b
+
+  - `_orb_long_entry` reads only the most recent closed 5m bar
+    (`compute_5m_ohlc_and_ema9` returns closed bars; forming bar is
+    dropped) + the live `current_price`. No future data.
+  - `check_entry()` consumes only the locked OR window state which was
+    built from bars strictly inside `[09:30, OR_END)`.
+  - Equity comes from PortfolioBook's current state, not future
+    projections.
+
+---
+
 ## v7.14.0 (2026-05-10) -- v10 ORB shadow-mode wiring in engine/scan.py
 
 Sixth PR in v10 rollout. Wires the `orb.live_runtime` singleton into
