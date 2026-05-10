@@ -522,6 +522,16 @@ def main(argv: list[str]) -> int:
     cfg = ORBConfig.from_env()
 
     dates = discover_dates(corpus, args.year_prefix, tickers)
+    # v8 -- honor DATES_STRIDE env var for cross-validation sweeps. The
+    # GHA matrix wrapper passes stride from the trigger JSON via this env
+    # var. Without this, STRIDE=2/4/8 variants silently ran on the full
+    # corpus, producing byte-identical results to STRIDE=1 -- making
+    # cross-validation impossible.
+    stride = max(1, int(os.environ.get("DATES_STRIDE", "1")))
+    if stride > 1:
+        dates = dates[::stride]
+        print(f"ORB: DATES_STRIDE={stride} -> {len(dates)} dates",
+              file=sys.stderr, flush=True)
     if args.max_dates > 0:
         dates = dates[:args.max_dates]
     if not dates:
@@ -529,7 +539,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     print(f"ORB: {len(dates)} dates, {len(tickers)} tickers, "
-          f"OR={cfg.or_minutes}m, RR={cfg.rr}, "
+          f"OR={cfg.or_minutes}m, RR={cfg.rr}, stride={stride}, "
           f"range=[{cfg.range_min_pct:.3f},{cfg.range_max_pct:.3f}]")
 
     summary = run(corpus, Path(args.out), dates, tickers, cfg, args.vid)
