@@ -1,0 +1,92 @@
+{
+  "date": "2026-03-11",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "META",
+    "GOOG",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "ORCL"
+  ],
+  "entries": [
+    {
+      "ts": "2026-03-11T10:05:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "price": 187.3086
+    },
+    {
+      "ts": "2026-03-11T10:05:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "price": 309.4296
+    }
+  ],
+  "exits": [
+    {
+      "ts": "2026-03-11T13:37:00-05:00",
+      "ticker": "NVDA",
+      "side": "long",
+      "exit_price": 184.5679,
+      "reason": "stop"
+    },
+    {
+      "ts": "2026-03-11T15:55:00-05:00",
+      "ticker": "GOOG",
+      "side": "long",
+      "exit_price": 308.1858,
+      "reason": "eod"
+    }
+  ],
+  "pnl_pairs": [
+    {
+      "ticker": "NVDA",
+      "side": "long",
+      "entry_ts": "2026-03-11T10:05:00-05:00",
+      "exit_ts": "2026-03-11T13:37:00-05:00",
+      "entry_price": 187.3086,
+      "exit_price": 184.5679,
+      "shares": 266,
+      "pnl_per_share": -2.7407,
+      "pnl_dollars": -729.0179,
+      "exit_reason": "stop",
+      "or_high": 186.99,
+      "or_low": 184.94,
+      "or_range_pct": 0.011024,
+      "stop_price": 184.7527,
+      "risk_dollars": 679.87
+    },
+    {
+      "ticker": "GOOG",
+      "side": "long",
+      "entry_ts": "2026-03-11T10:05:00-05:00",
+      "exit_ts": "2026-03-11T15:55:00-05:00",
+      "entry_price": 309.4296,
+      "exit_price": 308.1858,
+      "shares": 161,
+      "pnl_per_share": -1.2438,
+      "pnl_dollars": -200.253,
+      "exit_reason": "eod",
+      "or_high": 308.83,
+      "or_low": 305.84,
+      "or_range_pct": 0.009729,
+      "stop_price": 305.5306,
+      "risk_dollars": 627.75
+    }
+  ],
+  "rejected_concurrent_cap": 23,
+  "kill_switch_fired": false,
+  "summary": {
+    "entries": 2,
+    "exits": 2,
+    "wins": 0,
+    "losses": 2,
+    "total_pnl": -929.2709,
+    "pairs_missing_shares": 0
+  },
+  "_orb_strategy": true
+}
