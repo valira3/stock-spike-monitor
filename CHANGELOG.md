@@ -4,6 +4,75 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.23.0 (2026-05-10) -- v10 ORB per-portfolio entry routing + dashboard
+
+Fifteenth PR in v10 rollout. Closes the per-portfolio coverage gap:
+v10 strategy now evaluates entries for ALL enabled portfolios
+(Main / Val / Gene), with each portfolio's RiskBook + FSM tracked
+independently. The dashboard banner + Telegram /status now show
+per-portfolio breakdowns.
+
+### A. `engine/scan.py` -- per-portfolio fanout
+
+`_orb_long_entry` and `_orb_short_entry` now iterate
+`engine.portfolio_ids` and call `check_entry` for each portfolio.
+Each portfolio has its own RiskBook + FSM so admissions are
+isolated.
+
+Broker execution: `callbacks.execute_entry` is main-bound today, so
+only Main actually fires broker orders. Val / Gene admissions are
+tracked on their `LiveAdapter` (position state + ticket id) and
+logged with `[V79-ORB-ADMIT]` tags so the dashboard / Telegram
+surfaces show consistent state. Their actual broker order routing
+is wired in a follow-up PR once the Val/Gene executors expose a
+`fire_long` / `fire_short` surface.
+
+This means: today, with VAL_ALPACA_PAPER_KEY / GENE_ALPACA_PAPER_KEY
+unset (the typical default), the executors are skipped at boot but
+the v10 STRATEGY logic still runs for them so the dashboard reflects
+their state.
+
+### B. `dashboard_static/app.js` -- per-portfolio strip
+
+`renderV10DayStatus(s)` now appends a per-portfolio inline strip
+showing each portfolio's:
+  - equity (live, current)
+  - trades used / max
+  - open positions
+  - utilization %
+
+Tooltips on the trades + risk pills show the per-portfolio breakdown
+(e.g. "main:2/5  val:0/5  gene:0/5").
+
+### C. `trade_genius._status_text_sync` -- per-portfolio Telegram
+
+The /status v10 block now shows one row per portfolio instead of
+aggregating. Format (iPhone-narrow, <=34 chars/line):
+
+  v10 ORB Status
+    Mode:     LIVE
+    VIX(D-1): 18.5/22 PASS
+    Day:      OK
+    main:  2/5 $1500/$2000
+    val:   0/5 $0/$2000
+    gene:  0/5 $0/$2000
+
+### D. Test totals
+
+  Strategy tests: 187/187 passing + 4 sandbox-skipped.
+  Per-portfolio behavior is exercised by:
+    - test_orb_engine.py::TestRegistry (3 portfolios independent)
+    - test_orb_live_runtime.py::TestPerTickAPI (multi-portfolio)
+    - test_orb_live_adapter.py::TestMultiPortfolioAdapter
+
+### Effect
+
+v10 strategy now runs for all 3 portfolios as a first-class concern.
+Dashboard + Telegram show per-portfolio state. Broker fire on
+Val/Gene awaits executor wiring (next PR).
+
+---
+
 ## v7.22.0 (2026-05-10) -- v10 retirement plan (docs only; no code change)
 
 Fourteenth PR in v10 rollout. Honest scoping: the planned dead-code

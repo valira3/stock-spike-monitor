@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.22.0"
+BOT_VERSION = "7.23.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7383,10 +7383,8 @@ def _status_text_sync():
     if qqq_pdc_s > 0:
         lines.append("QQQ PDC: $%.2f" % qqq_pdc_s)
 
-    # v7.21.0: v10 ORB strategy status block. Tells the operator at a
-    # glance whether the v10 strategy is live, whether today's day
-    # gates passed, and how much risk is in flight. iPhone-friendly
-    # (every line <= 34 chars per CLAUDE.md Telegram rule).
+    # v7.21.0+v7.23.0: v10 ORB strategy status block, per-portfolio.
+    # iPhone-friendly (every line <= 34 chars per CLAUDE.md Telegram).
     try:
         import orb.live_runtime as _v10rt
         if _v10rt._bootstrapped:
@@ -7406,18 +7404,30 @@ def _status_text_sync():
                 lines.append("  Day:     BLOCKED %s" % reason)
             else:
                 lines.append("  Day:     OK")
-            # Trades + risk used (sum across portfolios)
-            day_states = snap.get("day_states", []) or []
-            total_trades = sum(s.get("trades_today", 0) for s in day_states)
+            # v7.23.0: per-portfolio breakdown. Trades_today and risk_used
+            # are independent per portfolio_id; surface each row so the
+            # operator sees Main / Val / Gene at a glance.
             cfg = snap.get("config", {}) or {}
             max_t = cfg.get("max_trades_per_day", 5)
-            lines.append("  Trades:  %d/%d" % (total_trades, max_t))
+            day_states = snap.get("day_states", []) or []
             rb = snap.get("risk_books", {}) or {}
-            risk_used = sum((b.get("open_risk") or 0) for b in rb.values())
-            risk_max = sum((b.get("max_risk_dollars") or 0) for b in rb.values())
-            lines.append(
-                "  Risk:    $%d/$%d" % (round(risk_used), round(risk_max))
-            )
+            # Aggregate trades_today by portfolio_id
+            trades_by_pid: dict = {}
+            for s in day_states:
+                pid = s.get("portfolio_id") or "?"
+                trades_by_pid[pid] = trades_by_pid.get(pid, 0) + (s.get("trades_today", 0) or 0)
+            # Per-portfolio rows (iPhone-narrow: PID x/Y trades $A/$B risk)
+            for pid in sorted(rb.keys()):
+                bk = rb.get(pid) or {}
+                t_used = trades_by_pid.get(pid, 0)
+                rk_u = round(bk.get("open_risk") or 0)
+                rk_m = round(bk.get("max_risk_dollars") or 0)
+                # Compose two short fields to keep <=34 chars per line:
+                #   "  main: 2/5 $1500/$2000"
+                pid_label = pid[:5]
+                lines.append("  %s: %d/%d $%d/$%d" % (
+                    pid_label, t_used, max_t, rk_u, rk_m
+                ))
     except Exception:
         # Defensive: never break /status because of v10 surface
         pass

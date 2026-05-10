@@ -5238,19 +5238,65 @@
     for (var i = 0; i < dayStates.length; i++) totalTrades += (dayStates[i].trades_today || 0);
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
     var tradesEl = document.getElementById("v10-trades-used");
-    if (tradesEl) tradesEl.textContent = totalTrades + "/" + maxTrades;
+    // v7.23.0: per-portfolio breakdown in tooltip; aggregate in pill text.
+    var rb = v10.risk_books || {};
+    var pidsAll = Object.keys(rb).sort();
+    var perPidTrades = {};
+    for (var j = 0; j < dayStates.length; j++) {
+      var ds = dayStates[j];
+      var p = ds.portfolio_id || "?";
+      perPidTrades[p] = (perPidTrades[p] || 0) + (ds.trades_today || 0);
+    }
+    if (tradesEl) {
+      tradesEl.textContent = totalTrades + "/" + (maxTrades * pidsAll.length);
+      // Tooltip with per-portfolio breakdown
+      var tradesTip = pidsAll.map(function (p) {
+        return p + ":" + (perPidTrades[p] || 0) + "/" + maxTrades;
+      }).join("  ");
+      tradesEl.title = tradesTip;
+    }
 
     var riskUsed = 0;
     var riskMax = 0;
-    var rb = v10.risk_books || {};
-    Object.keys(rb).forEach(function (pid) {
+    pidsAll.forEach(function (pid) {
       riskUsed += (rb[pid].open_risk || 0);
       riskMax += (rb[pid].max_risk_dollars || 0);
     });
     var riskEl = document.getElementById("v10-risk-used");
     if (riskEl) {
       riskEl.textContent = "$" + Math.round(riskUsed) + " / $" + Math.round(riskMax);
+      // Per-portfolio risk tooltip
+      var riskTip = pidsAll.map(function (p) {
+        return p + ":$" + Math.round(rb[p].open_risk || 0)
+          + "/$" + Math.round(rb[p].max_risk_dollars || 0);
+      }).join("  ");
+      riskEl.title = riskTip;
     }
+
+    // v7.23.0: Per-portfolio rows under the banner. Build / refresh a
+    // small inline strip so each portfolio's state is visible at a glance.
+    var perPidStrip = document.getElementById("v10-pid-strip");
+    if (!perPidStrip) {
+      perPidStrip = document.createElement("div");
+      perPidStrip.id = "v10-pid-strip";
+      perPidStrip.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;width:100%;font-size:11px;font-family:'JetBrains Mono',monospace";
+      banner.appendChild(perPidStrip);
+    }
+    perPidStrip.innerHTML = "";
+    pidsAll.forEach(function (pid) {
+      var b = rb[pid] || {};
+      var row = document.createElement("span");
+      var openCount = b.open_count || 0;
+      var ut = b.utilization_pct || 0;
+      var color = openCount > 0 ? "#fbbf24" : "#374151";
+      row.style.cssText = "padding:3px 8px;background:#0a0d12;border:1px solid #1f2937;border-radius:6px;color:#9ca3af";
+      row.innerHTML = "<b style=\"color:" + color + "\">" + pid + "</b>"
+        + "  $" + Math.round(b.equity || 0).toLocaleString()
+        + "  " + (perPidTrades[pid] || 0) + "/" + maxTrades + " trades"
+        + "  " + (openCount > 0 ? openCount + " open" : "no open")
+        + "  " + ut.toFixed(0) + "% util";
+      perPidStrip.appendChild(row);
+    });
   }
 
   function fmtPct(v, prec) {
