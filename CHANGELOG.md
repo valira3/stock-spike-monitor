@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.12.0 (2026-05-10) -- v10 ORB live-runtime singleton
+
+Fourth PR in the v10 ORB rollout. Adds `orb/live_runtime.py`: the
+production singleton that holds the OrbEngine + LiveAdapter registry
+behind a single `bootstrap()` entry point + per-tick API for
+`engine/scan.py` to call.
+
+### A. New module: `orb/live_runtime.py`
+
+Public surface for the live engine:
+
+  - `bootstrap(force=False)` -- idempotent. Reads env vars, discovers
+    portfolio_ids from `engine.portfolio_book.PORTFOLIOS`, loads the
+    earnings calendar fn, builds OrbEngine + LiveAdapterRegistry.
+  - `is_live_mode_on()` -- reads `ORB_LIVE_MODE` env (default "1").
+    `0` is the kill-switch for emergency rollback to legacy strategy.
+  - `ensure_session_started(date_iso, ...)` -- once-per-day reset.
+    Idempotent; second call with the same date is a no-op.
+  - `feed_bar(ticker, ohlc, bucket_min)` -- forwards to OR window.
+  - `check_entry(portfolio_id, ticker, side, ...)` -> EntryResult.
+  - `check_exit(portfolio_id, ticker, ticket_id, ohlc, bucket_min)`
+    -> ExitResult.
+  - `snapshot()` -- /api/state shape.
+
+When `ORB_LIVE_MODE=0` (kill switch), every per-tick API returns a
+no-op result so scan.py can fall back to whatever the legacy code
+path did before. The runtime stays loaded; only its decisions are
+disabled.
+
+### B. Tests (`tests/strategy/test_orb_live_runtime.py`)
+
+23 new tests covering:
+  - Live-mode flag (default-on, explicit on/off, invalid values)
+  - bootstrap idempotency + force-rebuild + env-var reading
+  - Blocklist JSON parsing (valid + invalid)
+  - Session lifecycle (first call, idempotent, advance to next day)
+  - feed_bar no-op when off
+  - check_entry long + no-signal + unknown-portfolio + live-mode-off
+  - check_exit target trigger end-to-end
+  - snapshot pre/post bootstrap shape
+  - reset_session
+
+### C. Test totals
+
+  v7.x strategy tests: **133/133 passing** (110 + 23 new).
+
+### D. Forensic logs
+
+  - `[V79-ORB-BOOT]` at bootstrap completion (portfolios + key cfg)
+  - `[V79-ORB-RESET]` at session start (date, vix, block status)
+
+### Effect
+
+No production behavior change. `engine/scan.py` is unchanged. The
+runtime is bootstrapped + tested but its callers haven't been added
+yet. PR5 (v7.13.0) will modify `engine/scan.py:_per_ticker_tick` to
+route through this runtime when ORB_LIVE_MODE=1.
+
+---
+
 ## v7.11.0 (2026-05-10) -- v10 ORB live-adapter bridge
 
 Third PR in the v10 ORB rollout. Adds `orb/live_adapter.py`: the bridge
