@@ -4,6 +4,61 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.19.0 (2026-05-10) -- v10 ORB dashboard backend (api/state v10 block)
+
+Eleventh PR in v10 rollout. Backend-only dashboard surface for v10
+state. Frontend rewrite + Telegram UI overhaul are deferred to
+PR12-13 per the architect's 20-25h estimate.
+
+### A. New `v10` block in `/api/state`
+
+`dashboard_server.snapshot()` now includes a top-level `v10` key:
+
+  v10.bootstrapped       (bool)   runtime initialized?
+  v10.live_mode          (bool)   ORB_LIVE_MODE=1?
+  v10.session_date       (str)    YYYY-MM-DD when current session started
+  v10.config             (dict)   or_minutes, rr, max_trades, risk%, vix
+                                  threshold, blocklist
+  v10.day_status         (dict)   block_day, vix_d1_close, threshold,
+                                  block_reason, session_date
+  v10.or_windows         (dict)   per-ticker: high/low/open/close/width%/
+                                  bars_seen/locked/locked_at_iso
+  v10.day_states         (list)   per-(portfolio, ticker) FSM rows
+  v10.risk_books         (dict)   per-portfolio: equity, max_risk,
+                                  open_risk, open_count, utilization%
+
+Failure-tolerant: a runtime exception cannot break /api/state. Missing
+runtime returns `{"available": False, "error": "..."}`.
+
+### B. New `/api/v10/projection` endpoint
+
+Static keystone numbers (CAGR / Sharpe / drawdown / win-rate) from
+`docs/v10_strategy_keystone.md` plus a live-computed account-growth
+field (`live_balance`, `live_growth_pct`) so the frontend can render
+"projection vs reality" cards.
+
+Cache-friendly: keystone is a module-level constant; live fields are
+computed per request from `PortfolioBook.current_equity()`.
+
+### C. Tests (`tests/strategy/test_dashboard_v10_block.py`)
+
+3 new tests assert the keystone payload contract:
+  - All required keys present
+  - Values match docs/v10_strategy_keystone.md canonical numbers
+  - low < mid < high CAGR ordering
+
+### D. Test totals
+
+  v7.x strategy tests: **187/187 passing** + 4 skipped.
+
+### Effect
+
+No production trading change. Dashboard observers can now see v10
+state via `/api/state.v10` and `/api/v10/projection`. Frontend
+consumes these in PR12 (deferred).
+
+---
+
 ## v7.18.0 (2026-05-10) -- v10 ORB sizing handoff to broker.orders
 
 Tenth PR in v10 rollout. Closes a gap between v10's per-trade risk
