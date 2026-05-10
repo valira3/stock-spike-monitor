@@ -31,6 +31,16 @@ Operating rules for autonomous, quality work in this session and future sessions
 **7. Audit-driven realism.** Phantom leverage, look-ahead bias, over-leverage, fee/slippage gaps — all need to be hunted before relying on backtest numbers. Realistic execution constraints baked into the harness.
 *Established by: "Update the strategy to be realistic"*
 
+**7b. No look-ahead, ever.** A backtest may NEVER use information that would not have been available in real time at the moment of the decision. Concretely:
+- A signal/filter computed at time T may only consume data with timestamps ≤ T.
+- Day-skip filters must use data available BEFORE the day's first entry would fire — prior-day close, overnight futures, pre-market quotes, prior session ATR/RVOL/etc. Same-day OR-derived signals may gate entries that fire AFTER the OR window closes, but never before.
+- Indicators that are computed once per day (e.g. session VWAP, daily range) must be reset at session open and built incrementally, never end-of-day-back-dated.
+- Forward-fill from "next available bar" is forbidden. If data is missing at T, the strategy sees nothing — not the next print.
+- Cross-validation/STRIDE samples must not leak across train/test boundaries (a feature engineered on day D may not implicitly use day D+1 data).
+
+Every new lever ships with a one-line claim of which timestamp's data it consumes. Audits explicitly test: "if I removed all data after T, does this signal compute the same value?" If the answer is no, it's look-ahead.
+*Established by: "remember that when we are running backtests, we can not know the future. So the run should never assume any indicators that would not be known at the time"*
+
 **8. Industry research-grounded.** New levers should come from peer-reviewed or community-replicated literature (ATR stops, ADX, VWAP, Kelly sizing, etc.) not handwaved hypotheses. Spawn a research subagent for this.
 *Established by: "Identify any other potential levers we can use (again refer to industry research)"*
 
@@ -78,16 +88,25 @@ Operating rules for autonomous, quality work in this session and future sessions
 **20. Times in Central Time.** All future report timestamps + ETAs in CT.
 *Established by: "I am in central time zone for future reports"*
 
-**27. Periodic timed progress updates.** During long-running work (sweeps, GHA matrices, multi-step compute jobs), surface a progress update every ~5 minutes with elapsed/expected/ETA in CT. Format:
+**27. Periodic timed progress updates.** During long-running work (sweeps, GHA matrices, multi-step compute jobs), surface a progress update every ~5 minutes with step counter, elapsed/expected/ETA in CT, and overall-loop ETA. **Wrap to ≤34 chars per line so it fits on an iPhone** — narrow stacked rows, no wide tables. Format:
 
 ```
-Progress: <step or job name>
-Elapsed: 5m of ~55m expected
-ETA:     10:30am CT
+Progress: <step name>
+Step:     3/20
+Elapsed:  5m of ~55m
+Step ETA: 10:30am CT
+Loop:     3/12 done
+Full ETA: 12:45pm CT
 ```
 
-Add brief context if helpful (e.g. variants completed, top-3 results so far, current step). Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" without a recent timestamped signal.
-*Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT"*
+Required fields:
+- **Step counter** (`Step: N/M`) when the work is part of a known multi-step loop (research → audit → screen → cross-val → report → ...). If M is unknown, say so explicitly (`N/?`).
+- **This step's elapsed/expected** and **Step ETA** in CT.
+- **Loop counter** (`Loop: K/L done`) and **Full ETA** in CT for the entire phase. If the loop is open-ended, state it and give a soft cap.
+- **iPhone-friendly width**: every line ≤ ~34 chars. Don't put multiple fields on one line. Stack vertically.
+
+Add brief context if helpful (variants completed, top-3 so far, current sub-step) — but keep each line narrow. Don't spam if nothing meaningful has changed — but the user should never wonder "is it still running?" or "how much further?" without a recent timestamped signal.
+*Established by: "Periodically (every 5 mins) provide progress update in time. Ie, processing 5 mins out of 55mins expected. ETA 10:30am CT" + "Show step vs total steps expected (ie, step 1/20). Also add an estimate for a full completion of the overall loop" + "Make sure to wrap text in progress reporting so it fits on an iPhone"*
 
 **28. Keep Val aware.** The user's name is Val. Outbound progress communication is required at minimum every 5 minutes during active long-running work — even when rule #27's elapsed/ETA format doesn't apply (e.g. ETA unknown, multiple parallel tasks). At minimum: a one-line status confirming the current step, last result, and what's running. Silence longer than 5 minutes during active work is a process bug, not a feature. If genuinely idle (no work in flight, awaiting user direction), say so explicitly — silence is never an acceptable status.
 *Established by: "Keep Val aware of the progress. At least every 5 mins"*
