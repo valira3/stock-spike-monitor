@@ -2,11 +2,11 @@
   "trigger": "v789_finer_gradient_explore",
   "phase": "running",
   "started_at": "2026-05-10T03:51:36.928006+00:00",
-  "updated_at": "2026-05-10T04:09:20.078507+00:00",
+  "updated_at": "2026-05-10T04:09:22.582481+00:00",
   "variants_total": 6,
-  "variants_completed": 1,
-  "variants_succeeded": 1,
+  "variants_completed": 2,
+  "variants_succeeded": 2,
   "variants_failed": 0,
-  "latest_vid": "v789_90bp_block",
+  "latest_vid": "v789_120bp_block",
   "latest_rc": 0
 }
