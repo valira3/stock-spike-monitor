@@ -386,8 +386,170 @@ def _scenario_golden_long(verbose: bool = False) -> bool:
         return ex.exit and ex.reason == "target"
 
 
+def _basic_cfg(equity: float = 100_000.0, vix: float = 18.0,
+                tickers: list[str] | None = None) -> SimulatorConfig:
+    tks = tickers or ["AAPL"]
+    return SimulatorConfig(
+        date_iso="2026-01-15", tickers=tks, vix_close_d1=vix,
+        ticker_open_today={tk: 100.0 for tk in tks},
+        ticker_prev_close={tk: 100.0 for tk in tks},
+        equity_per_portfolio={"main": equity},
+    )
+
+
+def _scenario_golden_short(verbose: bool = False) -> bool:
+    """Short breakout at OR_low * 0.995, RR=2.5 target hit."""
+    with SessionSimulator(_basic_cfg()) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="short",
+                                       or_high=100.5, or_low=99.5),
+                     ticker="AAPL")
+        ent = sim.try_short(ticker="AAPL", price=99.0)
+        if not ent.ok:
+            if verbose: print(f"FAIL entry: {ent.reason_no}")
+            return False
+        ex = sim.walk_to_target(ticker="AAPL", ticket_id=ent.ticket_id,
+                                target=ent.target)
+        if verbose:
+            print(f"entry ok: shares={ent.shares} stop={ent.stop:.2f} "
+                  f"target={ent.target:.2f}")
+            print(f"exit: {ex.exit} reason={ex.reason} price={ex.price:.2f}")
+        return ex.exit and ex.reason == "target"
+
+
+def _scenario_long_stop(verbose: bool = False) -> bool:
+    """Long breakout, price reverses, stop hit."""
+    with SessionSimulator(_basic_cfg()) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="long",
+                                       or_high=100.5, or_low=99.5),
+                     ticker="AAPL")
+        ent = sim.try_long(ticker="AAPL", price=101.0)
+        if not ent.ok:
+            if verbose: print(f"FAIL entry: {ent.reason_no}")
+            return False
+        ex = sim.walk_to_stop(ticker="AAPL", ticket_id=ent.ticket_id,
+                              stop=ent.stop)
+        if verbose:
+            print(f"entry ok shares={ent.shares} stop={ent.stop:.2f}")
+            print(f"exit: {ex.exit} reason={ex.reason} price={ex.price:.2f}")
+        return ex.exit and ex.reason == "stop"
+
+
+def _scenario_short_stop(verbose: bool = False) -> bool:
+    with SessionSimulator(_basic_cfg()) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="short",
+                                       or_high=100.5, or_low=99.5),
+                     ticker="AAPL")
+        ent = sim.try_short(ticker="AAPL", price=99.0)
+        if not ent.ok:
+            if verbose: print(f"FAIL entry: {ent.reason_no}")
+            return False
+        ex = sim.walk_to_stop(ticker="AAPL", ticket_id=ent.ticket_id,
+                              stop=ent.stop)
+        if verbose:
+            print(f"entry ok shares={ent.shares} stop={ent.stop:.2f}")
+            print(f"exit: {ex.exit} reason={ex.reason} price={ex.price:.2f}")
+        return ex.exit and ex.reason == "stop"
+
+
+def _scenario_vix_kill(verbose: bool = False) -> bool:
+    """VIX > 22 must block every entry today."""
+    with SessionSimulator(_basic_cfg(vix=25.0)) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="long",
+                                       or_high=100.5, or_low=99.5),
+                     ticker="AAPL")
+        ent = sim.try_long(ticker="AAPL", price=101.0)
+        if verbose:
+            print(f"entry: ok={ent.ok} reason={ent.reason_no}")
+            snap = sim.snapshot()
+            print(f"day_status: {snap.get('day_status', {})}")
+        return not ent.ok
+
+
+def _scenario_gap_skip(verbose: bool = False) -> bool:
+    """Gap > 1.5% must block the ticker."""
+    cfg = SimulatorConfig(
+        date_iso="2026-01-15", tickers=["AAPL"], vix_close_d1=18.0,
+        ticker_open_today={"AAPL": 102.0},
+        ticker_prev_close={"AAPL": 100.0},
+        equity_per_portfolio={"main": 100_000.0},
+    )
+    with SessionSimulator(cfg) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=101.5, or_high=102.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="long",
+                                       or_high=102.5, or_low=101.5),
+                     ticker="AAPL")
+        ent = sim.try_long(ticker="AAPL", price=103.0)
+        if verbose:
+            print(f"entry: ok={ent.ok} reason={ent.reason_no}")
+        return not ent.ok
+
+
+def _scenario_eod_flatten(verbose: bool = False) -> bool:
+    """Open long position at 15:55 ET must be force-exited (eod)."""
+    with SessionSimulator(_basic_cfg()) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        sim.feed_bar(make_breakout_bar(bucket=600, side="long",
+                                       or_high=100.5, or_low=99.5),
+                     ticker="AAPL")
+        ent = sim.try_long(ticker="AAPL", price=101.0)
+        if not ent.ok:
+            if verbose: print(f"FAIL entry: {ent.reason_no}")
+            return False
+        ex = sim.force_eod(ticker="AAPL", ticket_id=ent.ticket_id,
+                           price=101.5)
+        if verbose:
+            print(f"entry ok stop={ent.stop:.2f} target={ent.target:.2f}")
+            print(f"exit: {ex.exit} reason={ex.reason} price={ex.price:.2f}")
+        return ex.exit and ex.reason == "eod"
+
+
+def _scenario_daily_kill(verbose: bool = False) -> bool:
+    """Two stop-outs on $10k equity should trigger the daily-loss kill,
+    blocking the third entry attempt."""
+    with SessionSimulator(_basic_cfg(equity=10_000.0)) as sim:
+        sim.start()
+        sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
+        for i in range(2):
+            sim.feed_bar(make_breakout_bar(bucket=600 + i * 5, side="long",
+                                           or_high=100.5, or_low=99.5,
+                                           push_pct=0.005 + i * 0.005),
+                         ticker="AAPL")
+            e = sim.try_long(ticker="AAPL", price=101.0 + i * 0.5,
+                             equity=10_000.0)
+            if not e.ok:
+                if verbose: print(f"unexpected reject at iter {i}: {e}")
+                return False
+            sim.walk_to_stop(ticker="AAPL", ticket_id=e.ticket_id,
+                             stop=e.stop, start_bucket=605 + i * 5)
+        sim.feed_bar(make_breakout_bar(bucket=615, side="long",
+                                       or_high=100.5, or_low=99.5,
+                                       push_pct=0.015),
+                     ticker="AAPL")
+        ent3 = sim.try_long(ticker="AAPL", price=102.0, equity=10_000.0)
+        if verbose:
+            print(f"3rd entry: ok={ent3.ok} reason={ent3.reason_no}")
+        return not ent3.ok
+
+
 _SCENARIOS = {
     "golden_long": _scenario_golden_long,
+    "golden_short": _scenario_golden_short,
+    "long_stop": _scenario_long_stop,
+    "short_stop": _scenario_short_stop,
+    "vix_kill": _scenario_vix_kill,
+    "gap_skip": _scenario_gap_skip,
+    "eod_flatten": _scenario_eod_flatten,
+    "daily_kill": _scenario_daily_kill,
 }
 
 

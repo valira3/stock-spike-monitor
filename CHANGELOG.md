@@ -4,6 +4,86 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.33.0 (2026-05-10) -- Simulator coverage expansion + session-start equity fix
+
+Twenty-fifth PR in v10 rollout. Closes the simulator-coverage audit
+findings + fixes one real strategy bug surfaced by the new tests.
+
+### A. STRATEGY BUG -- session-start equity snapshot order
+
+While adding the daily-kill end-to-end scenario, the new test
+discovered that `OrbEngine.start_new_session` was calling
+`reset_all_sessions()` BEFORE `update_equity(eq)`. The reset path
+snapshots `_session_start_equity = _equity`, which at that moment
+still held the stale 100k registration default. The daily-kill
+threshold computed against this stale value, so a portfolio with
+$10k equity was effectively using a $2000 threshold instead of $200
+-- kill would never fire on small accounts.
+
+Fix: reorder so equity is updated FIRST, then reset (which snapshots
+the correct value). Cited file:line: `orb/engine.py:168-178`.
+
+This was masked in earlier daily-kill tests (`test_orb_daily_kill.py`)
+because those constructed `OrbEngine` directly with portfolio_ids and
+then called `start_new_session` with the same equity multiple times
+-- the second+ session snapshot used the correct equity. The
+simulator path uses the singleton bootstrap, which only goes through
+start_new_session once per session.
+
+### B. New simulator scenarios (10 new tests)
+
+`tests/strategy/test_orb_session_sim.py` adds:
+
+| Class | Tests | Rule covered |
+|---|---|---|
+| `TestBreakevenShort` | 1 | Short BE-after-1R (mirror of long) |
+| `TestSameBarTargetAndStop` | 2 | Pessimistic exit ordering: stop-side wins over target on same bar (long + short) |
+| `TestEarningsSkip` | 1 | Earnings ±1d window blocks entry (live runtime path) |
+| `TestDailyKillViaSimulator` | 2 | Cumulative losses trigger kill; kill cascade blocks other tickers same portfolio |
+| `TestMaxTradesCap` | 1 | 6th entry blocked after 5 admissions+closes |
+| `TestSingleTradeNotionalClamp` | 1 | Shares clamped so notional <= 75% equity |
+| `TestBarWindowRejection` | 2 | Bar at OR boundary (600) rejected; bar at 16:00 doesn't lock OR |
+| `TestOrBoundaryWidths` | 2 | OR width at exact 0.8% and 2.5% boundaries admits (inclusive bounds) |
+| `TestThreePortfolioBreakout` | 1 | Main+Val+Gene admit independently with distinct tickets |
+
+### C. CLI scenarios (8 total, was 1)
+
+`tools/orb_session_sim.py --scenario <name>` now exposes:
+
+| Scenario | What it verifies |
+|---|---|
+| `golden_long` | Long RR=2.5 target hit (pre-existing) |
+| `golden_short` | Short RR=2.5 target hit |
+| `long_stop` | Long stop hit on reversal |
+| `short_stop` | Short stop hit on reversal |
+| `vix_kill` | VIX > 22 blocks all entries |
+| `gap_skip` | Gap > 1.5% blocks ticker |
+| `eod_flatten` | Open position force-exit at 15:55 ET |
+| `daily_kill` | 2 stop-outs on $10k equity triggers kill, 3rd entry rejects |
+
+Local verification: all 8 CLI scenarios return `ok=True`. The
+`daily_kill` run emits the expected `[V79-ORB-KILL]` warning:
+
+```
+[V79-ORB-KILL] daily-loss kill TRIGGERED portfolio=main
+realized=$-264.31 threshold=-$200.00
+```
+
+### Tests
+
+**294 strategy tests pass** (was 281, +13 new). 8 sandbox-skipped.
+
+### Files
+
+- `bot_version.py` -- 7.32.0 -> 7.33.0
+- `trade_genius.py` -- BOT_VERSION mirror -> 7.33.0
+- `orb/engine.py` -- fix `start_new_session` equity-snapshot order
+- `tests/strategy/test_orb_session_sim.py` -- 13 new tests across 9 classes
+- `tools/orb_session_sim.py` -- 7 new CLI scenarios
+- `CHANGELOG.md` -- this entry
+
+---
+
 ## v7.32.0 (2026-05-10) -- Re-audit fixes (2 CRIT + 2 MED + 4 LOW)
 
 Twenty-fourth PR in v10 rollout. Closes new findings from the re-audit

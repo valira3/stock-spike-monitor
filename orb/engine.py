@@ -167,11 +167,16 @@ class OrbEngine:
         """
         # 1. Reset state
         self._state.reset_for_new_session(date_iso)
-        self._risk.reset_all_sessions()
+        # v7.33.0: update equity BEFORE reset_all_sessions so the
+        # session-start equity snapshot inside RiskBook.reset_session
+        # captures the actual session-start equity (not the stale
+        # registration default). The daily-loss kill threshold reads
+        # _session_start_equity, so this order matters.
         for pid, eq in equity_per_portfolio.items():
             rb = self._risk.get(pid)
             if rb is not None:
                 rb.update_equity(eq)
+        self._risk.reset_all_sessions()
 
         # 2. Evaluate day gates ONCE for this session
         gate_cfg = _day_gates.DayGateConfig(
