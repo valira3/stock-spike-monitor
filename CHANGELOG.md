@@ -4,6 +4,102 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.86.0 (2026-05-11) -- Total-exposure cap (95% of equity) in execute_breakout
+
+Operator screenshot (TSLA long $32K + NFLX/GOOG/META shorts $224K =
+$256K total notional on $100K equity = 2.55x leverage):
+
+> "We can't invest more than our equity (actually needs at least 5%
+> safety margin in account too). So if I started with $100k, I can't
+> have $233k shorted."
+
+### Root cause
+
+The only pre-trade cap in `broker/orders.py:execute_breakout` was:
+
+```python
+if cfg.side.is_long and notional > tg.paper_cash:
+    tg.logger.info("[paper] skip %s -- insufficient cash ...", ticker)
+    return
+```
+
+This check ONLY fires for LONG entries. Shorts credit cash on open
+(paper_cash += short_proceeds), so the legacy cash check never trips
+for shorts -- they can expand `short_liability` without bound.
+
+Production observed Main's `short_liability` growing to $223K on a
+$100K equity book, far exceeding any reasonable margin requirement.
+
+### Fix
+
+New total-exposure cap clause added BEFORE the existing cash check,
+applied to BOTH sides:
+
+```python
+long_mv = sum(p.entry_price * p.shares for p in tg.positions.values())
+short_liab = sum(p.entry_price * p.shares for p in tg.short_positions.values())
+equity = tg.paper_cash + long_mv - short_liab
+exposure_cap = 0.95 * equity                 # 5% safety margin
+new_exposure = long_mv + short_liab + notional_new
+if equity > 0 and new_exposure > exposure_cap:
+    tg.logger.info("[paper] skip %s %s -- total-exposure cap ...", ticker, side)
+    return
+```
+
+Forensic log on rejection:
+```
+[paper] skip TSLA SHORT -- total-exposure cap
+  (new $275000 > $95000 = 95% of equity $100000;
+   longs=$32000 shorts=$224000 cash=$292000)
+```
+
+### Edge-case handling
+
+- **equity > 0 guard**: skip the check when equity is 0 or negative
+  (fresh bot, or underwater book where daily-loss kill should already
+  have fired). Prevents the cap from being a deadlock on edge states.
+- **Exception-safe**: any compute error in the cap (corrupt position
+  dict, etc.) logs a warning and falls through to the legacy check.
+  The cap is defensive -- it should never prevent a healthy entry
+  due to its own bug.
+
+### What this catches going forward
+
+- Repeat-short accumulation (the TSLA/NFLX/GOOG/META scenario)
+- Mixed long+short books where each side individually fits cash but
+  the combined exposure exceeds equity
+- Legacy-path entries that bypass the v10 RiskBook (which has its
+  own per-trade notional cap at `max_concurrent_notional_mult * equity`
+  but doesn't see legacy paths)
+
+### What this does NOT do
+
+- Does not auto-close existing over-cap positions. Operator can wait
+  for v10 exits to fire, or manually close via the dashboard.
+- Does not enforce per-direction caps (long-only or short-only).
+  The 95% total cap is direction-agnostic per operator spec.
+
+### Files
+
+- `broker/orders.py`: new exposure-cap clause in `execute_breakout`
+- `tests/strategy/test_exposure_cap_v786.py`: NEW (10 tests)
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+Tests: **492 passed** (up from 482), 8 skipped. +10 new covering:
+clean-book under cap, clean-book over cap, short-over cap, the
+exact $223K production scenario, mixed long+short admit/block,
+zero/negative equity edge cases, exact-boundary admit, one-cent-over
+block.
+
+### Operator action
+
+Redeploy Railway. Next entry signal that would breach the 95% cap
+will produce `[paper] skip ... total-exposure cap ...` in Railway
+logs and the position will NOT open. Existing positions are
+untouched.
+
+---
+
 ## v7.85.0 (2026-05-11) -- Signal-bus emit/dispatch forensics + wider grep window
 
 v7.84.0 deployed and the operator confirmed Railway secrets work.

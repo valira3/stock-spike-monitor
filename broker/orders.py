@@ -1361,6 +1361,51 @@ def execute_breakout(ticker, current_price, side):
             )
         return
 
+    # v7.86.0 -- TOTAL-EXPOSURE CAP. Pre-v7.86.0 the only pre-trade
+    # cap was the long-only "notional <= cash" check below, which let
+    # SHORTS expand short_liability unboundedly (shorts credit cash
+    # on open, so the legacy cash check never tripped). Production
+    # observed Main accumulating $223K of shorts on a $100K equity
+    # book (2.55x leverage on a paper account with no real margin
+    # backstop). Operator spec: total exposure (longs MV + shorts
+    # liability + new entry notional) must stay below 95% of current
+    # equity (5% safety margin). Applies to BOTH sides.
+    try:
+        _long_mv_now = 0.0
+        for _p in (getattr(tg, "positions", {}) or {}).values():
+            _ep = _p.get("entry_price") if isinstance(_p, dict) else None
+            _sh = _p.get("shares") if isinstance(_p, dict) else None
+            if isinstance(_ep, (int, float)) and isinstance(_sh, (int, float)):
+                _long_mv_now += float(_ep) * float(_sh)
+        _short_liab_now = 0.0
+        for _p in (getattr(tg, "short_positions", {}) or {}).values():
+            _ep = _p.get("entry_price") if isinstance(_p, dict) else None
+            _sh = _p.get("shares") if isinstance(_p, dict) else None
+            if isinstance(_ep, (int, float)) and isinstance(_sh, (int, float)):
+                _short_liab_now += float(_ep) * float(_sh)
+        _equity_now = float(getattr(tg, "paper_cash", 0.0)) + _long_mv_now - _short_liab_now
+        _exposure_cap = 0.95 * _equity_now
+        _new_exposure = _long_mv_now + _short_liab_now + notional
+        if _equity_now > 0 and _new_exposure > _exposure_cap:
+            tg.logger.info(
+                "[paper] skip %s %s -- total-exposure cap "
+                "(new $%.0f > $%.0f = 95%% of equity $%.0f; "
+                "longs=$%.0f shorts=$%.0f cash=$%.0f)",
+                ticker,
+                "LONG" if cfg.side.is_long else "SHORT",
+                _new_exposure,
+                _exposure_cap,
+                _equity_now,
+                _long_mv_now,
+                _short_liab_now,
+                float(getattr(tg, "paper_cash", 0.0)),
+            )
+            return
+    except Exception as _exc:
+        tg.logger.warning(
+            "[paper] exposure-cap check raised for %s: %s", ticker, _exc,
+        )
+
     # Long entry needs cash to buy; short entry credits cash on open.
     if cfg.side.is_long and notional > tg.paper_cash:
         tg.logger.info(
