@@ -5207,11 +5207,14 @@
   // ============================================================
   // v7.40.0 -- expose for the exec render path (Val/Gene poll loop)
   // which lives in a separate IIFE further below.
+  // v7.41.0 -- also expose renderV10DayStatus for the same reason.
   if (typeof window !== "undefined") {
-    // Will be assigned once the function declaration is hoisted below.
-    // We use a getter so the reference is resolved on first use.
     Object.defineProperty(window, "__tgRenderKillSwitchBanner", {
       get: function () { return renderKillSwitchBanner; },
+      configurable: true,
+    });
+    Object.defineProperty(window, "__tgRenderV10DayStatus", {
+      get: function () { return renderV10DayStatus; },
       configurable: true,
     });
   }
@@ -5453,8 +5456,87 @@
       riskEl.title = riskTip;
     }
 
-    // v7.23.0: Per-portfolio rows under the banner. Build / refresh a
-    // small inline strip so each portfolio's state is visible at a glance.
+    // v7.41.0: gauges row -- visual bars for Trades / Risk / Daily-kill.
+    var gaugesRow = document.getElementById("v10-gauges-row");
+    if (!gaugesRow) {
+      gaugesRow = document.createElement("div");
+      gaugesRow.id = "v10-gauges-row";
+      gaugesRow.className = "v10-gauges-row";
+      banner.appendChild(gaugesRow);
+    }
+    var totalMaxTrades = maxTrades * Math.max(pidsAll.length, 1);
+    var tradesPct = totalMaxTrades > 0
+                    ? (totalTrades / totalMaxTrades * 100) : 0;
+    var riskPct = riskMax > 0 ? (riskUsed / riskMax * 100) : 0;
+    // Worst-portfolio daily-kill % drives the kill gauge -- the closest-
+    // to-blown portfolio is what an operator needs to see.
+    var killWorstPct = 0;
+    var killWorstPid = null;
+    var killWorstRealized = 0;
+    var killWorstThreshold = 0;
+    var anyKillTriggered = false;
+    pidsAll.forEach(function (pid) {
+      var b = rb[pid] || {};
+      var thr = b.daily_kill_threshold || 0;
+      var realized = b.realized_pnl_today || 0;
+      if (thr > 0 && realized < 0) {
+        var pct = Math.abs(realized) / thr * 100;
+        if (pct > killWorstPct) {
+          killWorstPct = pct;
+          killWorstPid = pid;
+          killWorstRealized = realized;
+          killWorstThreshold = thr;
+        }
+      }
+      if (b.daily_kill_triggered) anyKillTriggered = true;
+    });
+
+    function _gaugeHtml(label, value, fillPct, cls) {
+      var clamped = Math.max(0, Math.min(110, fillPct));
+      var stateCls = '';
+      if (fillPct >= 90 || cls === 'danger' || (cls || '').indexOf('danger') >= 0) stateCls = ' v10-gauge-danger';
+      else if (fillPct >= 70) stateCls = ' v10-gauge-warn';
+      return '<div class="v10-gauge ' + (cls || '') + stateCls + '">'
+           + '<div class="v10-gauge-head">'
+           + '<span class="v10-gauge-label">' + label + '</span>'
+           + '<span class="v10-gauge-value">' + value + '</span>'
+           + '</div>'
+           + '<div class="v10-gauge-bar">'
+           + '<div class="v10-gauge-fill" style="width:'
+                + clamped.toFixed(1) + '%"></div>'
+           + '</div></div>';
+    }
+
+    var html = '';
+    html += _gaugeHtml(
+      'Trades',
+      totalTrades + ' / ' + totalMaxTrades +
+        ' (' + tradesPct.toFixed(0) + '%)',
+      tradesPct
+    );
+    html += _gaugeHtml(
+      'Concurrent risk',
+      '$' + Math.round(riskUsed).toLocaleString()
+       + ' / $' + Math.round(riskMax).toLocaleString()
+       + ' (' + riskPct.toFixed(0) + '%)',
+      riskPct
+    );
+    if (killWorstPct > 0 || anyKillTriggered) {
+      var killValue = killWorstPid
+        ? (killWorstPid.toUpperCase() + ' $' +
+           Math.round(killWorstRealized).toLocaleString() +
+           ' / -$' + Math.round(killWorstThreshold).toLocaleString())
+        : 'no kill data';
+      var killCls = 'v10-gauge-kill' +
+                    (anyKillTriggered ? ' danger' : '');
+      html += _gaugeHtml('Daily-kill (worst pid)', killValue,
+                          killWorstPct, killCls);
+    }
+    gaugesRow.innerHTML = html;
+
+    // v7.23.0 + v7.41.0: Per-portfolio rows under the gauges. Each
+    // row carries a mini daily-kill bar so the operator can spot the
+    // closest-to-blown portfolio at a glance.
     var perPidStrip = document.getElementById("v10-pid-strip");
     if (!perPidStrip) {
       perPidStrip = document.createElement("div");
@@ -5466,15 +5548,31 @@
     pidsAll.forEach(function (pid) {
       var b = rb[pid] || {};
       var row = document.createElement("span");
+      row.className = "v10-pid-row";
       var openCount = b.open_count || 0;
       var ut = b.utilization_pct || 0;
       var color = openCount > 0 ? "#fbbf24" : "#374151";
+      var pidKillPct = 0;
+      if ((b.daily_kill_threshold || 0) > 0 &&
+          (b.realized_pnl_today || 0) < 0) {
+        pidKillPct = Math.abs(b.realized_pnl_today) /
+                     b.daily_kill_threshold * 100;
+      }
+      var miniGauge =
+        '<span class="v10-mini-gauge" title="daily-kill ' +
+        pidKillPct.toFixed(0) + '% of threshold">' +
+        '<span class="v10-mini-gauge-fill" style="width:' +
+        Math.min(100, pidKillPct).toFixed(0) + '%"></span>' +
+        '</span>';
       row.style.cssText = "padding:3px 8px;background:#0a0d12;border:1px solid #1f2937;border-radius:6px;color:#9ca3af";
       row.innerHTML = "<b style=\"color:" + color + "\">" + pid + "</b>"
         + "  $" + Math.round(b.equity || 0).toLocaleString()
         + "  " + (perPidTrades[pid] || 0) + "/" + maxTrades + " trades"
         + "  " + (openCount > 0 ? openCount + " open" : "no open")
-        + "  " + ut.toFixed(0) + "% util";
+        + "  " + ut.toFixed(0) + "% util"
+        + (pidKillPct > 0
+            ? "  kill" + miniGauge + pidKillPct.toFixed(0) + "%"
+            : "");
       perPidStrip.appendChild(row);
     });
   }
