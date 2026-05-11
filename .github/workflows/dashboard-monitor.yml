@@ -43,6 +43,32 @@ on:
     # (v10_live_mode_on skips when regime mode isn't RTH).
     # Per-day firings: 13 hours x 6/hr = 78 GHA minutes/day at worst.
     - cron: "7-57/10 8-20 * * 1-5"
+  push:
+    # v7.80.0 -- run the monitor on every push to main. Two reasons:
+    # (1) GitHub has been silently dropping the scheduled cron for
+    #     this workflow (operator's Actions tab shows zero runs from
+    #     the `schedule` event despite the cron being correctly
+    #     declared). Running on push gives us guaranteed exercise
+    #     during active development -- we've been merging ~10 PRs/day,
+    #     so the monitor effectively runs every time a release lands.
+    # (2) Each push acts as a "kick" to GHA's scheduler that
+    #     sometimes revives a stalled cron registration.
+    # Only fires on changes to the monitor itself OR known live-state
+    # files; a doc-only commit to ARCHITECTURE.md still won't trigger.
+    branches: [main]
+    paths:
+      - "tools/dashboard_monitor*.py"
+      - "tools/railway_log_tail.py"
+      - ".github/workflows/dashboard-monitor.yml"
+      - "bot_version.py"
+      - "trade_genius.py"
+      - "dashboard_server.py"
+      - "engine/scan.py"
+      - "engine/portfolio_book.py"
+      - "engine/portfolio_equity.py"
+      - "orb/**.py"
+      - "broker/**.py"
+      - "executors/**.py"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -74,6 +100,14 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+
+      # v7.80.0 -- on push events, give Railway 2min to roll out the
+      # new code before we hit /api/state. Otherwise the monitor
+      # validates the OLD container and reports stale state. No-op
+      # for schedule/workflow_dispatch events.
+      - name: Wait for Railway rollout (push only)
+        if: github.event_name == 'push'
+        run: sleep 120
 
       - name: Run dashboard monitor
         env:
