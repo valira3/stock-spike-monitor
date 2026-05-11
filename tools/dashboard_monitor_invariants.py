@@ -523,6 +523,170 @@ def inv_equity_self_consistent(ctx: InvariantContext) -> dict:
                f"eq=${eq:.2f} ≈ derived ${derived:.2f}")
 
 
+def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
+    """v7.76.0 -- every (portfolio, ticker) in v10 phase=IN_POS must
+    have a matching entry in that portfolio's positions list.
+
+    The 2026-05-11 production scenario the operator hit: the
+    dashboard's v10 Ticker Matrix shows AAPL "IN POS" and Concurrent
+    Risk reads $739/$2000, but `OPEN POSITIONS: 0` and the positions
+    list is empty.
+
+    The most likely root cause: v10 ORB admitted the entry, the FSM
+    transitioned WARMUP/ARMED -> IN_POS, and the RiskBook reserved
+    capacity -- but `callbacks.execute_entry` (which calls
+    `broker/orders.execute_breakout`, which mutates `tg.positions`)
+    failed or never ran. The FSM is now stuck IN_POS with no
+    underlying position to manage. (Alternate: FSM stayed stuck
+    IN_POS after the position exited normally -- bug in the exit
+    path's FSM transition.)
+
+    Either way, the bot is in an inconsistent state and the operator
+    needs to know. Auto-recovery is intentionally NOT attempted here
+    -- this invariant only DETECTS so the operator can choose the
+    safe action (manual /reconcile, FSM reset, or close-and-reset).
+    """
+    s = _state(ctx)
+    v10 = _v10(ctx)
+    if not s or not v10:
+        return _ok("v10_in_pos_has_internal_position",
+                   "skipped: state or v10 missing")
+    day_states = v10.get("day_states") or []
+    if not day_states:
+        return _ok("v10_in_pos_has_internal_position",
+                   "skipped: no v10 day_states yet")
+
+    def _ticker_set_for(pid: str) -> set[str]:
+        # Try per-portfolio first, fall back to top-level positions
+        # for Main (legacy / pre-v7.0.0 schema).
+        portfolios = s.get("portfolios") or {}
+        pbk = portfolios.get(pid) or {}
+        pos = pbk.get("positions")
+        if pos is None and pid == "main":
+            pos = s.get("positions") or []
+        pos = pos or []
+        out: set[str] = set()
+        for p in pos:
+            if isinstance(p, dict):
+                t = p.get("ticker") or p.get("symbol")
+                if t:
+                    out.add(str(t).upper())
+        return out
+
+    # Cache per-portfolio ticker sets (cheap, but stable per call).
+    per_pid_tickers: dict[str, set[str]] = {}
+    phantom_in_pos: list[dict] = []
+    for ds in day_states:
+        if not isinstance(ds, dict):
+            continue
+        phase = (ds.get("phase") or "").lower()
+        if phase != "in_pos" and not ds.get("in_position"):
+            continue
+        pid = (ds.get("portfolio_id") or "").lower() or "main"
+        ticker = (ds.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        if pid not in per_pid_tickers:
+            per_pid_tickers[pid] = _ticker_set_for(pid)
+        if ticker not in per_pid_tickers[pid]:
+            phantom_in_pos.append({
+                "pid": pid, "ticker": ticker,
+                "phase": ds.get("phase"),
+                "in_position": ds.get("in_position"),
+                "last_entry_iso": ds.get("last_entry_iso"),
+            })
+
+    if phantom_in_pos:
+        lines = []
+        for ph in phantom_in_pos[:10]:
+            lines.append(
+                f"  {ph['pid']}/{ph['ticker']}: phase={ph['phase']!r} "
+                f"in_position={ph['in_position']} "
+                f"last_entry={ph['last_entry_iso']}"
+            )
+        return _fail(
+            "v10_in_pos_has_internal_position",
+            f"{len(phantom_in_pos)} phantom IN_POS state(s) -- "
+            "FSM thinks open but no matching position in book",
+            "v10 FSM has phase=IN_POS for one or more (portfolio, "
+            "ticker) pairs that have no corresponding entry in the "
+            "portfolio's positions list. Likely cause: the entry "
+            "admit() succeeded and the RiskBook reserved capacity, "
+            "but the actual paper-book fill (callbacks.execute_entry "
+            "-> broker.orders.execute_breakout -> tg.positions[]) "
+            "failed or didn't run. The bot is in an inconsistent "
+            "state with reserved risk but no managed position. "
+            "Safe recovery: inspect trade_log.jsonl for the entry "
+            "intent, then manually reset the FSM via /reconcile or "
+            "force-close the phantom slot.\n" + "\n".join(lines),
+        )
+    return _ok("v10_in_pos_has_internal_position")
+
+
+def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
+    """v7.76.0 -- every active RiskBook must have a nonzero notional cap.
+
+    The 2026-05-11 Val tab production scenario: every entry rejected
+    with ``risk_reject:notional_cap (would-be $293 > $0)``. Root
+    cause: ``RiskBook.equity`` was seeded from
+    ``PortfolioBook.current_equity()`` which returns 0 for Val/Gene
+    (their `paper_cash` defaults to 0 and was never bridged from
+    Alpaca's actual account equity). So `max_notional = equity *
+    max_concurrent_notional_mult = 0`, blocking every entry.
+
+    During RTH, when ORB live mode is on, every portfolio's RiskBook
+    must have a nonzero ``max_notional`` (and `equity`). This catches
+    both the Val/Gene-equity-seeding bug and any future regression
+    that fails to populate per-portfolio equity at session start.
+    """
+    v10 = _v10(ctx)
+    if not v10:
+        return _ok("risk_book_notional_cap_nonzero",
+                   "skipped: v10 not bootstrapped")
+    regime = (_state(ctx) or {}).get("regime") or {}
+    mode = (regime.get("mode") or "").upper()
+    if mode not in ("OPEN", "POWER", "OR"):
+        return _ok("risk_book_notional_cap_nonzero",
+                   f"skipped: regime mode={mode!r}")
+    risk_books = v10.get("risk_books") or {}
+    if not risk_books:
+        return _ok("risk_book_notional_cap_nonzero",
+                   "skipped: no risk_books in snapshot")
+    zeros = []
+    for pid, rb in risk_books.items():
+        if not isinstance(rb, dict):
+            continue
+        max_notional = rb.get("max_notional")
+        equity = rb.get("equity")
+        if (isinstance(max_notional, (int, float)) and max_notional <= 0) \
+                or (isinstance(equity, (int, float)) and equity <= 0):
+            zeros.append((pid, equity, max_notional,
+                          rb.get("last_reject_reason")))
+    if zeros:
+        lines = []
+        for pid, eq, mn, reason in zeros:
+            lines.append(
+                f"  {pid}: equity={eq} max_notional={mn} "
+                f"last_reject={reason!r}"
+            )
+        return _fail(
+            "risk_book_notional_cap_nonzero",
+            f"{len(zeros)} RiskBook(s) have zero equity/max_notional "
+            "during RTH -- entries will be rejected on notional_cap",
+            "RiskBook.equity is 0 for one or more portfolios. For "
+            "Val/Gene this happens when the paper_cash defaults to 0 "
+            "and isn't bridged from Alpaca's account equity (the "
+            "v7.76.0 engine.portfolio_equity.resolve_equity helper "
+            "wires this on session start; older deployments may "
+            "still be missing it). For Main it points at a stale "
+            "tg.paper_cash sync.\n" + "\n".join(lines),
+        )
+    return _ok(
+        "risk_book_notional_cap_nonzero",
+        f"{len(risk_books)} books all have nonzero caps",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -545,4 +709,7 @@ INVARIANTS = [
     inv_or_window_data_quality,
     inv_position_count_three_way,
     inv_equity_self_consistent,
+    # v7.76.0 -- FSM-vs-book + RiskBook equity consistency
+    inv_v10_in_pos_has_internal_position,
+    inv_risk_book_notional_cap_nonzero,
 ]

@@ -13,6 +13,8 @@ from tools.dashboard_monitor_invariants import (
     inv_or_window_data_quality,
     inv_position_count_three_way,
     inv_equity_self_consistent,
+    inv_v10_in_pos_has_internal_position,
+    inv_risk_book_notional_cap_nonzero,
 )
 
 
@@ -242,3 +244,179 @@ class TestEquitySelfConsistent:
         r = inv_equity_self_consistent(_ctx(s))
         assert r["ok"]
         assert "skipped" in r["summary"]
+
+
+# ---------------------------------------------------------------------
+# inv_v10_in_pos_has_internal_position (v7.76.0)
+# ---------------------------------------------------------------------
+
+
+def _state_with_v10_day_states(day_states, positions_per_pid=None):
+    """Build a /api/state-shaped payload with v10.day_states and
+    optionally a portfolios.{pid}.positions list per portfolio."""
+    portfolios = {}
+    for pid in ("main", "val", "gene"):
+        portfolios[pid] = {"positions": (positions_per_pid or {}).get(pid, [])}
+    return {
+        "regime": {"mode": "OPEN"},
+        "portfolios": portfolios,
+        "positions": (positions_per_pid or {}).get("main", []),
+        "v10": {
+            "available": True,
+            "bootstrapped": True,
+            "day_states": day_states,
+        },
+    }
+
+
+class TestV10InPosHasInternalPosition:
+
+    def test_passes_when_no_day_states(self):
+        s = _state_with_v10_day_states([])
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert r["ok"]
+        assert "skipped" in r["summary"]
+
+    def test_passes_when_in_pos_has_matching_position(self):
+        s = _state_with_v10_day_states(
+            day_states=[
+                {"portfolio_id": "main", "ticker": "AAPL",
+                 "phase": "in_pos", "in_position": True,
+                 "last_entry_iso": "2026-05-11T13:32:00Z"},
+            ],
+            positions_per_pid={"main": [{"ticker": "AAPL"}]},
+        )
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert r["ok"]
+
+    def test_fails_on_phantom_in_pos(self):
+        """The exact 2026-05-11 production scenario: AAPL is IN POS in
+        the v10 ticker matrix but no entry in positions."""
+        s = _state_with_v10_day_states(
+            day_states=[
+                {"portfolio_id": "main", "ticker": "AAPL",
+                 "phase": "in_pos", "in_position": True,
+                 "last_entry_iso": "2026-05-11T13:32:00Z"},
+            ],
+            positions_per_pid={"main": []},
+        )
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert not r["ok"]
+        assert "phantom IN_POS" in r["summary"]
+        assert "main/AAPL" in r["detail"]
+
+    def test_passes_when_in_pos_for_other_phase(self):
+        # ARMED / BLOCKED_* tickers are not checked; only IN_POS.
+        s = _state_with_v10_day_states(
+            day_states=[
+                {"portfolio_id": "main", "ticker": "AAPL",
+                 "phase": "armed", "in_position": False},
+                {"portfolio_id": "main", "ticker": "NVDA",
+                 "phase": "blocked_range", "in_position": False},
+            ],
+            positions_per_pid={"main": []},
+        )
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert r["ok"]
+
+    def test_detects_phantom_in_val_portfolio(self):
+        # Val's executor positions live under portfolios.val.positions
+        s = _state_with_v10_day_states(
+            day_states=[
+                {"portfolio_id": "val", "ticker": "TSLA",
+                 "phase": "in_pos", "in_position": True},
+            ],
+            positions_per_pid={"val": []},
+        )
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert not r["ok"]
+        assert "val/TSLA" in r["detail"]
+
+    def test_falls_back_to_top_level_positions_for_main(self):
+        # Legacy / pre-v7.0.0 schema: state.positions (top-level)
+        # rather than state.portfolios.main.positions
+        s = {
+            "regime": {"mode": "OPEN"},
+            "positions": [{"ticker": "AAPL"}],
+            "portfolios": {"main": {}},  # no positions key here
+            "v10": {
+                "available": True,
+                "bootstrapped": True,
+                "day_states": [
+                    {"portfolio_id": "main", "ticker": "AAPL",
+                     "phase": "in_pos", "in_position": True},
+                ],
+            },
+        }
+        r = inv_v10_in_pos_has_internal_position(_ctx(s))
+        assert r["ok"]
+
+
+# ---------------------------------------------------------------------
+# inv_risk_book_notional_cap_nonzero (v7.76.0)
+# ---------------------------------------------------------------------
+
+
+def _state_with_risk_books(books, mode="OPEN"):
+    return {
+        "regime": {"mode": mode},
+        "v10": {
+            "available": True,
+            "bootstrapped": True,
+            "risk_books": books,
+        },
+    }
+
+
+class TestRiskBookNotionalCapNonzero:
+
+    def test_passes_when_all_books_nonzero(self):
+        s = _state_with_risk_books({
+            "main": {"equity": 100000.0, "max_notional": 200000.0},
+            "val":  {"equity": 99273.10, "max_notional": 198546.20},
+            "gene": {"equity": 99500.0, "max_notional": 199000.0},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert r["ok"]
+        assert "3" in r["summary"]
+
+    def test_skips_when_v10_not_bootstrapped(self):
+        s = {"regime": {"mode": "OPEN"},
+             "v10": {"available": False}}
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert r["ok"]
+        assert "skipped" in r["summary"]
+
+    def test_skips_outside_rth_modes(self):
+        s = _state_with_risk_books(
+            {"val": {"equity": 0.0, "max_notional": 0.0}},
+            mode="AFTER",
+        )
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert r["ok"]
+        assert "AFTER" in r["summary"]
+
+    def test_fails_when_val_has_zero_cap(self):
+        """The exact 2026-05-11 Val tab scenario: Val has equity=0
+        and max_notional=0, every entry rejects on notional_cap."""
+        s = _state_with_risk_books({
+            "main": {"equity": 99552.28, "max_notional": 199104.56},
+            "val":  {"equity": 0.0, "max_notional": 0.0,
+                     "last_reject_reason":
+                     "notional_cap (would-be $293 > $0)"},
+            "gene": {"equity": 99500.0, "max_notional": 199000.0},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert not r["ok"]
+        assert "1" in r["summary"]
+        assert "val: equity=0.0 max_notional=0.0" in r["detail"]
+
+    def test_fails_when_all_three_have_zero(self):
+        s = _state_with_risk_books({
+            "main": {"equity": 0.0, "max_notional": 0.0},
+            "val":  {"equity": 0.0, "max_notional": 0.0},
+            "gene": {"equity": 0.0, "max_notional": 0.0},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert not r["ok"]
+        assert "3" in r["summary"]

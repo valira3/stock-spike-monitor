@@ -4,6 +4,102 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.76.0 (2026-05-11) -- Val/Gene RiskBook equity sourced from Alpaca + 2 new cross-check invariants
+
+The 2026-05-11 production session surfaced two distinct failure
+modes that earlier invariants/fixes didn't cover:
+
+### Issue 1: Val rejecting every entry with `notional_cap (would-be $293 > $0)`
+
+Operator's Val tab showed 6 consecutive AAPL entry rejects, every
+LONG with the exact same reason:
+`risk_reject:notional_cap (would-be $293 > $0)`. Notional cap of
+**$0**. Root cause: `RiskBook.equity` is seeded from
+`PortfolioBook.current_equity()` (paper_cash + long_mv -
+short_liab). For Val/Gene books, `paper_cash` defaults to 0 in
+`PortfolioBook.__init__` and is **never bridged from Alpaca's
+actual account equity**. So `max_notional = equity * 2.0 = 0`
+and every entry rejects.
+
+v7.72.0 fixed this for Main (bridged `tg.paper_cash` into
+`_MAIN_BOOK.paper_cash` at every mutation site) -- but Val/Gene's
+authoritative equity lives at the BROKER, not in a local global,
+so a different mechanism is needed.
+
+**Fix:** new `engine/portfolio_equity.py` module with a single
+`resolve_equity(pid)` helper:
+- `main` -> `tg.paper_cash` (unchanged)
+- `val` / `gene` -> Alpaca `get_account().equity` via
+  `<PID>_ALPACA_PAPER_KEY/_SECRET` env, cached 30s
+- Falls back to `book.current_equity()` if Alpaca unreachable
+
+`engine/scan.py` now calls `resolve_equity(pid)` when building the
+`equity_per_portfolio` dict for `ensure_session_started`. After
+Railway redeploy, Val/Gene `RiskBook.equity` will reflect their
+real Alpaca paper account balance (~$99K each instead of $0).
+
+`dashboard_server.py`'s legacy `_alpaca_account_for_book` is now a
+thin re-export of `engine.portfolio_equity.alpaca_account_for_book`
+so there's a single Alpaca fetch path with a single shared cache.
+
+### Issue 2: AAPL "IN POS" on v10 ticker matrix but `OPEN POSITIONS: 0`
+
+Operator screenshot showed `AAPL: IN POS · open ticket` in the
+v10 Ticker Matrix and `Concurrent risk $739/$2000 (37%)`, while
+the headline KPIs read `OPEN POSITIONS: 0` and `No positions`.
+The v10 FSM transitioned to `IN_POS` and the RiskBook reserved
+$739 of capacity, but the actual paper-book fill never landed in
+`tg.positions`. The bot is in an inconsistent state with reserved
+risk but no managed position.
+
+The existing `no_phantom_positions` invariant cross-checked
+`state.positions` against `risk_books.main.open_count`, but it
+didn't notice that `v10.day_states` had `phase=IN_POS` for a
+ticker not in any portfolio's positions list. New invariant
+catches this directly.
+
+### New invariants
+
+1. **`inv_v10_in_pos_has_internal_position`**: for every
+   `v10.day_states[*]` with phase=IN_POS, the matching portfolio's
+   positions list must contain that ticker. Falls back to
+   top-level `state.positions` for Main per legacy schema.
+
+2. **`inv_risk_book_notional_cap_nonzero`**: during RTH (regime
+   in OR/OPEN/POWER), every `v10.risk_books[*]` must have nonzero
+   `equity` AND `max_notional`. Catches the Val $0-cap scenario.
+
+### Files
+
+- `engine/portfolio_equity.py`: NEW. `resolve_equity(pid)` +
+  `alpaca_account_for_book(pid)`. 30s cache.
+- `engine/scan.py`: routes Val/Gene RiskBook equity through
+  `resolve_equity` instead of `book.current_equity()`.
+- `dashboard_server.py`: `_alpaca_account_for_book` re-exported
+  from the shared module; old cache globals removed.
+- `tools/dashboard_monitor_invariants.py`: 2 new invariants +
+  registry update.
+- `tests/strategy/test_portfolio_equity.py`: NEW (9 tests).
+- `tests/strategy/test_dashboard_monitor_invariants.py`: 11 new
+  tests (6 for v10_in_pos, 5 for risk_book_notional).
+
+Full suite: **431 passed** (up from 411), 8 skipped.
+
+### Operator action after merge
+
+Redeploy Railway. After bootstrap, Val/Gene RiskBooks will pick
+up their real Alpaca paper equity (~$99K), notional caps will be
+~$198K each, and Val/Gene entries will no longer reject on
+`notional_cap`. The new monitor invariants will alert on either
+zero-cap or phantom IN_POS conditions going forward.
+
+For the AAPL phantom IN_POS specifically: after redeploy the
+v10 state is in-memory only and resets to a clean session, so
+the phantom IN_POS resolves automatically. If it recurs, the
+new invariant will file a GH issue with the FSM-vs-book details.
+
+---
+
 ## v7.75.0 (2026-05-11) -- Monitor: 4 cross-check invariants for independent state analysis
 
 Operator request: the dashboard monitor was largely structural

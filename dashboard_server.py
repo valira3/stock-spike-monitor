@@ -368,69 +368,15 @@ _PORTFOLIO_BLOCK_STUB = {
 # caller falls back to the legacy ``portfolio_equity_floor + day_pnl``
 # math. Snapshots are cached ~30s per pid to keep /api/state polling
 # (every 2s on the dashboard) from hammering Alpaca.
-_ALPACA_ACCT_CACHE: dict = {}
-_ALPACA_ACCT_TTL_S = 30.0
+# v7.76.0 -- _ALPACA_ACCT_CACHE / _ALPACA_ACCT_TTL_S moved to
+# engine/portfolio_equity.py alongside alpaca_account_for_book().
 
 
-def _alpaca_account_for_book(pid: str) -> dict | None:
-    """Fetch (cached) Alpaca paper account for a book.
-
-    Resolves ``<PID>_ALPACA_PAPER_KEY`` and ``<PID>_ALPACA_PAPER_SECRET``
-    from env (case-insensitive on the pid \u2014 we uppercase). Returns a
-    dict with ``equity``, ``cash``, ``last_equity`` (all float) and
-    ``buying_power`` if the call succeeds. Returns ``None`` when:
-      - either env var is missing/blank
-      - the alpaca-py import fails
-      - the API call raises
-      - the account is blocked
-
-    Callers MUST treat ``None`` as "no live equity available, fall back".
-
-    Cached for ``_ALPACA_ACCT_TTL_S`` seconds per pid; cache stores
-    successful snapshots only \u2014 failures are NOT cached so a
-    transient Alpaca blip recovers on the next poll.
-    """
-    if not pid:
-        return None
-    pid_norm = str(pid).strip().lower()
-    if not pid_norm or pid_norm == "main":
-        # main never uses this path; it reads m.paper_cash directly.
-        return None
-
-    now = time.monotonic()
-    cached = _ALPACA_ACCT_CACHE.get(pid_norm)
-    if cached is not None:
-        ts, snap = cached
-        if (now - ts) < _ALPACA_ACCT_TTL_S:
-            return snap
-
-    pid_up = pid_norm.upper()
-    key = (os.getenv("%s_ALPACA_PAPER_KEY" % pid_up, "") or "").strip()
-    secret = (os.getenv("%s_ALPACA_PAPER_SECRET" % pid_up, "") or "").strip()
-    # Treat trivially-short values (e.g. ``GENE_ALPACA_KEY=' '``) as unset.
-    if len(key) < 8 or len(secret) < 16:
-        return None
-
-    try:
-        from alpaca.trading.client import TradingClient as _ATC  # type: ignore
-        tc = _ATC(key, secret, paper=True)
-        acct = tc.get_account()
-        if getattr(acct, "account_blocked", False):
-            return None
-        snap = {
-            "equity": float(getattr(acct, "equity", 0) or 0),
-            "cash": float(getattr(acct, "cash", 0) or 0),
-            "last_equity": float(getattr(acct, "last_equity", 0) or 0),
-            "buying_power": float(getattr(acct, "buying_power", 0) or 0),
-        }
-        _ALPACA_ACCT_CACHE[pid_norm] = (now, snap)
-        return snap
-    except Exception as exc:
-        logger.debug(
-            "[v7.0.2] alpaca account fetch failed for %s: %s: %s",
-            pid_norm, type(exc).__name__, str(exc)[:120],
-        )
-        return None
+# v7.76.0 -- alpaca account snapshot lookup moved to
+# engine/portfolio_equity.py so engine/scan.py can reuse the same
+# cached fetch for RiskBook equity seeding (Val/Gene). The wrapper
+# below preserves the legacy name + signature for in-file callers.
+from engine.portfolio_equity import alpaca_account_for_book as _alpaca_account_for_book  # noqa: E402,F401
 
 
 def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> dict:
