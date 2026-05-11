@@ -242,6 +242,23 @@ class RiskBook:
             self._open_notional = max(0.0, self._open_notional - existing.notional)
             return True
 
+    def release_by_id(self, ticket_id: str) -> bool:
+        """v7.81.0 -- release a ticket by id when the caller doesn't
+        hold the original ticket reference. Used by the v10 admit-
+        rollback path in `orb.live_runtime.rollback_admit`.
+
+        Returns True if a ticket was found and released, False otherwise.
+        """
+        if not ticket_id:
+            return False
+        with self._lock:
+            existing = self._open_tickets.pop(str(ticket_id), None)
+            if existing is None:
+                return False
+            self._open_risk = max(0.0, self._open_risk - existing.risk_dollars)
+            self._open_notional = max(0.0, self._open_notional - existing.notional)
+            return True
+
     def reset_session(self) -> None:
         """Clear all open tickets. Call at session start to defensively
         clear any stale tickets that may have leaked across a restart.

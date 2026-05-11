@@ -497,3 +497,91 @@ class TestRefreshEquityFromBooks:
         assert abs(rb_val.equity - 99273.10) < 0.01
         # max_notional = equity * 2.0 = $198K -- entries no longer reject.
         assert abs(rb_val.max_notional - 198546.20) < 0.01
+
+
+# ---------------------------------------------------------------------
+# rollback_admit (v7.81.0)
+# ---------------------------------------------------------------------
+
+
+class TestRollbackAdmit:
+    """v7.81.0 -- when the downstream broker call early-returns without
+    populating tg.positions, rollback the v10 admit so the FSM doesn't
+    stick at IN_POS (phantom IN_POS pattern caught by inv_v10_in_pos_
+    has_internal_position in v7.76.0+)."""
+
+    def test_no_op_when_not_bootstrapped(self, isolated_env):
+        # Without bootstrap, rollback is a safe no-op.
+        assert live_runtime.rollback_admit("main", "AAPL", "x", "test") is False
+
+    def test_rolls_back_fsm_to_armed_and_releases_ticket(self, isolated_env):
+        live_runtime.bootstrap()
+        live_runtime.ensure_session_started(
+            date_iso="2026-05-11", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        eng = live_runtime.get_engine()
+        rb = eng._risk.get("main")
+        ds = eng._state.get_day_state("main", "AAPL")
+        # Manually transition to IN_POS + reserve ticket (simulates the
+        # state after try_enter admitted but before broker call ran).
+        ticket = rb.try_admit(risk_dollars=500.0, notional=10000.0)
+        assert ticket is not None
+        from orb import state as _state
+        ds.transition(_state.PHASE_ARMED)  # need to start from ARMED to go IN_POS legally
+        ds.transition(_state.PHASE_IN_POS)
+        ds.in_position = True
+        # Sanity
+        assert ds.phase == _state.PHASE_IN_POS
+        assert rb.open_count == 1
+        # Rollback
+        ok = live_runtime.rollback_admit("main", "AAPL", ticket.ticket_id,
+                                         reason="test")
+        assert ok is True
+        # FSM should be back at ARMED
+        assert ds.phase == _state.PHASE_ARMED
+        assert ds.in_position is False
+        # RiskBook ticket should be released
+        assert rb.open_count == 0
+        assert rb.open_risk == 0.0
+        assert rb.open_notional == 0.0
+
+    def test_rollback_safe_when_no_ticket_id(self, isolated_env):
+        """If we lost the ticket id but still want to undo the FSM,
+        the helper should at least flip the phase back."""
+        live_runtime.bootstrap()
+        live_runtime.ensure_session_started(
+            date_iso="2026-05-11", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        eng = live_runtime.get_engine()
+        ds = eng._state.get_day_state("main", "AAPL")
+        from orb import state as _state
+        ds.transition(_state.PHASE_ARMED)
+        ds.transition(_state.PHASE_IN_POS)
+        ds.in_position = True
+
+        ok = live_runtime.rollback_admit("main", "AAPL", "", reason="no-id")
+        assert ok is True  # FSM was rolled back even without ticket id
+        assert ds.phase == _state.PHASE_ARMED
+
+    def test_rollback_no_op_when_fsm_not_in_pos(self, isolated_env):
+        """If FSM is already ARMED (or any non-IN_POS state) and the
+        ticket id is unknown, rollback is a complete no-op."""
+        live_runtime.bootstrap()
+        live_runtime.ensure_session_started(
+            date_iso="2026-05-11", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        ok = live_runtime.rollback_admit("main", "AAPL", "no-such-id",
+                                         reason="nothing-to-undo")
+        assert ok is False

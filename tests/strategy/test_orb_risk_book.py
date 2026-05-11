@@ -235,3 +235,40 @@ class TestRiskBookRegistry:
         reg.reset_all_sessions()
         assert reg.get("main").open_count == 0
         assert reg.get("val").open_count == 0
+
+
+class TestReleaseByIdV781:
+    """v7.81.0 -- release_by_id(ticket_id) supports the rollback path
+    in orb.live_runtime.rollback_admit where the caller no longer holds
+    the original ticket object (e.g. engine/scan.py keeps only the
+    string ticket_id from CheckEntryResult)."""
+
+    def test_release_by_id_frees_budget(self):
+        rb = RiskBook(portfolio_id="main", max_concurrent_risk_dollars=2000.0,
+                      equity=100000.0)
+        ticket = rb.try_admit(risk_dollars=500.0, notional=10000.0)
+        assert ticket is not None
+        # Release by id only -- no ticket reference
+        ok = rb.release_by_id(ticket.ticket_id)
+        assert ok
+        assert rb.open_risk == 0.0
+        assert rb.open_notional == 0.0
+        assert rb.open_count == 0
+
+    def test_release_by_id_unknown_returns_false(self):
+        rb = RiskBook(portfolio_id="main", max_concurrent_risk_dollars=2000.0,
+                      equity=100000.0)
+        assert rb.release_by_id("never-existed") is False
+
+    def test_release_by_id_empty_string_returns_false(self):
+        rb = RiskBook(portfolio_id="main", max_concurrent_risk_dollars=2000.0,
+                      equity=100000.0)
+        assert rb.release_by_id("") is False
+
+    def test_release_by_id_idempotent(self):
+        rb = RiskBook(portfolio_id="main", max_concurrent_risk_dollars=2000.0,
+                      equity=100000.0)
+        ticket = rb.try_admit(risk_dollars=500.0, notional=10000.0)
+        assert rb.release_by_id(ticket.ticket_id) is True
+        # Second call returns False (ticket no longer in dict).
+        assert rb.release_by_id(ticket.ticket_id) is False

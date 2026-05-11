@@ -853,7 +853,7 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
 def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
                                 price: float, shares: int,
                                 callbacks: "EngineCallbacks | None" = None,
-                                ) -> None:
+                                ) -> bool:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
     Production-safe rollout: gated on BOTH ORB_LIVE_MODE and
@@ -868,6 +868,11 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
     v7.30.0: also routes broker submit failures (e.g. Alpaca 5xx) to
     callbacks.report_error so Telegram/dashboard see them instead of
     only the log file.
+
+    v7.81.0: returns True iff a broker order was actually submitted.
+    Callers use this to know whether to roll back the v10 admit on
+    the FSM + RiskBook -- otherwise a deferred / suppressed / failed
+    fire leaves the admit dangling as a phantom IN_POS.
     """
     if not _orb_runtime.is_live_mode_on():
         logger.info(
@@ -875,14 +880,14 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             "(ORB_LIVE_MODE=0; kill switch active)",
             pid, side, ticker,
         )
-        return
+        return False
     if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
             "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
             pid, side, ticker,
         )
-        return
+        return False
     try:
         from executors.bootstrap import get_executor
         ex = get_executor(pid)
@@ -902,14 +907,14 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
                 )
             except Exception:
                 logger.exception("[V79-ORB-FIRE] report_error failed")
-        return
+        return False
     if ex is None:
         logger.info(
             "[V79-ORB-FIRE] %s %s %s -- no executor instance "
             "(keys unset); admission tracked only",
             pid, side, ticker,
         )
-        return
+        return False
 
     # v7.30.0: error callback escalates broker submit failures (5xx,
     # timeouts, connection drops) through the standard report_error
@@ -943,6 +948,7 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
             pid, side, ticker, int(shares), ok,
         )
+        return bool(ok)
     except Exception as e:
         # v7.32.0: ERROR-level (was WARNING) since this is an executor
         # bug (not a broker error -- those are escalated via the
@@ -965,6 +971,7 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
                 )
             except Exception:
                 logger.exception("[V79-ORB-FIRE] report_error failed")
+        return False
 
 
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
@@ -1022,8 +1029,17 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 # callbacks.execute_entry path today. Val/Gene execution
                 # wiring is a follow-up PR.
                 if pid == "main":
+                    _fired_main = False
                     try:
                         callbacks.execute_entry(ticker, result.price)
+                        # v7.81.0 -- verify the broker call actually
+                        # populated tg.positions. execute_breakout has
+                        # ~10 early-return gates (daily loss, cutoff,
+                        # cooldown, insufficient cash, ...) that each
+                        # skip the tg.positions write without raising.
+                        # If the write didn't land, roll back the v10
+                        # admit so the FSM doesn't stick at IN_POS.
+                        _fired_main = ticker in getattr(tg, "positions", {})
                     except Exception as e:
                         callbacks.report_error(
                             executor="main",
@@ -1032,12 +1048,32 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                             summary=f"ORB long entry exception: {ticker}",
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
+                    if not _fired_main:
+                        try:
+                            _orb_runtime.rollback_admit(
+                                pid, ticker, result.ticket_id,
+                                reason="execute_entry early-returned without populating tg.positions",
+                            )
+                        except Exception:
+                            pass
                 else:
-                    _v10_dispatch_executor_fire(
+                    _fired_other = _v10_dispatch_executor_fire(
                         pid=pid, side="long", ticker=ticker,
                         price=result.price, shares=result.shares,
                         callbacks=callbacks,
                     )
+                    # v7.81.0 -- if the executor's broker fire was
+                    # deferred (ORB_PORTFOLIO_FIRE=0 mirror mode) or
+                    # the executor wasn't available, roll back the
+                    # admit so Val/Gene FSM doesn't stick IN_POS.
+                    if not _fired_other:
+                        try:
+                            _orb_runtime.rollback_admit(
+                                pid, ticker, result.ticket_id,
+                                reason="executor broker-fire deferred or unavailable",
+                            )
+                        except Exception:
+                            pass
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] long %s portfolio=%s reason=%s",
@@ -1082,8 +1118,11 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 except Exception:
                     pass
                 if pid == "main":
+                    _fired_main_s = False
                     try:
                         callbacks.execute_short_entry(ticker, result.price)
+                        # v7.81.0 -- post-check tg.short_positions
+                        _fired_main_s = ticker in getattr(tg, "short_positions", {})
                     except Exception as e:
                         callbacks.report_error(
                             executor="main",
@@ -1092,12 +1131,28 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                             summary=f"ORB short entry exception: {ticker}",
                             detail=f"{type(e).__name__}: {str(e)[:200]}",
                         )
+                    if not _fired_main_s:
+                        try:
+                            _orb_runtime.rollback_admit(
+                                pid, ticker, result.ticket_id,
+                                reason="execute_short_entry early-returned without populating tg.short_positions",
+                            )
+                        except Exception:
+                            pass
                 else:
-                    _v10_dispatch_executor_fire(
+                    _fired_other_s = _v10_dispatch_executor_fire(
                         pid=pid, side="short", ticker=ticker,
                         price=result.price, shares=result.shares,
                         callbacks=callbacks,
                     )
+                    if not _fired_other_s:
+                        try:
+                            _orb_runtime.rollback_admit(
+                                pid, ticker, result.ticket_id,
+                                reason="executor broker-fire deferred or unavailable",
+                            )
+                        except Exception:
+                            pass
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] short %s portfolio=%s reason=%s",
