@@ -4,6 +4,91 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.63.0 (2026-05-11) -- Val/Gene v10 ORB card matches Main framing + Main trades double-count fix
+
+Operator: "Val tab doesn't seem to match to Main (for example
+number of trades available). Audit Val and Gene tabs and
+autocorrect."
+
+Audit found two distinct bugs, fixed together.
+
+### Bug 1: Val/Gene used the legacy v7.41.0 trades-gauge framing
+
+Main panel switched to the per-ticker-cap framing in v7.57.0:
+  - Label: `Trades today (cap 5/ticker)`
+  - Value: `N total · top ticker M/5`
+
+Val/Gene `renderV10PerPortfolio` was never updated and still used
+the original v7.41.0 framing:
+  - Label: `Trades`
+  - Value: `N / 5 (X%)`
+
+The X/5 form misled the same way Main's old form did -- the cap is
+per (ticker, portfolio, day), not per book.
+
+**Fix**: `renderV10PerPortfolio` now uses the identical label and
+value format as Main. The per-ticker breakdown is computed from
+`execData.trades_today` (a list of trade dicts, each tagged with a
+ticker) when available; falls back to v10 `day_states` per-ticker
+counts. Header `count` chip updated to `· N today` matching Main.
+
+### Bug 2: Main was double-counting broker_trades_today
+
+The v7.50.0 backend writes `broker_trades_today` (the book total)
+**redundantly onto every day_state row** of a pid. The Main
+renderer in `renderV10DayStatus` was summing `_tradesForDs(ds)`
+across rows, multiplying the total by the ticker count. With main
+running 3 trades across AAPL + NVDA, Main displayed `6 total`.
+
+The same bug also corrupted `maxTickerPerPid` -- it was treating
+the broker book-total as a per-ticker value, so "top ticker" showed
+the book total (e.g. 3) instead of the actual ticker high-water
+mark (e.g. 2).
+
+**Fix**: split the two computations in `renderV10DayStatus`:
+  - `perPidTrades[pid]`: take `broker_trades_today` **once per pid**
+    (the authoritative book total). Fall back to summing v10
+    `trades_today` per-ticker rows when `broker_trades_today` is
+    absent.
+  - `maxTickerPerPid[pid]`: always use the per-ticker v10
+    `trades_today`. Never the broker book-total.
+
+### Verification
+
+Playwright fixture: main has 2 trades on AAPL + 1 on NVDA (book
+total 3). Val and Gene mirror via the legacy signal bus (each
+broker also has 3 trades, same distribution).
+
+Before this PR:
+  - Main:  `Trades today (cap 5/ticker)  6 total · top ticker 3/5`  ❌
+  - Val:   `Trades  3 / 5 (60%)`                                     ❌
+  - Gene:  `Trades  3 / 5 (60%)`                                     ❌
+
+After this PR:
+  - Main:  `Trades today (cap 5/ticker)  3 total · top ticker 2/5`  ✓
+  - Val:   `Trades today (cap 5/ticker)  3 total · top ticker 2/5`  ✓
+  - Gene:  `Trades today (cap 5/ticker)  3 total · top ticker 2/5`  ✓
+
+### Files
+
+  - `dashboard_static/app.js` -- `renderV10PerPortfolio`
+    (Val/Gene) gets per-ticker counter + new label/value; +
+    `renderV10DayStatus` (Main) double-count fix.
+  - `bot_version.py` / `trade_genius.py` -- 7.62.0 -> 7.63.0
+  - `docs/dashboard_redesign_v2/pr55_screenshots/`
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+### Risk
+
+Pure frontend display fix. No backend change (the redundant
+`broker_trades_today` on every row stays as-is; we just stop
+mis-summing it). No engine path touched.
+
+---
+
 ## v7.62.0 (2026-05-11) -- Visual polish: uniform section gaps on Main panel
 
 Audit follow-up. With all the v10-era cards landed (banner, baseline,
