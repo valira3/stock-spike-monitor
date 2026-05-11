@@ -1,4 +1,4 @@
-"""v5.13.1 \u2014 canonical version constant.
+"""v5.13.1 — canonical version constant.
 
 Mirrored in trade_genius.py for backwards compatibility with the
 version-bump-check CI workflow and existing imports. The preflight.sh

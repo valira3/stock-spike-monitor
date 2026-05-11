@@ -53,10 +53,9 @@ never breaks the exec panel paint.
 
 ### Version
 
-`BOT_VERSION` bumped 7.45.0 -> 7.47.0 (v7.46.0 reserved for the
-dashboard-keystone snapshot that landed on the keystone branch but
-was never merged to main; numbering preserved for traceability).
-Mirrored in `trade_genius.py`.
+`BOT_VERSION` bumped 7.46.0 -> 7.47.0 (mirrored in `trade_genius.py`).
+Builds on PR39 (v7.46.0 hero-zone reorder) which is the immediate
+parent on main.
 
 ### Screenshots
 
@@ -72,6 +71,72 @@ limit" (4/5 trades, 75% risk) and Gene with daily-kill tripped at
   - Sections hide entirely when v10 is not bootstrapped (graceful
     fallback to the legacy Permit-Matrix-only layout).
   - No backend changes -- pure dashboard read.
+
+---
+
+## v7.46.0 (2026-05-11) -- Hero zone reorder + index strip demote
+
+PR39 of the dashboard-redesign loop. Two layout changes that
+re-prioritize what an operator sees first on every page load.
+
+### Hero zone reorder
+
+The Open Positions card now sits **above** the KPI row, immediately
+after the kill-switch banner. Previously the page opened with:
+  index strip > brand > tabs > KPI row > v10 banner > matrix > ...
+                                                      > positions
+making "what am I holding?" require scrolling past 5 cards.
+
+New order:
+  index strip (demoted) > brand > tabs > KPI row > OPEN POSITIONS >
+  KPI row > v10 banner > matrix > activity > ...
+
+(Wait, actually OPEN POSITIONS is now ABOVE the KPI row. Let me
+correct: brand > tabs > kill-banner > OPEN POSITIONS > KPI row >
+v10 banner > matrix > activity > ...)
+
+Operator's first-glance answer ("what am I holding right now?") is
+now resolved in the visible viewport on both desktop and mobile.
+
+### Index strip demoted
+
+The market-indices strip (SPY/QQQ/DIA/IWM/VIX marquee at the very
+top of every page) was previously the visual hero -- 11.5 px text
+in high-contrast `#e7ecf3`, 6 px vertical padding. Operators don't
+trade SPY directly; the strip is context, not headline.
+
+v7.46.0:
+  - font-size 11.5 px -> 10.5 px
+  - color #e7ecf3 -> #9ca3af (dim)
+  - padding 6 px -> 4 px
+
+`.idx-strip-demoted` class added for future CSS targeting; current
+demotion lives inline.
+
+### Coverage
+
+Layout change affects the Main panel only. Val/Gene executor panels
+already had their own per-panel positions card in the
+`execSkeleton` template; PR40 (next) will audit per-portfolio parity
+for ALL the new components (kill banner, gauges, position progress
+bars, broker chip, ticker matrix mobile, activity feed).
+
+### Tests
+
+No backend change → 388 strategy tests still pass. Playwright smoke
+renders desktop (1280) + mobile (390).
+
+Screenshots in `docs/dashboard_redesign_v2/pr39_screenshots/`.
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.45.0 → 7.46.0
+- `dashboard_static/index.html` -- positions section moved above
+  KPI row inside `<main class="main">`; index strip font/color
+  demoted
+- `docs/dashboard_redesign_v2/pr39_screenshots/` -- 2 reference
+  images
+- `CHANGELOG.md`
 
 ---
 
