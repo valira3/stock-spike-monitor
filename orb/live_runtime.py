@@ -67,6 +67,54 @@ _bootstrapped: bool = False
 _bootstrap_lock = threading.RLock()
 _sizes_lock = threading.RLock()
 
+# v7.45.0 -- recent activity ring buffer. Captures the last 50 events
+# (admits, rejects, exits, session_start, day_block, kill) so the
+# dashboard's Activity Feed card can render a unified timeline. Each
+# event is a dict with at least {ts_iso, kind, ticker, pid, detail}.
+# Thread-safe via _activity_lock.
+import collections as _collections
+import datetime as _datetime
+_RECENT_ACTIVITY_MAXLEN = 50
+_recent_activity: _collections.deque = _collections.deque(
+    maxlen=_RECENT_ACTIVITY_MAXLEN)
+_activity_lock = threading.RLock()
+
+
+def _record_activity(*, kind: str, ticker: str = "",
+                     pid: str = "", detail: str = "") -> None:
+    """Append a single event to the recent-activity ring buffer.
+
+    `kind` is one of: session_start | admit | reject | exit |
+    day_block | kill | or_lock. The dashboard activity-feed renderer
+    color-codes by kind.
+    """
+    try:
+        ts_iso = _datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        with _activity_lock:
+            _recent_activity.append({
+                "ts_iso": ts_iso,
+                "kind": kind,
+                "ticker": ticker,
+                "pid": pid,
+                "detail": detail,
+            })
+    except Exception:
+        pass  # never break the trading path
+
+
+def get_recent_activity(limit: int = 20) -> list:
+    """Read the most recent N activity events (newest first)."""
+    with _activity_lock:
+        items = list(_recent_activity)
+    items.reverse()
+    return items[:max(1, min(limit, _RECENT_ACTIVITY_MAXLEN))]
+
+
+def clear_recent_activity() -> None:
+    """For session reset + tests."""
+    with _activity_lock:
+        _recent_activity.clear()
+
 
 def is_live_mode_on() -> bool:
     """True if the ORB_LIVE_MODE env flag is set to "1" (default).
@@ -240,6 +288,19 @@ def ensure_session_started(*, date_iso: str,
         date_iso, vix_close_d1,
         result.block_day, result.block_reason,
     )
+    # v7.45.0: activity-feed event for session start + day-block if any
+    clear_recent_activity()
+    _record_activity(
+        kind="session_start",
+        detail="date " + date_iso + " · VIX_d1=" +
+               (("%.2f" % vix_close_d1) if isinstance(vix_close_d1, (int, float))
+                else "n/a"),
+    )
+    if result.block_day:
+        _record_activity(
+            kind="day_block",
+            detail="day-level gate fired: " + (result.block_reason or "?"),
+        )
     return True
 
 
@@ -370,11 +431,31 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
     a = adapters.get(portfolio_id)
     if a is None:
         return EntryResult(ok=False, reason_no=f"no_adapter:{portfolio_id}")
-    return a.check_entry(
+    result = a.check_entry(
         ticker, side=side,
         five_min_close=five_min_close, next_open=next_open,
         equity=equity, signal_iso=signal_iso,
     )
+    # v7.45.0: record admit / informative-reject in activity feed.
+    # Skip "no_signal" rejects since they fire every tick when no
+    # breakout is happening -- would flood the buffer.
+    try:
+        if result.ok:
+            _record_activity(
+                kind="admit",
+                ticker=ticker, pid=portfolio_id,
+                detail=(side.upper() + " · " + str(int(result.shares or 0))
+                        + " sh @ " + ("%.2f" % (result.price or 0))),
+            )
+        elif result.reason_no and result.reason_no != "no_signal":
+            _record_activity(
+                kind="reject",
+                ticker=ticker, pid=portfolio_id,
+                detail=side.upper() + " · " + (result.reason_no or ""),
+            )
+    except Exception:
+        pass
+    return result
 
 
 def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
@@ -394,11 +475,22 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
     a = adapters.get(portfolio_id)
     if a is None:
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
-    return a.check_exit(
+    result = a.check_exit(
         ticker, ticket_id,
         bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
         bar_bucket_min=bar_bucket_min,
     )
+    if result and result.exit:
+        try:
+            _record_activity(
+                kind="exit",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(result.reason or "") + " @ "
+                        + ("%.2f" % (result.price or 0)),
+            )
+        except Exception:
+            pass
+    return result
 
 
 # v7.18.0: v10 sizing handoff to broker.orders.paper_shares_for.
@@ -465,11 +557,22 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
     a = adapters.get(portfolio_id)
     if a is None:
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
-    return a.check_exit_by_ticker(
+    result = a.check_exit_by_ticker(
         ticker,
         bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
         bar_bucket_min=bar_bucket_min,
     )
+    if result and result.exit:
+        try:
+            _record_activity(
+                kind="exit",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(result.reason or "") + " @ "
+                        + ("%.2f" % (result.price or 0)),
+            )
+        except Exception:
+            pass
+    return result
 
 
 def snapshot() -> dict:
@@ -491,6 +594,8 @@ def snapshot() -> dict:
     snap["bootstrapped"] = True
     snap["live_mode"] = is_live_mode_on()
     snap["session_date"] = session_date
+    # v7.45.0: recent activity feed for the dashboard
+    snap["activity"] = get_recent_activity(limit=25)
     return snap
 
 

@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.45.0 (2026-05-11) -- Recent Activity feed (backend ring buffer + dashboard card)
+
+PR38 of the dashboard-redesign loop. Adds a unified events timeline
+so operators see admit / reject / exit / kill events in real time
+without grepping logs.
+
+### Backend (orb/live_runtime.py)
+
+New 50-event ring buffer (`_recent_activity` deque) + thread-safe
+record/read API:
+  - `_record_activity(*, kind, ticker, pid, detail)` -- internal
+  - `get_recent_activity(limit=20)` -- newest-first
+  - `clear_recent_activity()` -- session reset + tests
+
+Hooked into:
+  - `ensure_session_started` -> `session_start` + `day_block`
+    (when VIX/earnings/gap fires)
+  - `check_entry` -> `admit` (when ok) or `reject` (when reason_no
+    is not "no_signal" -- filters out the per-tick no-breakout noise)
+  - `check_exit` and `check_exit_by_ticker` -> `exit` when result.exit
+
+Surfaced in `snapshot()["activity"]` (newest first, 25 events).
+
+### Frontend (`renderV10ActivityFeed`)
+
+New card `#v10-activity-section` between the Ticker Matrix and the
+Open Positions. Each event renders as a row:
+
+`14:38  AAPL  [ADMIT]  main  LONG · 742 sh @ 101.00`
+
+Color-coded kind chips:
+  - `session_start` -- purple
+  - `admit` -- green
+  - `exit` -- blue
+  - `reject` -- gray
+  - `kill` -- red
+  - `day_block` -- dark red
+  - `or_lock` -- blue tint
+
+### Mobile
+
+Rows wrap to two lines under 720 px: chips + ticker + time on row 1,
+detail on row 2 (indented). Long reject reasons stay readable.
+
+### Tests
+
+9 new tests in `tests/strategy/test_orb_activity_feed.py`:
+  - empty buffer initially
+  - single event recording
+  - newest-first order
+  - ring buffer caps at 50 (drops oldest)
+  - clear_recent_activity wipes
+  - get_recent honors limit
+  - session_start records session event
+  - VIX>22 records both session_start AND day_block
+  - snapshot includes activity
+
+**388 strategy tests pass** (was 379, +9 new).
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.44.0 → 7.45.0
+- `orb/live_runtime.py` -- `_recent_activity` deque + lock +
+  `_record_activity` + `get_recent_activity` +
+  `clear_recent_activity` + hooks in `ensure_session_started`,
+  `check_entry`, `check_exit`, `check_exit_by_ticker` +
+  `snapshot()` exposes `activity`
+- `dashboard_static/index.html` -- `<section id="v10-activity-section">`
+- `dashboard_static/app.js` -- `renderV10ActivityFeed` +
+  `window.__tgRenderV10ActivityFeed` export + wire-up in renderAll
+- `dashboard_static/app.css` -- `#v10-act-list`, `.act-row`,
+  `.act-kind-*` color chips + mobile media
+- `tests/strategy/test_orb_activity_feed.py` -- new (9 tests)
+- `docs/dashboard_redesign_v2/pr38_screenshots/` -- 2 reference images
+- `CHANGELOG.md`
+
+---
+
 ## v7.44.0 (2026-05-11) -- v10 Ticker Matrix mobile card stack + hidden-bug fix
 
 PR37 of the dashboard-redesign loop. Two outcomes:
