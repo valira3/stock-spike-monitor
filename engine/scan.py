@@ -419,10 +419,22 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                 from engine.portfolio_book import (
                     PORTFOLIOS, ALL_PORTFOLIO_IDS,
                 )
+                from engine.portfolio_equity import resolve_equity
                 _eq = {}
                 for pid in ALL_PORTFOLIO_IDS:
                     book = PORTFOLIOS.get(pid)
-                    if book is not None:
+                    if book is None:
+                        continue
+                    # v7.76.0 -- route through resolve_equity so Val/Gene
+                    # books pick up their Alpaca account equity instead
+                    # of book.current_equity() returning 0 (paper_cash
+                    # defaults to 0 and is never bridged for non-main
+                    # books). Pre-v7.76.0 Val/Gene RiskBook.equity was
+                    # always 0, which produced a notional cap of 0 and
+                    # rejected every entry with risk_reject:notional_cap.
+                    try:
+                        _eq[pid] = resolve_equity(pid)
+                    except Exception:
                         try:
                             _eq[pid] = book.current_equity()
                         except Exception:
