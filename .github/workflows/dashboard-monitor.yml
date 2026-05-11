@@ -1,0 +1,78 @@
+name: dashboard-monitor
+
+# RTH live-dashboard validator. Polls the production dashboard's read
+# endpoints every 5 min during US market hours and runs a battery of
+# invariants. On violation:
+#   - Posts a Telegram alert to TELEGRAM_ADMIN_CHAT_ID
+#   - Files a GitHub issue with full diagnostic context (tagged @claude
+#     so the Claude Code GitHub app drafts a fix PR)
+#
+# All side effects are read-only against production. The monitor never
+# writes back to the bot.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   DASHBOARD_BASE_URL          e.g. https://tradegenius.up.railway.app
+#   DASHBOARD_SESSION_SECRET    hex; same value the live bot uses for
+#                               DASHBOARD_SESSION_SECRET env var on Railway
+#   TELEGRAM_BOT_TOKEN          existing TG bot token (reused from the bot)
+#   TELEGRAM_ADMIN_CHAT_ID      chat id to post alerts to
+#
+# Built-in GITHUB_TOKEN handles the issue-filing scope (issues: write).
+#
+# Manual run: Actions -> dashboard-monitor -> Run workflow (button up
+# top right). Useful for dry-run validation before relying on the cron.
+
+on:
+  schedule:
+    # Cron is UTC. US RTH = 09:30 -> 16:00 ET.
+    # In EDT (UTC-4): 13:30 -> 20:00 UTC.
+    # In EST (UTC-5): 14:30 -> 21:00 UTC.
+    # Cover the union: 13:30 UTC -> 21:00 UTC, Mon-Fri.
+    # GHA cron uses 5-field syntax; */5 13-20 covers 13:00, 13:05, ...,
+    # 20:55. The first poll at 13:00 might be before EDT open (09:00 ET),
+    # but the invariants short-circuit when v10 isn't in RTH (mode=PRE
+    # etc.) so they pass cheaply.
+    - cron: "*/5 13-20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run -- print diagnostics, no Telegram/issue side effects"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # Don't pile up monitor runs if a long one is still going.
+  group: dashboard-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Run dashboard monitor
+        env:
+          DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_BASE_URL }}
+          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MONITOR_DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '' }}
+        run: |
+          python -m tools.dashboard_monitor
