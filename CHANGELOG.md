@@ -4,6 +4,87 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.64.0 (2026-05-11) -- Fix v10 Backtest Baseline "Live $0 / Δ -100%" bug
+
+Operator reported the v10 Backtest Baseline card showing "Live $0
+Δ -100.00%" in red while the headline Equity KPI on the same page
+read $99,552.28. Discrepancy was confusing and visually alarming.
+
+### Root cause
+
+The "Live $X / Δ Y%" pair is sourced from `/api/v10/projection`,
+which calls `PortfolioBook.current_equity()` on the new portfolio
+registry (`engine/portfolio_book.py`, introduced in the v7.0.x
+multi-book refactor). That registry's Main book sometimes returns 0
+for `paper_cash` (sync from `tg._ssm().paper_cash` doesn't always
+fire in time, especially early in the boot cycle / outside RTH).
+
+So the backend was emitting:
+  - `live_balance = 0`
+  - `live_growth_pct = -100.0`  (= (0 - 100000) / 100000 × 100)
+
+Meanwhile the Equity KPI on the same page reads
+`s.portfolio.equity` from `/api/state`, which is computed via
+`_equity(paper_cash, longs, shorts, prices)` using
+`tg._ssm().paper_cash` directly -- the authoritative source.
+
+### Fix
+
+Frontend `renderV10Projection` now sources the live balance and
+growth from `window.__tgLastState.portfolio.equity` (same source as
+the Equity KPI tile) instead of trusting `payload.live_balance`.
+Falls back to the payload value only when the state hasn't loaded
+yet. Single source of truth, both tiles always match.
+
+Also bumped the refresh cadence: previously the baseline card only
+refreshed every 60s (the projection-endpoint poll). Now it
+re-renders on every state tick via a `window.__tgRefreshV10Baseline`
+hook called from `applyState`. The "Live $X" and "Δ Y%" pair now
+tracks the Equity KPI in real time.
+
+### Verification
+
+Playwright fixture: backend returns the buggy `live_balance=0` and
+`live_growth_pct=-100.0`. State returns `portfolio.equity=99552.28`
+and `portfolio.start=100000`.
+
+Before this PR:
+  - Live: `$0`
+  - Δ: `-100.00%` (red)
+
+After this PR:
+  - Live: `$99,552` (matches Equity KPI exactly)
+  - Δ: `-0.45%` (red, correct math: (99552-100000)/100000)
+
+### Files
+
+  - `dashboard_static/app.js` -- `renderV10Projection` reads from
+    state instead of payload; new `window.__tgRefreshV10Baseline`
+    hook + applyState wiring.
+  - `bot_version.py` / `trade_genius.py` -- 7.63.0 -> 7.64.0
+  - `docs/dashboard_redesign_v2/pr56_screenshots/main_baseline_fixed.png`
+
+### Note on backend
+
+The underlying `PortfolioBook.current_equity() == 0` issue in
+`h_v10_projection` is left in place for now -- it's a v7.0.x
+portfolio-book registry sync bug that affects only this single
+backend endpoint. The frontend override makes the dashboard work
+correctly regardless. Anyone querying `/api/v10/projection`
+directly (no other production consumer today) still sees the
+backend value; a follow-up backend PR can repair the sync in the
+portfolio registry.
+
+### Risk
+
+Pure frontend display fix. No backend change. No engine path
+touched. The frontend's preference order is: state.portfolio.equity
+(authoritative) -> payload.live_balance (legacy backend, may be 0).
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+---
+
 ## v7.63.0 (2026-05-11) -- Val/Gene v10 ORB card matches Main framing + Main trades double-count fix
 
 Operator: "Val tab doesn't seem to match to Main (for example

@@ -3219,6 +3219,14 @@
       if (typeof window.__tgRenderV10ProximityMatrix === "function")
         window.__tgRenderV10ProximityMatrix(s);
     } catch (e) { /* never break Main */ }
+    // v7.64.0 -- re-render v10 Backtest Baseline with the cached
+    // /api/v10/projection payload so the "Live $X / Δ Y%" pair tracks
+    // window.__tgLastState.portfolio.equity in real time instead of
+    // waiting 60s for the next projection poll.
+    try {
+      if (typeof window.__tgRefreshV10Baseline === "function")
+        window.__tgRefreshV10Baseline();
+    } catch (e) { /* never break Main */ }
     // v7.58.0 -- legacy render calls retired:
     //   renderWeatherCheck, renderPermitMatrix (Tiger Sovereign Phase
     //   1-4 cards; their HTML was removed from index.html)
@@ -6085,9 +6093,32 @@
     setText("v10-proj-sharpe", p.sharpe_ann == null ? "—" : p.sharpe_ann.toFixed(2));
     setText("v10-proj-mdd", fmtPct(p.max_drawdown_pct, 2));
     setText("v10-proj-wr", p.win_rate_pct == null ? "—" : p.win_rate_pct.toFixed(1) + "%");
-    setText("v10-proj-live-balance", fmtMoney(p.live_balance));
-    var growth = p.live_growth_pct;
-    setText("v10-proj-growth", fmtPct(growth, 2));
+    // v7.64.0 -- "Live $0 / Δ -100%" bug fix. /api/v10/projection
+    // backend calls PortfolioBook.current_equity() which returns 0 if
+    // the new portfolio_book registry isn't initialized (a known v7.x
+    // edge case during boot or in certain harness configs). The
+    // headline Equity KPI uses tg._ssm().paper_cash + MTM via
+    // _equity() and is always correct; mirror that source here.
+    var liveBal = null;
+    var startBal = (typeof p.starting_balance === "number") ? p.starting_balance : null;
+    try {
+      var s = window.__tgLastState;
+      var eq = s && s.portfolio && s.portfolio.equity;
+      if (typeof eq === "number" && eq > 0) liveBal = eq;
+      var startK = s && s.portfolio && s.portfolio.start;
+      if (typeof startK === "number" && startK > 0) startBal = startK;
+    } catch (e) { /* fall through to payload value */ }
+    if (liveBal == null && typeof p.live_balance === "number" && p.live_balance > 0) {
+      liveBal = p.live_balance;
+    }
+    setText("v10-proj-live-balance", liveBal == null ? "—" : fmtMoney(liveBal));
+    var growth = null;
+    if (liveBal != null && startBal != null && startBal > 0) {
+      growth = 100.0 * (liveBal - startBal) / startBal;
+    } else if (typeof p.live_growth_pct === "number") {
+      growth = p.live_growth_pct;
+    }
+    setText("v10-proj-growth", growth == null ? "—" : fmtPct(growth, 2));
     var growthEl = document.getElementById("v10-proj-growth");
     if (growthEl) {
       growthEl.style.color = growth == null
@@ -6096,13 +6127,29 @@
     }
   }
 
-  // 60-second poll for /api/v10/projection. Live-balance changes don't
-  // need to be sub-second; the keystone numbers are static.
+  // 60-second poll for /api/v10/projection. The static keystone numbers
+  // don't change; live balance + growth are now sourced from
+  // window.__tgLastState in renderV10Projection (v7.64.0) so they
+  // refresh on every state tick, not just every 60s.
+  // v7.64.0 -- cache the last payload + expose a refresh hook for the
+  // applyState path to call with the cached payload so the live pair
+  // tracks the Equity KPI in real time.
+  var _v10ProjLastPayload = null;
+  if (typeof window !== "undefined") {
+    window.__tgRefreshV10Baseline = function () {
+      if (_v10ProjLastPayload) {
+        try { renderV10Projection(_v10ProjLastPayload); } catch (e) {}
+      }
+    };
+  }
   (function initV10ProjectionPoll() {
     var run = function () {
       fetch("/api/v10/projection", { credentials: "same-origin" })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (p) { try { renderV10Projection(p); } catch (e) {} })
+        .then(function (p) {
+          if (p) _v10ProjLastPayload = p;
+          try { renderV10Projection(p); } catch (e) {}
+        })
         .catch(function () { /* silent */ });
     };
     run();
