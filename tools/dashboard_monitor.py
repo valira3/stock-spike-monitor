@@ -1,6 +1,7 @@
-"""tools.dashboard_monitor -- RTH live dashboard validator.
+"""tools.dashboard_monitor -- live dashboard validator.
 
-Periodically (every 5 min during US RTH) hits the live production
+Periodically (every 5 min during US premarket + RTH; see
+.github/workflows/dashboard-monitor.yml) hits the live production
 dashboard's read endpoints, runs a battery of invariants against the
 responses, and on any violation:
 
@@ -10,13 +11,14 @@ responses, and on any violation:
     mention so the Claude Code GitHub app can auto-draft a fix PR.
 
 The monitor itself is read-only against production -- it never writes
-back to the bot. It mints its own session cookie via the same
-HMAC_SHA256 scheme dashboard_server uses for browser sessions, given
-the shared DASHBOARD_SESSION_SECRET (stored as a GHA secret).
+back to the bot. v7.68.0: authenticates by POSTing to /login with the
+operator's DASHBOARD_PASSWORD, capturing the spike_session cookie from
+the 302 response, and reusing that cookie on subsequent GETs. Matches
+the same auth flow a human operator uses in the browser.
 
 Usage:
     DASHBOARD_BASE_URL=https://tradegenius.up.railway.app \\
-    DASHBOARD_SESSION_SECRET=<hex32> \\
+    DASHBOARD_PASSWORD=<password> \\
     TELEGRAM_BOT_TOKEN=<token> \\
     TELEGRAM_ADMIN_CHAT_ID=<chat-id> \\
     GH_TOKEN=<pat-with-issues:write> \\
@@ -25,80 +27,124 @@ Usage:
 
 Env vars (all required except where noted):
     DASHBOARD_BASE_URL          e.g. https://tradegenius.up.railway.app
-    DASHBOARD_SESSION_SECRET    hex; same value the live bot uses
+    DASHBOARD_PASSWORD          login password (>= 8 chars); same value the
+                                live bot has under DASHBOARD_PASSWORD env
     TELEGRAM_BOT_TOKEN          existing bot token
     TELEGRAM_ADMIN_CHAT_ID      chat-id to post alerts (numeric or @handle)
     GH_TOKEN                    PAT or workflow GITHUB_TOKEN with issues:write
     GH_REPO                     owner/repo, e.g. valira3/stock-spike-monitor
-    MONITOR_DRY_RUN             optional; "1" disables Telegram + GH issue side
-                                effects (prints diagnostics only). Useful for
-                                local debugging.
+    MONITOR_DRY_RUN             optional; "1" disables Telegram + GH issue
+                                side effects (prints diagnostics only).
     MONITOR_LABEL               optional issue label (default: "dashboard-monitor")
 
 Exit codes:
     0  all invariants passed (or violations were filed successfully)
-    1  hard failure (couldn't reach dashboard, secret missing, etc.)
+    1  hard failure (login failure, secret missing, etc.)
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import os
-import struct
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from tools.dashboard_monitor_invariants import INVARIANTS, InvariantContext
 
 logger = logging.getLogger("dashboard_monitor")
 
 
-# ---------------------------------------------------------------------------
-# Session cookie minting (mirrors dashboard_server._check_auth + _mint_session)
-# ---------------------------------------------------------------------------
-
 SESSION_COOKIE_NAME = "spike_session"
 
 
-def mint_session_cookie(secret_hex: str) -> str:
-    """Build a fresh HMAC-signed session cookie value.
-
-    Matches dashboard_server._mint_session:
-        cookie = hex(HMAC_SHA256(secret, big-endian uint64 timestamp)) + ":" + ts
-    """
-    try:
-        secret = bytes.fromhex(secret_hex.strip())
-    except ValueError as e:
-        raise RuntimeError(f"DASHBOARD_SESSION_SECRET is not valid hex: {e}")
-    if len(secret) < 32:
-        raise RuntimeError(
-            f"DASHBOARD_SESSION_SECRET too short ({len(secret)} bytes, need >= 32)"
-        )
-    ts = int(time.time())
-    sig = hmac.new(secret, struct.pack(">Q", ts), hashlib.sha256).hexdigest()
-    return f"{sig}:{ts}"
-
-
 # ---------------------------------------------------------------------------
-# Dashboard HTTP client
+# Dashboard HTTP client -- login + cookie reuse
 # ---------------------------------------------------------------------------
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Block urllib from auto-following the /login 302 so we can read
+    the Set-Cookie header off the response."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 class DashboardClient:
-    def __init__(self, base_url: str, session_cookie: str, timeout: float = 15.0):
+    """Browser-shape login client.
+
+    POSTs the password form-encoded to /login, captures the
+    spike_session cookie from the 302 response, then re-uses it on
+    subsequent GETs. Mirrors what an operator's browser does.
+
+    The CSRF check on /login requires Origin/Referer to match the
+    Host (when either is present). We send a matching Origin so the
+    check passes.
+    """
+
+    def __init__(self, base_url: str, password: str, timeout: float = 15.0):
         self.base_url = base_url.rstrip("/")
-        self.cookie = f"{SESSION_COOKIE_NAME}={session_cookie}"
+        self.password = password
         self.timeout = timeout
+        self._cookie_value: str | None = None
+        parsed = urlparse(self.base_url)
+        self._origin = f"{parsed.scheme}://{parsed.netloc}"
+        self._host = parsed.netloc
+
+    def login(self) -> None:
+        if self._cookie_value is not None:
+            return
+        url = self.base_url + "/login"
+        body = urllib.parse.urlencode({"password": self.password}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": self._origin,
+                "Referer": self._origin + "/",
+                "User-Agent": "tg-dashboard-monitor/7.68.0",
+            },
+        )
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            opener.open(req, timeout=self.timeout)
+            raise RuntimeError("Expected /login to return a 302, got 200")
+        except urllib.error.HTTPError as e:
+            if e.code != 302:
+                if e.code == 401:
+                    raise RuntimeError("/login returned 401 -- DASHBOARD_PASSWORD wrong?")
+                if e.code == 429:
+                    raise RuntimeError("/login rate-limited (429) -- retry in 60s")
+                raise RuntimeError(f"/login returned unexpected status {e.code}")
+            set_cookies = e.headers.get_all("Set-Cookie") or []
+            for c in set_cookies:
+                if c.startswith(SESSION_COOKIE_NAME + "="):
+                    val = c.split(";", 1)[0]
+                    self._cookie_value = val.split("=", 1)[1]
+                    return
+            raise RuntimeError("/login 302 had no spike_session Set-Cookie header")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"/login request failed: {e.reason}")
 
     def get_json(self, path: str) -> dict:
+        if self._cookie_value is None:
+            raise RuntimeError("Not logged in; call login() first")
         url = self.base_url + path
-        req = urllib.request.Request(url, headers={"Cookie": self.cookie})
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Cookie": f"{SESSION_COOKIE_NAME}={self._cookie_value}",
+                "User-Agent": "tg-dashboard-monitor/7.68.0",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 if r.status != 200:
@@ -168,7 +214,7 @@ def file_github_issue(
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main
 # ---------------------------------------------------------------------------
 
 
@@ -197,9 +243,9 @@ def _format_violation_issue(
         f"at {ts_iso}"
     )
     body_lines = [
-        "Automated detection from the RTH live-dashboard monitor",
-        f"(`tools/dashboard_monitor.py`). Hit `{base_url}` and ran"
-        f" {len(violations)} invariant violation(s) against the response.",
+        "Automated detection from the live-dashboard monitor",
+        f"(`tools/dashboard_monitor.py`). Hit `{base_url}` and observed"
+        f" {len(violations)} invariant violation(s).",
         "",
         "## Violations",
         "",
@@ -221,7 +267,7 @@ def _format_violation_issue(
             "```bash",
             "# Re-run the monitor locally against production:",
             f"DASHBOARD_BASE_URL={base_url} \\",
-            "DASHBOARD_SESSION_SECRET=<hex> \\",
+            "DASHBOARD_PASSWORD=<password> \\",
             "MONITOR_DRY_RUN=1 \\",
             "python -m tools.dashboard_monitor",
             "```",
@@ -237,63 +283,7 @@ def _format_violation_issue(
     return title, "\n".join(body_lines)
 
 
-def run_once() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    base_url = _require_env("DASHBOARD_BASE_URL")
-    secret = _require_env("DASHBOARD_SESSION_SECRET")
-    dry_run = os.environ.get("MONITOR_DRY_RUN", "").strip() == "1"
-
-    try:
-        cookie = mint_session_cookie(secret)
-    except RuntimeError as e:
-        logger.error("Session secret invalid: %s", e)
-        return 1
-
-    client = DashboardClient(base_url, cookie)
-
-    # Fetch the four core endpoints.
-    payloads: dict[str, Any] = {}
-    for name, path in [
-        ("state", "/api/state"),
-        ("exec_val", "/api/executor/val"),
-        ("exec_gene", "/api/executor/gene"),
-        ("v10_proj", "/api/v10/projection"),
-    ]:
-        try:
-            payloads[name] = client.get_json(path)
-            logger.info("fetched %s ok (%d bytes)", path, len(json.dumps(payloads[name])))
-        except RuntimeError as e:
-            logger.error("fetch %s failed: %s", path, e)
-            # Treat a fetch failure as a violation too -- something
-            # serious is wrong with production if /api/state is down.
-            payloads[name] = {"_fetch_error": str(e)}
-
-    ctx = InvariantContext(payloads=payloads, base_url=base_url)
-    violations: list[dict] = []
-    for inv in INVARIANTS:
-        try:
-            result = inv(ctx)
-        except Exception as e:
-            result = {
-                "name": getattr(inv, "__name__", "<unknown>"),
-                "ok": False,
-                "summary": f"invariant raised: {e}",
-                "detail": "",
-            }
-        if not result.get("ok"):
-            violations.append(result)
-            logger.warning("VIOLATION: %s -- %s", result.get("name"), result.get("summary"))
-        else:
-            logger.info("OK: %s", result.get("name"))
-
-    if not violations:
-        logger.info("all %d invariants passed", len(INVARIANTS))
-        return 0
-
-    # Alert
+def _emit_alerts(violations: list[dict], base_url: str, dry_run: bool) -> None:
     ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
@@ -318,6 +308,70 @@ def run_once() -> int:
     else:
         logger.warning("GH credentials missing; skipping issue filing")
 
+
+def run_once() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    base_url = _require_env("DASHBOARD_BASE_URL")
+    password = _require_env("DASHBOARD_PASSWORD")
+    dry_run = os.environ.get("MONITOR_DRY_RUN", "").strip() == "1"
+
+    client = DashboardClient(base_url, password)
+    try:
+        client.login()
+        logger.info("login ok against %s", base_url)
+    except RuntimeError as e:
+        logger.error("login failed: %s", e)
+        violations = [
+            {
+                "name": "login",
+                "ok": False,
+                "summary": f"login failed: {e}",
+                "detail": "",
+            }
+        ]
+        _emit_alerts(violations, base_url, dry_run)
+        return 1
+
+    payloads: dict[str, Any] = {}
+    for name, path in [
+        ("state", "/api/state"),
+        ("exec_val", "/api/executor/val"),
+        ("exec_gene", "/api/executor/gene"),
+        ("v10_proj", "/api/v10/projection"),
+    ]:
+        try:
+            payloads[name] = client.get_json(path)
+            logger.info("fetched %s ok (%d bytes)", path, len(json.dumps(payloads[name])))
+        except RuntimeError as e:
+            logger.error("fetch %s failed: %s", path, e)
+            payloads[name] = {"_fetch_error": str(e)}
+
+    ctx = InvariantContext(payloads=payloads, base_url=base_url)
+    violations: list[dict] = []
+    for inv in INVARIANTS:
+        try:
+            result = inv(ctx)
+        except Exception as e:
+            result = {
+                "name": getattr(inv, "__name__", "<unknown>"),
+                "ok": False,
+                "summary": f"invariant raised: {e}",
+                "detail": "",
+            }
+        if not result.get("ok"):
+            violations.append(result)
+            logger.warning("VIOLATION: %s -- %s", result.get("name"), result.get("summary"))
+        else:
+            logger.info("OK: %s", result.get("name"))
+
+    if not violations:
+        logger.info("all %d invariants passed", len(INVARIANTS))
+        return 0
+
+    _emit_alerts(violations, base_url, dry_run)
     return 0
 
 
