@@ -1949,13 +1949,8 @@
     gap: 5px;
     padding: 6px 8px;
   }
-  /* Remove the extra margin-left on the TO chip so it doesn't double
-     up with the new 5px row gap. */
-  #tg-brand-row.tg-brand-row #tg-cooldown-chip {
-    margin-left: 0;
-  }
-  /* Slightly shrink the clock so HH:MM fits even with TO + L pills
-     on the same line. */
+  /* v7.58.0 -- #tg-cooldown-chip rule removed (chip retired in this PR). */
+  /* Slightly shrink the clock so HH:MM fits even on small viewports. */
   #tg-brand-row.tg-brand-row #tg-brand-clock {
     font-size: 12.5px;
   }
