@@ -4489,11 +4489,30 @@
       </div>
     </section>
 
+    <!-- v7.55.0 -- v10 Proximity card on Val/Gene tabs (mirrors the
+         Main panel card from v7.52.0). Same renderer, same scope (the
+         v10 universe is market-wide), but the per-pid phase chips
+         filter to this portfolio. Click any row to expand the intraday
+         chart with OR overlays + entry/exit markers. -->
+    <section class="grid" data-f="v10-prox-section-pid">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="Distance from current price to OR break levels. Click any row to expand the intraday chart.">v10 Proximity &middot; ${label}<span class="count" data-f="v10-prox-pid-count">\u2014</span></span>
+          <span class="chip" data-f="v10-prox-pid-summary">\u2014</span>
+        </div>
+        <div class="card-body flush" data-f="v10-prox-pid-body">
+          <div class="empty">Waiting for v10 universe...</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.20.0 \u2014 Weather Check banner (Phase 1 Sovereign verdict) sits BELOW Open positions
-         so the operator sees held risk first and the new-entry permit second. -->
-    <section class="pmtx-weather-section" aria-label="Phase 1 weather check">
+         so the operator sees held risk first and the new-entry permit second.
+         v7.55.0 -- tagged legacy-v10-hidden so this collapses on Val/Gene
+         once the v10 runtime is live, mirroring the v7.27.0 Main treatment. -->
+    <section class="pmtx-weather-section legacy-v10-hidden" aria-label="Phase 1 weather check">
       <div class="pmtx-weather pmtx-weather-pending" data-f="pmtx-weather">
-        <div class="pmtx-weather-icon" data-f="pmtx-weather-icon" aria-hidden="true">\u00B7</div>
+        <div class="pmtx-weather-icon" data-f="pmtx-weather-icon" aria-hidden="true">\u00b7</div>
         <div class="pmtx-weather-body">
           <div class="pmtx-weather-eyebrow">Weather check \u00b7 Phase 1 Sovereign</div>
           <div class="pmtx-weather-verdict" data-f="pmtx-weather-verdict">Waiting for permit state\u2026</div>
@@ -4503,7 +4522,7 @@
       </div>
     </section>
 
-    <section class="grid">
+    <section class="grid legacy-v10-hidden">
       <div class="card">
         <div class="card-head">
           <span class="card-title" title="Per-Titan view of the Tiger Sovereign v15.0 entry checklist (market-wide \u2014 same data as Main).">Permit Matrix<span class="count" data-f="pmtx-count">\u00b7 \u2014</span></span>
@@ -4587,6 +4606,18 @@
     var pid = name; // "val" or "gene" maps directly to portfolio_id
     var section = execField(panel, "v10-pid-section");
     var actSection = execField(panel, "v10-pid-activity-section");
+    var proxSection = execField(panel, "v10-prox-section-pid");
+
+    // v7.55.0 -- proximity card stays visible across all states
+    // (matches Main panel behaviour from v7.54.0). The other v10
+    // sections still hide when v10 isn't bootstrapped, but proximity
+    // can still surface the universe + current prices pre-bootstrap.
+    if (s && s.v10) {
+      try { renderV10ProximityForPanel(s, panel, pid); }
+      catch (e) { /* never break exec render */ }
+    } else if (proxSection) {
+      proxSection.style.display = "none";
+    }
 
     if (!v10 || v10.available === false || !v10.bootstrapped) {
       if (section) section.style.display = "none";
@@ -6261,6 +6292,45 @@
   // signed distance %. FSM phase per pid (main/val/gene) as mini
   // chips. Sorted by absolute distance (closest-to-break first).
   function renderV10ProximityMatrix(s) {
+    var section = document.getElementById("v10-proximity-section");
+    if (!section) return;
+    // v7.54.0 -- always visible (see comment in _renderV10ProximityCore)
+    section.style.display = "";
+    _renderV10ProximityCore(s, {
+      body: document.getElementById("v10-prox-body"),
+      countEl: document.getElementById("v10-prox-count"),
+      summaryEl: document.getElementById("v10-prox-summary"),
+      expandedKey: "main",
+      pidFilter: null,
+      rerender: function () { renderV10ProximityMatrix(s); },
+    });
+  }
+
+  // v7.55.0 -- per-portfolio variant. Renders the same proximity card
+  // into the Val/Gene exec panel section added in v7.55.0
+  // (data-f="v10-prox-section-pid"). Phase chips are filtered to just
+  // the panel's pid so the card stays focused on what THIS book is
+  // doing. OR data + distance are market-wide so they're shared.
+  function renderV10ProximityForPanel(s, panel, pid) {
+    if (!panel || !pid) return;
+    var section = panel.querySelector('[data-f="v10-prox-section-pid"]');
+    if (!section) return;
+    section.style.display = "";
+    _renderV10ProximityCore(s, {
+      body: panel.querySelector('[data-f="v10-prox-pid-body"]'),
+      countEl: panel.querySelector('[data-f="v10-prox-pid-count"]'),
+      summaryEl: panel.querySelector('[data-f="v10-prox-pid-summary"]'),
+      expandedKey: "panel-" + pid,
+      pidFilter: pid,
+      rerender: function () { renderV10ProximityForPanel(s, panel, pid); },
+    });
+  }
+
+  // v7.55.0 -- shared row builder + DOM writer extracted out of
+  // renderV10ProximityMatrix so the per-pid panels (Val/Gene) can reuse
+  // the same logic with a different target body and an optional pid
+  // filter on the phase chips.
+  function _renderV10ProximityCore(s, opts) {
     function esc(v) {
       return String(v == null ? "" : v)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -6268,23 +6338,9 @@
         .replace(/'/g, "&#39;");
     }
     var v10 = (s && s.v10) || {};
-    var section = document.getElementById("v10-proximity-section");
-    if (!section) return;
-
-    // v7.54.0 -- the card stays visible across all three lifecycle states:
-    //   (1) v10 not bootstrapped (premarket / engine warmup):
-    //       show the universe from s.tickers with current prices,
-    //       OR cells as "—", phase chips as "WARMUP".
-    //   (2) v10 bootstrapped, OR not locked yet (~09:30-10:00 ET):
-    //       same shape but the per-pid phase chips reflect day_states.
-    //   (3) v10 bootstrapped + OR locked: full proximity calc.
-    // Before this PR the card hid itself in (1) and (2), leaving the
-    // operator with only the legacy "Waiting for permit data..." card.
-    section.style.display = "";
-
-    var body = document.getElementById("v10-prox-body");
-    var countEl = document.getElementById("v10-prox-count");
-    var summaryEl = document.getElementById("v10-prox-summary");
+    var body = opts.body;
+    var countEl = opts.countEl;
+    var summaryEl = opts.summaryEl;
     var orWindows = v10.or_windows || {};
     var dayStates = v10.day_states || [];
     var prices = v10.prices || {};
@@ -6403,12 +6459,17 @@
 
     // v7.53.0 -- track which tickers are expanded across renders so the
     // table can be rebuilt every state tick without collapsing the
-    // operator's open detail rows. Module-level so it survives the
-    // re-render but resets on page refresh.
-    if (!renderV10ProximityMatrix._expanded) {
-      renderV10ProximityMatrix._expanded = {};
+    // operator's open detail rows. Module-level + keyed by panel
+    // (Main / Val / Gene) so each panel's expansion state is
+    // independent. Resets on page refresh.
+    if (!_renderV10ProximityCore._expanded) {
+      _renderV10ProximityCore._expanded = {};
     }
-    var expanded = renderV10ProximityMatrix._expanded;
+    var expandedKey = opts.expandedKey || "main";
+    if (!_renderV10ProximityCore._expanded[expandedKey]) {
+      _renderV10ProximityCore._expanded[expandedKey] = {};
+    }
+    var expanded = _renderV10ProximityCore._expanded[expandedKey];
 
     var html = '<div class="v10-prox-table-wrap"><table class="v10-prox-table">';
     html += '<thead><tr>'
@@ -6424,7 +6485,10 @@
     rows.forEach(function (r) {
       var widthPct = (typeof r.or_width_pct === "number")
                       ? (r.or_width_pct * 100).toFixed(2) + "%" : "—";
-      var pids = ["main", "val", "gene"];
+      // v7.55.0 -- pidFilter restricts the chip list to a single pid
+      // for the per-portfolio panels (Val/Gene). Main passes null and
+      // gets all three.
+      var pids = opts.pidFilter ? [opts.pidFilter] : ["main", "val", "gene"];
       var chips = pids
         .filter(function (p) { return r.phases[p]; })
         .map(function (p) { return _phaseChip(p, r.phases[p]); })
@@ -6484,8 +6548,8 @@
       if (!tk) return;
       if (expanded[tk]) { delete expanded[tk]; }
       else { expanded[tk] = true; }
-      // Re-render. Cheap; only this card paints.
-      renderV10ProximityMatrix(s);
+      // Re-render via the panel-specific callback.
+      if (typeof opts.rerender === "function") opts.rerender();
     };
   }
 
