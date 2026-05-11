@@ -186,12 +186,26 @@ def inv_val_gene_trades_match_main(ctx):
     )
     try:
         from tools.railway_log_tail import grep_logs, format_log_slice
-        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]", limit=1000, max_matches=40)
+        # v7.85.0 -- limit raised 1000 -> 3000 so we span a wider time
+        # window. The bot logs at ~50 lines/min during RTH; 3000 lines
+        # covers ~1 hour, which catches any Main fire from the last
+        # cron tick / monitor cycle even if Main was quiet recently.
+        # Also added the [SIGNAL-BUS-*] section so we can audit "did
+        # emit fire?" / "did dispatch fire?" vs the receiver side.
+        bus_slice = grep_logs(r"\[SIGNAL-BUS-(EMIT|DISPATCH)\]",
+                              limit=3000, max_matches=40)
+        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]",
+                                 limit=3000, max_matches=40)
         alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]",
-                               limit=1000, max_matches=20)
+                               limit=3000, max_matches=20)
         alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]",
-                                limit=1000, max_matches=20)
+                                limit=3000, max_matches=20)
         log_sections: list[str] = []
+        if bus_slice:
+            log_sections.append(
+                "### Railway [SIGNAL-BUS-*] slice (emit + dispatch counts)\n\n"
+                "```\n" + format_log_slice(bus_slice, max_lines=40) + "\n```"
+            )
         if mirror_slice:
             log_sections.append(
                 "### Railway [V79-MIRROR-*] slice (signal-bus receipts)\n\n"

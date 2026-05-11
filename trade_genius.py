@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.84.0"
+BOT_VERSION = "7.85.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -332,6 +332,13 @@ def _emit_signal(event: dict) -> None:
 
     Async fire-and-forget: main's paper book never blocks on Alpaca.
     Per-listener exceptions are logged but never break the bus.
+
+    v7.85.0 -- emits [SIGNAL-BUS-EMIT] (once per call, with kind+ticker)
+    and [SIGNAL-BUS-DISPATCH] (once per listener) forensic logs so the
+    dashboard monitor's grep can audit "did emit fire?" vs "did
+    dispatch fire?" vs "did the listener's _on_signal run?". Pre-
+    v7.85.0 the bus produced no log on the happy path, only on
+    listener exceptions, making mirror-bus drift undebuggable.
     """
     # v5.5.7 \u2014 capture the latest event for the Main-tab LAST SIGNAL
     # card before dispatching, so even a listener-less moment (or a
@@ -352,6 +359,11 @@ def _emit_signal(event: dict) -> None:
     # mutate what we iterate. Held under the same lock as registration.
     with _signal_listeners_lock:
         listeners = list(_signal_listeners)
+    # v7.85.0 -- one EMIT log per event, INFO level.
+    logger.info(
+        "[SIGNAL-BUS-EMIT] kind=%s ticker=%s n_listeners=%d",
+        event.get("kind", ""), event.get("ticker", ""), len(listeners),
+    )
     if not listeners:
         return
 
@@ -366,6 +378,12 @@ def _emit_signal(event: dict) -> None:
             )
 
     for fn in listeners:
+        # v7.85.0 -- one DISPATCH log per listener, before thread start.
+        logger.info(
+            "[SIGNAL-BUS-DISPATCH] kind=%s ticker=%s listener=%s",
+            event.get("kind", ""), event.get("ticker", ""),
+            getattr(fn, "__qualname__", repr(fn)),
+        )
         threading.Thread(
             target=_wrap, args=(fn, event), daemon=True,
         ).start()
