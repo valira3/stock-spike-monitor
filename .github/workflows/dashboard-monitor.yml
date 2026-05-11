@@ -11,11 +11,12 @@ name: dashboard-monitor
 # writes back to the bot.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions).
-# v7.66.0: workflow uses the operator's existing GHA secret names; the
-# Python script's internal env var names are mapped via this workflow.
+# v7.68.0: auth is now via the dashboard's login form (POST /login with
+# DASHBOARD_PASSWORD), matching the operator's browser flow. All four
+# secrets below use the operator's existing GHA names.
 #   DASHBOARD_URL               e.g. https://tradegenius.up.railway.app
-#   DASHBOARD_SESSION_SECRET    hex; same value the live bot uses for
-#                               DASHBOARD_SESSION_SECRET env var on Railway
+#   DASHBOARD_PASSWORD          same login password the live bot has on
+#                               Railway under DASHBOARD_PASSWORD env
 #   TELEGRAM_TP_TOKEN           existing TG bot token (reused from the bot)
 #   TELEGRAM_TP_CHAT_ID         chat id to post alerts to
 #
@@ -70,11 +71,11 @@ jobs:
 
       - name: Run dashboard monitor
         env:
-          # v7.66.0 -- map operator's existing GHA secret names onto the
-          # script's internal env var contract. Keeps tools/dashboard_monitor.py
-          # provider-agnostic (it can be run locally with any naming).
+          # v7.68.0 -- auth is via POST /login with DASHBOARD_PASSWORD,
+          # matching the browser flow. Operator's existing GHA secret
+          # names map to the script's neutral env var contract here.
           DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_URL }}
-          DASHBOARD_SESSION_SECRET: ${{ secrets.DASHBOARD_SESSION_SECRET }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_TP_TOKEN }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_TP_CHAT_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,6 +4,75 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.68.0 (2026-05-11) -- Monitor auth switched to POST /login with DASHBOARD_PASSWORD
+
+Operator clarified the auth shape: the production dashboard uses
+the `DASHBOARD_PASSWORD` login flow (form POST + cookie response),
+not a separate HMAC session secret. v7.65.0's monitor assumed the
+shared-HMAC-secret path which would only have worked if the bot
+exposed the raw session secret -- it doesn't.
+
+### Fix
+
+`tools/dashboard_monitor.py` rewrote its auth path:
+
+  - Removed `mint_session_cookie()` (the HMAC-from-secret helper).
+  - New `DashboardClient.login()` POSTs `password=<DASHBOARD_PASSWORD>`
+    to `/login` with `Origin` + `Referer` headers matching `Host`
+    (satisfies the dashboard's CSRF check), captures the
+    `spike_session=<token>` Set-Cookie off the 302 response, and
+    reuses it on subsequent GETs.
+  - Handles 401 (wrong password), 429 (rate-limited), and
+    `URLError` (DNS / connection refused) with clear error messages.
+
+The workflow's env block now maps `secrets.DASHBOARD_PASSWORD` to
+the script's `DASHBOARD_PASSWORD` env var. All four required
+secrets are now in the operator's existing GHA naming:
+
+  | Workflow secret | Script env var |
+  |---|---|
+  | `DASHBOARD_URL` | `DASHBOARD_BASE_URL` |
+  | `DASHBOARD_PASSWORD` | `DASHBOARD_PASSWORD` |
+  | `TELEGRAM_TP_TOKEN` | `TELEGRAM_BOT_TOKEN` |
+  | `TELEGRAM_TP_CHAT_ID` | `TELEGRAM_ADMIN_CHAT_ID` |
+
+All four were already present per the operator's GHA secrets
+list -- no new secrets to add. The monitor is ready to run after
+this PR merges.
+
+### Files
+
+  - `tools/dashboard_monitor.py` -- rewrote login flow, dropped
+    HMAC mint helper
+  - `.github/workflows/dashboard-monitor.yml` -- env map updated to
+    `DASHBOARD_PASSWORD`
+  - `docs/dashboard_monitor_setup.md` -- secret-name table + local
+    testing block updated
+  - `bot_version.py` / `trade_genius.py` -- 7.67.0 -> 7.68.0
+
+### Verification
+
+Local dry-run with bogus DNS target:
+
+```
+login failed: /login request failed: [Errno -2] Name or service not known
+Telegram credentials missing; skipping TG alert
+GH credentials missing; skipping issue filing
+```
+
+Error paths cleanly bubble (URLError, HTTPError 401/429/other,
+missing Set-Cookie) and the alert sinks skip safely under
+`MONITOR_DRY_RUN=1`. `pytest tests/strategy/` -- 388 passed,
+8 skipped.
+
+### Risk
+
+Read-only against production (just `POST /login` + `GET` reads).
+The monitor never writes back to the bot. Side effects (Telegram +
+GH issue) remain external.
+
+---
+
 ## v7.67.0 (2026-05-11) -- Dashboard monitor extended to premarket hours
 
 Operator: "Can you update it to start running during premarket hours?"

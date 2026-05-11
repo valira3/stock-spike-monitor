@@ -7,8 +7,9 @@ Shipped in **v7.65.0**. Live RTH validator for the production dashboard.
 Every 5 minutes during US premarket + RTH (Mon-Fri, 08:00-20:55 UTC -- spans ~04:00-16:55 ET DST-safe; v7.67.0) a
 GitHub Actions cron job runs `tools/dashboard_monitor.py`, which:
 
-1. Hits the production read endpoints with an HMAC-signed session
-   cookie minted from `DASHBOARD_SESSION_SECRET`:
+1. Logs into the dashboard by POST /login with `DASHBOARD_PASSWORD`
+   (same auth flow the operator's browser uses), captures the
+   `spike_session` cookie, and hits the read endpoints with it:
      - `GET /api/state`
      - `GET /api/executor/val`
      - `GET /api/executor/gene`
@@ -31,16 +32,17 @@ repository secret**:
 
 | Secret | Value |
 |---|---|
-| `DASHBOARD_URL` | `https://tradegenius.up.railway.app` (no trailing slash). Operator already has this secret -- the workflow reads it. |
-| `DASHBOARD_SESSION_SECRET` | Hex; same value the live bot has on Railway under `DASHBOARD_SESSION_SECRET`. Must be ≥ 32 bytes hex (= 64 hex chars). **Add this one if missing.** |
-| `TELEGRAM_TP_TOKEN` | Existing TG bot token. Operator already has this secret. |
-| `TELEGRAM_TP_CHAT_ID` | Chat id to post alerts. Operator already has this secret. |
+| `DASHBOARD_URL` | `https://tradegenius.up.railway.app` (no trailing slash). Operator already has this. |
+| `DASHBOARD_PASSWORD` | The login password — same value the live bot has on Railway under `DASHBOARD_PASSWORD`. Operator already has this. |
+| `TELEGRAM_TP_TOKEN` | Existing TG bot token. Operator already has this. |
+| `TELEGRAM_TP_CHAT_ID` | Chat id to post alerts. Operator already has this. |
 
-The Python script itself uses neutral env names (`DASHBOARD_BASE_URL`,
-`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`); the workflow maps the
-operator's GHA secret names to those via the `env:` block in
-`.github/workflows/dashboard-monitor.yml`. To run locally with
-different naming, just set the script env names directly (see
+All four secrets per the operator's existing GHA naming. The Python
+script itself uses neutral env names (`DASHBOARD_BASE_URL`,
+`DASHBOARD_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`);
+the workflow maps the operator's GHA secret names to those via the
+`env:` block in `.github/workflows/dashboard-monitor.yml`. To run
+locally with different naming, set the script env names directly (see
 **Local testing** at the bottom).
 
 `GITHUB_TOKEN` for issue filing is provided automatically by the
@@ -123,7 +125,7 @@ To temporarily disable monitoring:
 
 ```bash
 DASHBOARD_BASE_URL=https://tradegenius.up.railway.app \
-DASHBOARD_SESSION_SECRET=<hex> \
+DASHBOARD_PASSWORD=<password> \
 MONITOR_DRY_RUN=1 \
 python -m tools.dashboard_monitor
 ```
