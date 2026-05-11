@@ -241,6 +241,66 @@ def inv_val_gene_trades_match_main(ctx):
     )
 
 
+def inv_signal_bus_has_listeners(ctx):
+    """v7.90.0 -- the signal bus must have at least one subscriber
+    whenever any executor is enabled.
+
+    Each enabled executor (Val, Gene, ...) calls
+    `tg.register_signal_listener(self._on_signal)` from its `start()`
+    method. If startup fails before that line runs, the bus is empty
+    and Main's `_emit_signal` calls fire into the void. Today
+    (pre-v7.90.0) the only signal this was happening was the
+    val_gene_trades_match_main invariant flipping hours later -- the
+    bus itself was opaque from outside the process.
+
+    v7.90.0 adds `signal_bus_status()` in trade_genius.py, surfaced on
+    /api/state.signal_bus, and this invariant asserts the listener
+    count matches the enabled-executor count. A mismatch is the
+    smoking-gun for "Val/Gene started but failed to subscribe."
+    """
+    s = _state(ctx)
+    if not s:
+        return _ok("signal_bus_has_listeners", "skipped: state missing")
+    bus = s.get("signal_bus") or {}
+    n_listeners = int(bus.get("n_listeners") or 0)
+    names = list(bus.get("names") or [])
+    val = _exec(ctx, "val")
+    gene = _exec(ctx, "gene")
+    expected_listeners = 0
+    if val and val.get("enabled") is not False:
+        expected_listeners += 1
+    if gene and gene.get("enabled") is not False:
+        expected_listeners += 1
+    if expected_listeners == 0:
+        return _ok("signal_bus_has_listeners",
+                   "skipped: no enabled executors")
+    if n_listeners >= expected_listeners:
+        return _ok("signal_bus_has_listeners")
+    detail = (
+        "Main emits signals through trade_genius._emit_signal so that "
+        "Val/Gene executors (and any future subscribers) can mirror "
+        "fills onto Alpaca. The bus is populated by each executor's "
+        "start() method via register_signal_listener. A listener "
+        "count below the enabled-executor count means the bus is "
+        "leaking signals -- Main fires, no executor mirrors. "
+        "Usual root causes: executor process crashed before start() "
+        "completed; register_signal_listener raised silently; a "
+        "post-deploy module reload dropped the listener list "
+        "(in-memory state). Inspect the bot's startup log for "
+        "[Val] started / [Gene] started and 'signal_bus: listener "
+        "registered' lines from trade_genius.py."
+    )
+    return _fail(
+        "signal_bus_has_listeners",
+        (
+            f"signal-bus subscribers={n_listeners} but expected "
+            f">={expected_listeners} (val/gene enabled). "
+            f"Registered: {names!r}"
+        ),
+        detail,
+    )
+
+
 def inv_top_ticker_within_cap(ctx):
     """No (pid, ticker) day_state may have trades_today > max_trades_per_day."""
     v10 = _v10(ctx)
@@ -875,6 +935,7 @@ INVARIANTS = [
     inv_v10_live_mode_on_during_rth,
     inv_equity_matches_baseline,
     inv_val_gene_trades_match_main,
+    inv_signal_bus_has_listeners,
     inv_top_ticker_within_cap,
     inv_open_risk_within_cap,
     inv_or_window_well_formed,
