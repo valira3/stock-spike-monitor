@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.95.0 (2026-05-11) -- Bump Railway log-grep window 3000 → 10000 lines
+
+Today's first trade-replay run (2026-05-11.md on the `trade-replay-archive` branch) showed 7 closed positions with $865.95 net P&L — but the Railway log slice that should have accompanied them came back empty:
+
+```
+## Railway log slice (forensic)
+(no matching log lines in recent Railway window)
+```
+
+That's despite a `[TRADE_CLOSED]` line MUST exist for each of those 7 closes — they're emitted by `broker.orders.close_breakout`. The same empty-window pattern showed up in dashboard-monitor issues #575/#577/#579 at 18:55–19:22 ET, all reporting `status=ok` from the v7.91.0 probe but zero `[SIGNAL-BUS-*]` matches.
+
+Root cause is window size, not missing logs. The bot's post-RTH log rate is dominated by scan-loop heartbeats and idle gating — roughly 10-20 lines/min. The previous 3000-line cap therefore only covered ~2-3 hours of post-RTH activity, which doesn't reach back to RTH-window trades when the monitor runs after-hours.
+
+### Fix
+
+Bumped the `grep_logs(..., limit=)` calls from **3000 → 10000** in two places, plus matching `max_matches` bumps so we don't truncate the wider grep:
+
+| Call site | Before | After |
+|---|---|---|
+| `inv_val_gene_trades_match_main` → `[SIGNAL-BUS-(EMIT\|DISPATCH)]` | 3000 / 40 | **10000 / 100** |
+| `inv_val_gene_trades_match_main` → `[V79-MIRROR-\w+]` | 3000 / 40 | **10000 / 100** |
+| `inv_val_gene_trades_match_main` → `[Val] [ALPACA-*]` | 3000 / 20 | **10000 / 50** |
+| `inv_val_gene_trades_match_main` → `[Gene] [ALPACA-*]` | 3000 / 20 | **10000 / 50** |
+| `tools/trade_replay.py` log slice | 3000 / 80 | **10000 / 200** |
+
+10000 lines covers approximately:
+- 8 hours of post-RTH idle activity (sufficient to reach back into RTH from a 19:00 ET replay run)
+- 3-5 hours of active RTH activity (sufficient to span an entire trading day during early-evening runs)
+
+`inv_railway_logs_clean` keeps `limit=500` — it scans for recent failure traces only, so a wider window doesn't help.
+
+### Files
+
+- `tools/dashboard_monitor_invariants.py` — 4 grep calls bumped
+- `tools/trade_replay.py` — 1 grep call bumped
+- `bot_version.py` / `trade_genius.py` — `7.94.0` → `7.95.0`
+
+---
+
 ## v7.94.0 (2026-05-11) -- trade-replay archive branch (programmatic retrieval)
 
 v7.93.0's trade-replay workflow wrote the markdown to `$GITHUB_STEP_SUMMARY` and uploaded it as a 30-day-retention artifact. Both surfaces are operator-friendly (you click through the Actions tab to read them) but neither is reachable through the GitHub Contents API the way a checked-in file is — so a Claude Code session has no way to pull the report after the fact without the operator pasting it.

@@ -222,9 +222,14 @@ def _maybe_log_slice() -> str | None:
         logger.warning("railway_log_tail import failed: %s", exc)
         return None
     try:
+        # v7.95.0 -- limit raised 3000 -> 10000 so the slice reaches
+        # back through a full trading day even when the report runs
+        # after-hours. 3000 lines only covered ~2-3h of post-RTH
+        # idle activity; a replay run at 19:00 ET wouldn't capture
+        # any of the day's [TRADE_CLOSED] / [SIGNAL-BUS-EMIT] lines.
         rows = grep_logs(
             r"\[(ENTRY|TRADE_CLOSED|V79-ORB-EXIT|V10-FIRE|SIGNAL-BUS-EMIT|V79-MIRROR-RECV)\]",
-            limit=3000, max_matches=80,
+            limit=10000, max_matches=200,
         )
     except Exception as exc:
         logger.warning("grep_logs raised: %s", exc)
