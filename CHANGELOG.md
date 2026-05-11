@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.91.0 (2026-05-11) -- Scheduled PR + dashboard-monitor watchdog
+
+Operator request: a scheduled job that catches (a) PRs sitting green
+but unmerged and (b) new dashboard-monitor issues, surfacing both
+through a single notification surface during the operator's active
+hours.
+
+Pre-v7.91.0 the only persistent monitor was `dashboard-monitor.yml`,
+which checks live-state invariants but ignores PR CI. We've been
+relying on the operator's eyeball to notice when a green PR sits
+unmerged — and on the rare days the operator misses it, the alert
+backlog (the val_gene_trades_match_main and no_phantom_positions
+violations from 2026-05-11 are a current example) keeps building
+without anyone shipping the fix.
+
+### Added
+
+- `.github/workflows/pr-watchdog.yml` — scheduled at `2-57/5 13-20 *
+  * 1-5` (every 5 minutes, 13:00–20:57 UTC, Mon-Fri). The UTC window
+  covers 8 AM CT through 4 PM ET year-round; GitHub cron has no DST
+  awareness so the union of CDT (Mar-Nov) and CST (Nov-Mar) windows
+  is used.
+- `tools/pr_watchdog.py` — pure-stdlib Python watchdog. Each cycle:
+  1. Lists open non-draft PRs; classifies each via `_classify_pr`
+     as `green_unmerged` (all checks success + mergeable_state=clean
+     + not merged) or `failing_check` (any check completed with
+     conclusion=failure).
+  2. Lists open `dashboard-monitor`-labeled issues; reports any
+     whose number is higher than the `last_seen_monitor_issue:`
+     marker stored in the tracking issue body.
+  3. If anything actionable, opens a new `pr-watchdog`-labeled
+     tracking issue or appends a comment to the existing one. The
+     comment carries a `<!-- watchdog-cycle:HH:MM ET -->` HTML
+     marker so cycles are visually scannable.
+  4. If nothing actionable, closes the tracking issue with an
+     "all clear" comment. The next finding opens a fresh one.
+- `tests/strategy/test_pr_watchdog_v791.py` — 10 unit tests
+  exercising the classify + render logic (draft / merged / pending
+  / failure / neutral-skipped / mergeable_state edge cases + the
+  comment-body section ordering).
+
+### Design notes
+
+- **No interaction with `dashboard-monitor.yml`.** The two workflows
+  run independently. The existing one continues at `7-57/10 8-20`
+  during 24/7 premarket-through-RTH coverage; this watchdog adds
+  the tighter 5-min RTH cadence + PR surface without changing the
+  existing alert path.
+- **Single-tracking-issue contract.** Multiple cycles in one alert
+  burst append to the same issue rather than spawning N issues.
+  Auto-close on a clean cycle prevents stale "watchdog noise" PRs
+  from accumulating across days.
+- **Pure-stdlib.** No `requests` / `gh` CLI / MCP dependency; the
+  workflow runs `python -m tools.pr_watchdog` with `urllib` against
+  the GitHub REST API. Same auth pattern as
+  `tools/dashboard_monitor.py:file_github_issue`.
+- **Read-only on PRs.** The watchdog NEVER calls
+  `/repos/.../pulls/N/merge`. The user picked the
+  tracking-issue-on-findings option (over auto-merge) so green PRs
+  still wait for explicit human approval.
+
+### Files
+
+- `.github/workflows/pr-watchdog.yml` — new
+- `tools/pr_watchdog.py` — new
+- `tests/strategy/test_pr_watchdog_v791.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.90.0` → `7.91.0`
+
+---
+
 ## v7.90.0 (2026-05-11) -- Signal-bus observability: empty-bus WARN + monitor invariant
 
 The dashboard monitor has been firing the same `val_gene_trades_match_main`

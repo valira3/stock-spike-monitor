@@ -1,0 +1,73 @@
+name: pr-watchdog
+
+# v7.91.0 -- scheduled PR + dashboard-monitor watchdog.
+#
+# Polls every 5 minutes during RTH (8 AM CT / 9 AM ET through 4 PM ET)
+# Mon-Fri and opens / comments on a single `pr-watchdog`-labeled
+# tracking issue when something is actionable:
+#
+#   - Open non-draft PR that is GREEN (all checks success) and
+#     mergeable_state=clean but not merged ("ready, no one merged it")
+#   - Open non-draft PR with a check that completed with failure
+#     ("needs attention")
+#   - New `dashboard-monitor`-labeled issue opened since the last
+#     watchdog run (tracked inside the tracking issue body's
+#     `last_seen_monitor_issue:` marker)
+#
+# When a cycle finds nothing actionable, the script auto-closes the
+# tracking issue. The next finding opens a fresh one.
+#
+# The existing 24/7 dashboard-monitor.yml workflow is unaffected --
+# this watchdog complements it by adding the PR-CI surface and a
+# tighter cadence during the operator's active hours.
+
+on:
+  schedule:
+    # Cron is UTC; GitHub cron has no DST awareness.
+    # Window covers 8 AM CT through 4 PM ET year-round:
+    #   - CDT (Mar-Nov, 8 AM CT = 13:00 UTC, 4 PM ET = 20:00 UTC)
+    #   - CST (Nov-Mar, 8 AM CT = 14:00 UTC, 4 PM ET = 21:00 UTC)
+    # Union: 13:00-21:00 UTC, Mon-Fri. The :02 offset avoids the
+    # top-of-hour scheduling spike that GHA documents as
+    # at-risk-for-skip.
+    - cron: "2-57/5 13-20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run -- log planned actions, do not open/comment"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  # If a long cycle is mid-flight, hold the next one until it returns.
+  # Prevents two cycles racing to open/close the tracking issue.
+  group: pr-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run PR watchdog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          WATCHDOG_DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '' }}
+        run: |
+          python -m tools.pr_watchdog
