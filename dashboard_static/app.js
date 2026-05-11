@@ -55,6 +55,41 @@
     const d = digits ?? (abs < 0.1 ? 3 : 2);
     return (v >= 0 ? "+" : "−") + abs.toFixed(d) + "%";
   }
+
+  // v7.82.0 -- timestamps shown to the operator are converted from
+  // UTC (the storage format) into the BROWSER's local timezone. The
+  // underlying data fields keep their `_utc` / `_iso` names because
+  // the wire format remains UTC ISO-8601; only the rendered text is
+  // local-zone. Chart x-axis math still uses ET buckets (see
+  // utcIsoToEtMin elsewhere in this file) -- this helper is for the
+  // display surfaces operators read directly.
+  function utcIsoToLocalHHMM(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleTimeString([], {
+        hour: "2-digit", minute: "2-digit",
+        timeZoneName: "short",
+      });
+    } catch (e) {
+      return String(iso);
+    }
+  }
+  function utcIsoToLocalFull(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleString([], {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        timeZoneName: "short",
+      });
+    } catch (e) {
+      return String(iso);
+    }
+  }
   function cls(el, add, rm = []) {
     rm.forEach((c) => el.classList.remove(c));
     if (Array.isArray(add)) add.forEach((c) => el.classList.add(c));
@@ -4022,10 +4057,8 @@
         actSummary.textContent = "no events yet";
       } else {
         var first = events[0];
-        var t = first.ts_iso || "";
-        var hhmm = (t && t.indexOf("T") > 0)
-          ? t.split("T")[1].slice(0, 5) + " UTC" : t;
-        actSummary.textContent = "most recent · " + hhmm;
+        // v7.82.0 -- display in browser-local timezone (was raw UTC).
+        actSummary.textContent = "most recent · " + utcIsoToLocalHHMM(first.ts_iso || "");
       }
     }
     var actBody = execField(panel, "v10-pid-act-body");
@@ -4693,8 +4726,9 @@
         if (posEl) {
           const cur = posEl.value;
           posEl.innerHTML = '<option value="">— select a position —</option>' + rows.map(r => {
+            // v7.82.0 -- display in browser-local timezone (was raw UTC).
             const label = (r.ticker || "?") + " " + (r.side || "") + " " +
-              (r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
+              utcIsoToLocalFull(r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
             // v5.13.10 — surface position_id and any cached realized P&L / latest stage in the option tooltip.
             const tipParts = ["position_id: " + (r.position_id || "")];
             if (r.realized_pnl !== undefined && r.realized_pnl !== null) tipParts.push("realized: $" + Number(r.realized_pnl).toFixed(2));
@@ -4857,7 +4891,7 @@
         row.innerHTML =
           '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">' +
           '  <span style="font-size:10px;color:#5b6572;font-family:monospace" title="Per-position event sequence number (monotonically increasing)">#' + (ev.event_seq || 0) + '</span>' +
-          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace" title="Event timestamp in UTC">' + escHtml(ev.event_ts_utc || "") + '</span>' +
+          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace" title="Event timestamp in your local timezone (stored as UTC: ' + escAttr(ev.event_ts_utc || "") + ')">' + escHtml(utcIsoToLocalFull(ev.event_ts_utc || "")) + '</span>' +
           '  <span class="lifecycle-chip" title="' + escAttr(typeTip) + '" style="background:' + color + '22;color:' + color + ';border:1px solid ' + color + '55;padding:1px 7px;border-radius:9px;font-size:10.5px;letter-spacing:.04em">' + escHtml(ev.event_type) + '</span>' +
           '</div>' + reason + facts +
           '<pre class="lifecycle-payload" title="Full raw event payload (JSON)" style="display:none;margin:6px 0 0;padding:8px;background:var(--surface-2);border-radius:4px;font-size:11px;color:var(--text-muted);max-height:300px;overflow:auto">' + escHtml(JSON.stringify(ev.payload || {}, null, 2)) + '</pre>';
