@@ -1627,12 +1627,25 @@ class TradeGeniusBase:
             )
 
     def _on_signal(self, event: dict) -> None:
-        """Listener callback: dispatch on event['kind']."""
+        """Listener callback: dispatch on event['kind'].
+
+        v7.83.0 -- emits [V79-MIRROR-*] forensic logs at every branch
+        so the dashboard monitor can audit why the legacy signal-bus
+        mirror produces val_gene_trades_match_main violations. Pre-
+        v7.83.0 silent early-returns (qty<=0, exception in builder)
+        gave no log trail post-receipt.
+        """
         kind = event.get("kind", "")
         ticker = event.get("ticker", "")
         price = event.get("price", 0.0) or 0.0
         reason = event.get("reason", "")
         label = f"{self.NAME} {self.mode}"
+        main_shares = event.get("main_shares")
+        # [V79-MIRROR-RECV] -- proof that _on_signal fired at all.
+        logger.info(
+            "[V79-MIRROR-RECV] %s kind=%s ticker=%s price=%s main_shares=%s",
+            self.NAME, kind, ticker, price, main_shares,
+        )
 
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any
@@ -1650,11 +1663,10 @@ class TradeGeniusBase:
 
         client = self._ensure_client()
         if client is None:
+            # v7.83.0 -- [V79-MIRROR-SKIP] makes drop-path auditable.
             logger.warning(
-                "[%s] skip %s %s \u2014 no alpaca client",
-                self.NAME,
-                kind,
-                ticker,
+                "[V79-MIRROR-SKIP] %s %s %s \u2014 no alpaca client",
+                self.NAME, kind, ticker,
             )
             return
 
@@ -1787,7 +1799,20 @@ class TradeGeniusBase:
             if kind == "ENTRY_LONG":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
+                    # v7.83.0 -- forensic log so silent qty=0 drops are
+                    # auditable. main_shares is the sender-supplied size;
+                    # _shares_for is the local fallback.
+                    logger.warning(
+                        "[V79-MIRROR-SKIP] %s ENTRY_LONG %s qty=0 "
+                        "(main_shares=%s, local_fallback_shares_for=%d)",
+                        self.NAME, ticker, signal_qty,
+                        self._shares_for(price, ticker=ticker),
+                    )
                     return
+                logger.info(
+                    "[V79-MIRROR-DISPATCH] %s ENTRY_LONG %s qty=%d price=%s",
+                    self.NAME, ticker, qty, price,
+                )
                 coid = self._build_client_order_id(ticker, "LONG")
                 req, order_descr = _build_entry_request("LONG", qty, coid, price=price)
                 order = self._submit_order_idempotent(client, req, coid)
@@ -1882,7 +1907,18 @@ class TradeGeniusBase:
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
                 if qty <= 0:
+                    # v7.83.0 -- forensic log; see ENTRY_LONG branch.
+                    logger.warning(
+                        "[V79-MIRROR-SKIP] %s ENTRY_SHORT %s qty=0 "
+                        "(main_shares=%s, local_fallback_shares_for=%d)",
+                        self.NAME, ticker, signal_qty,
+                        self._shares_for(price, ticker=ticker),
+                    )
                     return
+                logger.info(
+                    "[V79-MIRROR-DISPATCH] %s ENTRY_SHORT %s qty=%d price=%s",
+                    self.NAME, ticker, qty, price,
+                )
                 coid = self._build_client_order_id(ticker, "SHORT")
                 req, order_descr = _build_entry_request("SHORT", qty, coid, price=price)
                 order = self._submit_order_idempotent(client, req, coid)
