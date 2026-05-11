@@ -4,6 +4,86 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.61.0 (2026-05-11) -- Intraday chart: refresh overlays to v10 ORB semantics
+
+Follow-up to v7.58.0 (vestigial UI removal). The per-stock intraday
+chart (reached by expanding any row in the v10 Proximity Matrix)
+was still drawing Tiger Sovereign-era overlays that play no role
+in v10 ORB entry/exit decisions. This PR removes them and replaces
+them with v10-aligned overlays.
+
+### Removed
+
+  - **AVWAP line** (RTH + PM) -- v6 Tiger Sovereign Phase 1 input.
+  - **AVWAP ±1σ band** -- same source.
+  - **EMA9 (5m) line** -- v6 Phase 1 input.
+  - **PDC** (prior-day close) -- v6 Phase 2 gap-from-PDC input.
+  - **Session HOD/LOD** -- v6 Phase 3 proximity input.
+  - **Sentinel arm/trip diamonds** -- v6 Phase 4 instrumentation.
+  - **Trail-stop staircase** (chandelier-stage step-up) -- v6
+    Phase 4 trail. v10 ORB has no trailing stop; its only post-
+    entry stop adjustment is move-to-BE after +1R.
+
+### Added
+
+For every entry in `payload.trades` today, three horizontal
+reference lines extending from the entry timestamp to the exit
+timestamp (or right edge if still open):
+
+  - **Stop** (dashed red) -- at the opposite-side OR boundary
+    (LONG entries plot the stop at `or_low`; SHORT entries at
+    `or_high`). The buffer-bps adjustment is omitted for visual
+    simplicity; the chart shows the OR boundary itself.
+  - **1R move-to-BE** (dashed amber) -- at `entry ± |entry − stop|`.
+    This is the price at which the stop moves to break-even per
+    `ORB_MOVE_TO_BE_AFTER_1R=1`.
+  - **+2.5R target** (dashed green) -- at `entry ± 2.5 × risk`.
+    Matches the v10 keystone `ORB_RR=2.5`.
+
+Only drawn when the OR window has locked (`or_fresh: true`).
+
+### Kept (unchanged)
+
+  - **Candles** (1m / 5m on mobile)
+  - **Volume** sub-pane
+  - **OR_high / OR_low** dashed gold lines
+  - **Entry/Exit triangles** (from `payload.trades` + `payload.lifecycle`)
+  - **MAE/MFE bands** (favorable / adverse excursion between entry
+    and exit) -- v10-agnostic, useful for any strategy
+  - **Live position rail** -- shows current open positions
+  - **Hover crosshair + tooltip**, pan/zoom interaction
+
+### Legend
+
+Updated to match the new draw set: `OR H/L · Volume · Entry · Exit
+· Stop · 1R (move-to-BE) · +2.5R target`. Was `OR H/L · AVWAP ±1σ
+· EMA9 (5m) · PDC · HOD/LOD · Volume · Sentinel · Entry · Exit ·
+Trail stop`.
+
+### Files
+
+  - `dashboard_static/app.js` -- `_drawIntradayChart` overlay
+    block surgically rewritten; `_drawLifecycleOverlay`
+    `trail_series` rendering removed; `_pmtxIntradayChartPanel`
+    legend updated
+  - `dashboard_static/app.css` -- legacy `.pmtx-intraday-leg-*`
+    color rules pruned; new `.pmtx-intraday-leg-stop /-be /-target`
+    rules added
+  - `bot_version.py` / `trade_genius.py` -- 7.60.0 -> 7.61.0
+  - `docs/dashboard_redesign_v2/pr53_screenshots/`
+
+### Risk
+
+The backend `/api/intraday/<ticker>` endpoint is unchanged --
+still emits avwap / ema9_5m / pdc / sess_hod / sentinel_events /
+trail_series. Removing these from the client just means we stop
+drawing them. The endpoint is reusable for any future strategy
+that wants those signals back.
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+---
+
 ## v7.60.0 (2026-05-11) -- Telegram deploy banner now carries full release notes
 
 Operator request: "update telegram deployment messages to show the

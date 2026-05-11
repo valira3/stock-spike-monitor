@@ -1735,17 +1735,16 @@
 }
 
 .pmtx-intraday-leg-or { color: #e5b85c; }
-.pmtx-intraday-leg-avwap { color: #7aa6ff; }
-.pmtx-intraday-leg-ema9 { color: #c084fc; }
 .pmtx-intraday-leg-entry { color: #3ec28f; }
 .pmtx-intraday-leg-exit { color: #e26a6a; }
-/* v6.0.0 — expanded legend so every layer the renderer paints is
-   labelled. The hint chip describes the new wheel/drag/dblclick UX. */
-.pmtx-intraday-leg-pdc { color: #b08bff; }
-.pmtx-intraday-leg-hod { color: #67c4d6; }
 .pmtx-intraday-leg-vol { color: #6c8595; }
-.pmtx-intraday-leg-sentinel { color: #ffb24a; }
-.pmtx-intraday-leg-trail { color: #f0c356; }
+/* v7.61.0 -- legend entries refreshed to v10 ORB overlays. The
+   legacy avwap / ema9 / pdc / hod / sentinel / trail entries are
+   gone (matches the draw code in app.js). New v10 entries: stop
+   line, 1R move-to-BE line, +2.5R target line. */
+.pmtx-intraday-leg-stop   { color: #ef4444; }
+.pmtx-intraday-leg-be     { color: #fbbf24; }
+.pmtx-intraday-leg-target { color: #22c55e; }
 .pmtx-intraday-hint {
   margin-left: auto;
   font-size: 11px;
