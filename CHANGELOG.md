@@ -4,6 +4,87 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.89.0 (2026-05-11) -- ET-everywhere clock + KPI-on-top + Notional on Val/Gene
+
+Three operator pieces of feedback after v7.88.0 landed:
+
+1. **Notional is only on Main.** v7.87.0 added the Notional column
+   to Main's Open Positions table but not Val's or Gene's. Operator:
+   "should have been automatically added to Val's and Gene's tabs".
+2. **Hero zone order.** The KPI row (Equity / Day P&L / Open /
+   Session) should sit ABOVE Open Positions on every tab, not
+   below. v7.88.0 had moved Val's KPI row below positions to mirror
+   what Main was doing pre-v7.89.0; this release flips both back
+   to KPI-on-top.
+3. **Redundant footer.** The `port-strip` block at the bottom of
+   the Open Positions card (Equity / Buying power / Cash / Invested
+   / Shorted) duplicated Equity from the KPI row above and the new
+   Notional column inside the table; operator wanted it gone.
+4. **Times still not consistent.** v7.82.0 switched dashboard
+   timestamps from server-CDT to browser-local; the operator then
+   asked to standardize on ET everywhere so the web UI matches the
+   market clock the bot keys all decisions off of.
+
+### Fix 1: Notional column on Val/Gene
+
+`dashboard_static/app.js` -- the Val/Gene executor table renderer
+now emits the same `Notional` `<th>` + `<td>` pair Main got in
+v7.87.0, computed as `qty * avg_entry` (USD). The tooltip cites
+the v7.86.0 95%-of-equity total-exposure cap so an operator can
+trace the cap math back to the column.
+
+### Fix 2: KPI row above Open Positions, on every tab
+
+- `dashboard_static/index.html`: Main's `<section class="kpi-row">`
+  moved BEFORE the Open Positions `<section class="grid">`.
+- `dashboard_static/app.js` `execSkeleton`: same reorder for the
+  Val + Gene panels (was KPI-below in v7.88.0).
+
+### Fix 3: port-strip retired
+
+- Main `index.html`: the `port-strip-empty` (collapsed empty state)
+  and `port-strip` (populated footer) blocks are deleted from
+  inside the Open Positions card. The `renderPositions` paint
+  paths that fed those blocks in `app.js` are reduced to a single
+  body update.
+- Val/Gene exec renderer: the `setField(panel, "port-equity", ...)`
+  / `port-bp` / `port-cash` / `port-longmv` / `port-shortliab`
+  writes are removed (they were no-oping after the skeleton lost
+  the target elements, so this just trims dead code).
+
+### Fix 4: ET everywhere on the dashboard
+
+| Surface | Pre-v7.89.0 | v7.89.0 |
+| --- | --- | --- |
+| Brand clock tick (`__tgTickClock`) | browser-local HH:MM:SS, "ET" suffix from server label (mismatch when browser wasn't ET) | `Intl.DateTimeFormat` pinned to `America/New_York` with "ET" suffix; defaults to "ET" before first server label arrives |
+| ISO-to-display helpers `utcIsoToLocalHHMM` / `utcIsoToLocalFull` | browser-local | `toLocaleTimeString("en-US", { timeZone: "America/New_York", ... })` |
+| Health-pill error timestamps (`__tgFormatErrTs`) | browser-local HH:MM:SS | ET HH:MM:SS |
+| Broker trade labels (`broker/orders.py`) | `tg._now_cdt()` -> `"HH:MM CDT"` | `tg._now_et()` -> `"HH:MM ET"` (entry + exit emit sites) |
+| Dashboard server entry-time normalization | `_to_cdt_hhmm(...)` / `"HH:MM CDT"` legacy fallback | new `_to_et_hhmm(...)` helper / `"HH:MM ET"` legacy fallback |
+| `CLAUDE.md` operator preference | "always show times in CT" (v7.72.0) | "always show times in ET" |
+
+Two ET-zoned helpers (`_to_et_hhmm`, `_to_et_hhmmss`) are added
+to `trade_genius.py` alongside the existing CDT helpers. The CDT
+helpers stay in place for now because the Telegram surface still
+consumes them; a follow-up release will migrate Telegram.
+
+### Files
+
+- `dashboard_static/app.js` -- Val/Gene Notional column; KPI-on-top
+  in `execSkeleton`; renderPositions + renderExecutor port-strip
+  cleanup; `utcIsoToLocalHHMM` / `utcIsoToLocalFull` /
+  `__tgFormatErrTs` / `__tgTickClock` pinned to ET
+- `dashboard_static/index.html` -- KPI row moved above Open
+  Positions; port-strip / port-strip-empty blocks deleted
+- `broker/orders.py` -- entry + exit `now_hhmm` emit ET labels;
+  `entry_hhmm` derived via `_to_et_hhmm`
+- `dashboard_server.py` -- entry-time normalization uses
+  `_to_et_hhmm` / `"HH:MM ET"` fallback
+- `trade_genius.py` -- `_to_et_hhmm` + `_to_et_hhmmss` helpers added
+- `CLAUDE.md` -- operator-timezone preference flipped from CT to ET
+
+---
+
 ## v7.88.0 (2026-05-11) -- Val/Gene tab badge + layout matches Main
 
 Two operator complaints about the Val tab:
