@@ -2488,6 +2488,85 @@ body.v10-live .legacy-v10-hidden {
   letter-spacing: 0.03em;
   flex-shrink: 0;
 }
+/* v7.52.0 -- v10 Proximity Matrix card */
+.v10-prox-table-wrap { overflow-x: auto; }
+.v10-prox-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+}
+.v10-prox-table thead th {
+  text-align: right;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.v10-prox-table thead th:first-child { text-align: left; padding-left: 14px; }
+.v10-prox-table thead th:last-child  { text-align: left;  padding-right: 14px; }
+.v10-prox-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.5);
+  text-align: right;
+  color: var(--text);
+  white-space: nowrap;
+}
+.v10-prox-table tbody td:first-child { text-align: left; padding-left: 14px; }
+.v10-prox-table tbody td:last-child  { text-align: left;  padding-right: 14px; }
+.v10-prox-table tbody tr:last-child td { border-bottom: 0; }
+.v10-prox-table tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+.v10-prox-tkr { font-weight: 700; color: #e5e7eb; }
+.v10-prox-dist {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  background: #1a2030;
+  color: #9ca3af;
+}
+.v10-prox-dist-label {
+  margin-left: 4px;
+  color: #6b7280;
+  font-weight: 400;
+  font-size: 10px;
+}
+.v10-prox-near { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.v10-prox-mid  { background: rgba(59, 130, 246, 0.12); color: #93c5fd; }
+.v10-prox-far  { background: #1a2030; color: #9ca3af; }
+.v10-prox-phase {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 4px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-family: 'JetBrains Mono', monospace;
+  background: #1f2937;
+  color: #cbd5e1;
+}
+.v10-prox-phase-armed    { background: #16a34a; color: #fff; }
+.v10-prox-phase-in_pos   { background: #3b82f6; color: #fff; }
+.v10-prox-phase-or_locked { background: #1e3a5f; color: #93c5fd; }
+.v10-prox-phase-warmup   { background: #4b5563; color: #e5e7eb; }
+.v10-prox-phase-closed   { background: #6b7280; color: #fff; }
+.v10-prox-phase-blocked_daily_kill { background: #dc2626; color: #fff; }
+.v10-prox-phase-blocked_day        { background: #b91c1c; color: #fff; }
+.v10-prox-phase-blocked_strike_cap { background: #92400e; color: #fff; }
+@media (max-width: 720px) {
+  .v10-prox-table { font-size: 10.5px; }
+  .v10-prox-table thead th { padding: 6px 6px; font-size: 9.5px; }
+  .v10-prox-table tbody td { padding: 6px 6px; }
+  .v10-prox-dist-label { display: none; }
+}
+
 .act-kind.act-kind-session_start { background: #6b21a8; color: #f3e8ff; }
 .act-kind.act-kind-admit { background: #16a34a; color: #fff; }
 /* v7.49.0 -- alias: renderers emit "entry" for long/short admits while
