@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.89.0"
+BOT_VERSION = "7.90.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -293,6 +293,25 @@ logger = logging.getLogger(__name__)
 _signal_listeners: list = []
 _signal_listeners_lock = threading.Lock()
 
+
+# v7.90.0 -- public read of the signal-bus state, surfaced on
+# /api/state.signal_bus so the dashboard monitor can assert during
+# RTH that at least one executor has subscribed. Before v7.90.0 the
+# bus was opaque from outside the process and a Val/Gene listener
+# that failed to register was undetectable until trade-count
+# divergence (the val_gene_trades_match_main invariant) flagged it
+# hours later.
+def signal_bus_status() -> dict:
+    """Return a snapshot of registered signal-bus listeners.
+
+    Shape: {"n_listeners": int, "names": [str, ...]}. Names are the
+    listener callables' qualnames so an operator can tell whether
+    Val / Gene / both registered.
+    """
+    with _signal_listeners_lock:
+        names = [getattr(fn, "__qualname__", repr(fn)) for fn in _signal_listeners]
+    return {"n_listeners": len(names), "names": names}
+
 # v5.5.7 \u2014 Most recent signal emitted by the main paper book. The
 # per-executor TradeGeniusBase already keeps its own ``last_signal`` for
 # the Val/Gene exec panels; this module-level mirror is the equivalent
@@ -360,12 +379,25 @@ def _emit_signal(event: dict) -> None:
     with _signal_listeners_lock:
         listeners = list(_signal_listeners)
     # v7.85.0 -- one EMIT log per event, INFO level.
+    # v7.90.0 -- escalate to WARNING when listeners=0. The bus has
+    # at least one subscriber in every production configuration
+    # (Val and/or Gene executors register at startup); n_listeners=0
+    # means Main fired a signal into the void and no executor will
+    # mirror it. That is the most common root cause of the
+    # val_gene_trades_match_main dashboard-monitor violation, and
+    # without an explicit WARN it is invisible in log tails until a
+    # trade-count audit catches it.
+    if not listeners:
+        logger.warning(
+            "[SIGNAL-BUS-EMIT-VOID] kind=%s ticker=%s n_listeners=0 "
+            "-- Main emitted a signal but no executor is subscribed",
+            event.get("kind", ""), event.get("ticker", ""),
+        )
+        return
     logger.info(
         "[SIGNAL-BUS-EMIT] kind=%s ticker=%s n_listeners=%d",
         event.get("kind", ""), event.get("ticker", ""), len(listeners),
     )
-    if not listeners:
-        return
 
     def _wrap(fn, ev):
         try:

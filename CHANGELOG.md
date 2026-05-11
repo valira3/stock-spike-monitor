@@ -4,6 +4,96 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.90.0 (2026-05-11) -- Signal-bus observability: empty-bus WARN + monitor invariant
+
+The dashboard monitor has been firing the same `val_gene_trades_match_main`
+violation (val=0 vs main=N) all day on 2026-05-11 (issues #532, #533, #543,
+#545, #547, #548, #550, #552, #554, #556, #557, #559, #561, #563). The
+operator-facing pattern is unambiguous: Val never sends a single order to
+Alpaca while Main fires N. Without Railway log access (the secrets are not
+set in the sandbox the monitor runs in) we cannot tell from outside the
+process whether the failure is:
+
+1. Val's listener never registered on the signal bus, OR
+2. Val's listener registered, `_on_signal` runs, but every dispatch hits a
+   silent early-return.
+
+Pre-v7.90.0 the bus was opaque from outside the process -- no surface on
+`/api/state` exposed the subscriber list, and `_emit_signal` returned
+silently on empty-bus emits. So even an attentive operator could not
+diagnose which of (1) and (2) was happening without a Railway log tail.
+
+This release adds three pieces of observability that collapse the
+diagnostic ambiguity:
+
+### 1. `trade_genius.signal_bus_status()`
+
+New module-level helper returns
+`{"n_listeners": int, "names": [str, ...]}` — a thread-safe snapshot of
+the registered listeners, with their qualnames so an operator can tell
+whether Val / Gene / both subscribed. Wraps the existing
+`_signal_listeners_lock` so a concurrent `register_signal_listener` cannot
+race the read.
+
+### 2. `[SIGNAL-BUS-EMIT-VOID]` WARN log on empty-bus emits
+
+`_emit_signal` previously returned silently when `len(_signal_listeners) ==
+0`. v7.90.0 escalates this to `WARNING` with a `[SIGNAL-BUS-EMIT-VOID]`
+prefix that includes `kind`, `ticker`, and an explanatory tail. Any Main
+fire while the bus is empty now produces a high-signal log line that the
+dashboard monitor's `inv_railway_logs_clean` will catch on its next
+scan.
+
+### 3. `/api/state.signal_bus` field + new invariant
+
+Dashboard server emits `signal_bus` alongside `last_signal` on every
+`/api/state` poll. New invariant
+`inv_signal_bus_has_listeners` (in
+`tools/dashboard_monitor_invariants.py`) asserts that the listener count
+is >= the number of currently-enabled executors. When Gene is unconfigured
+(no Alpaca creds) the executor's `enabled` flag is False and the
+invariant drops the requirement; when both are enabled it expects 2.
+
+### What this catches today
+
+Whichever of (1) or (2) the production bot is hitting, v7.90.0 surfaces
+the answer in the very next dashboard-monitor cycle:
+
+- If Val's listener never registered, `n_listeners < expected` → the new
+  invariant fails with a structural summary naming exactly which executor
+  is missing.
+- If the listener registered but Main emits never reach the bus,
+  `[SIGNAL-BUS-EMIT-VOID]` log lines appear and
+  `inv_railway_logs_clean` picks them up.
+- If neither is true, the bug is downstream of the bus (Alpaca rejecting
+  Val's order silently, or `_on_signal` exception inside the daemon
+  thread) — and v7.83-7.85's existing `[V79-MIRROR-*]` /
+  `[SIGNAL-BUS-DISPATCH]` tags already cover that path.
+
+### Files
+
+- `trade_genius.py` — `signal_bus_status()` added; `_emit_signal` empty-bus
+  branch escalated to `WARNING` with `[SIGNAL-BUS-EMIT-VOID]` prefix.
+- `dashboard_server.py` — `/api/state` payload gains a `signal_bus` field.
+- `tools/dashboard_monitor_invariants.py` — `inv_signal_bus_has_listeners`
+  added and registered next to `inv_val_gene_trades_match_main`.
+- `tests/strategy/test_dashboard_monitor_invariants.py` — 6 new test
+  cases for the invariant (both-subscribed pass; zero-subscribed-both-
+  enabled fail; one-subscribed-both-enabled fail; gene-disabled-only-val
+  pass; no-executors-enabled skip; state-missing skip).
+- `bot_version.py` + `trade_genius.py` — `BOT_VERSION` 7.89.0 -> 7.90.0.
+
+### Scope note
+
+The companion Symptom-3 fix (Main RiskBook backfill at scan-loop startup
+to repair the `RiskBook.open_count` drift the same monitor cycle has been
+flagging) was scoped out of v7.90.0 deliberately: it is a runtime
+behaviour change with multi-cycle blast-radius. We are landing v7.90.0
+first so the next monitor cycle confirms (or refutes) the listener-empty
+hypothesis before a behaviour change ships.
+
+---
+
 ## v7.89.0 (2026-05-11) -- ET-everywhere clock + KPI-on-top + Notional on Val/Gene
 
 Three operator pieces of feedback after v7.88.0 landed:

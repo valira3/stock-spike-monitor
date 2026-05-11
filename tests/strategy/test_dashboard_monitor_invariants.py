@@ -681,3 +681,118 @@ class TestValGeneTradesMatchMainEnrichmentV784:
         # Detail should include the missing-secrets explainer
         assert ("RAILWAY_API_TOKEN" in r["detail"]
                 or "No Railway log slice attached" in r["detail"])
+
+
+# ---------------------------------------------------------------------
+# v7.90.0 -- signal_bus_has_listeners invariant
+# ---------------------------------------------------------------------
+
+
+class TestSignalBusHasListenersV790:
+    """v7.90.0 -- the new invariant asserts that whenever any executor
+    is enabled, /api/state.signal_bus.n_listeners is at least equal to
+    the count of enabled executors. Catches "Val/Gene started but
+    failed to call register_signal_listener" earlier than the
+    val_gene_trades_match_main audit (which only fires after a Main
+    trade is missed)."""
+
+    def test_passes_when_both_executors_subscribed(self):
+        s = {
+            "signal_bus": {
+                "n_listeners": 2,
+                "names": [
+                    "TradeGeniusVal._on_signal",
+                    "TradeGeniusGene._on_signal",
+                ],
+            },
+        }
+        ctx = InvariantContext(
+            payloads={
+                "state": s,
+                "exec_val": {"enabled": True},
+                "exec_gene": {"enabled": True},
+            },
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert r["ok"]
+
+    def test_fails_when_no_listeners_but_both_enabled(self):
+        s = {"signal_bus": {"n_listeners": 0, "names": []}}
+        ctx = InvariantContext(
+            payloads={
+                "state": s,
+                "exec_val": {"enabled": True},
+                "exec_gene": {"enabled": True},
+            },
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert not r["ok"]
+        assert "subscribers=0" in r["summary"]
+        assert "expected >=2" in r["summary"]
+
+    def test_fails_when_only_one_listener_but_both_enabled(self):
+        s = {
+            "signal_bus": {
+                "n_listeners": 1,
+                "names": ["TradeGeniusVal._on_signal"],
+            },
+        }
+        ctx = InvariantContext(
+            payloads={
+                "state": s,
+                "exec_val": {"enabled": True},
+                "exec_gene": {"enabled": True},
+            },
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert not r["ok"]
+        assert "subscribers=1" in r["summary"]
+        assert "expected >=2" in r["summary"]
+
+    def test_passes_when_gene_disabled_and_only_val_subscribed(self):
+        # Gene is parked (not connected to Alpaca yet); only Val needs
+        # to be on the bus.
+        s = {
+            "signal_bus": {
+                "n_listeners": 1,
+                "names": ["TradeGeniusVal._on_signal"],
+            },
+        }
+        ctx = InvariantContext(
+            payloads={
+                "state": s,
+                "exec_val": {"enabled": True},
+                "exec_gene": {"enabled": False},
+            },
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert r["ok"]
+
+    def test_skipped_when_no_executors_enabled(self):
+        s = {"signal_bus": {"n_listeners": 0, "names": []}}
+        ctx = InvariantContext(
+            payloads={
+                "state": s,
+                "exec_val": {"enabled": False},
+                "exec_gene": {"enabled": False},
+            },
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert r["ok"]  # skipped == ok in this codebase
+        assert "no enabled executors" in r.get("summary", "")
+
+    def test_skipped_when_state_missing(self):
+        ctx = InvariantContext(payloads={}, base_url="https://example.com")
+        from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+        r = inv_signal_bus_has_listeners(ctx)
+        assert r["ok"]  # skipped

@@ -1624,6 +1624,15 @@ def snapshot() -> dict[str, Any]:
         except Exception:
             last_signal = None
 
+        # v7.90.0 -- expose the signal-bus subscription state so the
+        # dashboard monitor's signal_bus_has_listeners invariant
+        # (added in the same release) can detect "Val/Gene executor
+        # failed to register" earlier than the trade-count audit.
+        try:
+            signal_bus = m.signal_bus_status()
+        except Exception:
+            signal_bus = {"n_listeners": 0, "names": []}
+
         try:
             now_et = m._now_et()
             now_iso = now_et.isoformat()
@@ -1932,6 +1941,10 @@ def snapshot() -> dict[str, Any]:
             # for the Main-tab LAST SIGNAL card. Same shape as the
             # per-executor payload.
             "last_signal": last_signal,
+            # v7.90.0 -- signal-bus subscription snapshot. Consumed by
+            # the dashboard monitor's signal_bus_has_listeners
+            # invariant. Shape: {"n_listeners": int, "names": [str,...]}.
+            "signal_bus": signal_bus,
             "trades_today": _today_trades(),
             "proximity": _proximity_rows(),
             "regime": {
