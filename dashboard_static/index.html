@@ -190,6 +190,23 @@
       </div>
     </section>
 
+    <!-- v7.45.0 -- Recent activity feed. Sources from
+         orb.live_runtime._recent_activity (ring buffer of last 50
+         events); surfaced via /api/state.v10.activity. Each event is
+         one row with a colored chip per kind. Hidden when v10 isn't
+         bootstrapped (i.e. legacy/rollback path). -->
+    <section class="grid" id="v10-activity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="Recent v10 ORB events: session start, OR locks, admits, rejects, exits, kills. Newest first.">Recent activity<span class="count" id="v10-act-count" title="Events in the buffer">· —</span></span>
+          <span class="chip" id="v10-act-summary" title="newest first">—</span>
+        </div>
+        <div class="card-body flush" id="v10-act-body">
+          <div class="empty">Waiting for v10 session start...</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.18.0 — Open positions runs full-width. Proximity card was
          retired and folded into the Permit Matrix as a Price · Distance
          column (price + bar shows how close each Titan is to its OR

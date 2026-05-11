@@ -3906,6 +3906,7 @@
     try { renderKillSwitchBanner(s, "main"); } catch (e) { /* never break Main */ }
     try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
     try { renderV10TickerMatrix(s); } catch (e) { /* never break Main */ }
+    try { renderV10ActivityFeed(s); } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
@@ -5364,6 +5365,11 @@
       get: function () { return renderV10TickerMatrix; },
       configurable: true,
     });
+    // v7.45.0 -- expose activity feed renderer
+    Object.defineProperty(window, "__tgRenderV10ActivityFeed", {
+      get: function () { return renderV10ActivityFeed; },
+      configurable: true,
+    });
   }
 
   function renderKillSwitchBanner(s, target) {
@@ -5905,6 +5911,70 @@
     cards.push('</div>');
 
     body.innerHTML = rows.join("") + cards.join("");
+  }
+
+  // v7.45.0 -- recent activity feed renderer. Reads s.v10.activity
+  // (populated by orb.live_runtime._recent_activity ring buffer).
+  // Renders newest-first as a list of rows with colored kind chips.
+  function renderV10ActivityFeed(s) {
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    var v10 = s && s.v10;
+    var section = document.getElementById("v10-activity-section");
+    if (!section) return;
+    if (!v10 || v10.available === false || !v10.bootstrapped) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    var events = (v10.activity || []);
+    var body = document.getElementById("v10-act-body");
+    var countEl = document.getElementById("v10-act-count");
+    var summaryEl = document.getElementById("v10-act-summary");
+    if (countEl) countEl.textContent = "· " + events.length;
+    if (summaryEl) {
+      if (events.length === 0) {
+        summaryEl.textContent = "no events yet";
+      } else {
+        var first = events[0];
+        var t = first.ts_iso || "";
+        var hhmm = t && t.indexOf("T") > 0
+          ? t.split("T")[1].slice(0, 5) + " UTC"
+          : t;
+        summaryEl.textContent = "most recent · " + hhmm;
+      }
+    }
+    if (!body) return;
+    if (events.length === 0) {
+      body.innerHTML = '<div class="empty">No v10 events yet today.</div>';
+      return;
+    }
+    var rows = [];
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var t2 = e.ts_iso || "";
+      var hhmm2 = t2 && t2.indexOf("T") > 0
+        ? t2.split("T")[1].slice(0, 5)
+        : "—";
+      var kindCls = "act-kind-" + (e.kind || "info");
+      var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
+      var ticker = e.ticker || "—";
+      var pid = e.pid ? '<span class="act-pid">' + esc(e.pid) + '</span>' : '';
+      rows.push(
+        '<div class="act-row">' +
+          '<span class="act-time">' + esc(hhmm2) + '</span>' +
+          '<span class="act-ticker">' + esc(ticker) + '</span>' +
+          '<span class="act-kind ' + kindCls + '">' + esc(kindTxt) + '</span>' +
+          pid +
+          '<span class="act-detail">' + esc(e.detail || "") + '</span>' +
+        '</div>'
+      );
+    }
+    body.innerHTML = '<div id="v10-act-list">' + rows.join("") + '</div>';
   }
 
   function renderV10Projection(p) {
