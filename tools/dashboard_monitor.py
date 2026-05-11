@@ -320,9 +320,18 @@ def _heartbeat_should_fire() -> bool:
     heartbeat only at :07 yields one silent TG ping per active hour
     (13/day at peak). Operator can globally disable by unsetting
     MONITOR_HEARTBEAT.
+
+    v7.71.0 -- on manual `workflow_dispatch` invocations, always fire
+    the heartbeat regardless of the current minute. Manual runs are
+    explicit liveness checks ("did I wire this up correctly?"), so
+    suppressing them based on the cron-minute gate was a UX bug.
+    GitHub Actions sets GITHUB_EVENT_NAME=workflow_dispatch for the
+    Run-workflow button; the cron path sets it to "schedule".
     """
     if os.environ.get("MONITOR_HEARTBEAT", "").strip() != "1":
         return False
+    if os.environ.get("GITHUB_EVENT_NAME", "").strip() == "workflow_dispatch":
+        return True
     return time.gmtime().tm_min < 10
 
 
