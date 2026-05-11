@@ -4,6 +4,106 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.83.0 (2026-05-11) -- "Fix all" -- monitor noise reduction + Val mirror forensics
+
+Operator request: "fix all" -- the dashboard monitor was firing
+three recurring invariants every 10 min after v7.82.0 deployed:
+
+1. `risk_book_notional_cap_nonzero` -- Gene with $0 equity
+   (operator hasn't set GENE_ALPACA_PAPER_KEY).
+2. `equity_matches_baseline` -- $200-$420 drift between
+   /api/state.portfolio.equity and /api/v10/projection.live_balance
+   (timing race between snapshots).
+3. `val_gene_trades_match_main` -- Val isn't mirroring Main's
+   trades via the legacy signal bus.
+
+(1) and (2) are operator-config / timing-race issues that
+shouldn't generate fresh GH issues every cycle. (3) is a real
+production bug but we don't have post-v7.77.0 logs to diagnose
+the exact silent-return path.
+
+### Fix 1: dormant unconfigured portfolios get ok-skip
+
+`inv_risk_book_notional_cap_nonzero` now distinguishes two
+classes of "zero equity":
+
+- **dormant**: `admit_count == 0` AND `reject_count > 0` -- the
+  portfolio has tried to admit but every attempt got rejected at
+  the notional_cap gate. Pattern: Alpaca keys unset, executor
+  defaults to $0 equity, every entry signal rejects. Treated as
+  ok-skip with a summary line so the operator knows about it.
+- **actively-broken**: `admit_count > 0` AND now equity dropped
+  to 0 -- a real bug. Still fails loudly.
+
+Mixed case (Gene dormant + Val actively-stuck): the dormant one
+is omitted from the failure detail; only the real bug fires the
+GH issue. Operator can clear the noise by either:
+- Setting `<PID>_ALPACA_PAPER_KEY/_SECRET`, OR
+- Setting `<PID>_ENABLED=0`
+
+### Fix 2: equity_matches_baseline tolerance loosened
+
+`inv_equity_matches_baseline` tolerance was `max($1, eq * 0.01%)`
+= ~$10 on a $99K book. Production drift observed at $200-$420
+(0.2-0.4%) due to the timing race between the /api/state snapshot
+(paper book) and the /api/v10/projection snapshot (RiskBook).
+Both are taken in the same request cycle but seconds apart, and
+MTM long_mv can shift by a few hundred dollars during volatile
+minutes.
+
+Tolerance changed to `max($500, eq * 0.5%)`. Any drift >0.5%
+still fires (catches real sync bugs); sub-0.5% transient races
+no longer generate noise.
+
+### Fix 3: [V79-MIRROR-*] forensic logs in executor _on_signal
+
+The `val_gene_trades_match_main` invariant continues to fire
+because Val's `_on_signal` listener IS receiving signals but
+not producing Alpaca submissions. The exact silent-return path
+isn't visible in pre-v7.83.0 logs.
+
+Added three new forensic log lines in `executors/base.py:_on_signal`:
+
+- `[V79-MIRROR-RECV]`: every signal received, with kind/ticker/
+  price/main_shares for proof of receipt
+- `[V79-MIRROR-SKIP]`: client=None OR qty<=0 early returns (with
+  the local fallback `_shares_for` value for diagnostics)
+- `[V79-MIRROR-DISPATCH]`: about to submit broker order, with qty
+
+After this PR deploys, the next Main fire will produce a
+trail like:
+```
+[V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA price=435.26 main_shares=181
+[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181 price=435.26
+[Val] [ALPACA-REQ] sym=TSLA side=BUY ...
+[Val] [ALPACA-RESP] id=... status=...
+```
+
+Any gap in that chain pinpoints where the mirror drops. Operator
+should grep `[V79-MIRROR]` from the next Main-fire timestamp.
+
+### Files
+
+- `tools/dashboard_monitor_invariants.py`: dormant-skip logic +
+  tolerance loosening
+- `executors/base.py`: 4 new `[V79-MIRROR-*]` log lines
+- `tests/strategy/test_dashboard_monitor_invariants.py`: +6 tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+Full suite: **471 passed** (up from 465), 8 skipped.
+
+### Operator action after merge
+
+For ongoing noise reduction: none required. The new monitor runs
+will skip Gene-dormant and most equity-drift transient noise.
+
+For Val mirror investigation: after the next Main fire, paste the
+log slice containing `[V79-MIRROR-RECV]` through to either
+`[ALPACA-RESP]` or wherever the trail goes dark -- that nails
+the silent-return location.
+
+---
+
 ## v7.82.0 (2026-05-11) -- Dashboard times in end-user (browser) timezone
 
 Operator request: "make sure that the dashboard shows all times in

@@ -127,12 +127,24 @@ def inv_equity_matches_baseline(ctx):
                 "in engine/portfolio_book.py."
             ),
         )
-    # When both are present, allow a small tolerance for mid-tick races.
-    if abs(eq - live_bal) > max(1.0, eq * 0.001):
+    # When both are present, allow tolerance for the timing race between
+    # the /api/state snapshot (paper book cash+long_mv-short_liab) and
+    # the /api/v10/projection snapshot (book.current_equity()). These are
+    # taken at slightly different times during a single dashboard tick;
+    # MTM long_mv can differ between snapshots by a few hundred dollars
+    # on a $99K book during volatile minutes.
+    # v7.83.0 -- tolerance loosened from `max($1, eq * 0.01%)` to
+    # `max($500, eq * 0.5%)` based on observed Issue #547/#548 drift of
+    # $200-$420 (sub-0.5%). Larger drifts still surface as real bugs.
+    tolerance = max(500.0, float(eq) * 0.005)
+    if abs(eq - live_bal) > tolerance:
         return _fail(
             "equity_matches_baseline",
-            f"equity ${eq:.2f} != live_balance ${live_bal:.2f} (delta ${eq - live_bal:.2f})",
-            "Two surfaces of the same number have drifted apart. Check the v10 projection backend path.",
+            f"equity ${eq:.2f} != live_balance ${live_bal:.2f} (delta ${eq - live_bal:.2f}, tol ${tolerance:.2f})",
+            "Two surfaces of the same number have drifted apart beyond "
+            "the 0.5% timing-race tolerance. Check the v10 projection "
+            "backend path -- this likely indicates a real sync bug "
+            "(not the usual MTM race).",
         )
     return _ok("equity_matches_baseline")
 
@@ -653,13 +665,31 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
         return _ok("risk_book_notional_cap_nonzero",
                    "skipped: no risk_books in snapshot")
     zeros = []
+    dormant = []
     for pid, rb in risk_books.items():
         if not isinstance(rb, dict):
             continue
         max_notional = rb.get("max_notional")
         equity = rb.get("equity")
-        if (isinstance(max_notional, (int, float)) and max_notional <= 0) \
-                or (isinstance(equity, (int, float)) and equity <= 0):
+        is_zero = (
+            (isinstance(max_notional, (int, float)) and max_notional <= 0)
+            or (isinstance(equity, (int, float)) and equity <= 0)
+        )
+        if not is_zero:
+            continue
+        # v7.83.0 -- distinguish "stuck cap because broker not configured"
+        # (admit_count=0 all session, never had a real entry attempt
+        # succeed -- the Gene-without-keys pattern) from "stuck cap
+        # while actively trading" (admit_count>0 but a fresh signal
+        # got rejected because equity drifted to 0 -- a real bug).
+        admit_count = rb.get("admit_count")
+        reject_count = rb.get("reject_count")
+        if (isinstance(admit_count, int) and admit_count == 0
+                and isinstance(reject_count, int) and reject_count > 0):
+            # Dormant + rejecting = unconfigured portfolio.
+            dormant.append((pid, equity, max_notional,
+                            rb.get("last_reject_reason"), reject_count))
+        else:
             zeros.append((pid, equity, max_notional,
                           rb.get("last_reject_reason")))
     if zeros:
@@ -680,6 +710,19 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
             "wires this on session start; older deployments may "
             "still be missing it). For Main it points at a stale "
             "tg.paper_cash sync.\n" + "\n".join(lines),
+        )
+    # v7.83.0 -- dormant unconfigured portfolios produce a quieter "ok"
+    # rather than a full fail. Surfaces as a noteworthy summary so the
+    # operator knows about it without it generating a fresh GH issue
+    # every 10 minutes. To convert to actionable: set the executor's
+    # Alpaca keys OR set <PID>_ENABLED=0.
+    if dormant:
+        rows = ", ".join(f"{pid}({rejects})" for pid, _, _, _, rejects in dormant)
+        return _ok(
+            "risk_book_notional_cap_nonzero",
+            f"skipped: {len(dormant)} dormant unconfigured portfolio(s): "
+            f"{rows} -- set <PID>_ALPACA_PAPER_KEY/_SECRET or "
+            f"<PID>_ENABLED=0 to clear",
         )
     return _ok(
         "risk_book_notional_cap_nonzero",

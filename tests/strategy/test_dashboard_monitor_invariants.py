@@ -504,3 +504,108 @@ class TestRailwayLogsClean:
                 sys.modules["tools.railway_log_tail"] = orig
             else:
                 sys.modules.pop("tools.railway_log_tail", None)
+
+
+# ---------------------------------------------------------------------
+# v7.83.0 -- dormant unconfigured portfolio skip
+# ---------------------------------------------------------------------
+
+
+class TestRiskBookDormantSkipV783:
+    """v7.83.0 -- portfolios that look unconfigured (admit_count=0 +
+    reject_count>0 with $0 equity, e.g. Gene without Alpaca keys) get a
+    quieter ok-skip rather than firing a fresh GH issue every 10 min."""
+
+    def test_dormant_gene_skips_not_fails(self):
+        s = _state_with_risk_books({
+            "main": {"equity": 99552.28, "max_notional": 199104.56,
+                     "admit_count": 5, "reject_count": 1},
+            "val":  {"equity": 99500.0, "max_notional": 199000.0,
+                     "admit_count": 5, "reject_count": 1},
+            "gene": {"equity": 0.0, "max_notional": 0.0,
+                     "admit_count": 0, "reject_count": 12,
+                     "last_reject_reason":
+                     "notional_cap (would-be $440 > $0)"},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert r["ok"]
+        assert "dormant" in r["summary"]
+        assert "gene(12)" in r["summary"]
+
+    def test_actively_trading_portfolio_with_zero_equity_still_fails(self):
+        """If a portfolio has had admits (admit_count>0) AND now its
+        equity dropped to 0, that's a real bug (not the unconfigured
+        pattern). Still fail loudly."""
+        s = _state_with_risk_books({
+            "val": {"equity": 0.0, "max_notional": 0.0,
+                    "admit_count": 3, "reject_count": 0,
+                    "last_reject_reason": ""},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert not r["ok"]
+        assert "val: equity=0.0" in r["detail"]
+
+    def test_mixed_dormant_and_real_failure(self):
+        """Gene dormant + Val actively-stuck = still a fail (Val is the
+        real bug; Gene is just informational)."""
+        s = _state_with_risk_books({
+            "main": {"equity": 99552.28, "max_notional": 199104.56,
+                     "admit_count": 5, "reject_count": 0},
+            "val":  {"equity": 0.0, "max_notional": 0.0,
+                     "admit_count": 2, "reject_count": 0},
+            "gene": {"equity": 0.0, "max_notional": 0.0,
+                     "admit_count": 0, "reject_count": 12},
+        })
+        r = inv_risk_book_notional_cap_nonzero(_ctx(s))
+        assert not r["ok"]
+        # Val (real bug) appears in detail; Gene (dormant) does not.
+        assert "val: equity=0.0" in r["detail"]
+        assert "gene" not in r["detail"]
+
+
+# ---------------------------------------------------------------------
+# v7.83.0 -- equity_matches_baseline tolerance loosened
+# ---------------------------------------------------------------------
+
+
+class TestEquityMatchesBaselineToleranceV783:
+    """v7.83.0 -- production observed $200-$420 drifts (sub-0.5%)
+    between /api/state.portfolio.equity and /api/v10/projection.live_balance
+    due to between-snapshot MTM timing race. Loosened from $1+0.01%
+    to $500+0.5% so this stops firing every 10min."""
+
+    def test_500_drift_within_tolerance(self):
+        from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+        s = {"portfolio": {"equity": 99500.0}}
+        proj = {"live_balance": 99100.0}  # $400 drift, sub-0.5%
+        ctx = InvariantContext(
+            payloads={"state": s, "v10_proj": proj},
+            base_url="https://example.com",
+        )
+        r = inv_equity_matches_baseline(ctx)
+        assert r["ok"]
+
+    def test_above_500_but_within_pct_tolerance(self):
+        from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+        # $1M book; $499 drift would have failed under absolute-only,
+        # but 0.5% of $1M = $5000 covers it.
+        s = {"portfolio": {"equity": 1_000_000.0}}
+        proj = {"live_balance": 1_000_499.0}
+        ctx = InvariantContext(
+            payloads={"state": s, "v10_proj": proj},
+            base_url="https://example.com",
+        )
+        r = inv_equity_matches_baseline(ctx)
+        assert r["ok"]
+
+    def test_huge_drift_still_fails(self):
+        from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+        s = {"portfolio": {"equity": 99500.0}}
+        proj = {"live_balance": 90000.0}  # $9500 drift = ~10%
+        ctx = InvariantContext(
+            payloads={"state": s, "v10_proj": proj},
+            base_url="https://example.com",
+        )
+        r = inv_equity_matches_baseline(ctx)
+        assert not r["ok"]
+        assert "drifted apart beyond" in r["detail"]
