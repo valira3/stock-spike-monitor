@@ -1923,6 +1923,23 @@ def snapshot() -> dict[str, Any]:
         except Exception:
             pass
 
+        # v7.54.0 -- ALSO expose prices for the full universe (not just
+        # tickers that have entered the v10 OR window). The proximity
+        # card now renders rows pre-OR-lock too (premarket / outside
+        # RTH); without this enrichment those rows wouldn't have a
+        # current price to display.
+        try:
+            _v10_prices: dict[str, float | None] = {}
+            for _t in tickers:
+                try:
+                    _vp = _price_for(_t)
+                    _v10_prices[_t] = float(_vp) if _vp is not None else None
+                except Exception:
+                    _v10_prices[_t] = None
+            v10_block["prices"] = _v10_prices
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "version": version,

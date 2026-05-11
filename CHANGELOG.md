@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.54.0 (2026-05-11) -- v10 Proximity card always visible (pre-OR-lock + premarket)
+
+User reported "it says waiting for permit data and no cards are
+showing" outside RTH. Two issues conspired:
+  - The legacy Permit Matrix card stays visible whenever
+    `body.v10-live` isn't set (v10 not bootstrapped) and shows its
+    "Waiting for permit data..." empty state.
+  - The v7.52.0 v10 Proximity card hid itself when v10 wasn't
+    bootstrapped OR when no OR windows had locked yet (typical
+    state outside the 09:30-10:00 ET OR collection window).
+
+Result: outside RTH the operator saw the misleading legacy empty
+state + nothing from the v10 surface.
+
+### Fix
+
+Backend (`dashboard_server.py`):
+  - Adds `v10.prices` -- a flat `{ticker: float|None}` map covering
+    the full configured universe (not just tickers already in the
+    OR window). Same `_price_for(t)` source, single best-effort
+    pass after `snapshot()` runs.
+
+Frontend (`renderV10ProximityMatrix`):
+  - Card stays visible across all three lifecycle states:
+    1. v10 not bootstrapped (premarket / engine warmup)
+    2. v10 bootstrapped + no OR locked yet (~pre-09:30 to 10:00 ET)
+    3. v10 bootstrapped + OR locked (full proximity calc)
+  - Universe row builder now merges (a) tickers in `or_windows`,
+    (b) tickers with any `day_state`, and (c) `s.tickers` (the
+    configured universe) so the table is populated even when none
+    of (a)/(b) have data yet.
+  - Unlocked rows render with `—` for OR-low / OR-high / Width
+    and an "OR PENDING" pill in the Distance column. The row is
+    dimmed (`v10-prox-row-unlocked`) so the eye still goes to
+    locked rows first.
+  - Click-to-expand chart still works on every row -- valuable
+    even pre-lock for premarket inspection.
+  - Header count changed from "· N" to "· locked / total locked"
+    e.g. "1 / 7 locked".
+  - Summary chip text: "OR window not locked yet" when all
+    pending, otherwise the existing closest-to-break summary.
+
+### Files
+
+  - `dashboard_server.py` -- `v10.prices` enrichment
+  - `dashboard_static/app.js` -- universe builder + unlocked rows
+  - `dashboard_static/app.css` -- `.v10-prox-row-unlocked` dim
+    + `.v10-prox-pending` pill
+  - `bot_version.py` / `trade_genius.py` -- 7.53.0 -> 7.54.0
+  - `docs/dashboard_redesign_v2/pr47_screenshots/` -- pre-OR-lock
+    + mid-session-one-locked desktop shots
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped. Playwright:
+  - Pre-OR-lock: 0/7 locked, "OR window not locked yet" summary,
+    all 7 universe tickers visible (dimmed)
+  - Mid-session: 1/7 locked, "AAPL -0.44% from OR-high" summary,
+    AAPL at top + 6 dimmed rows below
+
+### Risk
+
+Backend addition is purely additive. Frontend renderer still
+wrapped in try/catch. Falls back gracefully when `s.tickers` is
+missing (renders whatever's in `or_windows` + `day_states`).
+
+---
+
 ## v7.53.0 (2026-05-11) -- v10 Proximity rows expand to per-stock intraday chart
 
 PR46 of the dashboard-redesign loop. Brings back the second half of

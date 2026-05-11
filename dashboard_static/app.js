@@ -6267,19 +6267,27 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
     }
-    var v10 = s && s.v10;
+    var v10 = (s && s.v10) || {};
     var section = document.getElementById("v10-proximity-section");
     if (!section) return;
-    if (!v10 || v10.available === false || !v10.bootstrapped) {
-      section.style.display = "none";
-      return;
-    }
+
+    // v7.54.0 -- the card stays visible across all three lifecycle states:
+    //   (1) v10 not bootstrapped (premarket / engine warmup):
+    //       show the universe from s.tickers with current prices,
+    //       OR cells as "—", phase chips as "WARMUP".
+    //   (2) v10 bootstrapped, OR not locked yet (~09:30-10:00 ET):
+    //       same shape but the per-pid phase chips reflect day_states.
+    //   (3) v10 bootstrapped + OR locked: full proximity calc.
+    // Before this PR the card hid itself in (1) and (2), leaving the
+    // operator with only the legacy "Waiting for permit data..." card.
     section.style.display = "";
+
     var body = document.getElementById("v10-prox-body");
     var countEl = document.getElementById("v10-prox-count");
     var summaryEl = document.getElementById("v10-prox-summary");
     var orWindows = v10.or_windows || {};
     var dayStates = v10.day_states || [];
+    var prices = v10.prices || {};
 
     // Index FSM phases by ticker -> { pid -> phase }
     var phaseByTk = {};
@@ -6290,21 +6298,34 @@
       phaseByTk[d.ticker][d.portfolio_id || "?"] = d.phase || "?";
     }
 
-    // Build rows for tickers whose OR window has locked.
-    var rows = [];
-    Object.keys(orWindows).forEach(function (tkr) {
-      var w = orWindows[tkr] || {};
-      if (!w.locked) return;
-      var px = (typeof w.current_price === "number") ? w.current_price : null;
-      var orh = (typeof w.or_high === "number") ? w.or_high : null;
-      var orl = (typeof w.or_low === "number") ? w.or_low : null;
-      if (orh == null || orl == null) return;
+    // Universe: union of (a) tickers in or_windows, (b) tickers in
+    // day_states, and (c) s.tickers (the configured universe). Order
+    // by closer-to-break first when proximity is computable, then
+    // alphabetical for the rest.
+    var universe = {};
+    Object.keys(orWindows).forEach(function (t) { universe[t] = 1; });
+    Object.keys(phaseByTk).forEach(function (t) { universe[t] = 1; });
+    if (Array.isArray(s.tickers)) {
+      s.tickers.forEach(function (t) { if (t) universe[t] = 1; });
+    }
 
-      // distance to break (signed %): positive = above OR_high (long
-      // already broke), negative = below OR_low (short already broke),
-      // zero-ish = inside the OR window.
-      var distToHigh = (px != null && orh > 0) ? ((px - orh) / orh * 100) : null;
-      var distToLow  = (px != null && orl > 0) ? ((px - orl) / orl * 100) : null;
+    var rows = [];
+    Object.keys(universe).forEach(function (tkr) {
+      var w = orWindows[tkr] || {};
+      // Current price: prefer or_window.current_price (set when ticker
+      // is in the v10 universe), fall back to v10.prices map (added in
+      // v7.54.0 for the full universe).
+      var px = (typeof w.current_price === "number") ? w.current_price
+                : (typeof prices[tkr] === "number" ? prices[tkr] : null);
+      var locked = !!w.locked;
+      var orh = (locked && typeof w.or_high === "number") ? w.or_high : null;
+      var orl = (locked && typeof w.or_low === "number")  ? w.or_low  : null;
+
+      // distance to break -- only meaningful when OR has locked.
+      var distToHigh = (locked && px != null && orh != null && orh > 0)
+                        ? ((px - orh) / orh * 100) : null;
+      var distToLow  = (locked && px != null && orl != null && orl > 0)
+                        ? ((px - orl) / orl * 100) : null;
       var closer = null;
       var closerLabel = "";
       if (distToHigh != null && distToLow != null) {
@@ -6317,34 +6338,42 @@
       else if (distToLow  != null) { closer = distToLow;  closerLabel = "OR-low"; }
 
       rows.push({
-        tkr: tkr, px: px, orh: orh, orl: orl,
-        or_width_pct: w.or_width_pct,
+        tkr: tkr, px: px, orh: orh, orl: orl, locked: locked,
+        or_width_pct: locked ? w.or_width_pct : null,
         closer: closer, closer_label: closerLabel,
         phases: phaseByTk[tkr] || {},
       });
     });
 
-    // Sort: smallest absolute distance first (closest to break).
+    // Sort: locked rows first (closest-to-break ascending), then
+    // unlocked alphabetical.
     rows.sort(function (a, b) {
-      var aa = (a.closer == null) ? 1e9 : Math.abs(a.closer);
-      var bb = (b.closer == null) ? 1e9 : Math.abs(b.closer);
-      return aa - bb;
+      if (a.locked !== b.locked) return a.locked ? -1 : 1;
+      if (a.locked && b.locked) {
+        var aa = (a.closer == null) ? 1e9 : Math.abs(a.closer);
+        var bb = (b.closer == null) ? 1e9 : Math.abs(b.closer);
+        return aa - bb;
+      }
+      return a.tkr < b.tkr ? -1 : (a.tkr > b.tkr ? 1 : 0);
     });
 
-    if (countEl) countEl.textContent = "· " + rows.length;
+    var lockedCount = rows.filter(function (r) { return r.locked; }).length;
+    if (countEl) countEl.textContent = "· " + lockedCount + " / " + rows.length + " locked";
     if (summaryEl) {
       if (rows.length === 0) {
-        summaryEl.textContent = "no locked OR windows";
+        summaryEl.textContent = "universe empty";
+      } else if (lockedCount === 0) {
+        summaryEl.textContent = "OR window not locked yet";
       } else {
         var top = rows[0];
-        var d = (top.closer == null) ? "" :
+        var dd = (top.closer == null) ? "" :
           ((top.closer >= 0 ? "+" : "") + top.closer.toFixed(2) + "%");
-        summaryEl.textContent = top.tkr + " " + d + " from " + top.closer_label;
+        summaryEl.textContent = top.tkr + " " + dd + " from " + top.closer_label;
       }
     }
     if (!body) return;
     if (rows.length === 0) {
-      body.innerHTML = '<div class="empty">No tickers have locked their OR window yet today.</div>';
+      body.innerHTML = '<div class="empty">Universe is empty -- check TRADE_TICKERS configuration.</div>';
       return;
     }
 
@@ -6403,15 +6432,23 @@
       var isOpen = !!expanded[r.tkr];
       var caret = isOpen ? "▼" : "▶";
       var openCls = isOpen ? " v10-prox-row-open" : "";
-      html += '<tr class="v10-prox-row' + openCls + '" data-prox-ticker="' + esc(r.tkr) + '" '
+      var unlockedCls = r.locked ? "" : " v10-prox-row-unlocked";
+      // v7.54.0 -- when OR is not locked the OR cells are empty and the
+      // distance cell shows a "OR pending" pill instead of a number.
+      var orLowCell  = r.locked ? r.orl.toFixed(2) : "—";
+      var orHighCell = r.locked ? r.orh.toFixed(2) : "—";
+      var distHtml = r.locked
+                       ? _distCell(r.closer, r.closer_label)
+                       : '<span class="v10-prox-pending" title="Opening-range window has not locked yet (locks at the end of OR_minutes after 09:30 ET)">OR pending</span>';
+      html += '<tr class="v10-prox-row' + openCls + unlockedCls + '" data-prox-ticker="' + esc(r.tkr) + '" '
            +  'title="Click to ' + (isOpen ? 'hide' : 'show') + ' intraday chart">'
            +   '<td class="v10-prox-caret">' + caret + '</td>'
            +   '<td class="v10-prox-tkr">' + esc(r.tkr) + '</td>'
            +   '<td class="mono">' + (r.px != null ? r.px.toFixed(2) : "—") + '</td>'
-           +   '<td class="mono">' + r.orl.toFixed(2) + '</td>'
-           +   '<td class="mono">' + r.orh.toFixed(2) + '</td>'
+           +   '<td class="mono">' + orLowCell + '</td>'
+           +   '<td class="mono">' + orHighCell + '</td>'
            +   '<td class="mono">' + widthPct + '</td>'
-           +   '<td>' + _distCell(r.closer, r.closer_label) + '</td>'
+           +   '<td>' + distHtml + '</td>'
            +   '<td>' + chips + '</td>'
            + '</tr>';
       if (isOpen) {
