@@ -192,12 +192,17 @@
     const tradesLen = (sl.trades || []).length;
     const pctCls = Number.isFinite(pct) ? (pct >= 0 ? 'delta-up' : 'delta-down') : '';
     // v7.43.0 -- broker (Alpaca) day P&L shown as a chip alongside the
-    // paper P&L. The backend computes broker_day_pnl = closed (from
-    // trade_log.jsonl) + open (from open_pnl.jsonl); we surface the
-    // raw value AND a delta vs paper. Operators can spot fills not
-    // reflected in the paper book, Alpaca connection issues, or
-    // slippage drift at a glance.
-    var brokerPnl = (typeof p.broker_day_pnl === "number") ? p.broker_day_pnl : null;
+    // paper P&L.
+    //
+    // v7.51.0 -- the Main panel is paper-only; Alpaca holds positions
+    // for Val + Gene (the per-executor Alpaca paper accounts). The
+    // closed half of broker_day_pnl just duplicates the paper Day
+    // P&L (close_breakout writes m.trade_log on every paper close),
+    // and the open half is Alpaca's unrealized for Val+Gene leaking
+    // into Main's KPI tile. Both sides are wrong for Main. Hide it.
+    // Val/Gene tabs don't render this chip (their whole KPI tile is
+    // already broker-shape via /api/executor/<name>).
+    var brokerPnl = null;
     var brokerHtml = "";
     if (brokerPnl != null) {
       var brokerCls = brokerPnl >= 0 ? "delta-up" : "delta-down";
