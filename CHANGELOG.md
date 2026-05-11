@@ -4,6 +4,112 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.79.0 (2026-05-11) -- Monitor: Railway log-tail invariant for upstream failure signals
+
+Operator request: "is there a way to monitor Railway logs directly?
+Maybe you can use the GitHub monitor we created to pull the logs
+and analyze them if any issues found?"
+
+Many production issues never surface in `/api/state` because they
+happen in non-state-mutating code paths -- broker rejects, sentinel
+errors, ingest disconnects, cash-skip rejects, the V15-SIZING WAIT
+aborts (pre-v7.78.0). The dashboard monitor was blind to those. This
+PR closes the gap by reading the bot's actual stdout/stderr via
+Railway's GraphQL API and scanning for known failure signatures.
+
+### New module: `tools/railway_log_tail.py`
+
+Two public functions:
+
+- `fetch_recent_logs(limit=500)` -- GraphQL POST to
+  `https://backboard.railway.com/graphql/v2`. Resolves the latest
+  deployment of `RAILWAY_SERVICE_ID` and pulls its last `limit`
+  log lines. Returns `[{timestamp, message, severity}]` or `[]` on
+  any failure (missing env, network error, schema drift). Failure-
+  tolerant -- the rest of the monitor keeps working without it.
+- `scan_for_failures(logs, signatures=None)` -- regex-scans the
+  log dicts for `FAILURE_SIGNATURES` and returns
+  `{signal_name: {count, first_message, last_timestamp}}` for
+  every signal that matched at least once.
+
+Default signature set:
+  - `alpaca_error`             -- `[ALPACA-ERR]`
+  - `sentinel_critical`        -- `[SENTINEL][CRITICAL]`
+  - `risk_reject_notional_cap` -- `risk_reject:notional_cap`
+  - `risk_reject_other`        -- `[V79-ORB-REJECT]`
+  - `insufficient_cash`        -- `[paper] skip ... insufficient cash`
+  - `v15_wait_abort`           -- `[V15-SIZING] ... WAIT (defensive abort)`
+  - `ingest_disconnect`        -- `[INGEST] ... DISCONNECTED`
+  - `uncaught_traceback`       -- `Traceback (most recent call last):`
+
+### New invariant: `inv_railway_logs_clean`
+
+Severity-tiered:
+  - **CRITICAL** (alpaca_error / sentinel_critical / uncaught_traceback):
+    fails on the first hit.
+  - **SOFT** (insufficient_cash / risk_reject_* / v15_wait_abort):
+    fails when count >= 5 in the fetched window (one-off rejection
+    is normal trading behavior; clustered hits indicate a systemic
+    issue).
+  - **INFO** (ingest_disconnect): fails when count >= 3.
+
+When `RAILWAY_API_TOKEN` or `RAILWAY_SERVICE_ID` is missing, the
+invariant ok-skips with a clear summary so the rest of the
+monitor's invariants still run.
+
+### Workflow + secrets
+
+`.github/workflows/dashboard-monitor.yml` env block adds:
+
+```yaml
+RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+```
+
+Operator setup: create a Railway personal token at
+`https://railway.app/account/tokens`; find the service UUID in the
+service-detail page URL. Both are read-only and can be revoked at
+any time. The invariant ok-skips when either is missing, so the
+monitor will keep running on partial setup while the operator
+configures.
+
+### Tests
+
+- `tests/strategy/test_railway_log_tail.py` (NEW, 18 tests):
+  fetch returns `[]` on every documented failure path; scanner
+  detects each signature type, counts repeats correctly, accepts
+  custom regex maps.
+- `tests/strategy/test_dashboard_monitor_invariants.py` (+6 tests):
+  invariant ok-skips on empty fetch; passes on clean logs;
+  fails on a single CRITICAL hit; SOFT-tier threshold at 5;
+  graceful import-failure handling.
+
+Full suite: **457 passed** (up from 433), 8 skipped.
+
+### Files
+
+- `tools/railway_log_tail.py` (NEW)
+- `tools/dashboard_monitor_invariants.py` -- new invariant + registry
+- `.github/workflows/dashboard-monitor.yml` -- env additions
+- `docs/dashboard_monitor_setup.md` -- secret table + invariant catalogue
+- `tests/strategy/test_railway_log_tail.py` (NEW)
+- `tests/strategy/test_dashboard_monitor_invariants.py` -- +6 tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+### Operator action
+
+1. Create a Railway API token (Account → Tokens → Create Token).
+2. Find the service UUID in the Railway dashboard URL when viewing
+   the service.
+3. Add both as GitHub repository secrets named `RAILWAY_API_TOKEN`
+   and `RAILWAY_SERVICE_ID`.
+4. The next scheduled monitor run will pick them up automatically.
+
+Without the secrets, the invariant ok-skips silently and the other
+17 invariants continue to run as before.
+
+---
+
 ## v7.78.0 (2026-05-11) -- execute_breakout: skip V15-SIZING when v10 supplied a size
 
 Operator pulled Railway logs after v7.77.0 deployed. Three findings:

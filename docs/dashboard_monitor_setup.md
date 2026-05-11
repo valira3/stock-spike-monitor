@@ -37,6 +37,8 @@ repository secret**:
 | `DASHBOARD_PASSWORD` | The login password — same value the live bot has on Railway under `DASHBOARD_PASSWORD`. Operator already has this. |
 | `TELEGRAM_TP_TOKEN` | Existing TG bot token. Operator already has this. |
 | `TELEGRAM_TP_CHAT_ID` | Chat id to post alerts. Operator already has this. |
+| `RAILWAY_API_TOKEN` | **Optional (v7.79.0+)**: Railway personal/team token for the log-tail invariant. Create at Railway dashboard → Account → Tokens. Read-only access is sufficient. |
+| `RAILWAY_SERVICE_ID` | **Optional (v7.79.0+)**: UUID of the Railway service, visible in the dashboard URL when viewing the service: `https://railway.app/project/<PROJECT>/service/<THIS_UUID>`. |
 
 All four secrets per the operator's existing GHA naming. The Python
 script itself uses neutral env names (`DASHBOARD_BASE_URL`,
@@ -83,6 +85,13 @@ set:
 | `or_window_well_formed` | Locked OR windows have `or_low <= or_high` and sane width |
 | `no_phantom_positions` | Main `positions.length == risk_books.main.open_count` |
 | `daily_kill_consistency` | `daily_kill_triggered` matches `realized_pnl_today <= -threshold` |
+| `or_locked_after_or_end` | v7.75.0 -- During OPEN/POWER, >=1 `v10.or_windows[*].locked=true` (catches "0/N LOCKED at 10:14 ET") |
+| `or_window_data_quality` | v7.75.0 -- <=2 locked windows with `bars_seen < or_minutes // 2` (catches upstream bar-source flapping) |
+| `position_count_three_way` | v7.75.0 -- `state.positions` vs `portfolios.*.positions` vs `broker_open_n` consistent (catches phantom-at-broker) |
+| `equity_self_consistent` | v7.75.0 -- `portfolio.equity == cash + long_mv - short_liab` (catches stale-snapshot drift) |
+| `v10_in_pos_has_internal_position` | v7.76.0 -- Every FSM `phase=IN_POS` has a matching entry in the portfolio's positions list (catches admit-without-fill phantom) |
+| `risk_book_notional_cap_nonzero` | v7.76.0 -- Every `v10.risk_books[*]` has nonzero equity + max_notional during RTH (catches the Val/Gene $0-cap bug) |
+| `railway_logs_clean` | v7.79.0 -- Fetches recent Railway logs and alerts on `[ALPACA-ERR]`, `[SENTINEL][CRITICAL]`, repeated `risk_reject:*`, `[paper] skip ... insufficient cash`, etc. Requires `RAILWAY_API_TOKEN` + `RAILWAY_SERVICE_ID` to fetch; ok-skips otherwise. |
 
 Add a new invariant by appending a function to the `INVARIANTS` list
 at the bottom of `dashboard_monitor_invariants.py`. The function

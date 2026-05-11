@@ -15,6 +15,7 @@ from tools.dashboard_monitor_invariants import (
     inv_equity_self_consistent,
     inv_v10_in_pos_has_internal_position,
     inv_risk_book_notional_cap_nonzero,
+    inv_railway_logs_clean,
 )
 
 
@@ -420,3 +421,86 @@ class TestRiskBookNotionalCapNonzero:
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert not r["ok"]
         assert "3" in r["summary"]
+
+
+# ---------------------------------------------------------------------
+# inv_railway_logs_clean (v7.79.0)
+# ---------------------------------------------------------------------
+
+
+class TestRailwayLogsClean:
+
+    def test_skips_when_log_fetch_returns_empty(self, monkeypatch):
+        # No RAILWAY_API_TOKEN / RAILWAY_SERVICE_ID -> fetch returns [].
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: [])
+        r = inv_railway_logs_clean(_ctx({}))
+        assert r["ok"]
+        assert "skipped" in r["summary"]
+
+    def test_passes_when_logs_have_no_signals(self, monkeypatch):
+        import tools.railway_log_tail as rlt
+        clean_logs = [
+            {"timestamp": "t1", "message": "[V79-ORB-ENTRY] long X", "severity": "info"},
+            {"timestamp": "t2", "message": "SCAN CYCLE done", "severity": "info"},
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: clean_logs)
+        r = inv_railway_logs_clean(_ctx({}))
+        assert r["ok"]
+        assert "scanned 2 lines" in r["summary"]
+
+    def test_fails_on_critical_signal_at_count_1(self, monkeypatch):
+        import tools.railway_log_tail as rlt
+        bad_logs = [
+            {"timestamp": "t1",
+             "message": "[ALPACA-ERR] insufficient_buying_power",
+             "severity": "warning"},
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: bad_logs)
+        r = inv_railway_logs_clean(_ctx({}))
+        assert not r["ok"]
+        assert "alpaca_error" in r["detail"]
+        assert "CRITICAL" in r["detail"]
+
+    def test_soft_signal_passes_below_threshold(self, monkeypatch):
+        import tools.railway_log_tail as rlt
+        # 4 hits is below the >=5 threshold for soft signals
+        soft_logs = [
+            {"timestamp": f"t{i}",
+             "message": f"[paper] skip MSFT -- insufficient cash {i}",
+             "severity": "info"}
+            for i in range(4)
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: soft_logs)
+        r = inv_railway_logs_clean(_ctx({}))
+        assert r["ok"]
+
+    def test_soft_signal_fails_at_threshold(self, monkeypatch):
+        import tools.railway_log_tail as rlt
+        soft_logs = [
+            {"timestamp": f"t{i}",
+             "message": f"[paper] skip MSFT -- insufficient cash {i}",
+             "severity": "info"}
+            for i in range(5)
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: soft_logs)
+        r = inv_railway_logs_clean(_ctx({}))
+        assert not r["ok"]
+        assert "insufficient_cash" in r["detail"]
+        assert "SOFT" in r["detail"]
+
+    def test_handles_import_error_gracefully(self, monkeypatch):
+        # Simulate the module disappearing -- should ok-skip, not crash.
+        import sys
+        # Save original to restore
+        orig = sys.modules.get("tools.railway_log_tail")
+        sys.modules["tools.railway_log_tail"] = None  # makes import raise
+        try:
+            r = inv_railway_logs_clean(_ctx({}))
+            assert r["ok"]
+            assert "import failed" in r["summary"] or "skipped" in r["summary"]
+        finally:
+            if orig is not None:
+                sys.modules["tools.railway_log_tail"] = orig
+            else:
+                sys.modules.pop("tools.railway_log_tail", None)

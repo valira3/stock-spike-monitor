@@ -687,6 +687,76 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
     )
 
 
+def inv_railway_logs_clean(ctx: InvariantContext) -> dict:
+    """v7.79.0 -- fetch recent Railway deployment logs and alert on
+    known failure signatures.
+
+    Many production issues never surface in /api/state because they
+    happen in non-state-mutating code paths (broker rejects, sentinel
+    errors, ingest disconnects). This invariant goes upstream and
+    reads the bot's actual stdout/stderr via Railway's GraphQL API.
+
+    Requires RAILWAY_API_TOKEN + RAILWAY_SERVICE_ID env vars. Falls
+    back to ok-skip if either is missing or the API is unreachable.
+
+    Severity tiers:
+      - Critical signals (alpaca_error, sentinel_critical,
+        uncaught_traceback): fail on any occurrence.
+      - Soft signals (insufficient_cash, risk_reject_*, v15_wait_abort):
+        fail only when count >= 5 in the fetched window (suggests
+        systemic issue, not a one-off rejection).
+      - Informational signals (ingest_disconnect): fail when count >= 3.
+    """
+    try:
+        from tools.railway_log_tail import fetch_recent_logs, scan_for_failures
+    except Exception as e:
+        return _ok("railway_logs_clean", f"skipped: import failed: {e}")
+    logs = fetch_recent_logs(limit=500)
+    if not logs:
+        return _ok(
+            "railway_logs_clean",
+            "skipped: Railway log fetch unavailable "
+            "(missing RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID or API error)",
+        )
+    findings = scan_for_failures(logs)
+    critical_signals = ("alpaca_error", "sentinel_critical",
+                        "uncaught_traceback")
+    soft_signals = ("insufficient_cash", "risk_reject_notional_cap",
+                    "risk_reject_other", "v15_wait_abort")
+    info_signals = ("ingest_disconnect",)
+    triggered: list[tuple[str, dict, str]] = []
+    for name, info in findings.items():
+        count = info.get("count", 0)
+        if name in critical_signals and count >= 1:
+            triggered.append((name, info, "CRITICAL"))
+        elif name in soft_signals and count >= 5:
+            triggered.append((name, info, "SOFT"))
+        elif name in info_signals and count >= 3:
+            triggered.append((name, info, "INFO"))
+    if triggered:
+        lines = []
+        for name, info, tier in triggered:
+            lines.append(
+                f"  [{tier}] {name}: count={info['count']} "
+                f"last={info['last_timestamp']} "
+                f"sample={info['first_message'][:200]!r}"
+            )
+        return _fail(
+            "railway_logs_clean",
+            f"{len(triggered)} log-signature alert(s) in last {len(logs)} lines",
+            "Recent Railway deployment logs contain failure signatures "
+            "that indicate runtime issues not visible in /api/state. "
+            "Tiers: CRITICAL=any 1 hit fails; SOFT=>=5 hits; "
+            "INFO=>=3 hits. Investigate the sample message(s) below "
+            "and grep Railway for the full context.\n" + "\n".join(lines),
+        )
+    return _ok(
+        "railway_logs_clean",
+        f"scanned {len(logs)} lines, "
+        f"{len(findings)} sub-threshold signals",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -712,4 +782,6 @@ INVARIANTS = [
     # v7.76.0 -- FSM-vs-book + RiskBook equity consistency
     inv_v10_in_pos_has_internal_position,
     inv_risk_book_notional_cap_nonzero,
+    # v7.79.0 -- Railway log-tail analysis
+    inv_railway_logs_clean,
 ]
