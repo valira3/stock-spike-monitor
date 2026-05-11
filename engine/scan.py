@@ -153,7 +153,13 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.exception("refresh_volume_baseline_if_needed failed")
 
     is_weekend = now_et.weekday() >= 5
-    before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 35)
+    # v7.72.0 -- boundary moved from 09:35 to 09:30 ET. The 09:30-09:34
+    # slot is the OR (opening range) lock window; the engine is actively
+    # collecting OR bounds during it, not idle. Pre-v7.72.0 the dashboard
+    # banner flashed "OUTSIDE MARKET HOURS" for those 5 minutes each
+    # session because _scan_idle_hours leaked True through the OR window.
+    # The "no entries during OR" gate is enforced separately in orb/day_gates.
+    before_open = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30)
     # v6.3.2 \u2014 hard cutoff moved 15:55 \u2192 16:00 ET so the engine
     # keeps managing positions and accepting candidates through the full
     # final 5-minute bucket. The 15:55 ceiling was clipping ~5 minutes

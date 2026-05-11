@@ -38,6 +38,9 @@ Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE /
 - Never hide `#h-tick`, never drop the health-pill count
 - Telegram mobile code-block: ≤34 chars per line
 
+## Operator preferences
+- **Timezone (added v7.72.0)**: always show times to the operator in US Central Time (CT — CDT during DST, CST otherwise). When referencing market hours or schedules, list CT first and only include ET/UTC alongside if necessary for disambiguation. Example: "next cron tick at 08:57 CT (13:57 UTC)". Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; this rule is for user-facing communication only.
+
 ## Before pushing
 Run `bash scripts/preflight.sh` — mirrors CI checks locally:
 - pytest

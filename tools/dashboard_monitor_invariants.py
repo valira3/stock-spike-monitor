@@ -322,7 +322,10 @@ def inv_version_advertised(ctx):
     s = _state(ctx)
     if not s:
         return _ok("version_advertised", "skipped: state missing")
-    bv = s.get("bot_version") or ""
+    # v7.72.0 -- field is `version` on the /api/state response
+    # (dashboard_server.py:1945), not `bot_version`. Pre-v7.72.0 monitor
+    # always tripped this invariant with `BOT_VERSION malformed: ''`.
+    bv = s.get("version") or s.get("bot_version") or ""
     parts = bv.split(".")
     if len(parts) < 3:
         return _fail("version_advertised", f"BOT_VERSION malformed: {bv!r}")

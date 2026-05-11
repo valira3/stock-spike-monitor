@@ -4,6 +4,118 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.72.0 (2026-05-11) -- Triage drop: monitor false-positive + paper_cash sync + OR-window banner + CT timezone
+
+First production payload from the live dashboard monitor surfaced
+two real invariant violations once the operator triggered a manual
+dispatch post-v7.71.0:
+
+```
+VIOLATION: version_advertised -- BOT_VERSION malformed: ''
+VIOLATION: equity_matches_baseline -- /api/v10/projection.live_balance=0.0
+                                       but /api/state.portfolio.equity=$99552.28
+```
+
+Plus a separate dashboard-banner regression noticed during RTH
+open (09:30-09:34 ET) -- "OUTSIDE MARKET HOURS" displayed during
+the OR (opening range) lock window.
+
+### Fix 1: `version_advertised` false positive (monitor bug)
+
+`inv_version_advertised` was reading `s.get("bot_version")` but
+the /api/state response serves the field as `version`
+(dashboard_server.py:1945). Pre-v7.72.0 the invariant always
+tripped on every cycle. The dashboard was always advertising the
+correct version; the monitor was just checking the wrong key.
+
+### Fix 2: `equity_matches_baseline` real prod bug (paper_cash desync)
+
+Root cause in `engine/portfolio_book.py`: `PortfolioBook.__init__`
+sets `self.paper_cash = 0.0` as the default. The bridge in
+`trade_genius.py:2663+` wires `positions`, `short_positions`,
+`trade_history`, etc. into `_MAIN_BOOK` but **forgot paper_cash**.
+Cash mutations at `broker/positions.py:922`, `broker/orders.py:1558`,
+`broker/orders.py:1891`, and `paper_state.py:402/551/592` only
+updated the legacy module global `tg.paper_cash`, never
+`_MAIN_BOOK.paper_cash`. Result: `_MAIN_BOOK.current_equity() = 0`
+always, which the /api/v10/projection endpoint exposes as
+`live_balance=0`. v7.64.0 patched the UI to read from
+`state.portfolio.equity` instead, masking the symptom -- but the
+backend contract stayed broken (and any v10 sizing path that uses
+`book.current_equity()` was also reading 0).
+
+**Fix**: bridge `_MAIN_BOOK.paper_cash = paper_cash` at module-load
+and add a tiny `tg._sync_main_book_cash()` helper that mirrors the
+module global into the book. Helper is called immediately after
+every site that mutates `tg.paper_cash`:
+
+  - `broker/positions.py:923` (legacy entry-2 cash debit)
+  - `broker/orders.py:1559` (v10 entry cash debit)
+  - `broker/orders.py:1893` (exit cash credit)
+  - `paper_state.py:403` (load_from_disk restore)
+  - `paper_state.py:553` (restore-failure reset)
+  - `paper_state.py:595` (explicit reset path)
+
+Net effect: `/api/v10/projection.live_balance` now tracks
+`/api/state.portfolio.equity` exactly. v10 sizing and the v7.64.0
+UI both read the same number. The frontend override remains as
+defense-in-depth.
+
+### Fix 3: OUTSIDE MARKET HOURS during OR window (banner regression)
+
+`engine/scan.py:156` defined `before_open = minute < 35`, which
+flipped `_scan_idle_hours = True` for 09:30-09:34 ET every session.
+That bled through to the dashboard banner via /api/state.gates
+and showed "OUTSIDE MARKET HOURS" during the OR lock window --
+exactly when the engine is most active (collecting OR bounds).
+
+**Fix**: boundary moved from `< 35` to `< 30`. The "no entries
+during OR" gate is enforced separately in `orb/day_gates.py`;
+`_scan_idle_hours` is purely a UI/idle-flag and should be False
+whenever the regular session is technically open.
+
+### Fix 4: monitor heartbeat polish
+
+Two issues found in the wild:
+
+- `_heartbeat_text` was reading `state.regime_mode` /
+  `state.equity_usd` / `state.v10`, but the actual /api/state
+  shape is `state.regime.mode`, `state.portfolio.equity`, and v10
+  live_mode lives on `/api/v10/projection` (not /api/state).
+  Pre-v7.72.0 the heartbeat rendered "regime: ? · v10 live\_mode: ?"
+  -- equity still rendered correctly via the fallback path.
+- Manual `workflow_dispatch` heartbeats were silent
+  (`disable_notification=true`), so the operator's "did the wiring
+  work?" liveness check produced no push notification. Now LOUD
+  on workflow_dispatch (silent on scheduled-cron only).
+
+### Fix 5: CT-timezone rule (CLAUDE.md)
+
+New operator-preference section: always present times in US Central
+(CT — CDT during DST). Internal code/logs continue to use UTC/ET
+as designed; user-facing communication uses CT first.
+
+### Files touched
+
+- `tools/dashboard_monitor_invariants.py`: `inv_version_advertised`
+- `tools/dashboard_monitor.py`: `_heartbeat_text` + `_emit_heartbeat`
+- `trade_genius.py`: `_sync_main_book_cash()` helper + bridge init
+- `broker/positions.py`, `broker/orders.py` (2 sites),
+  `paper_state.py` (3 sites): call `_sync_main_book_cash` after
+  every `tg.paper_cash` mutation
+- `engine/scan.py`: `before_open` boundary
+- `CLAUDE.md`: CT-timezone rule
+
+### Telegram-token note
+
+Separately, the live monitor's first run exposed that the
+`TELEGRAM_TP_TOKEN` GHA secret is currently returning **401
+Unauthorized** from the Telegram API. The operator needs to
+rotate the bot token via @BotFather and update the secret;
+the monitor itself is wired correctly.
+
+---
+
 ## v7.71.0 (2026-05-11) -- Monitor: heartbeat unconditional on workflow_dispatch
 
 Follow-up to v7.70.0. Operator manually dispatched the workflow

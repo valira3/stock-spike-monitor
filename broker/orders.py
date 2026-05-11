@@ -1556,6 +1556,7 @@ def execute_breakout(ticker, current_price, side):
 
     # Paper accounting: long debits, short credits.
     tg.paper_cash += cfg.entry_cash_delta(shares, current_price)
+    tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
 
     # Long BUYs are appended to paper_trades / paper_all_trades; short
     # opens are intentionally NOT appended (short_trade_history is the
@@ -1889,6 +1890,7 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     # Paper accounting: long credits sale proceeds, short debits cover cost.
     notional = price * shares  # "proceeds" for long, "cover_total" for short
     tg.paper_cash += cfg.close_cash_delta(shares, price)
+    tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
 
     # Long SELLs are appended to paper_trades / paper_all_trades; short
     # COVERs are intentionally NOT appended (short_trade_history is the
