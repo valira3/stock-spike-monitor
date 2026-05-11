@@ -371,7 +371,7 @@
           var rTxt = (r >= 0 ? "+" : "") + r.toFixed(2) + "R";
           progressRow =
             '<tr class="pos-progress-row" data-pos-ticker="' + escapeHtml(p.ticker) + '">' +
-              '<td colspan="8" class="pos-progress-cell">' +
+              '<td colspan="9" class="pos-progress-cell">' +
                 '<div class="pos-progress">' +
                   '<div class="pos-progress-track">' +
                     '<div class="pos-progress-zone red"     style="left:0%; width:' + entryAt.toFixed(2) + '%"></div>' +
@@ -393,6 +393,20 @@
               '</td>' +
             '</tr>';
         }
+        // v7.56.0 -- per-trade risk dollars. |entry - effective_stop|
+        // * shares is exactly the number summed into the Concurrent
+        // Risk gauge. Surfacing it per-row makes the gauge math
+        // traceable to specific tickers.
+        var _riskTxt = "—";
+        var _riskShareCount = Number(p.shares);
+        var _riskEntry = Number(p.entry);
+        var _riskStop = Number(eff);
+        if (Number.isFinite(_riskShareCount) && _riskShareCount > 0
+            && Number.isFinite(_riskEntry) && _riskEntry > 0
+            && Number.isFinite(_riskStop) && _riskStop > 0) {
+          var _rps = Math.abs(_riskEntry - _riskStop);
+          if (_rps > 0) _riskTxt = fmtUsd(_rps * _riskShareCount);
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
@@ -400,6 +414,7 @@
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
+          <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
           <td class="right ${pnlCls}">${pctTxt}</td>
         </tr>${progressRow}`;
@@ -412,6 +427,7 @@
           <th class="right" title="Average fill price when the position opened">Entry</th>
           <th class="right" title="Latest mark price">Mark</th>
           <th class="right" title="Effective stop \u2014 trail stop if armed (TRAIL badge), otherwise the hard stop">Stop</th>
+          <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
           <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
         </tr></thead>
@@ -5234,7 +5250,7 @@
             var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
             _progressRow =
               '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
-                '<td colspan="8" class="pos-progress-cell">' +
+                '<td colspan="9" class="pos-progress-cell">' +
                   '<div class="pos-progress">' +
                     '<div class="pos-progress-track">' +
                       '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
@@ -5263,6 +5279,7 @@
             <td class="right">${fmtNum(p.avg_entry, 2)}</td>
             <td class="right">${fmtNum(p.current_price, 2)}</td>
             <td class="right">${_stopTxt}</td>
+            <td class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">${(function(){var s=Number(p.qty),e=Number(p.avg_entry),st=_stopInfo&&Number.isFinite(_stopInfo.eff)?_stopInfo.eff:NaN;if(!(s>0&&e>0&&Number.isFinite(st)))return "\u2014";var rps=Math.abs(e-st);return rps>0?fmtUsd(rps*s):"\u2014";})()}</td>
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
           </tr>${_progressRow}`;
@@ -5275,6 +5292,7 @@
             <th class="right" title="Average fill price when the position opened">Entry</th>
             <th class="right" title="Latest mark price">Mark</th>
             <th class="right" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
+            <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
             <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
             <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
           </tr></thead>

@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.56.0 (2026-05-11) -- Per-trade Risk column on positions tables
+
+Follow-up to the v10 Concurrent Risk gauge explanation: each open
+position now shows its dollar risk-at-stop as a new column, so the
+gauge math is traceable to specific tickers. Risk = |entry −
+effective_stop| × shares, the exact value the engine submits to
+`RiskBook.try_admit()` and that sums into `open_risk`.
+
+### Frontend changes
+
+`dashboard_static/app.js`:
+  - Main panel `renderPositions`: new Risk cell computed inline
+    using `Number(p.entry)`, `Number(eff)` (effective stop), and
+    `Number(p.shares)`. Header tooltip explains the formula and
+    the link to the Concurrent Risk gauge. Em-dash fallback when
+    any input is missing or non-positive.
+  - Val/Gene exec panel positions table: same Risk cell, sourcing
+    `avg_entry` + `qty` from the broker payload and `effective_stop`
+    from the Main-state cross-reference (`_stopInfo.eff`) -- same
+    field path used by the TRAIL badge logic.
+  - Progress-bar row `colspan` bumped 8 -> 9 on both tables so the
+    bar still spans the full row width.
+
+### Files
+
+  - `dashboard_static/app.js` -- Risk cell + header tooltip + colspan
+  - `bot_version.py` / `trade_genius.py` -- 7.55.0 -> 7.56.0
+  - `docs/dashboard_redesign_v2/pr49_screenshots/` -- Main + Val
+
+### Tests
+
+Playwright on fixture: AAPL 100sh entry=190 stop=188 -> $200,
+NVDA 30sh entry=850 stop=845 -> $150, TSLA SHORT 50sh entry=240
+stop=245 -> $250. Sum = $600, matching what a 30% Concurrent Risk
+gauge ($600 / $2000) would show. Val NVDA mirror = $150 via
+Main-state stop cross-reference. `pytest tests/strategy/` -- 388
+passed, 8 skipped.
+
+### Risk
+
+Pure additive display. No backend change. No engine change. The
+new cell only renders when entry + stop + shares are all numeric
+and positive; otherwise shows em-dash.
+
+---
+
 ## v7.55.0 (2026-05-11) -- v10 Proximity card on Val/Gene tabs + hide legacy permit-matrix there
 
 User reported the Val tab still showed `Waiting for permit data...`
