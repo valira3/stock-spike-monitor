@@ -1241,64 +1241,96 @@ def execute_breakout(ticker, current_price, side):
     #                                    L-P3-AUTH gate already covers this)
     # v7.18.0: pass ticker so paper_shares_for can consult the v10
     # size stash (filled by orb.live_runtime.stash_v10_size at admission)
+    #
+    # v7.78.0 -- pre-check whether v10 supplied a size for this entry.
+    # If so, skip the V15-SIZING block below entirely. Pre-v7.78.0
+    # V15-SIZING ran unconditionally and either:
+    #   (a) aborted v10-admitted entries on its own `WAIT` rule (the
+    #       2026-05-11 AAPL `defensive abort: 5m DI 23.97 <= 25.0`).
+    #   (b) overwrote v10's share count with `FULL` tier = starter*2
+    #       (the MSFT case where v10 sized 181 -> V15 upsized to 362,
+    #       triggering insufficient-cash skip at $148K > $99K available).
+    # Both are wrong: v10 already passed all its own gates (range, VIX,
+    # earnings, gap, OR-break) and computed the proper size against
+    # available equity. Re-applying V15 is double-gating + double-sizing.
+    _v10_supplied_size = False
+    try:
+        from orb.live_runtime import peek_v10_size, is_live_mode_on
+        if is_live_mode_on() and peek_v10_size("main", ticker) is not None:
+            _v10_supplied_size = True
+    except Exception:
+        pass
     starter_shares = paper_shares_for(current_price, ticker=ticker)
     shares = starter_shares
     _v15_size_label = "FULL"  # legacy default for telemetry
     _v15_size_reason = ""
-    try:
-        from eye_of_tiger import evaluate_strike_sizing as _v15_eval_sizing
-
-        _di_streams = tg.v5_di_1m_5m(ticker) if hasattr(tg, "v5_di_1m_5m") else {}
-        if cfg.side.is_long:
-            _v15_di_5m = _di_streams.get("di_plus_5m")
-            _v15_di_1m = _di_streams.get("di_plus_1m")
-        else:
-            _v15_di_5m = _di_streams.get("di_minus_5m")
-            _v15_di_1m = _di_streams.get("di_minus_1m")
-        _v15_decision = _v15_eval_sizing(
-            side="LONG" if cfg.side.is_long else "SHORT",
-            di_5m=_v15_di_5m,
-            di_1m=_v15_di_1m,
-            is_fresh_extreme=False,
-            intended_shares=int(starter_shares) * 2,
-            held_shares_this_strike=0,
-            alarm_e_blocked=False,
-        )
-        _v15_size_label = _v15_decision.size_label
-        _v15_size_reason = _v15_decision.reason
-        # Map the spec tier back to the legacy two-leg sizing model:
-        #   FULL       \u2192 fill 100% now (2 \u00d7 starter); Entry-2 must NOT top up
-        #   SCALED_A   \u2192 fill 50% starter (existing behavior); Entry-2 may top up
-        #   SCALED_B   \u2192 not reachable here (held=0 path); fall through
-        #   WAIT       \u2192 abort entry; check_breakout should have caught this
-        if _v15_size_label == "FULL":
-            shares = int(_v15_decision.shares_to_buy)
-        elif _v15_size_label == "SCALED_A":
-            shares = int(_v15_decision.shares_to_buy)
-        elif _v15_size_label == "WAIT":
-            tg.logger.info(
-                "[V15-SIZING] %s side=%s WAIT (defensive abort): %s",
-                ticker,
-                "LONG" if cfg.side.is_long else "SHORT",
-                _v15_decision.reason,
-            )
-            return
+    if _v10_supplied_size:
+        # v7.78.0 -- delegate sizing+gating to v10 entirely. Log a
+        # marker line so the forensic trail makes the delegation
+        # visible alongside the existing [V79-ORB-ENTRY] admit log.
         tg.logger.info(
-            "[V15-SIZING] %s side=%s tier=%s shares=%d (1m DI=%s, 5m DI=%s)",
+            "[V79-ORB-DELEGATE] %s side=%s v10_shares=%d "
+            "(V15-SIZING skipped: v10 owns sizing+gates)",
             ticker,
             "LONG" if cfg.side.is_long else "SHORT",
-            _v15_size_label,
-            int(shares),
-            ("%.2f" % _v15_di_1m) if _v15_di_1m is not None else "None",
-            ("%.2f" % _v15_di_5m) if _v15_di_5m is not None else "None",
+            int(starter_shares),
         )
-    except Exception as _v15_err:
-        # Defensive: a sizing-helper exception MUST NOT block the trade.
-        # Fall through to the legacy ``starter_shares`` (50% Entry-1).
-        tg.logger.warning("[V15-SIZING] %s eval error: %s", ticker, _v15_err)
-        shares = starter_shares
-        _v15_size_label = "FULL"
-        _v15_size_reason = "sizing eval error \u2014 fell back to legacy starter"
+        _v15_size_reason = "delegated to v10 (ORB_LIVE_MODE=1)"
+    else:
+        try:
+            from eye_of_tiger import evaluate_strike_sizing as _v15_eval_sizing
+
+            _di_streams = tg.v5_di_1m_5m(ticker) if hasattr(tg, "v5_di_1m_5m") else {}
+            if cfg.side.is_long:
+                _v15_di_5m = _di_streams.get("di_plus_5m")
+                _v15_di_1m = _di_streams.get("di_plus_1m")
+            else:
+                _v15_di_5m = _di_streams.get("di_minus_5m")
+                _v15_di_1m = _di_streams.get("di_minus_1m")
+            _v15_decision = _v15_eval_sizing(
+                side="LONG" if cfg.side.is_long else "SHORT",
+                di_5m=_v15_di_5m,
+                di_1m=_v15_di_1m,
+                is_fresh_extreme=False,
+                intended_shares=int(starter_shares) * 2,
+                held_shares_this_strike=0,
+                alarm_e_blocked=False,
+            )
+            _v15_size_label = _v15_decision.size_label
+            _v15_size_reason = _v15_decision.reason
+            # Map the spec tier back to the legacy two-leg sizing model:
+            #   FULL       \u2192 fill 100% now (2 \u00d7 starter); Entry-2 must NOT top up
+            #   SCALED_A   \u2192 fill 50% starter (existing behavior); Entry-2 may top up
+            #   SCALED_B   \u2192 not reachable here (held=0 path); fall through
+            #   WAIT       \u2192 abort entry; check_breakout should have caught this
+            if _v15_size_label == "FULL":
+                shares = int(_v15_decision.shares_to_buy)
+            elif _v15_size_label == "SCALED_A":
+                shares = int(_v15_decision.shares_to_buy)
+            elif _v15_size_label == "WAIT":
+                tg.logger.info(
+                    "[V15-SIZING] %s side=%s WAIT (defensive abort): %s",
+                    ticker,
+                    "LONG" if cfg.side.is_long else "SHORT",
+                    _v15_decision.reason,
+                )
+                return
+            tg.logger.info(
+                "[V15-SIZING] %s side=%s tier=%s shares=%d (1m DI=%s, 5m DI=%s)",
+                ticker,
+                "LONG" if cfg.side.is_long else "SHORT",
+                _v15_size_label,
+                int(shares),
+                ("%.2f" % _v15_di_1m) if _v15_di_1m is not None else "None",
+                ("%.2f" % _v15_di_5m) if _v15_di_5m is not None else "None",
+            )
+        except Exception as _v15_err:
+            # Defensive: a sizing-helper exception MUST NOT block the trade.
+            # Fall through to the legacy ``starter_shares`` (50% Entry-1).
+            tg.logger.warning("[V15-SIZING] %s eval error: %s", ticker, _v15_err)
+            shares = starter_shares
+            _v15_size_label = "FULL"
+            _v15_size_reason = "sizing eval error \u2014 fell back to legacy starter"
     # v6.11.0 -- C25: apply regime-B short amplification after v15 sizing.
     try:
         from eye_of_tiger import (
