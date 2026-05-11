@@ -3971,10 +3971,11 @@
       if (typeof window.__tgRenderV10ProximityMatrix === "function")
         window.__tgRenderV10ProximityMatrix(s);
     } catch (e) { /* never break Main */ }
-    try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
-    try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
-    try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
-    try { positionEarningsWatcherCard(s); } catch (e) { /* never break Main */ }
+    // v7.58.0 -- legacy render calls retired:
+    //   renderWeatherCheck, renderPermitMatrix (Tiger Sovereign Phase
+    //   1-4 cards; their HTML was removed from index.html)
+    //   renderEarningsWatcher, positionEarningsWatcherCard (v6.18.0
+    //   EW panel removed; v10 has its own earnings gate)
     // v4.11.0 — health pill bound to Main when active.
     try { applyHealthPill("main", s.errors || { count: 0, severity: "green", entries: [] }); } catch (e) {}
   }
