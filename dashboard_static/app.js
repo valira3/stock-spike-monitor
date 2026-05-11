@@ -3952,16 +3952,20 @@
         window.__tgRenderKillSwitchBanner(s, "main");
     } catch (e) { /* never break Main */ }
     try {
+      // v7.57.0 -- pidFilter="main" so the banner gauges + strip don't
+      // mix val/gene state into the Main tab.
       if (typeof window.__tgRenderV10DayStatus === "function")
-        window.__tgRenderV10DayStatus(s);
+        window.__tgRenderV10DayStatus(s, "main");
     } catch (e) { /* never break Main */ }
     try {
+      // v7.57.0 -- scope to Main only.
       if (typeof window.__tgRenderV10TickerMatrix === "function")
-        window.__tgRenderV10TickerMatrix(s);
+        window.__tgRenderV10TickerMatrix(s, "main");
     } catch (e) { /* never break Main */ }
     try {
+      // v7.57.0 -- scope to Main only.
       if (typeof window.__tgRenderV10ActivityFeed === "function")
-        window.__tgRenderV10ActivityFeed(s);
+        window.__tgRenderV10ActivityFeed(s, "main");
     } catch (e) { /* never break Main */ }
     try {
       if (typeof window.__tgRenderV10ProximityMatrix === "function")
@@ -5778,11 +5782,15 @@
       });
     }
     // 5. Per-portfolio daily-loss kill
+    // v7.57.0 -- scope to `target` book only so the Main panel banner
+    // doesn't surface val/gene kill state, and vice versa. Each tab is
+    // independent.
     var rb = v10.risk_books || {};
     var killed_pids = [];
     var realized_total = 0;
     var threshold_total = 0;
     Object.keys(rb).sort().forEach(function (pid) {
+      if (target && pid !== target) return;
       var book = rb[pid] || {};
       if (book.daily_kill_triggered) {
         killed_pids.push({
@@ -5858,7 +5866,13 @@
     banner.innerHTML = html;
   }
 
-  function renderV10DayStatus(s) {
+  // v7.57.0 -- pidFilter scopes the banner to a single portfolio so the
+  // Main tab only shows Main's gauges + per-ticker stats (operator
+  // request: "Main, should only show information for main, it should
+  // not show Val or Gene information"). Pass null to keep the legacy
+  // cross-portfolio aggregation (no current caller; reserved for a
+  // future cross-book overview view if we add one).
+  function renderV10DayStatus(s, pidFilter) {
     var v10 = s && s.v10;
     var banner = document.getElementById("v10-day-status");
     if (!banner) return;
@@ -5927,53 +5941,77 @@
       }
     }
 
-    // Trades + risk used (sum across portfolios).
+    // Trades + risk used.
     // v7.50.0 -- prefer the backend-injected broker_trades_today so
     // the count matches what each pid's Alpaca account actually
     // booked (mirror mode keeps v10's trades_today=0 for val/gene).
+    // v7.57.0 -- when pidFilter is set, scope everything to that pid.
     function _tradesForDs(d) {
       return (d.broker_trades_today != null)
               ? d.broker_trades_today
               : (d.trades_today || 0);
     }
     var dayStates = v10.day_states || [];
-    var totalTrades = 0;
-    for (var i = 0; i < dayStates.length; i++) totalTrades += _tradesForDs(dayStates[i]);
-    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
-    var tradesEl = document.getElementById("v10-trades-used");
-    // v7.23.0: per-portfolio breakdown in tooltip; aggregate in pill text.
     var rb = v10.risk_books || {};
     var pidsAll = Object.keys(rb).sort();
-    var perPidTrades = {};
+    var pidsScope = pidFilter ? [pidFilter] : pidsAll;
+
+    // Per-pid + per-ticker trade counts (used by both gauge math and
+    // the per-pid strip below).
+    var perPidTrades = {};        // pid -> total trades_today on that book
+    var maxTickerPerPid = {};     // pid -> highest single-ticker count
     for (var j = 0; j < dayStates.length; j++) {
       var ds = dayStates[j];
       var p = ds.portfolio_id || "?";
-      perPidTrades[p] = (perPidTrades[p] || 0) + _tradesForDs(ds);
+      var n = _tradesForDs(ds);
+      perPidTrades[p] = (perPidTrades[p] || 0) + n;
+      if (n > (maxTickerPerPid[p] || 0)) maxTickerPerPid[p] = n;
     }
+    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
+
+    // Scoped sums.
+    var scopedTrades = 0;
+    var scopedMaxTicker = 0;
+    pidsScope.forEach(function (pid) {
+      scopedTrades += (perPidTrades[pid] || 0);
+      if ((maxTickerPerPid[pid] || 0) > scopedMaxTicker) {
+        scopedMaxTicker = maxTickerPerPid[pid];
+      }
+    });
+
+    var tradesEl = document.getElementById("v10-trades-used");
     if (tradesEl) {
-      tradesEl.textContent = totalTrades + "/" + (maxTrades * pidsAll.length);
-      // Tooltip with per-portfolio breakdown
-      var tradesTip = pidsAll.map(function (p) {
-        return p + ":" + (perPidTrades[p] || 0) + "/" + maxTrades;
-      }).join("  ");
-      tradesEl.title = tradesTip;
+      // For the header text we want the operator to see a clear number
+      // with the per-ticker cap in plain sight. v7.57.0 -- previous
+      // "8/15" form misled into "8 of 15 portfolio-level trades"; the
+      // cap is actually per (ticker, portfolio, day). Show book total
+      // + per-ticker cap explicitly.
+      tradesEl.textContent = scopedTrades + " today";
+      tradesEl.title = "Total trades today on " +
+        (pidFilter ? pidFilter : "all books") +
+        ". Cap: " + maxTrades + " entries per ticker per day "
+        + "(top ticker so far today: " + scopedMaxTicker + "/" + maxTrades + ").";
     }
 
     var riskUsed = 0;
     var riskMax = 0;
-    pidsAll.forEach(function (pid) {
-      riskUsed += (rb[pid].open_risk || 0);
-      riskMax += (rb[pid].max_risk_dollars || 0);
+    pidsScope.forEach(function (pid) {
+      riskUsed += (rb[pid] && rb[pid].open_risk) || 0;
+      riskMax += (rb[pid] && rb[pid].max_risk_dollars) || 0;
     });
     var riskEl = document.getElementById("v10-risk-used");
     if (riskEl) {
       riskEl.textContent = "$" + Math.round(riskUsed) + " / $" + Math.round(riskMax);
-      // Per-portfolio risk tooltip
-      var riskTip = pidsAll.map(function (p) {
-        return p + ":$" + Math.round(rb[p].open_risk || 0)
-          + "/$" + Math.round(rb[p].max_risk_dollars || 0);
-      }).join("  ");
-      riskEl.title = riskTip;
+      if (pidFilter) {
+        riskEl.title = pidFilter + " open risk vs cap. New entries are "
+          + "rejected with reason=risk_cap when (open_risk + new_trade) > cap.";
+      } else {
+        var riskTip = pidsScope.map(function (p) {
+          return p + ":$" + Math.round((rb[p] && rb[p].open_risk) || 0)
+            + "/$" + Math.round((rb[p] && rb[p].max_risk_dollars) || 0);
+        }).join("  ");
+        riskEl.title = riskTip;
+      }
     }
 
     // v7.41.0: gauges row -- visual bars for Trades / Risk / Daily-kill.
@@ -5984,18 +6022,20 @@
       gaugesRow.className = "v10-gauges-row";
       banner.appendChild(gaugesRow);
     }
-    var totalMaxTrades = maxTrades * Math.max(pidsAll.length, 1);
-    var tradesPct = totalMaxTrades > 0
-                    ? (totalTrades / totalMaxTrades * 100) : 0;
+    // v7.57.0 -- trades gauge fills on the highest-trades-on-any-ticker
+    // for this scope vs the per-ticker cap, because the cap is per
+    // (ticker, portfolio, day) -- not per book. Filling on book-total
+    // / N*cap was the misleading framing the operator flagged.
+    var tradesPct = maxTrades > 0 ? (scopedMaxTicker / maxTrades * 100) : 0;
     var riskPct = riskMax > 0 ? (riskUsed / riskMax * 100) : 0;
-    // Worst-portfolio daily-kill % drives the kill gauge -- the closest-
-    // to-blown portfolio is what an operator needs to see.
+    // Worst-pid daily-kill % drives the kill gauge -- closest-to-
+    // blown is what an operator needs to see at a glance.
     var killWorstPct = 0;
     var killWorstPid = null;
     var killWorstRealized = 0;
     var killWorstThreshold = 0;
     var anyKillTriggered = false;
-    pidsAll.forEach(function (pid) {
+    pidsScope.forEach(function (pid) {
       var b = rb[pid] || {};
       var thr = b.daily_kill_threshold || 0;
       var realized = b.realized_pnl_today || 0;
@@ -6027,11 +6067,15 @@
            + '</div></div>';
     }
 
+    // v7.57.0 -- trades gauge re-framed. The cap is PER TICKER, so the
+    // fill is "top ticker N/5" and the value text shows both the book
+    // total and the per-ticker high-water mark with explicit "ticker"
+    // wording so it's unambiguous.
     var html = '';
     html += _gaugeHtml(
-      'Trades',
-      totalTrades + ' / ' + totalMaxTrades +
-        ' (' + tradesPct.toFixed(0) + '%)',
+      'Trades today (cap 5/ticker)',
+      scopedTrades + ' total · top ticker ' +
+        scopedMaxTicker + '/' + maxTrades,
       tradesPct
     );
     html += _gaugeHtml(
@@ -6042,21 +6086,27 @@
       riskPct
     );
     if (killWorstPct > 0 || anyKillTriggered) {
+      // v7.57.0 -- when scoped to one pid, the "worst pid" framing is
+      // misleading; just say "Daily-kill" for the single book.
+      var killLabel = pidFilter ? 'Daily-kill' : 'Daily-kill (worst pid)';
       var killValue = killWorstPid
-        ? (killWorstPid.toUpperCase() + ' $' +
+        ? ((pidFilter ? '' : killWorstPid.toUpperCase() + ' ') + '$' +
            Math.round(killWorstRealized).toLocaleString() +
            ' / -$' + Math.round(killWorstThreshold).toLocaleString())
         : 'no kill data';
       var killCls = 'v10-gauge-kill' +
                     (anyKillTriggered ? ' danger' : '');
-      html += _gaugeHtml('Daily-kill (worst pid)', killValue,
-                          killWorstPct, killCls);
+      html += _gaugeHtml(killLabel, killValue, killWorstPct, killCls);
     }
     gaugesRow.innerHTML = html;
 
     // v7.23.0 + v7.41.0: Per-portfolio rows under the gauges. Each
     // row carries a mini daily-kill bar so the operator can spot the
     // closest-to-blown portfolio at a glance.
+    // v7.57.0 -- hidden entirely when scoped to a single pid (Main
+    // tab now scopes to "main"; showing a 1-row "main / val / gene"
+    // strip with two stale rows was the cross-portfolio leakage the
+    // operator flagged).
     var perPidStrip = document.getElementById("v10-pid-strip");
     if (!perPidStrip) {
       perPidStrip = document.createElement("div");
@@ -6065,6 +6115,12 @@
       banner.appendChild(perPidStrip);
     }
     perPidStrip.innerHTML = "";
+    if (pidFilter) {
+      perPidStrip.style.display = "none";
+      return;
+    } else {
+      perPidStrip.style.display = "flex";
+    }
     // v7.52.0 -- per-pid equity should reflect actual portfolio size
     // (real-time NAV), not the v10 RiskBook's `equity` which may lag
     // if refresh_equity_from_books() hasn't run since session boot
@@ -6136,7 +6192,10 @@
   // Renders the canonical v10 view. Hidden when v10 is not bootstrapped;
   // the legacy Permit Matrix below covers the pre-v10 path until the
   // v7.28.0 retirement removes it physically.
-  function renderV10TickerMatrix(s) {
+  // v7.57.0 -- pidFilter scopes the matrix to a single book so the
+  // Main tab only renders main rows, etc. Passing null keeps the
+  // legacy cross-portfolio render (no current caller).
+  function renderV10TickerMatrix(s, pidFilter) {
     // Local HTML-escape -- v7.44.0 fix for a silent regression: this
     // function lived in IIFE 2 but called `escapeHtml` from IIFE 1,
     // failing every render with "escapeHtml is not defined" which was
@@ -6161,12 +6220,15 @@
     var orWindows = v10.or_windows || {};
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
     var portfolios = Object.keys(v10.risk_books || {}).sort();
-    var multiPid = portfolios.length > 1;
+    // v7.57.0 -- when scoped to a single pid, the Pid column is
+    // redundant (every row has the same pid).
+    var multiPid = !pidFilter && portfolios.length > 1;
 
     // Build (ticker -> phases-per-portfolio) index.
     var byTicker = {};
     for (var i = 0; i < dayStates.length; i++) {
       var d = dayStates[i];
+      if (pidFilter && (d.portfolio_id || "main") !== pidFilter) continue;
       if (!byTicker[d.ticker]) byTicker[d.ticker] = {};
       byTicker[d.ticker][d.portfolio_id || "main"] = d;
     }
@@ -6314,12 +6376,14 @@
     if (!section) return;
     // v7.54.0 -- always visible (see comment in _renderV10ProximityCore)
     section.style.display = "";
+    // v7.57.0 -- pidFilter="main" so only Main's FSM phase chips show
+    // on this card (Main tab is now Main-only across all v10 surfaces).
     _renderV10ProximityCore(s, {
       body: document.getElementById("v10-prox-body"),
       countEl: document.getElementById("v10-prox-count"),
       summaryEl: document.getElementById("v10-prox-summary"),
       expandedKey: "main",
-      pidFilter: null,
+      pidFilter: "main",
       rerender: function () { renderV10ProximityMatrix(s); },
     });
   }
@@ -6574,7 +6638,10 @@
   // v7.45.0 -- recent activity feed renderer. Reads s.v10.activity
   // (populated by orb.live_runtime._recent_activity ring buffer).
   // Renders newest-first as a list of rows with colored kind chips.
-  function renderV10ActivityFeed(s) {
+  // v7.57.0 -- pidFilter scopes events to a single book so the Main
+  // tab's activity feed doesn't show val/gene events. Null keeps the
+  // legacy cross-book stream (no current caller).
+  function renderV10ActivityFeed(s, pidFilter) {
     function esc(v) {
       return String(v == null ? "" : v)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -6590,6 +6657,11 @@
     }
     section.style.display = "";
     var events = (v10.activity || []);
+    if (pidFilter) {
+      events = events.filter(function (ev) {
+        return (ev.pid || "").toLowerCase() === pidFilter;
+      });
+    }
     var body = document.getElementById("v10-act-body");
     var countEl = document.getElementById("v10-act-count");
     var summaryEl = document.getElementById("v10-act-summary");
