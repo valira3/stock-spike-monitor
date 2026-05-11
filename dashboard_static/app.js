@@ -191,7 +191,35 @@
     const pct = (p.start && pnlHasVal) ? (pnl / p.start) * 100 : null;
     const tradesLen = (sl.trades || []).length;
     const pctCls = Number.isFinite(pct) ? (pct >= 0 ? 'delta-up' : 'delta-down') : '';
-    $("k-pnl-sub").innerHTML = `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${pctCls}">${fmtPct(pct)}</span>`;
+    // v7.43.0 -- broker (Alpaca) day P&L shown as a chip alongside the
+    // paper P&L. The backend computes broker_day_pnl = closed (from
+    // trade_log.jsonl) + open (from open_pnl.jsonl); we surface the
+    // raw value AND a delta vs paper. Operators can spot fills not
+    // reflected in the paper book, Alpaca connection issues, or
+    // slippage drift at a glance.
+    var brokerPnl = (typeof p.broker_day_pnl === "number") ? p.broker_day_pnl : null;
+    var brokerHtml = "";
+    if (brokerPnl != null) {
+      var brokerCls = brokerPnl >= 0 ? "delta-up" : "delta-down";
+      brokerHtml = ' · <span class="kpi-broker ' + brokerCls
+        + '" title="Broker (Alpaca) day P&L: closed (trade_log) + open (open_pnl)">'
+        + 'broker ' + fmtUsd(brokerPnl);
+      // Delta chip when paper and broker diverge by > $1
+      if (pnlHasVal && Math.abs(brokerPnl - pnl) > 1) {
+        var delta = brokerPnl - pnl;
+        var deltaCls = Math.abs(delta) > 50 ? "kpi-delta-warn" : "kpi-delta-mild";
+        brokerHtml += ' <span class="kpi-delta-chip ' + deltaCls
+          + '" title="Broker vs paper divergence">'
+          + (delta >= 0 ? "+" : "")
+          + fmtUsd(delta) + '</span>';
+      }
+      brokerHtml += '</span>';
+    }
+    // v7.43.0 -- broker block gets its own line below so the delta
+    // chip never wraps + clips against the KPI tile's max-height.
+    $("k-pnl-sub").innerHTML =
+      `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${pctCls}">${fmtPct(pct)}</span>`
+      + (brokerHtml ? '<div class="kpi-broker-line">' + brokerHtml.replace(/^ · /, '') + '</div>' : '');
 
     const positions = sl.positions || [];
     $("k-open").textContent = String(positions.length);

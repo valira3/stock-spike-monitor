@@ -2324,3 +2324,44 @@ body.v10-live .legacy-v10-hidden {
   .pos-progress-tick::after { font-size: 8px; }
   .pos-progress-meta { font-size: 9px; }
 }
+
+/* ============================================================
+   v7.43.0 -- broker P&L chip in the Day P&L KPI sub-line.
+   Surfaces broker_day_pnl alongside paper P&L with a delta chip
+   when they diverge.
+============================================================ */
+.kpi-broker-line {
+  margin-top: 4px;
+  display: block;
+}
+.kpi-broker {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ca3af;
+  margin-left: 0;
+}
+.kpi-broker.delta-up { color: #86efac; }
+.kpi-broker.delta-down { color: #fca5a5; }
+.kpi-delta-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border-radius: 3px;
+  vertical-align: 1px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.kpi-delta-chip.kpi-delta-mild {
+  background: rgba(75, 85, 99, 0.4);
+  color: #d1d5db;
+}
+.kpi-delta-chip.kpi-delta-warn {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+}
+@media (max-width: 720px) {
+  .kpi-broker { font-size: 10px; }
+  .kpi-delta-chip { font-size: 9px; padding: 0 3px; }
+}
