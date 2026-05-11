@@ -4,6 +4,90 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.50.0 (2026-05-11) -- Outside-RTH banner clarity + Val/Gene trade-count parity
+
+Two operator-confusion fixes surfaced during the post-v7.49 review.
+
+### A. "Operator paused" was misleading outside RTH
+
+The kill-switch banner aggregated `_scan_paused` (manual /pause) and
+`_scan_idle_hours` (auto-idle after the close) into a single
+`gates.scan_paused` flag, then rendered the same red "Operator pause
+active" message for both. Every night and every weekend the banner
+shouted at the operator that they had paused the bot, even though
+the actual state was just "US RTH is closed -- bot is idle, no
+action needed."
+
+Backend (`dashboard_server.py`):
+  - Split into two flags: `gates.scan_paused_user` (manual /pause)
+    and `gates.scan_idle_hours` (auto-idle). The legacy union
+    `gates.scan_paused` stays for backwards compat.
+
+Frontend (`dashboard_static/app.js`, `app.css`):
+  - Banner renderer now picks the more specific message. If
+    `scan_idle_hours` is the only active condition, it shows
+    **OUTSIDE MARKET HOURS** with detail "US RTH is closed. Scan
+    loop auto-idle until the next open. No operator action
+    required." Otherwise the existing **SCAN PAUSED** message
+    fires for genuine operator pauses.
+  - New `.killswitch-banner--info` modifier softens the styling
+    to calm blue/gray (vs. the red alarm) and swaps the icon from
+    `⚠` to `ℹ`. The pulse animation is disabled in the
+    informational variant.
+  - Any actual kill condition (operator-pause + outside-RTH,
+    day-block, daily-kill, v10 disabled, legacy halt) brings the
+    red back -- a real alarm is never softened.
+
+### B. Val tab said 0/5 trades while Main showed N/5
+
+Val and Gene are the **Alpaca-routed twins of Main**: when
+`ORB_PORTFOLIO_FIRE=0` (the current default until the 5-day
+paper-fire observation lands) they mirror Main's signal via the
+legacy bus rather than admitting through their own v10 path.
+
+This left the v10 FSM's per-pid `trades_today` at 0 for val/gene
+in mirror mode -- which `renderV10PerPortfolio` (and the Main per-
+pid mini-strip) then displayed as "0/5 trades" while Main showed
+"3/5 trades". The tabs should match.
+
+Backend (`dashboard_server.py`):
+  - Each `v10.day_states[*]` now carries a `broker_trades_today`
+    field counting that pid's actual fills from book trade
+    history (or `_today_trades()` for main). The engine's
+    `trades_today` is preserved unchanged -- it's still what
+    drives the max-trades-per-day gate.
+
+Frontend (`dashboard_static/app.js`):
+  - `renderV10PerPortfolio` now sources trade count from (in order):
+    1. The exec poll payload's `trades_today.length`
+    2. `day_state.broker_trades_today` (backend-injected)
+    3. The v10 FSM `trades_today` (only correct in fire mode)
+  - `renderV10DayStatus`'s Main-tab per-pid strip ("gene 3/5 ·
+    main 3/5 · val 3/5") + the aggregate gauge ("Trades 9/15")
+    use the same broker-preferring helper.
+  - `pollExecutor` caches the latest exec payload per name on
+    `_execLastData` so the Main-state-driven refresh path can
+    re-render with broker data even between exec polls.
+
+### Files
+
+  - `dashboard_server.py` -- two new gate flags + day_state enrichment
+  - `dashboard_static/app.js` -- banner renderer + 3 trade-count
+    call sites
+  - `dashboard_static/app.css` -- `.killswitch-banner--info` variant
+  - `bot_version.py` / `trade_genius.py` -- 7.49.0 -> 7.50.0
+  - `docs/dashboard_redesign_v2/pr43_screenshots/` -- outside-RTH
+    desktop + mobile, operator-pause for contrast, Val tab parity
+
+### Risk
+
+Backend changes are additive (new fields). Frontend prefers the
+broker count but falls back through three sources -- works whether
+the new fields are present or not. No engine logic change. Tests:
+388 strategy passed, 8 skipped.
+
+---
+
 ## v7.49.0 (2026-05-11) -- Visual polish: chip glyphs, side arrows, kill-banner pulse
 
 PR42 of the dashboard-redesign loop. Pure CSS polish pass on top
