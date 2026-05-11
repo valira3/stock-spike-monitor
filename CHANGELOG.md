@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.60.0 (2026-05-11) -- Telegram deploy banner now carries full release notes
+
+Operator request: "update telegram deployment messages to show the
+release notes for the last point release." The deploy boot banner
+(`telegram_ui/runtime.py`) embeds `tg.CURRENT_MAIN_NOTE`, which since
+v7.13.1 has been auto-derived from CHANGELOG.md -- but capped at the
+first 3 body lines + max 5 wrapped output lines. Operators were
+seeing only the intro paragraph of each release.
+
+### Fix
+
+`trade_genius._derive_current_main_note` rewritten to emit the FULL
+CHANGELOG entry for the latest "## vX.Y.Z (date) -- title" section
+instead of just the first paragraph:
+
+  - **Sub-section headers** (`### Foo`) render as `─ Foo` so the
+    structure survives the 34-char wrap.
+  - **Bullet markers** (`- item`, `  - item`) are normalized to a
+    single `- ` prefix.
+  - **Code fences** (```` ``` ````) and their contents are stripped.
+  - **Blank paragraph breaks** are preserved so logical sections
+    stay separated when read on mobile.
+  - **Wrap rule** stays at 34 chars per line (Telegram mobile rule
+    from CLAUDE.md).
+  - **Output cap** raised 5 lines -> 80 lines (~2.7k chars at 34
+    chars/line), well within Telegram's 4096-char message limit
+    even stacked with the rest of the deploy banner.
+  - **Body scan window** raised 60 lines -> 500 lines so longer
+    release notes are captured fully.
+  - **Entry boundary**: stops at the next "## v" heading OR a
+    "---" separator line, whichever comes first.
+
+The first line is unchanged: `vX.Y.Z: <title>`. Smoke tests that
+assert "CURRENT_MAIN_NOTE begins with current BOT_VERSION" and
+"every line <= 34 chars" continue to pass.
+
+### Example output (this release on a phone)
+
+```
+v7.60.0: Telegram deploy banner
+now carries full release notes
+Operator request: ...
+[full body, ~80 lines max]
+```
+
+### Files
+
+  - `trade_genius.py` -- `_derive_current_main_note` rewritten;
+    BOT_VERSION 7.59.0 -> 7.60.0
+  - `bot_version.py` -- 7.59.0 -> 7.60.0
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped. The
+`CURRENT_MAIN_NOTE` smoke checks (begins-with version, all lines
+≤34 chars) are in `smoke_test.py` which requires `telegram` and
+isn't run in this sandbox; a manual Python harness confirmed both
+properties on the actual production CHANGELOG (80 lines, max width
+34).
+
+### Risk
+
+Single-function rewrite, fully wrapped in `try/except` with the
+same fallback (`"v{BOT_VERSION} deployed"`) as the old version --
+a malformed CHANGELOG can't crash the bot. The /version Telegram
+command + the boot banner both consume the same string so they
+update together.
+
+---
+
 ## v7.59.0 (2026-05-11) -- v10 Proximity: Range + Block leading-indicator columns
 
 Follow-up to v7.58.0. The legacy Permit Matrix card showed a
