@@ -4,6 +4,91 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.57.0 (2026-05-11) -- Main tab is Main-only; trades-cap label clarified
+
+Operator feedback: the dashboard reads as "5 trades per portfolio"
+because the v10 ORB banner shows `Trades 0/15` (sum of `5 × 3
+portfolios`), but the cap is actually **5 entries per ticker per
+portfolio per day**. Two complaints to fix:
+
+1. Make the cap clearer ("5/ticker", not aggregated).
+2. The Main tab should show only Main's data, not Val/Gene
+   information or sums across books.
+
+### Fix
+
+`renderV10DayStatus`, `renderV10TickerMatrix`, `renderV10ActivityFeed`,
+and `renderKillSwitchBanner` now all accept a `pidFilter` argument.
+The Main applyState call wires `"main"` into each so the Main panel
+is fully scoped:
+
+  - **Banner gauges**: read trades + open_risk + daily_kill state
+    for the filtered pid only.
+  - **Trades gauge label**: changed from `"Trades 0/15 (0%)"` to
+    `"Trades today (cap 5/ticker)  —  N total · top ticker N/5"`.
+    The gauge bar fills on `(highest single-ticker count / 5)`
+    rather than `(book total / N×5)`, since the per-ticker cap is
+    what actually binds. Tooltip explains the per-ticker structure.
+  - **Concurrent risk gauge**: sums only the filtered pid's
+    `open_risk` / `max_risk_dollars`; tooltip names the pid.
+  - **Daily-kill gauge**: only renders if THIS book is approaching
+    or has triggered its kill; "(worst pid)" suffix removed when
+    scoped to a single book.
+  - **Per-pid strip**: hidden entirely under the gauges when
+    `pidFilter` is set (the 1-of-3 view was the cross-portfolio
+    leakage the operator flagged).
+  - **Ticker matrix**: filters `day_states` to the chosen pid and
+    drops the Pid column (every row has the same pid).
+  - **Activity feed**: filters `s.v10.activity` to events whose
+    `pid` matches.
+  - **Kill banner**: the per-portfolio kill condition only includes
+    pids matching `target` (the same arg that already routed which
+    DOM banner gets the markup). Gene's daily-kill no longer
+    surfaces on Main's banner, and vice versa.
+
+`renderV10ProximityMatrix` (Main) already had `pidFilter` plumbing
+from v7.55.0; the Main call site now passes `pidFilter: "main"` so
+only MAIN phase chips render on this card.
+
+Val and Gene tabs already had per-panel scoping (v7.55.0); their
+behaviour is unchanged.
+
+### Files
+
+  - `dashboard_static/app.js` -- pidFilter through 4 v10 renderers
+    + clearer trades-cap label
+  - `bot_version.py` / `trade_genius.py` -- 7.56.0 -> 7.57.0
+  - `docs/dashboard_redesign_v2/pr50_screenshots/`
+
+### Verification
+
+Playwright with fixture: main on AAPL (3 trades, $200 risk), val
+on NVDA (4 trades, $750 risk), **gene with daily_kill_triggered**
+on TSLA (2 trades, -$1100 realized).
+
+On the Main panel:
+  - Gauges: `"3 total · top ticker 3/5"` (was `9/15`); `"$200 /
+    $2,000 (10%)"` (was `$950 / $6,000`); NO daily-kill gauge
+    despite Gene's `daily_kill_triggered=true`.
+  - Strip: hidden.
+  - Matrix: 3 rows (AAPL/NVDA/TSLA), Main phases only.
+  - Proximity chips: only `MAIN` (was `MAIN VAL GENE`).
+  - Activity: only Main's admit event.
+  - Kill banner: not visible.
+
+On the Val panel:
+  - Proximity chips: only `VAL` -- unchanged from v7.55.0.
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+### Risk
+
+Pure frontend filter. `pidFilter=null` keeps the legacy cross-book
+aggregation behavior; no current caller uses null but it's preserved
+for a future "cross-book overview" view. No engine change.
+
+---
+
 ## v7.56.0 (2026-05-11) -- Per-trade Risk column on positions tables
 
 Follow-up to the v10 Concurrent Risk gauge explanation: each open
