@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.92.0 (2026-05-11) -- Railway project-token auth fallback
+
+v7.91.0's diagnostic probe identified `status=auth_failed token_set=True service_set=True` on issue #570, then again on #572 after the operator updated the secrets. Root cause: Railway has two token types with different auth headers:
+
+- **Personal/team API tokens** (Account → Tokens) → sent as `Authorization: Bearer <token>`
+- **Project-scoped tokens** (Project Settings → Tokens) → sent as `Project-Access-Token: <token>` header instead
+
+The operator's token is a project-scoped token. Pre-v7.92.0 `tools.railway_log_tail._gql` only sent the `Bearer` header, so the project token returned 401 and the probe correctly flagged `auth_failed` — but the underlying problem was a Railway-specific header quirk we hadn't documented.
+
+### Fix
+
+`_gql` now tries `Authorization: Bearer <token>` first and falls back to `Project-Access-Token: <token>` on 401/403. Non-auth errors (5xx, network failures, schema drift) skip the fallback and return None immediately — there's no point retrying a different header when the server isn't rejecting the credential.
+
+The User-Agent header bumped to `tg-railway-log-tail/7.92.0` so Railway-side logs can identify our version.
+
+### Tests
+
+`tests/strategy/test_railway_project_token_v792.py` — 4 tests:
+- Personal token (Bearer succeeds on first try; no fallback)
+- Project token (Bearer 401 → Project-Access-Token succeeds)
+- Bad/expired token (both attempts return 401; helper returns None)
+- 5xx server error (no fallback attempt; immediate None return)
+
+### Files
+
+- `tools/railway_log_tail.py` — `_gql` rewrite with the fallback
+- `tests/strategy/test_railway_project_token_v792.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.91.0` → `7.92.0`
+
+---
+
 ## v7.91.0 (2026-05-11) -- Railway-secrets diagnostic probe
 
 Every `val_gene_trades_match_main` issue today (#532-#568) carried the same opaque footer:
