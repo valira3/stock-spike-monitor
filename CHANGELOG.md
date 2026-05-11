@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.93.0 (2026-05-11) -- On-demand per-trade replay tool
+
+Operator question after the v7.91/7.92 Railway-secrets fix landed: "Can you pull trade logs from anywhere else? Ie, jsonl?" The bot persists every closed-trade row to `/data/trade_log.jsonl` and the dashboard already exposes `/api/trade_log` to read from it — but there was no operator-facing tool that surfaced that data as a readable per-trade report. Every trade-quality / "how did today actually go?" question required someone to curl the endpoint and eyeball the raw JSON.
+
+### Added
+
+- **`tools/trade_replay.py`** — pulls `/api/trade_log?limit=&since=&portfolio=paper` and renders a markdown report:
+  - Summary table: trades, total P&L, win rate, avg R-multiple, biggest winner / loser
+  - Per-trade table: ticker, side, shares, entry $, exit $, P&L $, %, hold time, R-multiple, exit reason (newest first)
+  - Optional Railway log slice grepping for `[ENTRY] / [TRADE_CLOSED] / [V79-ORB-EXIT] / [V10-FIRE] / [SIGNAL-BUS-EMIT] / [V79-MIRROR-RECV]` lines for forensic context
+  - Output goes to stdout, `$GITHUB_STEP_SUMMARY` (so the report renders inline on the GHA run page), AND a `trade_replay.md` artifact file
+- **`.github/workflows/trade-replay.yml`** — `workflow_dispatch` only. Inputs: `since` (default = today ET), `limit` (default 500, max 5000), `include_logs` (default true). Wires the same `DASHBOARD_URL` / `DASHBOARD_PASSWORD` / `RAILWAY_API_TOKEN` / `RAILWAY_SERVICE_ID` secrets the existing monitor already consumes. Uploads the markdown as a 30-day-retention artifact.
+
+### Design notes
+
+- **Auth path reuse.** Both new files reuse `DashboardClient` from `tools/dashboard_monitor.py` — same `POST /login` → cookie flow the operator uses in the browser. Zero new auth code.
+- **Pure-function rendering.** `_fmt_dollar`, `_fmt_hold`, `_r_multiple`, `_summary_stats`, `render_markdown` are pure and have no I/O, so unit tests cover the entire formatter without mocking the network.
+- **R-multiple from snapshot fields.** Uses `effective_stop_at_exit` from `_trade_log_snapshot_pos` (captures the trail's final state) and falls back to `hard_stop_at_exit` when the trail wasn't armed. Returns None when stop==entry to avoid divide-by-zero.
+
+### Tests
+
+`tests/strategy/test_trade_replay_v793.py` — 20 tests covering: dollar formatting (positive / negative with U+2212 minus / None / garbage), hold formatting (seconds / minutes / hours / None), R-multiple (long winner / short winner / long loser / falls back to hard stop / missing stop / zero risk), summary stats (empty / mixed wins-losses), and end-to-end markdown shape (summary section, per-trade detail, log-slice embedding, open-row omission). Full strategy suite at 529 passed.
+
+### Files
+
+- `tools/trade_replay.py` — new
+- `.github/workflows/trade-replay.yml` — new
+- `tests/strategy/test_trade_replay_v793.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.92.0` → `7.93.0`
+
+---
+
 ## v7.92.0 (2026-05-11) -- Railway project-token auth fallback
 
 v7.91.0's diagnostic probe identified `status=auth_failed token_set=True service_set=True` on issue #570, then again on #572 after the operator updated the secrets. Root cause: Railway has two token types with different auth headers:
