@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.42.0 (2026-05-11) -- Position progress bars (stop / 1R / target axis)
+
+PR35 of the dashboard-redesign loop. Each open position now renders a
+visual progress bar BELOW its table row showing where the current
+mark sits on the RR axis from stop to target. Replaces the
+"mentally subtract entry from mark to figure out how much risk is on
+the line" workflow.
+
+### Geometry
+
+For long positions: `stop -> entry -> 1R -> target`, with the axis
+scaled 0-100%. RR=2.5 (v10 keystone) places entry at ~29%, 1R at
+~57%, target at 100%.
+
+For short positions: same visual ordering -- stop on the left (red),
+target on the right (green) -- so favorable direction always points
+right regardless of side.
+
+### Visual elements
+
+| Element | Meaning |
+|---|---|
+| Red zone (left) | stop -> entry (loss territory) |
+| Neutral zone (middle) | entry -> 1R (BE-arming window) |
+| Green zone (right) | 1R -> target (profit-locked territory) |
+| Gray ticks | entry / 1R / target labels above the bar |
+| Needle (white/green/red) | current mark, color reflects gain/loss sign |
+| Needle label | R-multiple of unrealized P&L (e.g. `+1.61R`, `-0.29R`) |
+| Footer row | stop / 1R / target dollar values |
+
+Tooltip on the bar carries the same numerics for screen readers.
+
+### Coverage
+
+- **Main panel**: `renderPositions(s, sl)` injects the progress row
+  via `<tr class="pos-progress-row"><td colspan="8">...</td></tr>`
+  after each position.
+- **Val / Gene panels**: `renderExecutor` already cross-references
+  Main's `__tgLastState` for the stop level; same logic now feeds
+  the progress bar. Falls back gracefully when Main hasn't populated
+  yet (no bar rendered).
+
+### Mobile
+
+Compact: needle label drops to 9 px, tick labels to 8 px, vertical
+padding tightens. Bar height stays 10 px for tap clarity. Verified
+at 390 px (iPhone 13).
+
+### Window export
+
+`window.__tgRenderPositions = renderPositions` so the smoke-test
+harness can drive it without the poll loop.
+
+### Tests
+
+No backend change → 379 strategy tests still pass. Playwright smoke
+render against 3 positions (long +1.61R BE-armed, long -0.29R, short
++1.20R) at desktop 1280 + mobile 390.
+
+Screenshots in `docs/dashboard_redesign_v2/pr35_screenshots/`.
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.41.0 → 7.42.0
+- `dashboard_static/app.css` -- `.pos-progress-row` / `.pos-progress`
+  / `.pos-progress-zone.*` / `.pos-progress-tick` / `.pos-progress-needle`
+  / `.pos-progress-meta` + mobile media
+- `dashboard_static/app.js` -- progress-bar geometry inside
+  `renderPositions` + same in `renderExecutor` (Val/Gene) +
+  `window.__tgRenderPositions` export
+- `docs/dashboard_redesign_v2/pr35_screenshots/` -- 2 reference images
+- `CHANGELOG.md`
+
+---
+
 ## v7.41.0 (2026-05-11) -- Dashboard gauges: trades + risk + daily-kill
 
 PR34 of the dashboard-redesign loop. Replaces raw `7/15` and `$1.2k/$6k`
