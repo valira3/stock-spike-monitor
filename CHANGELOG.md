@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.91.0 (2026-05-11) -- Railway-secrets diagnostic probe
+
+Every `val_gene_trades_match_main` issue today (#532-#568) carried the same opaque footer:
+
+> *No Railway log slice attached — `RAILWAY_API_TOKEN`/`RAILWAY_SERVICE_ID` may be unset, OR no [V79-MIRROR-*] log lines in the recent window.*
+
+That message conflates four failure modes into one string, and `tools.railway_log_tail.fetch_recent_logs` swallows every error into `[]` so the operator cannot tell which leg is broken without inspecting the GHA workflow log. Today the operator set the secrets at 14:13 ET and issue #568 (17:57 ET) STILL produced the same footer — we couldn't tell whether the names mismatched, the token lacked scope, or the service id was wrong.
+
+### Added
+
+- **`tools.railway_log_tail.probe_railway_access()`** — one-shot structured diagnostic returning `{status, token_set, service_set, deployment_id}` with status one of:
+  - `missing_token` — `RAILWAY_API_TOKEN` env var empty
+  - `missing_service` — `RAILWAY_SERVICE_ID` env var empty
+  - `auth_failed` — both set but GraphQL call failed (most common cause when names look right: token missing log-read scope, or service_id pointing at a project_id)
+  - `no_deployment` — auth ok but service has zero deployments
+  - `ok` — auth + service resolved cleanly
+- **`[MONITOR-DIAG]` top-level log line** in `tools/dashboard_monitor.run_once` — every monitor cycle now prints `[MONITOR-DIAG] railway: status=X token_set=Y/N service_set=Y/N` to the GHA workflow log, so the operator can read the probe result without waiting for an issue to fire.
+- **Sharpened `val_gene_trades_match_main` footer** — when no log slice attaches, the issue body now includes the probe result with a status-specific remediation hint ("token missing log-read scope" vs "service_id points at project id" vs "auth ok, window genuinely empty").
+
+### Why probe instead of fixing `fetch_recent_logs` directly
+
+`fetch_recent_logs` returning `[]` on every failure is correct behaviour for the dozens of read-side callers that just want "logs or empty, don't care why." The probe is a separate diagnostic surface for the one caller that DOES care: the monitor footer + the workflow log.
+
+### Files
+
+- `tools/railway_log_tail.py` — new `probe_railway_access()` function (additive)
+- `tools/dashboard_monitor.py` — `[MONITOR-DIAG]` log line at top of `run_once`
+- `tools/dashboard_monitor_invariants.py` — `val_gene_trades_match_main` footer rewrites to use probe result
+- `tests/strategy/test_railway_probe_v791.py` — 7 tests covering each status branch
+
+---
+
 ## v7.90.0 (2026-05-11) -- Signal-bus observability: empty-bus WARN + monitor invariant
 
 The dashboard monitor has been firing the same `val_gene_trades_match_main`

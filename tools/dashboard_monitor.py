@@ -417,6 +417,21 @@ def run_once() -> int:
     password = _require_env("DASHBOARD_PASSWORD")
     dry_run = os.environ.get("MONITOR_DRY_RUN", "").strip() == "1"
 
+    # v7.91.0 -- probe Railway credentials at the top of every run so
+    # the GHA log shows whether log-slicing will work on this cycle,
+    # even when no invariant fires. Pre-v7.91.0 a misconfigured
+    # secret was only visible by inferring from "no slice attached"
+    # footers across multiple issue bodies.
+    try:
+        from tools.railway_log_tail import probe_railway_access
+        _diag = probe_railway_access()
+        logger.info(
+            "[MONITOR-DIAG] railway: status=%s token_set=%s service_set=%s",
+            _diag.get("status"), _diag.get("token_set"), _diag.get("service_set"),
+        )
+    except Exception as e:
+        logger.warning("[MONITOR-DIAG] railway probe raised: %s", e)
+
     client = DashboardClient(base_url, password)
     try:
         client.login()
