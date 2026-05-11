@@ -223,3 +223,63 @@ def scan_for_failures(logs: list[dict],
                 if ts and ts > bucket["last_timestamp"]:
                     bucket["last_timestamp"] = ts
     return findings
+
+
+def grep_logs(pattern: str, *, limit: int = 500,
+              max_matches: int = 20) -> list[dict]:
+    """v7.84.0 -- fetch Railway logs and return rows matching `pattern`.
+
+    Used by invariants to enrich their failure detail with the actual
+    Railway log lines that explain the violation. E.g.:
+
+        slice = grep_logs(r"\\[V79-MIRROR-\\w+\\] Val")
+        if slice:
+            detail += "\\n\\nLog slice:\\n" + format_log_slice(slice)
+
+    Args:
+        pattern: regex pattern (Python `re.search` semantics).
+        limit: how many recent log lines to fetch (default 500).
+        max_matches: cap matches returned to avoid bloated issue bodies
+                     (default 20; older lines win the slot if exceeded).
+
+    Returns:
+        List of matching {timestamp, message, severity} dicts. Empty
+        list when Railway log fetch is unavailable (missing secrets,
+        API error, etc.) -- callers should treat empty as "no log
+        context available" rather than "no matches".
+    """
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return []
+    logs = fetch_recent_logs(limit=limit)
+    if not logs:
+        return []
+    matched: list[dict] = []
+    for row in logs:
+        msg = row.get("message") or ""
+        if compiled.search(msg):
+            matched.append(row)
+            if len(matched) >= max_matches:
+                break
+    return matched
+
+
+def format_log_slice(rows: list[dict], *, max_lines: int = 20) -> str:
+    """v7.84.0 -- compact one-line-per-row formatter for issue bodies.
+
+    Returns a string like:
+      2026-05-11T17:47:48Z [V79-MIRROR-RECV] Val kind=ENTRY_LONG ...
+      2026-05-11T17:47:48Z [V79-MIRROR-SKIP] Val ENTRY_LONG TSLA qty=0 ...
+    """
+    out: list[str] = []
+    for r in rows[:max_lines]:
+        ts = r.get("timestamp") or "?"
+        msg = (r.get("message") or "").rstrip()
+        # Trim msg if very long (preserve the first 280 chars).
+        if len(msg) > 280:
+            msg = msg[:280] + "…"
+        out.append(f"{ts} {msg}")
+    if len(rows) > max_lines:
+        out.append(f"... +{len(rows) - max_lines} more matches")
+    return "\n".join(out)

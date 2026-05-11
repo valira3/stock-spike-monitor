@@ -609,3 +609,75 @@ class TestEquityMatchesBaselineToleranceV783:
         r = inv_equity_matches_baseline(ctx)
         assert not r["ok"]
         assert "drifted apart beyond" in r["detail"]
+
+
+# ---------------------------------------------------------------------
+# v7.84.0 -- val_gene_trades_match_main enrichment with Railway log slice
+# ---------------------------------------------------------------------
+
+
+class TestValGeneTradesMatchMainEnrichmentV784:
+    """v7.84.0 -- on failure, the invariant fetches recent Railway logs
+    and appends a [V79-MIRROR-*] + [Val] [ALPACA-*] slice to the issue
+    detail. Operator no longer needs to paste logs manually."""
+
+    def test_passes_when_counts_match(self):
+        # Sanity: no mismatch -> no log fetch attempted -> ok.
+        s = {"trades_today": [{"ticker": "AAPL"}]}
+        val = {"enabled": True, "trades_today": [{"ticker": "AAPL"}]}
+        gene = {"enabled": True, "trades_today": [{"ticker": "AAPL"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+        r = inv_val_gene_trades_match_main(ctx)
+        assert r["ok"]
+
+    def test_fails_with_log_slice_when_logs_available(self, monkeypatch):
+        s = {"trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True, "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        # Stub grep_logs to return synthetic mirror lines.
+        import tools.railway_log_tail as rlt
+        def fake_grep(pattern, **kw):
+            if "MIRROR" in pattern:
+                return [
+                    {"timestamp": "t1",
+                     "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG",
+                     "severity": "info"},
+                    {"timestamp": "t2",
+                     "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG qty=0",
+                     "severity": "warning"},
+                ]
+            return []
+        monkeypatch.setattr(rlt, "grep_logs", fake_grep)
+        from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        assert "val=0 vs main=2" in r["summary"]
+        # The detail should now include the log slice with our MIRROR markers
+        assert "[V79-MIRROR-RECV]" in r["detail"]
+        assert "[V79-MIRROR-SKIP]" in r["detail"]
+
+    def test_fails_with_explainer_when_logs_unavailable(self, monkeypatch):
+        s = {"trades_today": [{"ticker": "A"}]}
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        # Stub grep_logs to return nothing (simulates missing secrets).
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
+        from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        # Detail should include the missing-secrets explainer
+        assert ("RAILWAY_API_TOKEN" in r["detail"]
+                or "No Railway log slice attached" in r["detail"])

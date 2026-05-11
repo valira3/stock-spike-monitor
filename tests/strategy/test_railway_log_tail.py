@@ -199,3 +199,75 @@ class TestScanForFailures:
                 "last_timestamp": "t1",
             }
         }
+
+
+# ---------------------------------------------------------------------
+# v7.84.0 -- grep_logs + format_log_slice
+# ---------------------------------------------------------------------
+
+
+class TestGrepLogsV784:
+
+    def test_returns_empty_when_no_logs(self, monkeypatch):
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: [])
+        assert rlt.grep_logs(r"\[V79-MIRROR-\w+\]") == []
+
+    def test_returns_empty_on_invalid_regex(self):
+        # Unbalanced ( in pattern
+        assert rlt.grep_logs("[V79-MIRROR-(") == []
+
+    def test_filters_by_pattern(self, monkeypatch):
+        logs = [
+            {"timestamp": "t1", "message": "[V79-MIRROR-RECV] Val kind=...", "severity": "info"},
+            {"timestamp": "t2", "message": "SCAN CYCLE done", "severity": "info"},
+            {"timestamp": "t3", "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG ...", "severity": "warning"},
+            {"timestamp": "t4", "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181", "severity": "info"},
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: logs)
+        out = rlt.grep_logs(r"\[V79-MIRROR-\w+\]")
+        assert len(out) == 3
+        assert all("MIRROR" in r["message"] for r in out)
+
+    def test_caps_at_max_matches(self, monkeypatch):
+        logs = [
+            {"timestamp": f"t{i}", "message": "[V79-MIRROR-RECV] ...", "severity": "info"}
+            for i in range(50)
+        ]
+        monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: logs)
+        out = rlt.grep_logs(r"\[V79-MIRROR-\w+\]", max_matches=10)
+        assert len(out) == 10
+
+
+class TestFormatLogSliceV784:
+
+    def test_empty_returns_empty_string(self):
+        assert rlt.format_log_slice([]) == ""
+
+    def test_one_line_per_row(self):
+        rows = [
+            {"timestamp": "2026-05-11T17:47:48Z",
+             "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA",
+             "severity": "info"},
+            {"timestamp": "2026-05-11T17:47:49Z",
+             "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181",
+             "severity": "info"},
+        ]
+        out = rlt.format_log_slice(rows)
+        assert "2026-05-11T17:47:48Z [V79-MIRROR-RECV]" in out
+        assert "2026-05-11T17:47:49Z [V79-MIRROR-DISPATCH]" in out
+        assert out.count("\n") == 1  # 2 lines = 1 newline
+
+    def test_truncates_long_messages(self):
+        rows = [{"timestamp": "t1", "message": "X" * 500, "severity": "info"}]
+        out = rlt.format_log_slice(rows)
+        assert len(out) < 500 + 50  # roughly < (280 cap + ellipsis + ts)
+        assert "…" in out
+
+    def test_caps_at_max_lines_with_tail_note(self):
+        rows = [{"timestamp": f"t{i}", "message": f"line-{i}", "severity": "info"}
+                for i in range(30)]
+        out = rlt.format_log_slice(rows, max_lines=10)
+        assert "line-0" in out
+        assert "line-9" in out
+        assert "line-10" not in out
+        assert "+20 more matches" in out
