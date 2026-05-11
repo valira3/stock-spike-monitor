@@ -339,6 +339,191 @@ def inv_version_advertised(ctx):
 
 
 # ---------------------------------------------------------------------------
+# v7.75.0 cross-check invariants (self-derived expectations vs payload)
+# ---------------------------------------------------------------------------
+
+
+def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
+    """v7.75.0 -- during OPEN/POWER regime, expect at least one OR
+    window to be locked.
+
+    The 2026-05-11 production incident: at 09:14 CT (10:14 ET, well
+    past 09:59 ET OR-end) the dashboard showed 0/10 LOCKED while
+    prices were flowing. Pre-existing invariants caught the symptom
+    (`or_window_well_formed` only checks locked windows; `no phantom
+    positions` had nothing to compare against). This invariant
+    catches the EXISTENCE problem directly.
+    """
+    v10 = _v10(ctx)
+    if not v10:
+        return _ok("or_locked_after_or_end", "skipped: v10 not bootstrapped")
+    regime = (_state(ctx) or {}).get("regime") or {}
+    mode = (regime.get("mode") or "").upper()
+    # OR phase is OK to be unlocked; only after the 09:35 ET ish boundary
+    # do we expect locks. dashboard_server.py labels post-OR-end as OPEN.
+    if mode not in ("OPEN", "POWER"):
+        return _ok("or_locked_after_or_end", f"skipped: regime mode={mode!r}")
+    or_windows = v10.get("or_windows") or {}
+    if not or_windows:
+        return _fail(
+            "or_locked_after_or_end",
+            f"v10.or_windows is empty during {mode} (no tickers tracked)",
+            "Engine bootstrap looks shallow. Check [V79-ORB-RESET] for "
+            "session-start completion and [V79-ORB-BACKFILL] (v7.74.0+) "
+            "for the post-restart historical replay.",
+        )
+    total = len(or_windows)
+    locked = sum(1 for w in or_windows.values() if w.get("locked"))
+    if locked == 0:
+        details = []
+        for t, w in list(or_windows.items())[:10]:
+            details.append(
+                f"  {t}: bars_seen={w.get('bars_seen')} locked={w.get('locked')}"
+            )
+        return _fail(
+            "or_locked_after_or_end",
+            f"0/{total} OR windows locked during {mode} "
+            f"(expected at least 1)",
+            "Engine never closed the OR window. Likely causes: "
+            "(1) bot restarted post-OR and the v7.74.0 backfill failed "
+            "or skipped; (2) bar source returned None for every ticker; "
+            "(3) bucket-math drift. First 10 windows:\n"
+            + "\n".join(details),
+        )
+    return _ok(
+        "or_locked_after_or_end",
+        f"{locked}/{total} OR windows locked",
+    )
+
+
+def inv_or_window_data_quality(ctx: InvariantContext) -> dict:
+    """v7.75.0 -- locked OR windows should have >= or_minutes // 2 bars.
+
+    A locked window with only 5/30 bars indicates a sparse data feed.
+    The engine already routes thin OR to BLOCKED_OR_INSUFFICIENT in
+    `_lock_and_arm`, but the monitor should still flag it because
+    multiple thin windows on the same day suggests an upstream
+    Alpaca/Yahoo problem, not a per-ticker quirk.
+    """
+    v10 = _v10(ctx)
+    if not v10:
+        return _ok("or_window_data_quality", "skipped: v10 not bootstrapped")
+    or_windows = v10.get("or_windows") or {}
+    cfg = v10.get("config") or {}
+    or_minutes = int(cfg.get("or_minutes") or 30)
+    min_bars = or_minutes // 2
+    thin = []
+    for ticker, w in or_windows.items():
+        if not w.get("locked"):
+            continue
+        bs = w.get("bars_seen") or 0
+        if bs < min_bars:
+            thin.append((ticker, bs))
+    if len(thin) >= 3:
+        rows = "\n".join(f"  {t}: bars_seen={b} (need {min_bars})"
+                         for t, b in thin)
+        return _fail(
+            "or_window_data_quality",
+            f"{len(thin)} locked OR windows with bars_seen < {min_bars}",
+            "Multiple thin OR windows on the same day suggests an "
+            "upstream bar-source problem (Alpaca IEX feed flapping, "
+            "Yahoo intraday gaps). Per-ticker individual thin windows "
+            "are routine; >=3 together is a system signal.\n" + rows,
+        )
+    return _ok("or_window_data_quality")
+
+
+def inv_position_count_three_way(ctx: InvariantContext) -> dict:
+    """v7.75.0 -- positions[] vs risk_books.main.open_count vs broker_open_n.
+
+    Three independent surfaces for "how many positions are open":
+      A. /api/state.positions length        (paper book)
+      B. risk_books.main.open_count         (per-portfolio RiskBook)
+      C. /api/state.portfolio.broker_open_n (Alpaca-side count)
+
+    A and B should match exactly (the v7.62-era no_phantom_positions
+    invariant covers that). A vs C can legitimately differ: Main is
+    paper-only and doesn't fire to the broker, so C can be > 0 from
+    Val/Gene executor positions while A == 0. But if A == 0 AND
+    /api/state.portfolios.val.open_count == 0 AND
+    /api/state.portfolios.gene.open_count == 0 AND C > 0, the broker
+    has positions nobody internally tracks -- that's a real phantom.
+    """
+    s = _state(ctx)
+    if not s:
+        return _ok("position_count_three_way", "skipped: state missing")
+    portfolios = s.get("portfolios") or {}
+    main = portfolios.get("main") or {}
+    val = portfolios.get("val") or {}
+    gene = portfolios.get("gene") or {}
+    portfolio = s.get("portfolio") or {}
+    broker_open_n = int(portfolio.get("broker_open_n") or 0)
+    main_count = len(main.get("positions") or s.get("positions") or [])
+    val_count = len(val.get("positions") or [])
+    gene_count = len(gene.get("positions") or [])
+    internal_total = main_count + val_count + gene_count
+    if broker_open_n > 0 and internal_total == 0:
+        return _fail(
+            "position_count_three_way",
+            f"broker has {broker_open_n} open position(s) but all "
+            "three internal books are empty -- phantom at broker",
+            "Likely cause: bot was down when a broker-side fill or "
+            "exit landed, or the post-restart state-restore missed "
+            "Val/Gene executor positions. Manual reconciliation may "
+            "be needed via /reconcile or by inspecting Alpaca's "
+            "positions endpoint directly. Counts: "
+            f"main={main_count} val={val_count} gene={gene_count} "
+            f"broker_open_n={broker_open_n}",
+        )
+    return _ok(
+        "position_count_three_way",
+        f"main={main_count} val={val_count} gene={gene_count} "
+        f"broker_open_n={broker_open_n}",
+    )
+
+
+def inv_equity_self_consistent(ctx: InvariantContext) -> dict:
+    """v7.75.0 -- portfolio.equity must equal cash + long_mv - short_liab.
+
+    The dashboard surfaces equity as a single computed field, but the
+    components are also exposed independently. The two views of the
+    same number must agree to within float precision. A divergence
+    points to either a stale cash-snapshot, an unbooked fill, or a
+    type/coercion bug in one of the surfaces.
+    """
+    s = _state(ctx)
+    if not s:
+        return _ok("equity_self_consistent", "skipped: state missing")
+    p = s.get("portfolio") or {}
+    eq = p.get("equity")
+    cash = p.get("cash")
+    long_mv = p.get("long_mv")
+    short_liab = p.get("short_liab")
+    if not all(isinstance(v, (int, float))
+               for v in (eq, cash, long_mv, short_liab)):
+        return _ok("equity_self_consistent", "skipped: components missing")
+    derived = float(cash) + float(long_mv) - float(short_liab)
+    diff = abs(float(eq) - derived)
+    # Allow $1 or 0.01% slack for floating-point noise.
+    tol = max(1.0, float(eq) * 1e-4)
+    if diff > tol:
+        return _fail(
+            "equity_self_consistent",
+            f"portfolio.equity ${eq:.2f} != cash + long_mv - short_liab "
+            f"(derived ${derived:.2f}, delta ${diff:.2f}, tol ${tol:.2f})",
+            f"Components: cash={cash} long_mv={long_mv} "
+            f"short_liab={short_liab}. The dashboard's equity KPI and "
+            "its position-detail breakdown have drifted. Likely a "
+            "stale snapshot in one of the surfaces or an unbooked "
+            "fill that updated cash but not the positions list (or "
+            "vice versa). Check the _state_snapshot construction in "
+            "dashboard_server.py.",
+        )
+    return _ok("equity_self_consistent",
+               f"eq=${eq:.2f} ≈ derived ${derived:.2f}")
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -355,4 +540,9 @@ INVARIANTS = [
     inv_or_window_well_formed,
     inv_no_phantom_positions,
     inv_daily_kill_consistency,
+    # v7.75.0 cross-check invariants
+    inv_or_locked_after_or_end,
+    inv_or_window_data_quality,
+    inv_position_count_three_way,
+    inv_equity_self_consistent,
 ]

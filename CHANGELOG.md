@@ -4,6 +4,94 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.75.0 (2026-05-11) -- Monitor: 4 cross-check invariants for independent state analysis
+
+Operator request: the dashboard monitor was largely structural
+("is this reachable?", "is this value present?"). The 2026-05-11
+production incident exposed two failure modes the existing
+invariants did NOT catch:
+
+1. **0/10 OR windows LOCKED at 10:14 ET** -- no invariant existed to
+   alert that "during RTH, after OR-end, at least one window must
+   be locked". `or_window_well_formed` only checked the shape of
+   locked windows; it had nothing to say about whether anything
+   locked at all.
+2. **Operator reported "open positions empty when one is open"** --
+   `no_phantom_positions` cross-checked `positions[]` against
+   `risk_books.main.open_count` but never compared either to the
+   BROKER-side count (`state.portfolio.broker_open_n`), so a
+   broker-side fill that the internal book missed could go undetected.
+
+This PR adds 4 cross-check invariants that derive expectations from
+the same /api/state payload instead of just asserting structural
+shape. The monitor now does its own analysis vs the dashboard state.
+
+### New invariants
+
+1. **`or_locked_after_or_end`**: during `regime.mode in (OPEN, POWER)`,
+   require at least one `v10.or_windows[*].locked = true`. Catches
+   the 2026-05-11 scenario directly. Skips PRE/OR/AFTER modes where
+   unlocked is legitimate.
+
+2. **`or_window_data_quality`**: among LOCKED windows, alert if
+   `>=3` have `bars_seen < or_minutes // 2`. Single thin windows are
+   routine (illiquid ticker); 3+ on the same day signals an
+   upstream bar-source problem (Alpaca/Yahoo flapping).
+
+3. **`position_count_three_way`**: cross-check `state.positions`
+   length vs `portfolios.{main,val,gene}.positions` lengths vs
+   `state.portfolio.broker_open_n`. Fails when broker has open
+   positions but all three internal books are empty (phantom at
+   broker). This is the exact failure mode the operator asked
+   about.
+
+4. **`equity_self_consistent`**: independently compute
+   `cash + long_mv - short_liab` and compare to advertised
+   `portfolio.equity`. Tolerance: `max($1, eq * 1e-4)`. Catches
+   stale-snapshot drift or unbooked fills that updated one
+   surface but not the other.
+
+### Tests
+
+18 new tests in `tests/strategy/test_dashboard_monitor_invariants.py`:
+6 for `or_locked_after_or_end`, 4 for `or_window_data_quality`, 4
+for `position_count_three_way`, 4 for `equity_self_consistent`.
+Each covers the happy path, the skip paths, and the fail path.
+
+Full suite: **411 passed** (up from 393), 8 skipped.
+
+### Files
+
+- `tools/dashboard_monitor_invariants.py`: 4 new invariant functions
+  + registry update
+- `tests/strategy/test_dashboard_monitor_invariants.py`: new (18 tests)
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+### Scheduled cron note (still not firing as of 09:44 CT)
+
+Separately, the scheduled cron (`7-57/10 8-20 * * 1-5`) is still
+not firing despite v7.70.0's reliability tuning. Manual dispatches
+work fine; only the `schedule` event is being dropped. Best
+diagnosis: GitHub Actions disabled the workflow's schedule due to
+a transient condition (high load, or previous workflow inactivity
+guard, or a manual toggle).
+
+Recovery procedure (operator-side, takes ~10s):
+
+1. **Actions** tab → **dashboard-monitor** in the left sidebar.
+2. Look at the TOP-RIGHT of the workflow's index page (NOT on a
+   specific run). The `...` menu there has **Disable workflow**.
+3. Click Disable, wait for the page to update, then click the
+   **Enable workflow** banner that replaces it.
+4. The next cron tick (within ~10 min) should produce a scheduled
+   run visible under Actions.
+
+If still nothing, the issue is GitHub-side and an Actions runner
+support ticket may be needed. The monitor itself is verified working
+end-to-end via manual dispatches.
+
+---
+
 ## v7.74.0 (2026-05-11) -- OR-window historical backfill on session start (auto-recover from mid-session restart)
 
 Follow-up to v7.73.0. The v7.73.0 fallback handled missed-LAST-bar
