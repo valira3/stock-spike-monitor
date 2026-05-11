@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.71.0 (2026-05-11) -- Monitor: heartbeat unconditional on workflow_dispatch
+
+Follow-up to v7.70.0. Operator manually dispatched the workflow
+twice post-merge (13:12 + 13:13 UTC) -- both runs succeeded but no
+Telegram heartbeat appeared, because the v7.70.0 gate
+`gmtime().tm_min < 10` only fires for the cron `:07` tick.
+
+For scheduled runs that's correct (avoids 6 pings/hr of chat
+clutter). For manual `workflow_dispatch` invocations it's a UX
+bug -- manual runs ARE the explicit liveness check, so the gate
+should always allow them.
+
+### Fix
+
+`_heartbeat_should_fire` now consults `GITHUB_EVENT_NAME`. When it
+equals `"workflow_dispatch"` (the value GitHub Actions sets for
+Run-workflow button clicks), the heartbeat fires regardless of the
+current UTC minute. The hourly-gate behavior is unchanged for the
+scheduled (`schedule` event) path.
+
+Net effect: every Run-workflow click now emits exactly one silent
+TG heartbeat, so the operator can verify the alert wiring without
+waiting for the next `:07` tick.
+
+### Files
+
+- `tools/dashboard_monitor.py`: `_heartbeat_should_fire`
+  short-circuits on `GITHUB_EVENT_NAME == "workflow_dispatch"`
+
+---
+
 ## v7.70.0 (2026-05-11) -- Monitor: hourly heartbeat + reliability-tuned cron
 
 Operator reported no visible scheduled-cron runs in the Actions tab
