@@ -4,6 +4,85 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.65.0 (2026-05-11) -- RTH live dashboard monitor + auto-fix loop
+
+Operator request: "set up a live monitor to run during RTH hours to
+validate the dashboard and actions to ensure that it correlates to
+the expectations during live market. If any deviations, then you
+would automatically troubleshoot and issue a fix."
+
+Decision: Option 2 (operator-chosen). Monitor detects + alerts +
+opens a **draft** fix PR. Never auto-merges. Operator reviews every
+monitor-triggered change before it ships.
+
+### What ships
+
+  - `tools/dashboard_monitor.py` -- the monitor script. Mints an
+    HMAC-signed session cookie via the same scheme `dashboard_server`
+    uses for browser sessions (given `DASHBOARD_SESSION_SECRET`),
+    hits the four core read endpoints, runs every invariant, and
+    on violation posts a Telegram alert + files a GitHub issue.
+  - `tools/dashboard_monitor_invariants.py` -- the invariants
+    registry. Each invariant is a small function returning
+    `{"name", "ok", "summary", "detail"}`. 11 invariants in v1:
+      - `state_reachable`, `executors_reachable`,
+        `version_advertised`, `v10_live_mode_on`,
+        `equity_matches_baseline`, `val_gene_trades_match_main`,
+        `top_ticker_within_cap`, `open_risk_within_cap`,
+        `or_window_well_formed`, `no_phantom_positions`,
+        `daily_kill_consistency`.
+  - `.github/workflows/dashboard-monitor.yml` -- cron at `*/5
+    13-20 * * 1-5` (every 5 min during US RTH, Mon-Fri, in UTC).
+    Manual `workflow_dispatch` trigger with dry-run toggle for
+    setup verification.
+  - `docs/dashboard_monitor_setup.md` -- secret-setup guide,
+    invariant catalogue, auto-fix flow explanation, pause /
+    disable instructions.
+
+### Auto-fix flow
+
+Filed issue body ends with `@claude please investigate ... and
+open a draft PR ...`. The Claude Code GitHub app (already
+configured on this repo, evidenced by the `subscribe_pr_activity`
+webhook stream used throughout the dashboard-redesign loop) picks
+up the mention, drafts a fix PR, leaves it as **draft** for
+operator review. Same review pattern as every PR shipped in this
+session.
+
+### Required GHA secrets (operator to set)
+
+  - `DASHBOARD_BASE_URL` (e.g. `https://tradegenius.up.railway.app`)
+  - `DASHBOARD_SESSION_SECRET` (existing value from Railway env)
+  - `TELEGRAM_BOT_TOKEN` (existing bot token)
+  - `TELEGRAM_ADMIN_CHAT_ID` (where alerts post)
+
+`GITHUB_TOKEN` is provided automatically by the workflow runner.
+
+### Verification
+
+Local dry-run with a synthetic unreachable target correctly
+flagged `state_reachable` + `executors_reachable` violations, the
+remaining invariants short-circuited safely on missing payloads,
+and side effects (Telegram + GH issue) were skipped per
+`MONITOR_DRY_RUN=1`. `pytest tests/strategy/` -- 388 passed, 8
+skipped.
+
+### Risk
+
+Pure read-only against production -- the monitor never writes back
+to the bot. Side effects (Telegram + GitHub issue) are external.
+The auto-fix loop only opens **draft** PRs that the operator must
+explicitly merge.
+
+### Setup (one-time)
+
+Set the four GHA secrets per `docs/dashboard_monitor_setup.md`,
+then trigger a manual dry-run from Actions → dashboard-monitor →
+Run workflow to confirm the auth + invariant set works against
+production. After that the cron takes over.
+
+---
+
 ## v7.64.0 (2026-05-11) -- Fix v10 Backtest Baseline "Live $0 / Δ -100%" bug
 
 Operator reported the v10 Backtest Baseline card showing "Live $0
