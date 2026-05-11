@@ -158,6 +158,108 @@ class TestOnBarArrival:
         ds = eng._state.get_day_state("main", "AAPL")
         assert ds.phase == PHASE_BLOCKED_RANGE
 
+    def test_missed_last_bar_post_window_bar_triggers_lock_fallback(self):
+        """v7.73.0 -- when the exact-last-bar (bucket 599) is missed but
+        the OR window has bars and a POST-window bar arrives, lock now.
+
+        Pre-v7.73.0, missing the 09:59 bar -> OR never locks for the day
+        because subsequent bars (>= or_end_min) are rejected by add_bar
+        and the strict equality check on the lock trigger meant no later
+        path could rescue. Symptom from prod 2026-05-11: 0/10 tickers
+        locked at 10:14 ET after a Railway redeploy during OR window.
+        """
+        cfg = make_config()
+        eng = OrbEngine(cfg, portfolio_ids=["main"])
+        eng.start_new_session(
+            date_iso="2026-01-02", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        # Feed bars 570..598 but SKIP 599 (the magic bucket pre-fix
+        # depended on). Width still ~1% so the OR is valid.
+        for m in range(570, 599):
+            h = 101.0 if m == 580 else 100.5
+            l = 100.0 if m == 585 else 100.5
+            eng.on_bar_arrival(
+                ticker="AAPL", bar_high=h, bar_low=l,
+                bar_open=100.0, bar_close=100.0,
+                bar_volume=10000, bar_bucket_min=m,
+            )
+        # No lock yet -- 599 was the trigger bucket pre-fix.
+        w = eng._state.or_windows["AAPL"]
+        assert not w.locked, "pre-fix path would also be unlocked here"
+        # Now a post-window bar arrives (e.g. 600 = 10:00 ET). With the
+        # fallback in place this triggers the missed-lock rescue.
+        eng.on_bar_arrival(
+            ticker="AAPL", bar_high=102.0, bar_low=101.5,
+            bar_open=101.8, bar_close=101.9,
+            bar_volume=10000, bar_bucket_min=600,
+        )
+        assert w.locked, "fallback should lock OR on first post-window bar"
+        assert w.bars_seen == 29, "29 bars accumulated, 1 missed"
+        ds = eng._state.get_day_state("main", "AAPL")
+        # 29 >= or_minutes // 2 (15), and width ~1% is inside the band,
+        # so the FSM should be ARMED, not BLOCKED.
+        assert ds.phase == PHASE_ARMED
+
+    def test_post_window_bar_with_empty_or_does_not_lock(self):
+        """v7.73.0 -- defensive: if zero OR bars accumulated (bot was down
+        for the ENTIRE OR window), the fallback must NOT lock. There's
+        nothing meaningful to lock against.
+        """
+        cfg = make_config()
+        eng = OrbEngine(cfg, portfolio_ids=["main"])
+        eng.start_new_session(
+            date_iso="2026-01-02", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        # No in-window bars at all. First bar arrives at 600 (post-OR).
+        eng.on_bar_arrival(
+            ticker="AAPL", bar_high=102.0, bar_low=101.5,
+            bar_open=101.8, bar_close=101.9,
+            bar_volume=10000, bar_bucket_min=600,
+        )
+        w = eng._state.or_windows["AAPL"]
+        assert not w.locked, "no bars accumulated -> nothing to lock"
+        ds = eng._state.get_day_state("main", "AAPL")
+        assert ds.phase == PHASE_WARMUP, (
+            "FSM should stay WARMUP rather than transition to a "
+            "synthetic ARMED/BLOCKED state on an empty OR"
+        )
+
+    def test_already_locked_post_window_bar_is_noop(self):
+        """v7.73.0 -- the fallback path must NOT re-lock an already-locked
+        window. add_bar returns False for both 'outside window' and
+        'already locked'; the fallback gate must distinguish.
+        """
+        cfg = make_config()
+        eng = OrbEngine(cfg, portfolio_ids=["main"])
+        eng.start_new_session(
+            date_iso="2026-01-02", tickers=["AAPL"],
+            vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        feed_or_window(eng, "AAPL", or_high=101.0, or_low=100.0)
+        w = eng._state.or_windows["AAPL"]
+        assert w.locked
+        locked_at_iso_before = w.locked_at_iso
+        # Post-window bar arrives.
+        eng.on_bar_arrival(
+            ticker="AAPL", bar_high=102.0, bar_low=101.5,
+            bar_open=101.8, bar_close=101.9,
+            bar_volume=10000, bar_bucket_min=600,
+        )
+        # Still locked with the original timestamp -- no re-lock.
+        assert w.locked
+        assert w.locked_at_iso == locked_at_iso_before
+
 
 # ------------------ detect_breakout ------------------
 
