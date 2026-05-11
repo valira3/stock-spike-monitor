@@ -4,7 +4,7 @@ Shipped in **v7.65.0**. Live RTH validator for the production dashboard.
 
 ## What it does
 
-Every 5 minutes during US market hours (Mon-Fri, 13:00-20:00 UTC) a
+Every 5 minutes during US premarket + RTH (Mon-Fri, 08:00-20:55 UTC -- spans ~04:00-16:55 ET DST-safe; v7.67.0) a
 GitHub Actions cron job runs `tools/dashboard_monitor.py`, which:
 
 1. Hits the production read endpoints with an HMAC-signed session
