@@ -400,6 +400,7 @@ def load_paper_state():
             state = json.load(f)
 
         tg.paper_cash = float(state.get("paper_cash", tg.PAPER_STARTING_CAPITAL))
+        tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
         # v4.1.2: .clear() before .update() to symmetrize load semantics
         # with paper_trades/paper_all_trades/trade_history/short_trade_history
         # below. A second load_paper_state call (module re-init, hot patch)
@@ -549,6 +550,7 @@ def load_paper_state():
             exc_info=True,
         )
         tg.paper_cash = tg.PAPER_STARTING_CAPITAL
+        tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
         tg.positions.clear()
         tg.paper_trades.clear()
         tg.paper_all_trades.clear()
@@ -590,6 +592,7 @@ def _do_reset_paper():
     tg.daily_entry_date = ""
     tg.daily_short_entry_date = ""
     tg.paper_cash = tg.PAPER_STARTING_CAPITAL
+    tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
     tg._trading_halted = False
     tg._trading_halted_reason = ""
     # v5.0.0 \u2014 reset Tiger/Buffalo tracks on a paper-book reset.

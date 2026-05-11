@@ -920,6 +920,7 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
         )
         return
     tg.paper_cash += cfg.entry_cash_delta(e2_shares, current_price)
+    tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
 
     # Average down/up the entry price; grow share count.
     e1_price = float(pos.get("v5104_entry1_price") or pos.get("entry_price"))

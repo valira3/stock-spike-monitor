@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.71.0"
+BOT_VERSION = "7.72.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -2672,6 +2672,29 @@ _MAIN_BOOK.short_trade_history = short_trade_history
 _MAIN_BOOK.v5_long_tracks = v5_long_tracks
 _MAIN_BOOK.v5_short_tracks = v5_short_tracks
 _MAIN_BOOK.v5_active_direction = v5_active_direction
+# v7.72.0 -- bridge paper_cash too. Pre-v7.72.0 the global
+# `tg.paper_cash` was the only source updated on every fill (broker/
+# positions.py + broker/orders.py mutate it via `+= cfg.*cash_delta`),
+# leaving `_MAIN_BOOK.paper_cash` frozen at the class-default 0.0. That
+# made `_MAIN_BOOK.current_equity()` always return 0, which surfaced as
+# /api/v10/projection.live_balance=0 (and a "Live $0 / -100%" KPI until
+# the v7.64.0 UI override). Initial sync here; mutation-site mirrors
+# below keep them in lockstep.
+_MAIN_BOOK.paper_cash = float(paper_cash)
+
+
+def _sync_main_book_cash() -> None:
+    """v7.72.0 -- mirror module-level `paper_cash` -> `_MAIN_BOOK.paper_cash`.
+
+    Called after every site that mutates the legacy global so the
+    per-portfolio book stays in sync. Cheap (one float assignment); safe
+    if the bridge hasn't run yet (silently no-ops via `try`).
+    """
+    try:
+        _MAIN_BOOK.paper_cash = float(paper_cash)
+    except Exception:
+        pass
+
 
 # v7.0.0 Phase 4 -- bridge sizing config into main book so size_for()
 # and paper_shares_for() draw from the same env-driven value.

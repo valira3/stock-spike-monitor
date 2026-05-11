@@ -336,14 +336,22 @@ def _heartbeat_should_fire() -> bool:
 
 
 def _heartbeat_text(payloads: dict[str, Any], base_url: str) -> str:
+    """Compose the heartbeat message.
+
+    v7.72.0 -- field paths corrected to match the actual /api/state shape:
+    `state.regime.mode` (not state.regime_mode / state.mode), and
+    `state.portfolio.equity` (not state.equity_usd). The v10 live_mode flag
+    lives on `/api/v10/projection.live_mode`, not on /api/state. Pre-v7.72.0
+    the heartbeat rendered "regime: ? · v10 live_mode: ?" because of these
+    mis-paths.
+    """
     state = payloads.get("state") or {}
-    mode = state.get("regime_mode") or state.get("mode") or "?"
-    v10 = state.get("v10") or {}
-    live_mode = v10.get("live_mode", "?")
-    equity = state.get("equity_usd")
-    if equity is None:
-        portfolio = state.get("portfolio") or {}
-        equity = portfolio.get("equity", "?")
+    regime = state.get("regime") or {}
+    mode = regime.get("mode") or "?"
+    portfolio = state.get("portfolio") or {}
+    equity = portfolio.get("equity", "?")
+    v10_proj = payloads.get("v10_proj") or {}
+    live_mode = v10_proj.get("live_mode", "?")
     return (
         f"❤️ *dashboard-monitor ok*\n"
         f"`{base_url}`\n"
@@ -359,14 +367,19 @@ def _emit_heartbeat(payloads: dict[str, Any], base_url: str, dry_run: bool) -> N
     if not (tg_token and tg_chat):
         logger.info("heartbeat skipped (no TG creds)")
         return
+    # v7.72.0 -- manual workflow_dispatch heartbeats are LOUD (push to
+    # phone). The operator explicitly clicked Run-workflow as a liveness
+    # check, so they want a notification. Scheduled-cron heartbeats stay
+    # silent (13/day during the active window -- too noisy if loud).
+    is_manual = os.environ.get("GITHUB_EVENT_NAME", "").strip() == "workflow_dispatch"
     ok = send_telegram(
         tg_token,
         tg_chat,
         _heartbeat_text(payloads, base_url),
         dry_run=dry_run,
-        silent=True,
+        silent=not is_manual,
     )
-    logger.info("heartbeat sent=%s", ok)
+    logger.info("heartbeat sent=%s manual=%s", ok, is_manual)
 
 
 def _emit_alerts(violations: list[dict], base_url: str, dry_run: bool) -> None:
