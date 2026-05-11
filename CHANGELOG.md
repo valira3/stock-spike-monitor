@@ -4,6 +4,72 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.55.0 (2026-05-11) -- v10 Proximity card on Val/Gene tabs + hide legacy permit-matrix there
+
+User reported the Val tab still showed `Waiting for permit data...`
+and the v10 Proximity card was missing. Two issues:
+
+  - The v7.52.0 v10 Proximity card was only added to the Main panel
+    HTML (`index.html`); the Val/Gene exec panel `execSkeleton`
+    template never got the card, so `renderV10ProximityMatrix` had
+    nothing to render into on those tabs.
+  - The legacy `pmtx-weather-section` and `Permit Matrix` cards in
+    `execSkeleton` were never tagged with `legacy-v10-hidden` so
+    they stayed visible on Val/Gene even when `body.v10-live` was
+    set (only Main was tagged in v7.27.0).
+
+### Fix
+
+Frontend (`dashboard_static/app.js`):
+  - `execSkeleton` now includes a per-portfolio v10 Proximity card
+    (`data-f="v10-prox-section-pid"`) above the legacy weather
+    banner, using the same row layout as the Main panel.
+  - Tagged the `pmtx-weather-section` and Permit Matrix card in
+    `execSkeleton` with `legacy-v10-hidden` so they collapse on
+    Val/Gene under `body.v10-live`, mirroring the v7.27.0 Main
+    treatment.
+  - Refactored `renderV10ProximityMatrix` to share its row builder
+    with a new `renderV10ProximityForPanel(s, panel, pid)`. The
+    per-pid renderer:
+      - Writes into the panel's data-f anchors
+      - Filters phase chips to a single pid (no longer shows
+        all three)
+      - Maintains an independent expansion-state map per panel
+        (`_renderV10ProximityCore._expanded[expandedKey]`) so
+        opening AAPL on Val doesn't open it on Main
+      - Has its own click rerender callback
+  - `renderV10PerPortfolio` now invokes the per-panel proximity
+    render so it paints on every executor poll cycle.
+
+### Files
+
+  - `dashboard_static/app.js` -- new exec-skeleton section,
+    legacy-v10-hidden tags on weather + permit-matrix in the
+    skeleton, refactored proximity renderer
+  - `bot_version.py` / `trade_genius.py` -- 7.54.0 -> 7.55.0
+  - `docs/dashboard_redesign_v2/pr48_screenshots/` -- Val + Gene
+    desktop + Val mobile shots showing the new proximity card and
+    the absent legacy permit-matrix
+
+### Risk
+
+Pure frontend. No backend change. The renderer refactor is
+behavior-preserving for the Main panel (same row builder, same
+output, same window getter exposure). The exec-skeleton additions
+are additive sections; no existing data-f anchors changed.
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped. Playwright on
+the Val tab confirmed:
+  - `body.v10-live` is set
+  - `[data-f="v10-prox-section-pid"]` is visible
+  - 7 proximity rows rendered (`0 / 7 locked`)
+  - `.pmtx-weather-section` has computed display=none
+  - 2 sections marked `legacy-v10-hidden` (weather + permit matrix)
+
+---
+
 ## v7.54.0 (2026-05-11) -- v10 Proximity card always visible (pre-OR-lock + premarket)
 
 User reported "it says waiting for permit data and no cards are
