@@ -192,14 +192,23 @@ def inv_val_gene_trades_match_main(ctx):
         # cron tick / monitor cycle even if Main was quiet recently.
         # Also added the [SIGNAL-BUS-*] section so we can audit "did
         # emit fire?" / "did dispatch fire?" vs the receiver side.
+        # v7.95.0 -- limit raised 3000 -> 10000. Post-RTH log rates
+        # (~10-20 lines/min for heartbeats + scan-loop ticks) meant
+        # the 3000-line window only covered ~2-3 hours of idle time,
+        # so monitor cycles fired hours after RTH close (e.g. issue
+        # #575/#577/#579 today at 18:55-19:22 ET, ~3-3.5h after the
+        # last trade) couldn't reach back to capture [TRADE_CLOSED]
+        # or [SIGNAL-BUS-EMIT] lines for today's actual fires. 10000
+        # covers ~8h of post-RTH activity or ~3-5h of RTH activity --
+        # either case reaches back to the most recent trade window.
         bus_slice = grep_logs(r"\[SIGNAL-BUS-(EMIT|DISPATCH)\]",
-                              limit=3000, max_matches=40)
+                              limit=10000, max_matches=100)
         mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]",
-                                 limit=3000, max_matches=40)
+                                 limit=10000, max_matches=100)
         alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]",
-                               limit=3000, max_matches=20)
+                               limit=10000, max_matches=50)
         alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]",
-                                limit=3000, max_matches=20)
+                                limit=10000, max_matches=50)
         log_sections: list[str] = []
         if bus_slice:
             log_sections.append(
