@@ -4,6 +4,87 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.78.0 (2026-05-11) -- execute_breakout: skip V15-SIZING when v10 supplied a size
+
+Operator pulled Railway logs after v7.77.0 deployed. Three findings:
+
+1. **v7.74.0 OR-window backfill is working** -- `[V79-ORB-BACKFILL]
+   done backfilled_tickers=10 locked_tickers=10` at session start.
+2. **v7.76.0+77.0 equity fix is working** -- v10 admits entries
+   through the RiskBook with proper notional caps.
+3. **NEW BUG SURFACED**: every v10-admitted entry was then aborted
+   or upsized-then-rejected by the legacy V15-SIZING block in
+   `broker/orders.py:execute_breakout`. Specifically:
+
+```
+15:28:37 [V79-ORB-ENTRY] long AAPL portfolio=main shares=254
+15:28:37 [V15-SIZING] AAPL side=LONG WAIT (defensive abort):
+         5m DI 23.97 <= 25.0 (anchor fail)
+```
+```
+15:31:44 [V79-ORB-ENTRY] long MSFT portfolio=main shares=181
+15:31:44 [V15-SIZING] MSFT side=LONG tier=FULL shares=362
+15:31:44 [paper] skip MSFT -- insufficient cash
+         (need $148,751, have $99,552)
+```
+
+V15-SIZING re-evaluates entries that v10 already gated and either
+(a) aborts on its own `WAIT` rule (legacy DI > 25 momentum anchor)
+or (b) upsizes shares to `starter * 2` = `FULL` tier, often
+exceeding available paper cash. Both are wrong: v10's day_gates
+(range, VIX, earnings, gap, OR-break) are the canonical gate, and
+v10 pre-computes a size that fits available equity. Re-applying
+V15 is double-gating and double-sizing.
+
+### Fix
+
+In `broker/orders.py:execute_breakout`, peek the v10 size stash
+BEFORE calling `paper_shares_for`. If `is_live_mode_on()` and
+`peek_v10_size("main", ticker)` returns a positive integer,
+`_v10_supplied_size = True`. The existing V15-SIZING try/except
+block is wrapped in `if _v10_supplied_size: ... else: <V15>`, so
+v10-admitted entries bypass V15 entirely and use the v10-supplied
+share count from `paper_shares_for` (which already routes through
+`consume_v10_size`).
+
+Forensic: new `[V79-ORB-DELEGATE]` log line emits whenever the
+V15 block is skipped in favor of v10's sizing/gating, so the
+audit trail shows the delegation alongside `[V79-ORB-ENTRY]`.
+
+### Compatibility
+
+- `ORB_LIVE_MODE=0` (legacy fallback): V15-SIZING still runs
+  unchanged. Operators using the kill switch retain the legacy
+  sizing behavior exactly.
+- v10 path with no stashed size (e.g. shadow-mode admits before
+  v7.18.0 sizing handoff): `peek_v10_size` returns None,
+  `_v10_supplied_size = False`, V15 runs as before.
+
+### Files
+
+- `broker/orders.py`: `execute_breakout` -- pre-peek + branch
+  around V15-SIZING block (~25 lines moved into `else:`).
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio.
+
+Full suite: **433 passed**, 8 skipped (no regressions).
+
+### Operator action after merge
+
+Redeploy Railway. After the next 5-min close > OR-high (or <
+OR-low for shorts) on an ARMED ticker:
+
+1. `[V79-ORB-ENTRY] long <TICKER> portfolio=main shares=N` (admit)
+2. `[V79-ORB-DELEGATE] <TICKER> ... (V15-SIZING skipped)` (new)
+3. Entry executes; `tg.send_telegram(...)` posts the entry banner
+   to the main TG channel.
+4. For Val/Gene (when `ORB_PORTFOLIO_FIRE=1`): `[ALPACA-REQ]`
+   followed by `[ALPACA-RESP]` shows the broker submission.
+
+If Alpaca rejects, `[ALPACA-ERR]` (added in v7.77.0) shows the
+broker's full reject text.
+
+---
+
 ## v7.77.0 (2026-05-11) -- refresh_equity_from_books also uses resolve_equity + Alpaca request/response logging
 
 Two issues from post-v7.76.0 production observation:
