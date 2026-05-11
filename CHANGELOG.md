@@ -4,6 +4,82 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.59.0 (2026-05-11) -- v10 Proximity: Range + Block leading-indicator columns
+
+Follow-up to v7.58.0. The legacy Permit Matrix card showed a
+column-by-column gate breakdown per Titan. After deletion, the
+v10 Proximity Matrix had the chart-expansion replacement but
+lacked the gate-breakdown view. This PR adds two leading-indicator
+columns so a glance at the Proximity table answers "is this ticker
+admissible right now?".
+
+### Range column
+
+New column between Width and Distance. Shows ✓ when
+`range_min_pct ≤ or_width_pct ≤ range_max_pct` (admissible), ✕
+otherwise. Tooltip on failures explains *too tight* vs *too wide*
+with the actual width and the boundary.
+
+Computed entirely on the frontend from data already in the v10
+snapshot (`config.range_min_pct`, `config.range_max_pct`,
+`or_windows[ticker].or_width_pct`). No backend change.
+
+### Block column
+
+New column after Phase. Summarises everything blocking new entries
+on this ticker:
+  - Per-side blocklist (`v10.config.blocklist[ticker]`) -- chip
+    `L blk` or `S blk` (or both) when a side is configured off.
+  - Day-level block (`v10.day_status.block_day` -- VIX gate,
+    earnings gate, etc.) -- single `day` chip; tooltip shows the
+    reason from `block_reason`.
+  - Per-pid `block_reason` from `day_states[i].block_reason` --
+    surfaces FSM block strings like `blocklist_long_short`,
+    `daily_kill`, `gap (X% > Y%)`, `earnings`. Filtered to the
+    panel's pid on Val/Gene.
+  - When nothing is blocking, the cell shows a single green ✓.
+
+### Visual
+
+  - `.v10-prox-gate` family with pass / fail / pending color
+    tiers matching the rest of the v10 palette.
+  - `.v10-prox-block-chip` variants by category (side / day /
+    reason) so the operator can distinguish at a glance.
+
+### Files
+
+  - `dashboard_static/app.js` -- row builder enriched with
+    `range_ok`, `bl_long`, `bl_short`; new helpers `_rangeCell`,
+    `_blockCell`; `_phaseChip` adapted to consume `{phase,
+    block_reason}` object instead of a phase string; header +
+    column count updated.
+  - `dashboard_static/app.css` -- new gate cell + block chip
+    styles
+  - `bot_version.py` / `trade_genius.py` -- 7.58.0 -> 7.59.0
+  - `docs/dashboard_redesign_v2/pr52_screenshots/`
+
+### Verification
+
+Playwright fixture covers all four cell states:
+  - NVDA (width 1.76%): Range ✓, Block ✓
+  - MSFT (width 0.48%, SHORT blocklisted): Range ✕ (too tight),
+    Block `S blk`
+  - AAPL (width 1.36%): Range ✓, Block ✓
+  - META (width 1.67%, both sides blocklisted, BLOCKED_DAY phase
+    with `blocklist_long_short` reason): Range ✓,
+    Block `L blk S blk blocklist_long_short`
+  - TSLA (width 4.05%): Range ✕ (too wide), Block ✓
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+### Risk
+
+Pure frontend addition. No backend change; all data was already in
+the v10 snapshot. The colspan on the expanded chart row bumped
+from 8 to 10 so the chart still spans the full table width.
+
+---
+
 ## v7.58.0 (2026-05-11) -- Vestigial UI removal pass
 
 Comprehensive sweep of dashboard elements that no longer correlate

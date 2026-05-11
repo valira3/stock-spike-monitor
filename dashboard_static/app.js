@@ -5774,14 +5774,25 @@
     var orWindows = v10.or_windows || {};
     var dayStates = v10.day_states || [];
     var prices = v10.prices || {};
+    var cfg = v10.config || {};
+    // v7.59.0 -- leading-indicator data: OR-width admissibility +
+    // per-ticker blocklist + per-(pid,ticker) block_reason.
+    var rangeMin = (typeof cfg.range_min_pct === "number") ? cfg.range_min_pct : null;
+    var rangeMax = (typeof cfg.range_max_pct === "number") ? cfg.range_max_pct : null;
+    var blocklist = cfg.blocklist || {};
+    var dayStatusBlock = (v10.day_status && v10.day_status.block_day)
+      ? (v10.day_status.block_reason || "day_block") : null;
 
-    // Index FSM phases by ticker -> { pid -> phase }
+    // Index FSM phases + block_reason by ticker -> { pid -> {phase, block_reason} }
     var phaseByTk = {};
     for (var i = 0; i < dayStates.length; i++) {
       var d = dayStates[i];
       if (!d.ticker) continue;
       if (!phaseByTk[d.ticker]) phaseByTk[d.ticker] = {};
-      phaseByTk[d.ticker][d.portfolio_id || "?"] = d.phase || "?";
+      phaseByTk[d.ticker][d.portfolio_id || "?"] = {
+        phase: d.phase || "?",
+        block_reason: d.block_reason || "",
+      };
     }
 
     // Universe: union of (a) tickers in or_windows, (b) tickers in
@@ -5823,11 +5834,33 @@
       } else if (distToHigh != null) { closer = distToHigh; closerLabel = "OR-high"; }
       else if (distToLow  != null) { closer = distToLow;  closerLabel = "OR-low"; }
 
+      // v7.59.0 -- leading-indicator data per row.
+      // Range admissibility: OR width must fall inside [range_min, range_max].
+      var widthPct = locked ? w.or_width_pct : null;
+      var rangeOk = null;
+      var rangeNote = "";
+      if (locked && typeof widthPct === "number" && rangeMin != null && rangeMax != null) {
+        rangeOk = (widthPct >= rangeMin && widthPct <= rangeMax);
+        if (!rangeOk) {
+          rangeNote = widthPct < rangeMin
+            ? "too tight (" + (widthPct * 100).toFixed(2) + "% < " + (rangeMin * 100).toFixed(2) + "%)"
+            : "too wide (" + (widthPct * 100).toFixed(2) + "% > " + (rangeMax * 100).toFixed(2) + "%)";
+        }
+      }
+      // Blocklist (per side, from config).
+      var bl = blocklist[tkr] || [];
+      var blLong = bl.indexOf && (bl.indexOf("LONG") >= 0 || bl.indexOf("long") >= 0);
+      var blShort = bl.indexOf && (bl.indexOf("SHORT") >= 0 || bl.indexOf("short") >= 0);
+
       rows.push({
         tkr: tkr, px: px, orh: orh, orl: orl, locked: locked,
-        or_width_pct: locked ? w.or_width_pct : null,
+        or_width_pct: widthPct,
         closer: closer, closer_label: closerLabel,
         phases: phaseByTk[tkr] || {},
+        range_ok: rangeOk,
+        range_note: rangeNote,
+        bl_long: !!blLong,
+        bl_short: !!blShort,
       });
     });
 
@@ -5863,10 +5896,56 @@
       return;
     }
 
-    function _phaseChip(pid, phase) {
-      var cls = "v10-prox-phase v10-prox-phase-" + (phase || "x").toLowerCase();
-      return '<span class="' + cls + '" title="' + esc(pid) + ': ' + esc(phase) + '">'
+    function _phaseChip(pid, phaseInfo) {
+      // v7.59.0 -- phaseInfo is now {phase, block_reason}. The chip
+      // shows the pid label; the tooltip surfaces the block_reason
+      // when the FSM is in a BLOCKED_* phase.
+      var phase = (phaseInfo && phaseInfo.phase) || "?";
+      var reason = (phaseInfo && phaseInfo.block_reason) || "";
+      var cls = "v10-prox-phase v10-prox-phase-" + phase.toLowerCase();
+      var titleTxt = pid + ": " + phase + (reason ? " (" + reason + ")" : "");
+      return '<span class="' + cls + '" title="' + esc(titleTxt) + '">'
            + esc(pid) + '</span>';
+    }
+
+    // v7.59.0 -- compact ✓/✕ cell for the Range column.
+    function _rangeCell(rangeOk, rangeNote, locked) {
+      if (!locked) return '<span class="v10-prox-gate v10-prox-gate-pending" title="OR window not locked">—</span>';
+      if (rangeOk === null) return '<span class="v10-prox-gate">—</span>';
+      var icon = rangeOk ? "✓" : "✕";
+      var clsExtra = rangeOk ? " v10-prox-gate-pass" : " v10-prox-gate-fail";
+      var tip = rangeOk
+        ? "Range OK: OR width within admissible band"
+        : "Range fail: " + rangeNote;
+      return '<span class="v10-prox-gate' + clsExtra + '" title="' + esc(tip) + '">' + icon + '</span>';
+    }
+
+    // v7.59.0 -- compact Block summary. Reports per-side blocklist
+    // entries + per-pid block_reason. Single-pid panels (Val/Gene)
+    // restrict the reason scan to that pid.
+    function _blockCell(r, pidFilter) {
+      var bits = [];
+      if (r.bl_long) bits.push('<span class="v10-prox-block-chip v10-prox-block-side" title="Blocklist: LONG side disabled for this ticker">L blk</span>');
+      if (r.bl_short) bits.push('<span class="v10-prox-block-chip v10-prox-block-side" title="Blocklist: SHORT side disabled for this ticker">S blk</span>');
+      // Day-status block applies to ALL tickers; surface it once per row.
+      if (dayStatusBlock) {
+        bits.push('<span class="v10-prox-block-chip v10-prox-block-day" title="Day-level block: ' + esc(dayStatusBlock) + '">day</span>');
+      }
+      // Per-pid block_reason -- show when at least one phase chip is BLOCKED_*.
+      var pidsToScan = pidFilter ? [pidFilter] : ["main", "val", "gene"];
+      var reasons = [];
+      pidsToScan.forEach(function (p) {
+        var pi = r.phases[p];
+        if (!pi) return;
+        if ((pi.phase || "").toLowerCase().indexOf("blocked") !== 0) return;
+        var rsn = (pi.block_reason || pi.phase || "").trim();
+        if (rsn && reasons.indexOf(rsn) < 0) reasons.push(rsn);
+      });
+      reasons.forEach(function (rs) {
+        bits.push('<span class="v10-prox-block-chip v10-prox-block-reason" title="Block reason: ' + esc(rs) + '">' + esc(rs.split(" ")[0]) + '</span>');
+      });
+      if (bits.length === 0) return '<span class="v10-prox-gate-pass" title="No blocks">✓</span>';
+      return bits.join(" ");
     }
 
     function _distCell(closer, label) {
@@ -5909,8 +5988,10 @@
          +    '<th title="Opening-range LOW">OR-low</th>'
          +    '<th title="Opening-range HIGH">OR-high</th>'
          +    '<th title="OR window width (high - low) as % of mid">Width</th>'
+         +    '<th title="OR width vs the admissible range filter [range_min_pct, range_max_pct]. ✓ = admissible. ✕ = too tight or too wide; the breakout EV degrades outside this band.">Range</th>'
          +    '<th title="Distance to the closer break level (signed %)">Distance</th>'
          +    '<th title="Per-portfolio FSM phase">Phase</th>'
+         +    '<th title="Entry gates: per-side blocklist + per-pid block_reason. ✓ = nothing blocking new entries on this ticker.">Block</th>'
          +    '</tr></thead><tbody>';
     rows.forEach(function (r) {
       var widthPct = (typeof r.or_width_pct === "number")
@@ -5934,6 +6015,8 @@
       var distHtml = r.locked
                        ? _distCell(r.closer, r.closer_label)
                        : '<span class="v10-prox-pending" title="Opening-range window has not locked yet (locks at the end of OR_minutes after 09:30 ET)">OR pending</span>';
+      var rangeHtml = _rangeCell(r.range_ok, r.range_note, r.locked);
+      var blockHtml = _blockCell(r, opts.pidFilter);
       html += '<tr class="v10-prox-row' + openCls + unlockedCls + '" data-prox-ticker="' + esc(r.tkr) + '" '
            +  'title="Click to ' + (isOpen ? 'hide' : 'show') + ' intraday chart">'
            +   '<td class="v10-prox-caret">' + caret + '</td>'
@@ -5942,12 +6025,14 @@
            +   '<td class="mono">' + orLowCell + '</td>'
            +   '<td class="mono">' + orHighCell + '</td>'
            +   '<td class="mono">' + widthPct + '</td>'
+           +   '<td class="v10-prox-col-gate">' + rangeHtml + '</td>'
            +   '<td>' + distHtml + '</td>'
            +   '<td>' + chips + '</td>'
+           +   '<td class="v10-prox-col-block">' + blockHtml + '</td>'
            + '</tr>';
       if (isOpen) {
         html += '<tr class="v10-prox-detail-row" data-prox-detail="' + esc(r.tkr) + '">'
-             +   '<td colspan="8" class="v10-prox-detail-cell">'
+             +   '<td colspan="10" class="v10-prox-detail-cell">'
              +     '<div class="v10-prox-chart-mount" data-chart-mount="' + esc(r.tkr) + '"></div>'
              +   '</td>'
              + '</tr>';
