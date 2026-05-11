@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.87.0 (2026-05-11) -- Per-position Notional column on the positions table
+
+Operator: "Also, need to show total investment (short or long) on
+each open position (we show all other metrics, but not this one)."
+
+The positions table on the Main tab had Sh, Entry, Mark, Stop,
+Risk, Unrealized, % -- but no column showing the **dollar amount
+invested** (longs) / **dollar liability outstanding** (shorts).
+That number is the per-position contribution to the v7.86.0
+total-exposure cap, so without it the cap math is opaque.
+
+### Change
+
+New "Notional" column inserted between Mark and Stop in the
+positions table render at `dashboard_static/app.js`:
+
+```
+Ticker  Side  Sh   Entry    Mark    Notional   Stop    Risk    Unreal.  %
+TSLA    LONG  71   $446.26  $447.04 $31,684    $444.03 $158.33 +$55.36  +0.17%
+NFLX    SHORT 873  $85.43   $85.33  $74,580    $85.69  $226.98 +$87.30  +0.12%
+GOOG    SHORT 192  $388.49  $387.61 $74,590    $389.65 $223.68 +$168.96 +0.23%
+META    SHORT 125  $599.24  $599.14 $74,905    $601.04 $225.00 +$12.50  +0.02%
+```
+
+Notional = `shares × entry`. For longs it's the original
+investment; for shorts it's the liability that needs to be
+covered. Sums per direction equal `long_mv` and `short_liab` in
+the v7.86.0 exposure-cap formula.
+
+Header tooltip:
+```
+Notional at cost: shares × entry. Long = invested $; short =
+liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).
+```
+
+Row tooltip on the value cell mirrors the header explanation so
+hovering an individual cell explains its meaning.
+
+### Implementation notes
+
+- Computed client-side from existing payload fields (`p.shares`,
+  `p.entry`). No server-side change required.
+- Falls back to `—` when shares or entry are not finite (parses
+  the same way the Risk column already does).
+- Defensive against malformed payload values.
+
+### Files
+
+- `dashboard_static/app.js`: positions-table render + header
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+No tests changed (pure display-layer; client-side math identical
+to the existing Risk column's computation pattern).
+
+### Operator action
+
+None. On next dashboard page reload the new column appears.
+
+---
+
 ## v7.86.0 (2026-05-11) -- Total-exposure cap (95% of equity) in execute_breakout
 
 Operator screenshot (TSLA long $32K + NFLX/GOOG/META shorts $224K =
