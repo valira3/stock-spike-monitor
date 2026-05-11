@@ -162,6 +162,10 @@
   .mark-short { color: var(--down); }
   .side-long  { color: var(--up); font-weight: 600; }
   .side-short { color: var(--down); font-weight: 600; }
+  /* v7.49.0 -- directional triangles prefix the side chip so the
+     position direction is readable at a glance even with low contrast. */
+  .side-long::before  { content: "\25B2"; margin-right: 4px; font-size: 9px; vertical-align: 1px; }
+  .side-short::before { content: "\25BC"; margin-right: 4px; font-size: 9px; vertical-align: 1px; }
 
   /* v3.4.31 — Today's Trades card: summary line + richer per-row
      layout. Keep all visual changes confined to this block so the
@@ -2058,6 +2062,18 @@ body.v10-live .legacy-v10-hidden {
   color: #ef4444;
   line-height: 1;
   flex-shrink: 0;
+  /* v7.49.0 -- gentle pulse pulls the eye to the alert without
+     introducing animation jank. 2.4s cycle is slow enough that the
+     operator's peripheral vision picks it up but it doesn't feel
+     restless when the banner stays up for long. */
+  animation: ks-icon-pulse 2.4s ease-in-out infinite;
+}
+@keyframes ks-icon-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.65; transform: scale(0.92); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .killswitch-banner .ks-icon { animation: none; }
 }
 .killswitch-banner .ks-text {
   flex: 1;
@@ -2456,12 +2472,32 @@ body.v10-live .legacy-v10-hidden {
 }
 .act-kind.act-kind-session_start { background: #6b21a8; color: #f3e8ff; }
 .act-kind.act-kind-admit { background: #16a34a; color: #fff; }
+/* v7.49.0 -- alias: renderers emit "entry" for long/short admits while
+   the backend ring buffer uses "admit". Same semantic, same styling. */
+.act-kind.act-kind-entry { background: #16a34a; color: #fff; }
 .act-kind.act-kind-exit { background: #3b82f6; color: #fff; }
 .act-kind.act-kind-reject { background: #6b7280; color: #fff; }
 .act-kind.act-kind-day_block { background: #b91c1c; color: #fff; }
 .act-kind.act-kind-kill { background: #dc2626; color: #fff; }
 .act-kind.act-kind-or_lock { background: #1e3a5f; color: #93c5fd; }
 .act-kind.act-kind-info { background: #374151; color: #d1d5db; }
+/* v7.49.0 -- directional glyphs prefix each chip so an operator can
+   scan the feed by shape, not just color. Width-budget: 100px desktop
+   chip easily fits "↗ ADMIT" (etc.); mobile 80px also fits "↗ EXIT". */
+.act-kind::before {
+  margin-right: 4px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+.act-kind.act-kind-admit::before,
+.act-kind.act-kind-entry::before { content: "\2197"; }       /* ↗ */
+.act-kind.act-kind-exit::before { content: "\2713"; }        /* ✓ */
+.act-kind.act-kind-reject::before { content: "\2298"; }      /* ⊘ */
+.act-kind.act-kind-day_block::before { content: "\26D4"; }   /* ⛔ */
+.act-kind.act-kind-kill::before { content: "\26A0"; }        /* ⚠ */
+.act-kind.act-kind-or_lock::before { content: "\1F512"; }    /* 🔒 */
+.act-kind.act-kind-info::before { content: "\2139"; }        /* ℹ */
+.act-kind.act-kind-session_start::before { content: "\25B6"; } /* ▶ */
 .act-pid {
   font-size: 10px;
   color: #9ca3af;
@@ -2484,7 +2520,9 @@ body.v10-live .legacy-v10-hidden {
   }
   .act-time { width: 45px; font-size: 10.5px; }
   .act-ticker { width: 50px; font-size: 11px; }
-  .act-kind { width: 80px; font-size: 9px; padding: 2px 6px; }
+  /* v7.49.0 -- bumped from 80px to 100px so "SESSION START" /
+     "DAY BLOCK" with the new directional glyph don't wrap. */
+  .act-kind { width: 100px; font-size: 9px; padding: 2px 6px; white-space: nowrap; }
   .act-detail {
     flex-basis: 100%;
     padding-left: 50px;

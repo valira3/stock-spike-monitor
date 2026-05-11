@@ -4,6 +4,71 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.49.0 (2026-05-11) -- Visual polish: chip glyphs, side arrows, kill-banner pulse
+
+PR42 of the dashboard-redesign loop. Pure CSS polish pass on top
+of the now-working v10 zone (PR41 was the structural fix that made
+the Main panel paint v10 components for the first time). All changes
+are decorative; no JS or DOM changes.
+
+### Activity-feed chip glyphs
+
+Each `.act-kind-*` chip now carries a directional prefix via CSS
+`::before`, so operators can scan the feed by **shape** as well as
+**color** (and the feed reads cleanly in screenshots / dark mode):
+
+  - `↗ ADMIT`        green (long/short admit)
+  - `↗ ENTRY`        green (renderer alias for admit)
+  - `✓ EXIT`         blue (target/stop close)
+  - `⊘ REJECT`       gray (gate / risk-cap rejection)
+  - `⛔ DAY BLOCK`   deep red (VIX / earnings gate)
+  - `⚠ KILL`         red (daily kill tripped)
+  - `🔒 OR LOCK`     blue (opening-range locked)
+  - `ℹ INFO`         gray (warmup / misc)
+  - `▶ SESSION START` purple (session boot)
+
+Bonus fix: the renderer emits `kind="entry"` but the CSS only had
+a rule for `act-kind-admit`. Added a green styling alias for
+`act-kind-entry` so the chip color matches.
+
+### Side-chip arrows (positions table)
+
+`.side-long` / `.side-short` now prefix `▲` / `▼` triangles. Useful
+when the table is scanned in low-contrast or partially zoomed-out
+contexts (peripheral-vision recognition is shape-first).
+
+### Kill-banner icon pulse
+
+The `.ks-icon` warning glyph on the kill-switch banner now pulses
+gently (`ks-icon-pulse`, 2.4s ease-in-out, opacity + scale). Cycle
+deliberately slow so the operator's peripheral vision picks it up
+without the banner feeling restless when it stays up for long.
+Respects `prefers-reduced-motion`.
+
+### Mobile chip width
+
+`.act-kind` mobile width bumped 80px -> 100px (with `white-space:
+nowrap`) so `▶ SESSION START` and `⛔ DAY BLOCK` (the longest labels
+plus glyph) don't wrap onto two lines. Total mobile row width
+budget (45 + 50 + 100 + pid + gaps) still fits inside the 390px
+iPhone viewport comfortably.
+
+### Files
+
+  - `dashboard_static/app.css` -- all polish lives here
+  - `bot_version.py` / `trade_genius.py` -- 7.48.0 -> 7.49.0
+  - `docs/dashboard_redesign_v2/pr42_screenshots/` -- Main / Val /
+    Gene desktop + Main mobile after-screenshots
+
+### Risk
+
+Pure CSS, no logic change. The `::before` content is decorative;
+screen readers + accessibility tools will see only the chip's
+existing text content. `prefers-reduced-motion` disables the pulse
+animation. No backend changes.
+
+---
+
 ## v7.48.0 (2026-05-11) -- Fix: route Main panel v10 renderers through window exports
 
 PR41 of the dashboard-redesign loop. Discovered while staging the
