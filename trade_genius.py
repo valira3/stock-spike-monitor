@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.59.0"
+BOT_VERSION = "7.60.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -126,7 +126,22 @@ BOT_VERSION = "7.59.0"
 def _derive_current_main_note() -> str:
     """Read CHANGELOG.md and build a Telegram-shaped release note.
 
-    Format: "v{ver}: {title}" + first 1-2 body lines (each <=34 chars).
+    v7.60.0: emit the FULL CHANGELOG entry for the latest point
+    release (not just the first 3 body lines as in v7.13.1+). The
+    operator asked for the deploy notification to actually carry
+    the release notes -- so the Telegram message + /version reply
+    both show the full markdown body of the latest "## vX.Y.Z"
+    section, with:
+      - Sub-section headers ("### Foo") rendered as a bold-ish
+        underlined label so the structure survives the wrap.
+      - Bullet list markers ("  - ") preserved as "- ".
+      - Code fences (```) stripped.
+      - Each output line wrapped to <= 34 chars per the mobile rule.
+      - Hard cap on the OUTPUT line count is 80 (~2.7k chars), well
+        within Telegram's 4096-char message limit even when stacked
+        with the rest of the deploy banner.
+
+    Format: "v{ver}: {title}" + body (each line <=34 chars).
     Falls back to "v{BOT_VERSION} deployed" on any parse error so a
     malformed CHANGELOG never crashes the bot.
     """
@@ -151,36 +166,69 @@ def _derive_current_main_note() -> str:
             i += 1
         if not title or not version_str:
             return fallback
-        # Title is the canonical short summary
+        # First line: canonical "vX.Y.Z: short title".
         body_lines = [f"v{version_str}: {title}"]
-        # Pull the first non-empty body paragraph (skip blank lines + sub-headings)
-        for j in range(i + 1, min(i + 60, len(lines))):
+        in_code_fence = False
+        # Walk the body until the next top-level heading or end of
+        # file. Limit the scan window to keep behavior bounded if
+        # the CHANGELOG ever balloons.
+        for j in range(i + 1, min(i + 500, len(lines))):
             ln = lines[j].rstrip()
-            if not ln:
-                continue
-            if ln.startswith("#"):  # next heading -- stop
+            # Next "## vX.Y.Z" or "---" separator -> end of this entry.
+            if ln.startswith("## v") or ln.strip() == "---":
                 break
-            if ln.startswith("###"):
-                continue
-            # Only take regular paragraph text; skip code fences etc.
+            # Code fences: toggle and skip the fence line itself.
             if ln.startswith("```"):
+                in_code_fence = not in_code_fence
                 continue
+            if in_code_fence:
+                continue
+            if not ln:
+                # Preserve paragraph breaks as a single blank line.
+                if body_lines and body_lines[-1] != "":
+                    body_lines.append("")
+                continue
+            # Sub-section header: render as a labeled separator.
+            if ln.startswith("### "):
+                hdr = ln[4:].strip().rstrip(":")
+                if body_lines and body_lines[-1] != "":
+                    body_lines.append("")
+                body_lines.append(f"─ {hdr}")
+                continue
+            # Bullet list: keep marker but collapse leading whitespace.
+            stripped = ln.lstrip()
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                body_lines.append("- " + stripped[2:])
+                continue
+            # Regular paragraph text.
             body_lines.append(ln)
-            if len(body_lines) >= 3:
-                break
-        # Wrap each line to 34 chars (Telegram mobile rule)
+        # Strip a trailing blank line if present.
+        while body_lines and body_lines[-1] == "":
+            body_lines.pop()
+        # Wrap each line to 34 chars (Telegram mobile rule). Keep
+        # blank lines intact so paragraph breaks survive.
         wrapped: list[str] = []
         for ln in body_lines:
+            if not ln:
+                wrapped.append("")
+                continue
             while len(ln) > 34:
                 cut = ln.rfind(" ", 0, 34)
                 if cut <= 0:
                     cut = 34
                 wrapped.append(ln[:cut].rstrip())
-                ln = ln[cut:].lstrip()
+                # Indent continuation lines under bullets so the
+                # wrap reads as a hanging indent.
+                rest = ln[cut:].lstrip()
+                if wrapped[-2 if len(wrapped) >= 2 else -1].startswith("- "):
+                    pass  # operator preference: no continuation indent
+                ln = rest
             if ln:
                 wrapped.append(ln)
-        # Cap at 5 wrapped lines so the deploy banner stays compact
-        return "\n".join(wrapped[:5])
+        # Cap the output at 80 wrapped lines (~2.7k chars at 34/line)
+        # so the deploy banner never exceeds Telegram's 4096-char limit
+        # when combined with the rest of the boot message.
+        return "\n".join(wrapped[:80])
     except Exception:
         return fallback
 
