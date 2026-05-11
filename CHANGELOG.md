@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.69.0 (2026-05-11) -- Monitor: scheme-normalize URL + drop Origin/Referer (fix dry-run 403)
+
+Operator triggered the v7.68.0 dry run, hit two production-specific
+issues in sequence:
+
+### Issue 1: "unknown url type"
+
+The `DASHBOARD_URL` GHA secret was stored as
+`tradegenius.up.railway.app` -- no scheme. Python's urllib rejects
+URLs without a scheme with `ValueError("unknown url type")`, so
+the monitor crashed before reaching the login endpoint.
+
+**Fix**: `DashboardClient.__init__` now prepends `https://` when
+the configured `DASHBOARD_BASE_URL` has no `://`. Defensive
+normalization so the operator doesn't have to remember to include
+the scheme in the secret value.
+
+### Issue 2: 403 from /login
+
+After scheme-fix, the request reached production but got a 403.
+Root cause: dashboard_server's CSRF check is
+
+```python
+src_host = _host_of(origin) or _host_of(referer)
+if src_host and src_host != host:
+    return 403
+```
+
+The v7.68.0 monitor sent `Origin: https://<host>` + `Referer:
+https://<host>/`. Railway's edge proxy may rewrite the `Host`
+header (e.g. internal port suffix) so the upstream sees a
+mismatched Host vs. the Origin we sent, tripping the cross-origin
+rejection.
+
+**Fix**: don't send `Origin` or `Referer` on the login request.
+When both are absent, the check short-circuits (`src_host = ""`)
+and the request passes through. Browsers always send Origin, so
+the operator's normal /login flow still gets CSRF protection;
+only server-to-server callers (like this monitor) bypass it.
+
+### Files
+
+  - `tools/dashboard_monitor.py` -- scheme normalization +
+    Origin/Referer drop
+  - `bot_version.py` / `trade_genius.py` -- 7.68.0 -> 7.69.0
+
+### Verification
+
+Local with no-scheme URL:
+```
+DASHBOARD_BASE_URL="tradegenius.up.railway.app" ...
+# (was: ValueError unknown url type)
+# now: 401 from wrong password (= it reached production correctly)
+```
+
+After deploy, operator should re-run **Actions → dashboard-monitor →
+Run workflow → Dry run = true**. Expected outputs:
+  - `login ok against https://tradegenius.up.railway.app`
+  - `fetched /api/state ok (... bytes)`
+  - `OK: <invariant>` lines
+
+### Risk
+
+Bug-fix-only. Pure frontend-of-the-monitor change. Dashboard CSRF
+protection for browser users is unchanged.
+
+---
+
 ## v7.68.0 (2026-05-11) -- Monitor auth switched to POST /login with DASHBOARD_PASSWORD
 
 Operator clarified the auth shape: the production dashboard uses
