@@ -579,6 +579,77 @@ class TradeGeniusBase:
         name = (self.NAME or "BASE").upper()
         return f"{name}-{sym}-{utc_iso_minute}-{direction}"
 
+    def _summarize_req(self, req) -> str:
+        """v7.77.0 -- compact one-line summary of a submit_order request
+        for the [ALPACA-REQ] forensic log. Best-effort across alpaca-py
+        request shapes (MarketOrderRequest, LimitOrderRequest, etc.).
+        """
+        try:
+            sym = getattr(req, "symbol", "?")
+            qty = getattr(req, "qty", None)
+            notional = getattr(req, "notional", None)
+            side = getattr(req, "side", None)
+            side_v = getattr(side, "value", side)
+            tif = getattr(req, "time_in_force", None)
+            tif_v = getattr(tif, "value", tif)
+            otype = getattr(req, "type", type(req).__name__)
+            otype_v = getattr(otype, "value", otype)
+            limit_price = getattr(req, "limit_price", None)
+            stop_price = getattr(req, "stop_price", None)
+            extended = getattr(req, "extended_hours", None)
+            coid = getattr(req, "client_order_id", None)
+            parts = [
+                f"sym={sym}",
+                f"side={side_v}",
+                f"type={otype_v}",
+                f"qty={qty}" if qty is not None else f"notional={notional}",
+                f"tif={tif_v}",
+            ]
+            if limit_price is not None:
+                parts.append(f"limit={limit_price}")
+            if stop_price is not None:
+                parts.append(f"stop={stop_price}")
+            if extended:
+                parts.append("extended_hours=true")
+            if coid:
+                parts.append(f"coid={coid}")
+            return " ".join(parts)
+        except Exception:
+            return f"<{type(req).__name__} unsummarizable>"
+
+    def _summarize_order(self, order) -> str:
+        """v7.77.0 -- compact one-line summary of an Alpaca Order response
+        for the [ALPACA-RESP] forensic log.
+        """
+        try:
+            oid = getattr(order, "id", "?")
+            status = getattr(order, "status", None)
+            status_v = getattr(status, "value", status)
+            filled_qty = getattr(order, "filled_qty", None)
+            filled_avg_price = getattr(order, "filled_avg_price", None)
+            sym = getattr(order, "symbol", "?")
+            side = getattr(order, "side", None)
+            side_v = getattr(side, "value", side)
+            rejected_reason = getattr(order, "rejected_reason", None)
+            failed_at = getattr(order, "failed_at", None)
+            parts = [
+                f"id={oid}",
+                f"sym={sym}",
+                f"side={side_v}",
+                f"status={status_v}",
+            ]
+            if filled_qty:
+                parts.append(f"filled_qty={filled_qty}")
+            if filled_avg_price:
+                parts.append(f"filled_avg_price={filled_avg_price}")
+            if rejected_reason:
+                parts.append(f"rejected_reason={rejected_reason!r}")
+            if failed_at:
+                parts.append(f"failed_at={failed_at}")
+            return " ".join(parts)
+        except Exception:
+            return f"<{type(order).__name__} unsummarizable>"
+
     def _submit_order_idempotent(self, client, req, coid: str):
         """Wrap client.submit_order with duplicate-coid \u2192 success handling.
 
@@ -586,9 +657,19 @@ class TradeGeniusBase:
         (HTTP 422 from Alpaca), look up the existing order by coid and
         return it as if the submit had just succeeded. Re-raise anything
         else.
+
+        v7.77.0 -- emits [ALPACA-REQ] / [ALPACA-RESP] / [ALPACA-ERR]
+        forensic logs around every submit_order call so operator can
+        diagnose broker-side rejects from Railway logs alone.
         """
+        # [ALPACA-REQ] -- pre-flight request summary
+        logger.info("[%s] [ALPACA-REQ] %s", self.NAME, self._summarize_req(req))
         try:
-            return client.submit_order(req)
+            order = client.submit_order(req)
+            logger.info(
+                "[%s] [ALPACA-RESP] %s", self.NAME, self._summarize_order(order),
+            )
+            return order
         except Exception as e:
             msg = str(e).lower()
             if "client order id" in msg and ("unique" in msg or "duplicate" in msg):
@@ -608,7 +689,23 @@ class TradeGeniusBase:
                     coid,
                     getattr(existing, "id", "?"),
                 )
+                logger.info(
+                    "[%s] [ALPACA-RESP] %s (via dup-lookup)",
+                    self.NAME, self._summarize_order(existing),
+                )
                 return existing
+            # v7.77.0 -- non-duplicate broker error. Log the structured
+            # [ALPACA-ERR] line so operator can grep Railway logs for
+            # the exact rejection text (insufficient_buying_power,
+            # pattern_day_trader, wash_sale, etc.) alongside the
+            # request that triggered it.
+            logger.warning(
+                "[%s] [ALPACA-ERR] req=(%s) err=%s: %s",
+                self.NAME,
+                self._summarize_req(req),
+                type(e).__name__,
+                str(e)[:400],
+            )
             raise
 
     # v5.5.10 \u2014 persistence helpers for self.positions. Backed by
