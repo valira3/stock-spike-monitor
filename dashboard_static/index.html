@@ -18,7 +18,12 @@
      fallback so the tickers are still reachable if app.js fails to load. -->
 <!-- Index ticker strip — each tile shows: symbol, last price, change % vs prior close.
      [AH] = after-hours move; [NQ/ES] = front-month future vs prior close. -->
-<div id="idx-strip" class="idx-strip" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:11.5px;color:#e7ecf3;padding:6px 14px;white-space:nowrap;position:relative">
+<!-- v7.46.0 -- index strip DEMOTED. Previously this was the visual
+     hero at the top of every page (11.5px text in #e7ecf3 high
+     contrast). Operator first-glance should answer "what am I
+     holding?" not "what's SPY doing?". Smaller font + dim text +
+     less padding makes it secondary context. -->
+<div id="idx-strip" class="idx-strip idx-strip-demoted" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:10.5px;color:#9ca3af;padding:4px 14px;white-space:nowrap;position:relative">
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
@@ -119,6 +124,73 @@
 
     <div class="banner hide" id="banner"></div>
 
+    <!-- v7.46.0 -- promoted ABOVE the KPI row (hero zone reorder).
+         Operator first-glance answer: "what am I holding?". KPI row,
+         v10 status strip, and v10 cards follow below. -->
+    <!-- v5.18.0 — Open positions runs full-width. Proximity card was
+         retired and folded into the Permit Matrix as a Price · Distance
+         column (price + bar shows how close each Titan is to its OR
+         boundary, replacing the standalone proximity strip).
+         v5.19.4 — promoted ABOVE the Weather Check banner so the operator's
+         first glance answers "what am I holding right now?" before the
+         conditional "can I take a new entry?" verdict. -->
+    <section class="grid">
+      <div class="card">
+        <div class="card-head"><span class="card-title" title="Currently open positions — one row per ticker with side, fill, mark, stop, and unrealized P&L">Open positions<span class="count" id="pos-count" title="Number of open positions">· 0</span></span></div>
+        <div class="card-body flush" id="pos-body">
+          <div class="empty">No open positions.</div>
+        </div>
+        <!-- v4.10.0 — collapsed empty-state strip. JS shows this when
+             positions.length === 0 in place of the body + 2-row strip. -->
+        <div id="port-strip-empty" class="port-strip-empty" style="display:none">
+          <div class="pse-cell">
+            <div class="pse-label">Equity</div>
+            <div class="pse-value" id="pse-equity">—</div>
+          </div>
+          <div class="pse-cell">
+            <div class="pse-label">Buying power</div>
+            <div class="pse-value" id="pse-bp">—</div>
+          </div>
+          <div class="pse-cell">
+            <div class="pse-label">Cash</div>
+            <div class="pse-value" id="pse-cash">—</div>
+          </div>
+        </div>
+        <div id="port-strip" style="display:none">
+          <!-- Row 1: hero — Equity + Buying Power. Net numbers first. -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:10px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Equity</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" id="port-equity">—</div>
+            </div>
+            <div style="padding:10px 14px">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Buying power</div>
+              <div class="mono" style="font-size:15px;color:var(--text)" id="port-bp">—</div>
+            </div>
+          </div>
+          <!-- Row 2: components — Cash / Invested / Shorted. Small + muted.
+               v3.4.46 — labels renamed from "Long MV" / "Short liab" to the
+               more-intuitive "Invested" / "Shorted" (same underlying
+               mark-to-market values from portfolio.long_mv / .short_liab). -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Cash</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-cash">—</div>
+            </div>
+            <div style="padding:8px 14px;border-right:1px solid var(--border)">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Invested</div>
+              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-longmv">—</div>
+            </div>
+            <div style="padding:8px 14px">
+              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Shorted</div>
+              <div class="mono" style="font-size:12px;color:var(--down)" id="port-shortliab">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
     <!-- v5.17.0 — KPI row trimmed from 6 to 4 cards. GATE / REGIME removed:
          GATE was redundant (Session card already conveys CLOSED / RTH OPEN);
          REGIME (RSI direction) was decommissioned in v5.15 when the algo
@@ -207,69 +279,6 @@
       </div>
     </section>
 
-    <!-- v5.18.0 — Open positions runs full-width. Proximity card was
-         retired and folded into the Permit Matrix as a Price · Distance
-         column (price + bar shows how close each Titan is to its OR
-         boundary, replacing the standalone proximity strip).
-         v5.19.4 — promoted ABOVE the Weather Check banner so the operator's
-         first glance answers "what am I holding right now?" before the
-         conditional "can I take a new entry?" verdict. -->
-    <section class="grid">
-      <div class="card">
-        <div class="card-head"><span class="card-title" title="Currently open positions — one row per ticker with side, fill, mark, stop, and unrealized P&L">Open positions<span class="count" id="pos-count" title="Number of open positions">· 0</span></span></div>
-        <div class="card-body flush" id="pos-body">
-          <div class="empty">No open positions.</div>
-        </div>
-        <!-- v4.10.0 — collapsed empty-state strip. JS shows this when
-             positions.length === 0 in place of the body + 2-row strip. -->
-        <div id="port-strip-empty" class="port-strip-empty" style="display:none">
-          <div class="pse-cell">
-            <div class="pse-label">Equity</div>
-            <div class="pse-value" id="pse-equity">—</div>
-          </div>
-          <div class="pse-cell">
-            <div class="pse-label">Buying power</div>
-            <div class="pse-value" id="pse-bp">—</div>
-          </div>
-          <div class="pse-cell">
-            <div class="pse-label">Cash</div>
-            <div class="pse-value" id="pse-cash">—</div>
-          </div>
-        </div>
-        <div id="port-strip" style="display:none">
-          <!-- Row 1: hero — Equity + Buying Power. Net numbers first. -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
-            <div style="padding:10px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Equity</div>
-              <div class="mono" style="font-size:15px;color:var(--text)" id="port-equity">—</div>
-            </div>
-            <div style="padding:10px 14px">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Buying power</div>
-              <div class="mono" style="font-size:15px;color:var(--text)" id="port-bp">—</div>
-            </div>
-          </div>
-          <!-- Row 2: components — Cash / Invested / Shorted. Small + muted.
-               v3.4.46 — labels renamed from "Long MV" / "Short liab" to the
-               more-intuitive "Invested" / "Shorted" (same underlying
-               mark-to-market values from portfolio.long_mv / .short_liab). -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
-            <div style="padding:8px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Cash</div>
-              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-cash">—</div>
-            </div>
-            <div style="padding:8px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Invested</div>
-              <div class="mono" style="font-size:12px;color:var(--text-muted)" id="port-longmv">—</div>
-            </div>
-            <div style="padding:8px 14px">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Shorted</div>
-              <div class="mono" style="font-size:12px;color:var(--down)" id="port-shortliab">—</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-    </section>
 
     <!-- v5.17.0 — Weather Check banner (Phase 1 Sovereign verdict).
          Reads tiger_sovereign.phase1.{long,short}.{permit,...} from
