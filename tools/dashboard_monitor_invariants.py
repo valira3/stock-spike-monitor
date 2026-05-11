@@ -152,6 +152,14 @@ def inv_equity_matches_baseline(ctx):
 def inv_val_gene_trades_match_main(ctx):
     """When ORB_PORTFOLIO_FIRE=0 (mirror mode), Val and Gene should
     have the same broker trade count as Main today.
+
+    v7.84.0 -- on failure, fetches recent Railway logs and appends a
+    `[V79-MIRROR-*]` slice + `[Val] [ALPACA-*]` slice to the issue
+    detail. Lets the operator (or a future me) see exactly where the
+    mirror drops without needing to paste Railway logs manually.
+    Requires RAILWAY_API_TOKEN + RAILWAY_SERVICE_ID secrets; if those
+    are missing the helper returns empty and the issue body just shows
+    the structural diagnosis as before.
     """
     s = _state(ctx)
     val = _exec(ctx, "val")
@@ -166,16 +174,57 @@ def inv_val_gene_trades_match_main(ctx):
         mismatches.append(f"val={val_count} vs main={main_count}")
     if gene.get("enabled") is not False and gene_count != main_count:
         mismatches.append(f"gene={gene_count} vs main={main_count}")
-    if mismatches:
-        return _fail(
-            "val_gene_trades_match_main",
-            f"trade-count mismatch: {', '.join(mismatches)}",
-            "In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the "
-            "same signals as Main via the legacy bus, so their broker trade "
-            "counts should match. A mismatch may indicate Alpaca-side "
-            "rejection or a mirror-bus drift.",
-        )
-    return _ok("val_gene_trades_match_main")
+    if not mismatches:
+        return _ok("val_gene_trades_match_main")
+
+    # v7.84.0 -- enrich failure with Railway log slice.
+    base_detail = (
+        "In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the "
+        "same signals as Main via the legacy bus, so their broker trade "
+        "counts should match. A mismatch may indicate Alpaca-side "
+        "rejection or a mirror-bus drift."
+    )
+    try:
+        from tools.railway_log_tail import grep_logs, format_log_slice
+        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]", limit=1000, max_matches=40)
+        alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]",
+                               limit=1000, max_matches=20)
+        alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]",
+                                limit=1000, max_matches=20)
+        log_sections: list[str] = []
+        if mirror_slice:
+            log_sections.append(
+                "### Railway [V79-MIRROR-*] slice (signal-bus receipts)\n\n"
+                "```\n" + format_log_slice(mirror_slice, max_lines=40) + "\n```"
+            )
+        if alpaca_val:
+            log_sections.append(
+                "### Railway [Val] [ALPACA-*] slice (broker submissions)\n\n"
+                "```\n" + format_log_slice(alpaca_val, max_lines=20) + "\n```"
+            )
+        if alpaca_gene:
+            log_sections.append(
+                "### Railway [Gene] [ALPACA-*] slice (broker submissions)\n\n"
+                "```\n" + format_log_slice(alpaca_gene, max_lines=20) + "\n```"
+            )
+        if log_sections:
+            detail = base_detail + "\n\n" + "\n\n".join(log_sections)
+        else:
+            # No log context (secrets unset OR no mirror logs in window).
+            detail = base_detail + (
+                "\n\n_No Railway log slice attached -- "
+                "RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID may be unset, "
+                "OR no [V79-MIRROR-*] log lines in the recent window. "
+                "Set the secrets at Settings -> Secrets -> Actions to "
+                "enable automatic log context._"
+            )
+    except Exception as exc:
+        detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"
+    return _fail(
+        "val_gene_trades_match_main",
+        f"trade-count mismatch: {', '.join(mismatches)}",
+        detail,
+    )
 
 
 def inv_top_ticker_within_cap(ctx):

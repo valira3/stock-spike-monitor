@@ -4,6 +4,114 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.84.0 (2026-05-11) -- Monitor auto-pulls Railway log slice into Val mirror failure detail
+
+Operator: "I thought you should be able to pull logs from railway
+via gha directly."
+
+Correct -- v7.79.0 added `tools/railway_log_tail.py` with
+`fetch_recent_logs()` for that exact purpose. But until now only
+`inv_railway_logs_clean` consumed those logs (for failure-signature
+scanning). Other invariants surfaced violations but left the
+log-context-gathering to the operator.
+
+v7.84.0 closes that gap for the most-asked-about invariant
+(`val_gene_trades_match_main`). When it fails, the monitor now
+fetches recent Railway logs, greps for `[V79-MIRROR-*]` (signal-
+bus receipts) + `[Val]/[Gene] [ALPACA-*]` (broker submissions),
+and embeds those slices directly in the GitHub-issue body.
+
+### New helpers in `tools/railway_log_tail.py`
+
+- `grep_logs(pattern, limit=500, max_matches=20)` -- fetch
+  recent logs and return rows whose `message` matches `pattern`
+  (Python `re.search` semantics). Empty list when Railway is
+  unavailable.
+- `format_log_slice(rows, max_lines=20)` -- one-line-per-row
+  formatter for embedding into Markdown issue bodies. Truncates
+  long messages at 280 chars + ellipsis; adds a "... +N more
+  matches" tail when capped.
+
+### Enriched `inv_val_gene_trades_match_main`
+
+On failure, the detail now reads:
+
+```
+In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same
+signals as Main via the legacy bus, so their broker trade counts
+should match. A mismatch may indicate Alpaca-side rejection or a
+mirror-bus drift.
+
+### Railway [V79-MIRROR-*] slice (signal-bus receipts)
+
+```
+2026-05-11T17:47:48Z [V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA price=435.26 main_shares=181
+2026-05-11T17:47:49Z [V79-MIRROR-SKIP] Val ENTRY_LONG TSLA qty=0 (main_shares=181, local_fallback_shares_for=0)
+```
+
+### Railway [Val] [ALPACA-*] slice (broker submissions)
+
+(empty)
+
+### Railway [Gene] [ALPACA-*] slice (broker submissions)
+
+(empty)
+```
+
+So at a glance the issue body shows: signal received → DISPATCH or
+SKIP → broker submitted (or not). Operator (or future me) reads
+the issue and immediately knows where the mirror dropped.
+
+When Railway secrets are missing the detail includes a one-line
+explainer pointing at the Settings -> Secrets -> Actions page.
+
+### Future expansion
+
+The same pattern can be applied to other invariants:
+  - `inv_no_phantom_positions` → grep for `[V79-ORB-ENTRY|EXIT|ROLLBACK]`
+  - `inv_or_locked_after_or_end` → grep for `[V79-ORB-OR-LOCK|BACKFILL]`
+  - `inv_equity_self_consistent` → grep for `[V79-ORB-EQUITY]`
+
+This PR scopes only `val_gene_trades_match_main` since that's the
+one actively blocking the Val mirror investigation. Others can
+adopt the same `grep_logs` + `format_log_slice` pattern as needed.
+
+### Tests
+
+- `tests/strategy/test_railway_log_tail.py` (+8): `grep_logs`
+  empty-on-no-logs / empty-on-bad-regex / pattern filtering /
+  max-matches cap; `format_log_slice` empty / one-line-per-row /
+  message truncation / max-lines cap with tail note.
+- `tests/strategy/test_dashboard_monitor_invariants.py` (+3):
+  passes when counts match (no log fetch); fails-with-log-slice
+  when stub logs available; fails-with-explainer when stub
+  returns empty.
+
+Full suite: **482 passed** (up from 471), 8 skipped.
+
+### Files
+
+- `tools/railway_log_tail.py`: `grep_logs` + `format_log_slice`
+- `tools/dashboard_monitor_invariants.py`:
+  `inv_val_gene_trades_match_main` enriched on failure
+- `tests/strategy/test_railway_log_tail.py`: +8 tests
+- `tests/strategy/test_dashboard_monitor_invariants.py`: +3 tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio.
+
+### Operator action
+
+If you've already set `RAILWAY_API_TOKEN` + `RAILWAY_SERVICE_ID`
+GHA secrets per v7.79.0: nothing to do. The next monitor run on a
+real `val_gene_trades_match_main` violation will auto-include the
+log slice and we'll diagnose the silent-return location
+immediately.
+
+If those secrets are NOT set: the next `val_gene_trades_match_main`
+issue body will include a one-line pointer telling you which
+secrets to set.
+
+---
+
 ## v7.83.0 (2026-05-11) -- "Fix all" -- monitor noise reduction + Val mirror forensics
 
 Operator request: "fix all" -- the dashboard monitor was firing
