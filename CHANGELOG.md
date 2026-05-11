@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.43.0 (2026-05-11) -- Broker P&L row + delta chip in Day P&L KPI
+
+PR36 of the dashboard-redesign loop. The backend has carried
+`portfolio.broker_day_pnl` since v6.15.0 (closed P&L from
+`trade_log.jsonl` + open P&L from `open_pnl.jsonl`) but it never
+surfaced on the dashboard. Operators couldn't reconcile paper vs
+broker in real time without opening Alpaca.
+
+### What renders
+
+In the Day P&L KPI tile's sub-line, below the existing
+`N trades · +X.XX%` text, a new row:
+
+`broker +$1,202  -$45`
+
+with:
+  - **Broker value** color-coded by sign (green up / red down)
+  - **Delta chip** showing `broker_pnl - paper_pnl` when the
+    absolute difference is > $1
+  - **Mild chip** (gray) when |delta| ≤ $50
+  - **Warn chip** (amber) when |delta| > $50 -- catches large
+    Alpaca slippage, missed fills, or trade_log gaps
+
+### Use cases
+
+- **+$45 delta**: slippage on intraday fills (normal)
+- **−$320 paper vs +$1,202 broker**: an Alpaca fill not yet
+  reflected in `tg.positions` (engine state drift)
+- **−$1,567 warn chip**: broker disconnected mid-session;
+  `broker_open_pnl` stale (operator must investigate)
+
+### Layout
+
+The broker info gets its own line below `5 trades · +1.21%` to
+avoid clipping against the KPI tile's fixed height. Mobile
+verified at 390 px.
+
+### Backend
+
+No new field needed -- `broker_day_pnl` was already in the
+`/api/state.portfolio` block. Frontend now reads it.
+
+### Tests
+
+No backend change → 379 strategy tests still pass. Playwright
+smoke renders: mild divergence (-$45), warn divergence (-$1,567),
+mobile 390 px.
+
+Screenshots in `docs/dashboard_redesign_v2/pr36_screenshots/`.
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.42.0 → 7.43.0
+- `dashboard_static/app.js` -- `renderKpis` reads
+  `p.broker_day_pnl` + builds `kpi-broker-line` + delta chip HTML
+- `dashboard_static/app.css` -- `.kpi-broker`, `.kpi-broker-line`,
+  `.kpi-delta-chip.{kpi-delta-mild, kpi-delta-warn}` + mobile media
+- `docs/dashboard_redesign_v2/pr36_screenshots/` -- 3 reference images
+- `CHANGELOG.md`
+
+---
+
 ## v7.42.0 (2026-05-11) -- Position progress bars (stop / 1R / target axis)
 
 PR35 of the dashboard-redesign loop. Each open position now renders a
