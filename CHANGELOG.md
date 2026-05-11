@@ -4,6 +4,93 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.80.0 (2026-05-11) -- Dashboard monitor runs on push to main (workaround for stalled cron)
+
+Operator request: "automatically run the dashboard monitor or
+figure out why it's not running".
+
+### Diagnosis
+
+The scheduled cron (`7-57/10 8-20 * * 1-5`) has never produced a
+visible run in the Actions tab today, despite:
+  - Workflow file correctly on `main`
+  - Cron expression valid (verified by `crontab` parser)
+  - Plenty of recent repo activity (10 PRs merged today alone)
+  - Manual `workflow_dispatch` runs succeed every time
+
+This matches the well-documented behavior of GitHub Actions
+silently dropping scheduled events under load or after some
+opaque schedule-deactivation trigger. The standard operator-side
+recovery (Actions tab -> ... menu -> Disable workflow ->
+Enable workflow) hasn't worked for this repo.
+
+The Claude Code session itself has NO direct access to GitHub's
+Actions API (no PAT exposed, no `gh` CLI installed), so we
+cannot trigger `workflow_dispatch` programmatically from here.
+
+### Fix: add `push` trigger on main
+
+`.github/workflows/dashboard-monitor.yml` now lists three triggers:
+
+```yaml
+on:
+  schedule:
+    - cron: "7-57/10 8-20 * * 1-5"
+  push:
+    branches: [main]
+    paths:
+      - "tools/dashboard_monitor*.py"
+      - "tools/railway_log_tail.py"
+      - ".github/workflows/dashboard-monitor.yml"
+      - "bot_version.py"
+      - "trade_genius.py"
+      - "dashboard_server.py"
+      - "engine/**.py"
+      - "orb/**.py"
+      - "broker/**.py"
+      - "executors/**.py"
+  workflow_dispatch:
+```
+
+Effect: every PR merge that touches the bot's runtime code
+automatically fires the monitor against the post-deploy state.
+With our current ~10 PRs/day velocity that gives effectively-realtime
+coverage on top of whatever the cron does (even if it's nothing).
+
+Doc-only commits (CHANGELOG.md, README.md, ARCHITECTURE.md,
+docs/*) don't trigger -- those changes don't affect runtime state
+so the monitor would just re-validate the same thing.
+
+### 2-min Railway rollout wait
+
+`push`-triggered runs now `sleep 120` between checkout and
+running the monitor, so Railway has time to deploy the new
+container before we hit `/api/state`. Without this, we'd often
+catch the OLD container and report stale state.
+`workflow_dispatch` and `schedule` events skip the wait (no
+rollout to wait for).
+
+### Files
+
+- `.github/workflows/dashboard-monitor.yml`: `push` trigger +
+  rollout wait
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+### Operator-side recovery for the cron itself
+
+If you want the scheduled cron back too (not strictly necessary
+once push-trigger is live), the standard GHA bounce:
+
+1. **Actions** tab -> **dashboard-monitor** (left sidebar)
+2. Top-right `...` menu on the workflow's index page
+3. **Disable workflow** -> wait 5s -> **Enable workflow**
+
+This re-registers the schedule with GHA's scheduler. Many users
+report it takes 2-3 bounces before a stalled cron actually
+revives. The `push` trigger ensures coverage during the gap.
+
+---
+
 ## v7.79.0 (2026-05-11) -- Monitor: Railway log-tail invariant for upstream failure signals
 
 Operator request: "is there a way to monitor Railway logs directly?
