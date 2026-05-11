@@ -1907,6 +1907,22 @@ def snapshot() -> dict[str, Any]:
         except Exception:
             pass
 
+        # v7.52.0 -- enrich each or_window with the current price so the
+        # frontend can compute proximity (distance from price to
+        # or_high / or_low) without an extra fetch path. Falls back to
+        # None silently when the price lookup fails (single-ticker
+        # failure must not break the rest of the matrix).
+        try:
+            _ow = v10_block.get("or_windows") or {}
+            for _tkr, _row in _ow.items():
+                try:
+                    _px = _price_for(_tkr)
+                    _row["current_price"] = float(_px) if _px is not None else None
+                except Exception:
+                    _row["current_price"] = None
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "version": version,

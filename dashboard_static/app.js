@@ -3932,6 +3932,10 @@
       if (typeof window.__tgRenderV10ActivityFeed === "function")
         window.__tgRenderV10ActivityFeed(s);
     } catch (e) { /* never break Main */ }
+    try {
+      if (typeof window.__tgRenderV10ProximityMatrix === "function")
+        window.__tgRenderV10ProximityMatrix(s);
+    } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
@@ -4739,7 +4743,13 @@
   // re-render the per-portfolio v10 strip with broker trades_today
   // -- but it doesn't have access to the exec payload directly. We
   // stash the latest one here so the refresh can read it.
+  // v7.52.0 -- also exposed on window so the Main per-pid strip in
+  // renderV10DayStatus can pull Alpaca-reported equity for val/gene
+  // (the v10 RiskBook's equity is stale in mirror mode).
   var _execLastData = {};
+  if (typeof window !== "undefined") {
+    window.__tgExecLastData = _execLastData;
+  }
 
   async function pollExecutor(name) {
     const panel = ensureExecSkeleton(name);
@@ -5625,6 +5635,12 @@
       get: function () { return renderV10ActivityFeed; },
       configurable: true,
     });
+    // v7.52.0 -- expose proximity-matrix renderer for the same
+    // IIFE-1 / IIFE-2 routing pattern as the other v10 renderers.
+    Object.defineProperty(window, "__tgRenderV10ProximityMatrix", {
+      get: function () { return renderV10ProximityMatrix; },
+      configurable: true,
+    });
   }
 
   function renderKillSwitchBanner(s, target) {
@@ -5985,6 +6001,28 @@
       banner.appendChild(perPidStrip);
     }
     perPidStrip.innerHTML = "";
+    // v7.52.0 -- per-pid equity should reflect actual portfolio size
+    // (real-time NAV), not the v10 RiskBook's `equity` which may lag
+    // if refresh_equity_from_books() hasn't run since session boot
+    // or is failing silently in production. Priority order:
+    //   1. Main:    s.portfolio.equity (the headline KPI value)
+    //   2. Val:     /api/executor/val.account.equity (Alpaca-reported)
+    //      Gene:    /api/executor/gene.account.equity (Alpaca-reported)
+    //   3. Fallback: v10 RiskBook equity (current behaviour)
+    function _liveEquityFor(pid) {
+      if (pid === "main") {
+        var pe = ((s.portfolio || {}).equity);
+        if (typeof pe === "number" && pe > 0) return pe;
+      } else if (typeof window !== "undefined") {
+        // _execLastData lives in the executor-poll IIFE; cross-IIFE
+        // read via window for the same reason as the other renderers.
+        var cache = window.__tgExecLastData;
+        var d = cache && cache[pid];
+        var eq = d && d.account && d.account.equity;
+        if (typeof eq === "number" && eq > 0) return eq;
+      }
+      return null;
+    }
     pidsAll.forEach(function (pid) {
       var b = rb[pid] || {};
       var row = document.createElement("span");
@@ -6005,8 +6043,10 @@
         Math.min(100, pidKillPct).toFixed(0) + '%"></span>' +
         '</span>';
       row.style.cssText = "padding:3px 8px;background:#0a0d12;border:1px solid #1f2937;border-radius:6px;color:#9ca3af";
+      var liveEq = _liveEquityFor(pid);
+      var displayEq = (liveEq != null) ? liveEq : (b.equity || 0);
       row.innerHTML = "<b style=\"color:" + color + "\">" + pid + "</b>"
-        + "  $" + Math.round(b.equity || 0).toLocaleString()
+        + "  $" + Math.round(displayEq).toLocaleString()
         + "  " + (perPidTrades[pid] || 0) + "/" + maxTrades + " trades"
         + "  " + (openCount > 0 ? openCount + " open" : "no open")
         + "  " + ut.toFixed(0) + "% util"
@@ -6198,6 +6238,155 @@
     cards.push('</div>');
 
     body.innerHTML = rows.join("") + cards.join("");
+  }
+
+  // v7.52.0 -- v10 Proximity Matrix renderer. For each ticker with
+  // a locked OR window, shows current price + OR_low + OR_high +
+  // the closer of (price -> OR_high) / (OR_low -> price) as a
+  // signed distance %. FSM phase per pid (main/val/gene) as mini
+  // chips. Sorted by absolute distance (closest-to-break first).
+  function renderV10ProximityMatrix(s) {
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    var v10 = s && s.v10;
+    var section = document.getElementById("v10-proximity-section");
+    if (!section) return;
+    if (!v10 || v10.available === false || !v10.bootstrapped) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    var body = document.getElementById("v10-prox-body");
+    var countEl = document.getElementById("v10-prox-count");
+    var summaryEl = document.getElementById("v10-prox-summary");
+    var orWindows = v10.or_windows || {};
+    var dayStates = v10.day_states || [];
+
+    // Index FSM phases by ticker -> { pid -> phase }
+    var phaseByTk = {};
+    for (var i = 0; i < dayStates.length; i++) {
+      var d = dayStates[i];
+      if (!d.ticker) continue;
+      if (!phaseByTk[d.ticker]) phaseByTk[d.ticker] = {};
+      phaseByTk[d.ticker][d.portfolio_id || "?"] = d.phase || "?";
+    }
+
+    // Build rows for tickers whose OR window has locked.
+    var rows = [];
+    Object.keys(orWindows).forEach(function (tkr) {
+      var w = orWindows[tkr] || {};
+      if (!w.locked) return;
+      var px = (typeof w.current_price === "number") ? w.current_price : null;
+      var orh = (typeof w.or_high === "number") ? w.or_high : null;
+      var orl = (typeof w.or_low === "number") ? w.or_low : null;
+      if (orh == null || orl == null) return;
+
+      // distance to break (signed %): positive = above OR_high (long
+      // already broke), negative = below OR_low (short already broke),
+      // zero-ish = inside the OR window.
+      var distToHigh = (px != null && orh > 0) ? ((px - orh) / orh * 100) : null;
+      var distToLow  = (px != null && orl > 0) ? ((px - orl) / orl * 100) : null;
+      var closer = null;
+      var closerLabel = "";
+      if (distToHigh != null && distToLow != null) {
+        if (Math.abs(distToHigh) <= Math.abs(distToLow)) {
+          closer = distToHigh; closerLabel = "OR-high";
+        } else {
+          closer = distToLow;  closerLabel = "OR-low";
+        }
+      } else if (distToHigh != null) { closer = distToHigh; closerLabel = "OR-high"; }
+      else if (distToLow  != null) { closer = distToLow;  closerLabel = "OR-low"; }
+
+      rows.push({
+        tkr: tkr, px: px, orh: orh, orl: orl,
+        or_width_pct: w.or_width_pct,
+        closer: closer, closer_label: closerLabel,
+        phases: phaseByTk[tkr] || {},
+      });
+    });
+
+    // Sort: smallest absolute distance first (closest to break).
+    rows.sort(function (a, b) {
+      var aa = (a.closer == null) ? 1e9 : Math.abs(a.closer);
+      var bb = (b.closer == null) ? 1e9 : Math.abs(b.closer);
+      return aa - bb;
+    });
+
+    if (countEl) countEl.textContent = "· " + rows.length;
+    if (summaryEl) {
+      if (rows.length === 0) {
+        summaryEl.textContent = "no locked OR windows";
+      } else {
+        var top = rows[0];
+        var d = (top.closer == null) ? "" :
+          ((top.closer >= 0 ? "+" : "") + top.closer.toFixed(2) + "%");
+        summaryEl.textContent = top.tkr + " " + d + " from " + top.closer_label;
+      }
+    }
+    if (!body) return;
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="empty">No tickers have locked their OR window yet today.</div>';
+      return;
+    }
+
+    function _phaseChip(pid, phase) {
+      var cls = "v10-prox-phase v10-prox-phase-" + (phase || "x").toLowerCase();
+      return '<span class="' + cls + '" title="' + esc(pid) + ': ' + esc(phase) + '">'
+           + esc(pid) + '</span>';
+    }
+
+    function _distCell(closer, label) {
+      if (closer == null) return '<span class="v10-prox-dist">—</span>';
+      var sign = closer >= 0 ? "+" : "";
+      var cls = "v10-prox-dist";
+      var absD = Math.abs(closer);
+      if (absD < 0.3) cls += " v10-prox-near";
+      else if (absD < 1.0) cls += " v10-prox-mid";
+      else cls += " v10-prox-far";
+      // Direction arrow: above OR_high (+) means already broke up;
+      // below OR_low (-) means already broke down. Inside the window
+      // shows the relative position.
+      var arrow = "";
+      if (label === "OR-high") arrow = (closer >= 0) ? "↑" : "↗";
+      else if (label === "OR-low") arrow = (closer < 0) ? "↓" : "↘";
+      return '<span class="' + cls + '">' + arrow + " " + sign + absD.toFixed(2) + "% "
+           + '<span class="v10-prox-dist-label">' + esc(label) + '</span></span>';
+    }
+
+    var html = '<div class="v10-prox-table-wrap"><table class="v10-prox-table">';
+    html += '<thead><tr>'
+         +    '<th>Ticker</th>'
+         +    '<th title="Last traded price">Last</th>'
+         +    '<th title="Opening-range LOW">OR-low</th>'
+         +    '<th title="Opening-range HIGH">OR-high</th>'
+         +    '<th title="OR window width (high - low) as % of mid">Width</th>'
+         +    '<th title="Distance to the closer break level (signed %)">Distance</th>'
+         +    '<th title="Per-portfolio FSM phase">Phase</th>'
+         +    '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var widthPct = (typeof r.or_width_pct === "number")
+                      ? (r.or_width_pct * 100).toFixed(2) + "%" : "—";
+      var pids = ["main", "val", "gene"];
+      var chips = pids
+        .filter(function (p) { return r.phases[p]; })
+        .map(function (p) { return _phaseChip(p, r.phases[p]); })
+        .join("");
+      html += '<tr>'
+           +   '<td class="v10-prox-tkr">' + esc(r.tkr) + '</td>'
+           +   '<td class="mono">' + (r.px != null ? r.px.toFixed(2) : "—") + '</td>'
+           +   '<td class="mono">' + r.orl.toFixed(2) + '</td>'
+           +   '<td class="mono">' + r.orh.toFixed(2) + '</td>'
+           +   '<td class="mono">' + widthPct + '</td>'
+           +   '<td>' + _distCell(r.closer, r.closer_label) + '</td>'
+           +   '<td>' + chips + '</td>'
+           + '</tr>';
+    });
+    html += '</tbody></table></div>';
+    body.innerHTML = html;
   }
 
   // v7.45.0 -- recent activity feed renderer. Reads s.v10.activity

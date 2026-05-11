@@ -4,6 +4,83 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.52.0 (2026-05-11) -- v10 Proximity Matrix + per-pid equity reads live NAV
+
+PR45 of the dashboard-redesign loop. Two fixes:
+
+### A. v10 Proximity Matrix card (rebuilds the retired proximity column)
+
+The legacy Permit Matrix had a per-ticker proximity column showing
+distance to break + a per-stock expandable chart. Both were hidden
+in v7.27.0 under `body.v10-live`. The user asked for them back, in
+a version that correlates with the running v10 algorithm.
+
+This PR ships the proximity half (per-stock chart follows in PR46).
+
+Backend (`dashboard_server.py`):
+  - Enriches each `v10.or_windows[ticker]` entry with
+    `current_price` from `_price_for(t)`. Single-ticker failures are
+    swallowed so one missing price doesn't break the matrix.
+
+Frontend (`dashboard_static/{index.html, app.js, app.css}`):
+  - New section `#v10-proximity-section` after the Recent Activity
+    feed. Card title "v10 Proximity" + count of tickers with a
+    locked OR window + summary chip showing the closest-to-break.
+  - `renderV10ProximityMatrix(s)` walks `v10.or_windows`, filters
+    to `locked: true`, computes signed distance % from
+    `current_price` to OR_high (long break) and OR_low (short
+    break), keeps the closer of the two per row, and renders a
+    sortable table: ticker | last | OR-low | OR-high | width | distance | per-pid phase chips.
+  - Sort order: closest-to-break first (smallest |distance|).
+  - Distance cell coloring: amber when |d| < 0.3%, blue when < 1%,
+    gray otherwise. Direction arrows distinguish "already broke"
+    (price outside the OR window) from "approaching" (still inside).
+  - Per-pid FSM phase chips per row (`v10-prox-phase-*` CSS rules
+    for armed / in_pos / or_locked / warmup / closed / blocked_*).
+  - Cross-IIFE routing pattern: `window.__tgRenderV10ProximityMatrix`
+    getter + Main `applyState` calls via `typeof === "function"`
+    guard (same as v7.48.0 fix).
+  - Mobile-friendly: horizontal scroll on narrow viewports, hides
+    the "OR-high / OR-low" label suffix on the distance cell.
+
+### B. Per-pid strip equity reads the actual portfolio NAV
+
+User reported: "gene $100,000 0/5 trades..., main $100,000 0/5
+trades..." -- the strip was showing the v10 RiskBook's `equity`
+field, which is initialized to 100k in the constructor and only
+updated when `refresh_equity_from_books()` runs. If that path is
+lagging or silent in production, the operator sees a fixed 100k
+that doesn't reflect actual portfolio size.
+
+Frontend (`dashboard_static/app.js`):
+  - `renderV10DayStatus` per-pid strip now reads equity from
+    (in order):
+      1. Main: `s.portfolio.equity` (the headline KPI)
+      2. Val/Gene: `window.__tgExecLastData[pid].account.equity`
+         (Alpaca-reported, cached by `pollExecutor`)
+      3. Fallback: v10 RiskBook `equity` (current behaviour)
+  - `_execLastData` now also exposed as `window.__tgExecLastData`
+    so the cross-IIFE renderer can read it.
+
+### Files
+
+  - `dashboard_server.py` -- `current_price` enrichment in or_windows
+  - `dashboard_static/index.html` -- new `#v10-proximity-section`
+  - `dashboard_static/app.js` -- renderer + cross-IIFE plumbing +
+    per-pid equity fallback
+  - `dashboard_static/app.css` -- `.v10-prox-*` table + chip styles
+  - `bot_version.py` / `trade_genius.py` -- 7.51.0 -> 7.52.0
+  - `docs/dashboard_redesign_v2/pr45_screenshots/` -- desktop + mobile
+
+### Risk
+
+Backend change is additive (one new field). Frontend renderer is
+wrapped in the standard try/catch. Per-pid equity fallback only
+kicks in when a more-authoritative source is present; if none, the
+current RiskBook value is still displayed. No engine logic change.
+
+---
+
 ## v7.51.0 (2026-05-11) -- Hide broker chip on Main KPI (Main is paper-only)
 
 The "broker $X.XX" sub-line on Main's Day P&L KPI was shipped in

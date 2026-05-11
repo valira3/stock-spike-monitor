@@ -262,6 +262,23 @@
       </div>
     </section>
 
+    <!-- v7.52.0 -- v10 Proximity Matrix. Replaces the legacy
+         Permit-Matrix proximity column with a v10-aware view:
+         per-ticker distance from current price to OR-high (long
+         break) and OR-low (short break), with FSM-phase chips per
+         pid. Hidden when v10 isn't bootstrapped (legacy fallback). -->
+    <section class="grid" id="v10-proximity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="Distance from current price to the v10 opening-range break levels (OR_high for long admits, OR_low for short admits). Locked OR windows only.">v10 Proximity<span class="count" id="v10-prox-count" title="Tickers with a locked OR window">· —</span></span>
+          <span class="chip" id="v10-prox-summary" title="Closest-to-break ticker right now">—</span>
+        </div>
+        <div class="card-body flush" id="v10-prox-body">
+          <div class="empty">Waiting for v10 OR lock...</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v7.45.0 -- Recent activity feed. Sources from
          orb.live_runtime._recent_activity (ring buffer of last 50
          events); surfaced via /api/state.v10.activity. Each event is
