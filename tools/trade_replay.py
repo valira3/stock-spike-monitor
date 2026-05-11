@@ -131,14 +131,31 @@ def _summary_stats(rows: list[dict]) -> dict:
     }
 
 
-def render_markdown(rows: list[dict], since: str, log_slice: str | None = None) -> str:
-    """Build the full markdown report. Pure: no I/O."""
+def render_markdown(
+    rows: list[dict],
+    since: str,
+    log_slice: str | None = None,
+    generated_at: str | None = None,
+) -> str:
+    """Build the full markdown report. Pure: no I/O.
+
+    v7.96.0 -- generated_at is embedded in the header so re-runs
+    produce a unique markdown body even when the underlying trade
+    data + log slice are identical. Without it the workflow's
+    no-diff-skip logic looks (to the operator) like the run didn't
+    happen at all.
+    """
+    if generated_at is None:
+        generated_at = datetime.now(timezone.utc).astimezone(ET).strftime(
+            "%Y-%m-%d %H:%M:%S ET"
+        )
     stats = _summary_stats(rows)
     lines: list[str] = []
     lines.append(f"# Trade replay — {since}")
     lines.append("")
-    lines.append(f"_Pulled {len(rows)} row(s) from `/api/trade_log` "
-                 f"(closed-trade rows only counted in summary)._")
+    lines.append(f"_Generated at {generated_at}. Pulled {len(rows)} row(s) "
+                 f"from `/api/trade_log` (closed-trade rows only counted "
+                 f"in summary)._")
     lines.append("")
     lines.append("## Summary")
     lines.append("")

@@ -225,3 +225,21 @@ def test_render_markdown_log_slice_embedded_when_provided():
 def test_render_markdown_log_slice_absent_when_none():
     md = render_markdown([], since="2026-05-11", log_slice=None)
     assert "Railway log slice" not in md
+
+
+# v7.96.0 -- timestamp in header ensures re-runs produce unique
+# markdown bodies even when the underlying trade data hasn't
+# changed, so the trade-replay-archive branch's no-diff-skip
+# logic doesn't make it look like the workflow never ran.
+def test_render_markdown_explicit_timestamp_appears_in_header():
+    md = render_markdown([], since="2026-05-11",
+                        generated_at="2026-05-11 18:42:00 ET")
+    assert "Generated at 2026-05-11 18:42:00 ET" in md
+
+
+def test_render_markdown_default_timestamp_is_not_empty():
+    md = render_markdown([], since="2026-05-11")
+    # Default branch produces a real ET timestamp string; just check
+    # the prefix is present and not None-stringified.
+    assert "Generated at" in md
+    assert "Generated at None" not in md
