@@ -4,6 +4,53 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.51.0 (2026-05-11) -- Hide broker chip on Main KPI (Main is paper-only)
+
+The "broker $X.XX" sub-line on Main's Day P&L KPI was shipped in
+v7.43.0 to surface broker/paper divergence for reconciliation. The
+architectural premise was wrong:
+
+  - Main is paper-only -- the dashboard tracks
+    `m.paper_trades` / `m.short_trade_history` in memory. Main does
+    NOT route through Alpaca.
+  - Alpaca holds positions ONLY for Val + Gene (the per-executor
+    Alpaca paper accounts; eventually live).
+
+So the broker chip on Main was reading:
+
+  1. `m.trade_log` -- written by `close_breakout()` on every paper
+     close, which means broker_closed_today === realized for Main.
+     Duplicate of what's already in the headline Day P&L.
+  2. `broker/open_pnl.jsonl` -- Alpaca's live unrealized via
+     `get_all_positions()`. Alpaca's positions belong to Val + Gene,
+     not Main. That number was Val+Gene's unrealized leaking into
+     Main's KPI tile.
+
+Both legs were wrong for Main. Removed the chip from the Main
+renderer (`renderKPIs` in IIFE 1). Val/Gene tabs never had it -- their
+KPI tile is already broker-shape via `/api/executor/<name>`.
+
+The backend still computes `portfolio.broker_day_pnl` (left in place
+for any future reconciliation work; cheap to keep, and any consumer
+that wants Alpaca reconciliation can still read it).
+
+### Files
+
+  - `dashboard_static/app.js` -- renderKPIs forces `brokerPnl = null`
+  - `bot_version.py` / `trade_genius.py` -- 7.50.0 -> 7.51.0
+  - `docs/dashboard_redesign_v2/pr44_screenshots/` -- Main KPI sub-line
+    now reads "0 trades · +0.15%" (no broker chip)
+
+### Risk
+
+Frontend-only display change. Backend keeps emitting the field.
+The `kpi-broker-line` CSS is unused but kept for now in case a
+future PR re-introduces the chip on Val/Gene (where it'd actually
+mean paper-vs-Alpaca reconciliation if Val/Gene ever maintain
+their own paper book).
+
+---
+
 ## v7.50.0 (2026-05-11) -- Outside-RTH banner clarity + Val/Gene trade-count parity
 
 Two operator-confusion fixes surfaced during the post-v7.49 review.
