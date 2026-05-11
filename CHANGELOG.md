@@ -4,6 +4,77 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.82.0 (2026-05-11) -- Dashboard times in end-user (browser) timezone
+
+Operator request: "make sure that the dashboard shows all times in
+the end user timezone (not utc)".
+
+Three operator-facing time displays in `dashboard_static/app.js`
+were rendering raw UTC ISO strings (or `HH:MM UTC`):
+
+1. v10 per-portfolio activity feed summary "most recent · HH:MM UTC"
+2. Lifecycle position picker label: `AAPL LONG 2026-05-11T16:14:50Z (status)`
+3. Lifecycle event timestamps: `2026-05-11T16:14:50Z`
+
+These are now converted client-side to the browser's local
+timezone using `Date.toLocaleString` / `toLocaleTimeString`. The
+underlying data fields keep their `_utc` / `_iso` names (the wire
+format is unchanged ISO-8601 UTC); only the rendered text is
+local-zone.
+
+Examples (Chicago browser):
+- `16:14:50Z` -> activity summary `11:14 AM CDT`
+- `16:14:50Z` -> lifecycle picker `05/11/2026, 11:14:50 AM CDT`
+- `16:14:50Z` -> event chip `05/11/2026, 11:14:50 AM CDT`
+
+Chart x-axis math (`utcIsoToEtMin` used by the intraday chart's
+entry/exit markers) is unchanged -- chart geometry stays anchored
+to ET trading-day buckets per spec. This rule applies only to
+displayed text labels.
+
+Tooltip on the lifecycle event chip retains the raw UTC string
+("Event timestamp in your local timezone (stored as UTC: ...)")
+so operators can correlate against Railway logs which still
+timestamp in UTC.
+
+### New helpers (top of app.js, near fmtUsd / fmtPx)
+
+- `utcIsoToLocalHHMM(iso)`: `"11:14 AM CDT"` style for compact
+  summary lines.
+- `utcIsoToLocalFull(iso)`: `"05/11/2026, 11:14:50 AM CDT"` for
+  full-precision labels.
+
+Both fall back to the raw input on parse failure (defensive --
+a malformed timestamp should still render its original string
+rather than blanking the row).
+
+### Files
+
+- `dashboard_static/app.js`: helpers + 3 display call-sites
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+Full suite: **465 passed**, 8 skipped (no regressions; pure
+display-layer change).
+
+### Operator action
+
+None. After the v7.82.0 push hits Railway, the dashboard's
+displayed times will switch to browser-local on the next page
+reload. No env vars to set.
+
+### Deferred -- Val mirror-bus investigation
+
+The `val_gene_trades_match_main` invariant continues to fire
+(val=0 vs main=3) showing Val isn't mirroring Main's trades via
+the legacy signal bus. Need Railway log greps for `[Val]
+[ALPACA-REQ]` and `[Val] [ALPACA-ERR]` (v7.77.0 forensic tags)
+to determine whether Val received the signal and failed at
+broker submit, or whether it never received the signal. Operator
+action: paste the relevant log slice for the next investigation
+round.
+
+---
+
 ## v7.81.0 (2026-05-11) -- Rollback v10 admit when broker call doesn't fill (kills phantom IN_POS)
 
 First post-v7.80.0 push-triggered monitor run filed Issue #543
