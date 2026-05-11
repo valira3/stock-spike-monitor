@@ -4378,6 +4378,35 @@
       <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
     </section>
 
+    <!-- v7.47.0 -- per-portfolio v10 strip. Shows THIS portfolio's
+         trades / risk / daily-kill gauges + a filtered activity feed.
+         Renderer is renderV10PerPortfolio(name, state, panel) in
+         renderExecutor; reads from window.__tgLastState (the most
+         recent main /api/state snapshot). -->
+    <section class="grid" data-f="v10-pid-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">v10 ORB &middot; ${label}<span class="count" data-f="v10-pid-count">\u2014</span></span>
+          <span class="chip" data-f="v10-pid-summary">\u2014</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-body">
+          <div class="empty">Waiting for v10 session start...</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid" data-f="v10-pid-activity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">\u2014</span></span>
+          <span class="chip" data-f="v10-pid-act-summary">\u2014</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-act-body">
+          <div class="empty">No v10 events on this portfolio yet today.</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v5.20.0 \u2014 Open positions sits ABOVE the Weather Check banner so currently-held risk
          is visible first; the Weather banner (a conditional "can I take a new entry?" verdict)
          appears immediately below. Mirrors the Main panel reorder shipped in v5.19.4. -->
@@ -4484,6 +4513,163 @@
       panel.dataset.tgReady = "1";
     }
     return panel;
+  }
+
+  // v7.47.0 -- per-portfolio v10 sections. Renders THIS portfolio's
+  // trades / concurrent-risk / daily-kill gauges + a pid-filtered
+  // activity feed into the exec skeleton. Reads from
+  // window.__tgLastState (the most recent Main /api/state snapshot)
+  // since the /api/executor/<name> endpoint does not carry v10 state.
+  // Section anchors live in execSkeleton under data-f="v10-pid-*".
+  function renderV10PerPortfolio(name, panel) {
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    var s = window.__tgLastState;
+    var v10 = s && s.v10;
+    var pid = name; // "val" or "gene" maps directly to portfolio_id
+    var section = execField(panel, "v10-pid-section");
+    var actSection = execField(panel, "v10-pid-activity-section");
+
+    if (!v10 || v10.available === false || !v10.bootstrapped) {
+      if (section) section.style.display = "none";
+      if (actSection) actSection.style.display = "none";
+      return;
+    }
+    if (section) section.style.display = "";
+    if (actSection) actSection.style.display = "";
+
+    var rb = (v10.risk_books || {})[pid] || {};
+    var dayStates = v10.day_states || [];
+    var myDayState = null;
+    for (var i = 0; i < dayStates.length; i++) {
+      if ((dayStates[i].portfolio_id || "").toLowerCase() === pid) {
+        myDayState = dayStates[i];
+        break;
+      }
+    }
+    var trades = (myDayState && myDayState.trades_today) || 0;
+    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
+    var openRisk = rb.open_risk || 0;
+    var maxRisk = rb.max_risk_dollars || 0;
+    var openCount = rb.open_count || 0;
+    var ut = rb.utilization_pct || 0;
+    var killThr = rb.daily_kill_threshold || 0;
+    var realizedToday = rb.realized_pnl_today || 0;
+    var killTriggered = !!rb.daily_kill_triggered;
+    var killPct = (killThr > 0 && realizedToday < 0)
+      ? Math.abs(realizedToday) / killThr * 100 : 0;
+
+    var tradesPct = maxTrades > 0 ? (trades / maxTrades * 100) : 0;
+    var riskPct = maxRisk > 0 ? (openRisk / maxRisk * 100) : 0;
+
+    var countEl = execField(panel, "v10-pid-count");
+    if (countEl) countEl.textContent = "· " + trades + " / " + maxTrades;
+    var summaryEl = execField(panel, "v10-pid-summary");
+    if (summaryEl) {
+      if (killTriggered) {
+        summaryEl.textContent = "DAILY KILL TRIPPED";
+        summaryEl.style.background = "#dc2626";
+        summaryEl.style.color = "#fff";
+      } else if (killPct >= 70 || tradesPct >= 70 || riskPct >= 70) {
+        summaryEl.textContent = "near limit";
+        summaryEl.style.background = "#f59e0b";
+        summaryEl.style.color = "#0a0d12";
+      } else if (openCount > 0) {
+        summaryEl.textContent = openCount + " open · " + ut.toFixed(0) + "% util";
+        summaryEl.style.background = "#1f2937";
+        summaryEl.style.color = "#cbd5e1";
+      } else {
+        summaryEl.textContent = "idle";
+        summaryEl.style.background = "#1f2937";
+        summaryEl.style.color = "#9ca3af";
+      }
+    }
+
+    function _gaugeHtml(label, value, fillPct, cls) {
+      var clamped = Math.max(0, Math.min(110, fillPct));
+      var stateCls = '';
+      if (fillPct >= 90 || (cls || '').indexOf('danger') >= 0)
+        stateCls = ' v10-gauge-danger';
+      else if (fillPct >= 70) stateCls = ' v10-gauge-warn';
+      return '<div class="v10-gauge ' + (cls || '') + stateCls + '">'
+           + '<div class="v10-gauge-head">'
+           + '<span class="v10-gauge-label">' + esc(label) + '</span>'
+           + '<span class="v10-gauge-value">' + esc(value) + '</span>'
+           + '</div>'
+           + '<div class="v10-gauge-bar">'
+           + '<div class="v10-gauge-fill" style="width:'
+                + clamped.toFixed(1) + '%"></div>'
+           + '</div></div>';
+    }
+
+    var body = execField(panel, "v10-pid-body");
+    if (body) {
+      var html = '';
+      html += _gaugeHtml('Trades',
+        trades + ' / ' + maxTrades +
+          ' (' + tradesPct.toFixed(0) + '%)',
+        tradesPct);
+      html += _gaugeHtml('Concurrent risk',
+        '$' + Math.round(openRisk).toLocaleString() +
+          ' / $' + Math.round(maxRisk).toLocaleString() +
+          ' (' + riskPct.toFixed(0) + '%)',
+        riskPct);
+      if (killThr > 0) {
+        var killValue = '$' + Math.round(realizedToday).toLocaleString() +
+                         ' / -$' + Math.round(killThr).toLocaleString();
+        var killCls = 'v10-gauge-kill' + (killTriggered ? ' danger' : '');
+        html += _gaugeHtml('Daily-kill', killValue, killPct, killCls);
+      }
+      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>';
+    }
+
+    var events = (v10.activity || []).filter(function (e) {
+      return (e.pid || "").toLowerCase() === pid;
+    });
+    var actCount = execField(panel, "v10-pid-act-count");
+    if (actCount) actCount.textContent = "· " + events.length;
+    var actSummary = execField(panel, "v10-pid-act-summary");
+    if (actSummary) {
+      if (events.length === 0) {
+        actSummary.textContent = "no events yet";
+      } else {
+        var first = events[0];
+        var t = first.ts_iso || "";
+        var hhmm = (t && t.indexOf("T") > 0)
+          ? t.split("T")[1].slice(0, 5) + " UTC" : t;
+        actSummary.textContent = "most recent · " + hhmm;
+      }
+    }
+    var actBody = execField(panel, "v10-pid-act-body");
+    if (actBody) {
+      if (events.length === 0) {
+        actBody.innerHTML = '<div class="empty">No v10 events on this portfolio yet today.</div>';
+      } else {
+        var rowsHtml = [];
+        for (var j = 0; j < events.length; j++) {
+          var e = events[j];
+          var ts = e.ts_iso || "";
+          var hhmm2 = (ts && ts.indexOf("T") > 0)
+            ? ts.split("T")[1].slice(0, 5) : "—";
+          var kindCls = "act-kind-" + (e.kind || "info");
+          var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
+          var ticker = e.ticker || "—";
+          rowsHtml.push(
+            '<div class="act-row">' +
+              '<span class="act-time">' + esc(hhmm2) + '</span>' +
+              '<span class="act-ticker">' + esc(ticker) + '</span>' +
+              '<span class="act-kind ' + kindCls + '">' + esc(kindTxt) + '</span>' +
+              '<span class="act-detail">' + esc(e.detail || "") + '</span>' +
+            '</div>'
+          );
+        }
+        actBody.innerHTML = '<div>' + rowsHtml.join("") + '</div>';
+      }
+    }
   }
 
   function execField(panel, name) {
@@ -4746,6 +4932,10 @@
       var fn = window.__tgRenderKillSwitchBanner;
       if (lastMain && typeof fn === "function") fn(lastMain, name);
     } catch (e) { /* never break exec render */ }
+
+    // v7.47.0 -- per-portfolio v10 strip + filtered activity feed.
+    try { renderV10PerPortfolio(name, panel); }
+    catch (e) { /* never break exec render */ }
 
     // Dim the whole panel when the executor is not configured so the
     // layout reads as "present but inert" rather than broken.
@@ -5031,6 +5221,11 @@
       if (panel && panel.dataset.tgReady) {
         renderExecMarketState(panel);
         refreshExecSharedKpis(panel);
+        // v7.47.0 -- refresh per-portfolio v10 strip + activity feed
+        // when Main's /api/state lands (the v10 block lives there,
+        // not on the /api/executor/<name> endpoint).
+        try { renderV10PerPortfolio(exec, panel); }
+        catch (e) { /* never break shared refresh */ }
       }
     }
   };
