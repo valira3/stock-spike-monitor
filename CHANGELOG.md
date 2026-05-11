@@ -4,6 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.62.0 (2026-05-11) -- Visual polish: uniform section gaps on Main panel
+
+Audit follow-up. With all the v10-era cards landed (banner, baseline,
+ticker matrix, proximity, activity), the spacing rhythm between
+sections was visibly off: most cards sat 18px apart (the
+`.main { gap: 18px }` rule), but the `#v10-day-status` banner and
+the `#v10-baseline` card carried inline `margin: 12px 16px` that
+made them sit 12px from their neighbors. Result: a noticeable
+hiccup right at the top of the v10 zone.
+
+### Fix
+
+Removed the inline `margin: 12px 16px` from both
+`#v10-day-status` and `#v10-baseline`. They now participate in the
+parent flex layout normally and inherit the 18px gap. No padding
+or content changes.
+
+### Verification
+
+Playwright measurement after the fix:
+
+```
+banner -> open-positions                : 18px
+open-positions -> kpi-row               : 18px
+kpi-row -> v10-day-status               : 18px
+v10-day-status -> v10-baseline          : 18px
+v10-baseline -> v10-ticker-matrix       : 18px
+v10-ticker-matrix -> v10-proximity      : 18px
+v10-proximity -> v10-activity           : 18px
+v10-activity -> today's trades          : 18px
+```
+
+Every consecutive section is now exactly 18px apart.
+
+### Files
+
+  - `dashboard_static/index.html` -- two inline `margin:12px 16px`
+    declarations removed
+  - `bot_version.py` / `trade_genius.py` -- 7.61.0 -> 7.62.0
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped.
+
+### Risk
+
+Pure CSS-style cleanup. No DOM structure changes. No backend
+changes. No engine path touched.
+
+---
+
 ## v7.61.0 (2026-05-11) -- Intraday chart: refresh overlays to v10 ORB semantics
 
 Follow-up to v7.58.0 (vestigial UI removal). The per-stock intraday

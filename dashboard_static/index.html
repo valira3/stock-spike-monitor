@@ -197,7 +197,10 @@
          from the header; the gauges row below shows the same info
          with a fill bar and clearer wording (top-ticker / 5 cap),
          so the inline duplicates were visual noise. -->
-    <section id="v10-day-status" class="v10-banner" style="margin:12px 16px;padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <!-- v7.62.0 -- inline margin dropped so the banner picks up the
+         parent .main flex gap (18px) like every other section.
+         Eliminates the prior 12px-vs-18px spacing inconsistency. -->
+    <section id="v10-day-status" class="v10-banner" style="padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
       <span style="font-weight:700;color:#7dd3fc;font-size:14px;letter-spacing:0.5px">v10 ORB</span>
       <span id="v10-mode-pill" class="v10-pill" style="padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600">…</span>
       <span class="v10-divider" style="color:#374151">|</span>
@@ -216,7 +219,10 @@
          taking 4-5 lines of vertical space for data the operator only
          needs to remember once. The live-balance + live-growth pair
          is the only dynamic content; kept on the right side. -->
-    <section id="v10-baseline" class="v10-card" style="margin:12px 16px;padding:10px 16px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:14px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;color:#9ca3af;flex-wrap:wrap">
+    <!-- v7.62.0 -- inline margin dropped (same as the v10-day-status
+         banner) so this card picks up the parent flex gap (18px) and
+         lines up with the rest of the dashboard. -->
+    <section id="v10-baseline" class="v10-card" style="padding:10px 16px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:14px;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;color:#9ca3af;flex-wrap:wrap">
       <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="font-weight:700;color:#7dd3fc;letter-spacing:0.5px" title="Static reference numbers from the v10 keystone backtest (docs/v10_strategy_keystone.md). These do not update day to day.">v10 Backtest Baseline</span>
         <span><span style="color:#9ca3af">CAGR</span> <span id="v10-proj-cagr" style="color:#22c55e;font-weight:700;font-family:'JetBrains Mono',monospace">—</span></span>
