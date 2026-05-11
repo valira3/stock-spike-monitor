@@ -89,7 +89,14 @@ class DashboardClient:
     """
 
     def __init__(self, base_url: str, password: str, timeout: float = 15.0):
-        self.base_url = base_url.rstrip("/")
+        # v7.69.0 -- defensive scheme normalization. The DASHBOARD_URL
+        # GHA secret was set as "tradegenius.up.railway.app" (no
+        # scheme), which Python's urllib rejects with "unknown url
+        # type". Assume https:// when the operator omits it.
+        bu = base_url.strip().rstrip("/")
+        if "://" not in bu:
+            bu = "https://" + bu
+        self.base_url = bu
         self.password = password
         self.timeout = timeout
         self._cookie_value: str | None = None
@@ -102,15 +109,22 @@ class DashboardClient:
             return
         url = self.base_url + "/login"
         body = urllib.parse.urlencode({"password": self.password}).encode()
+        # v7.69.0 -- DON'T send Origin/Referer. dashboard_server's CSRF
+        # check is `src_host = _host_of(origin) or _host_of(referer);
+        # if src_host and src_host != host: return 403`. With both
+        # headers absent, src_host is "" and the check short-circuits.
+        # Browsers always send Origin so the operator-flow stays
+        # protected; server-to-server callers (like this monitor)
+        # pass through cleanly. (Reverse-proxy-rewritten Host headers
+        # at Railway can cause spurious 403s when Origin/Referer are
+        # sent verbatim.)
         req = urllib.request.Request(
             url,
             data=body,
             method="POST",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": self._origin,
-                "Referer": self._origin + "/",
-                "User-Agent": "tg-dashboard-monitor/7.68.0",
+                "User-Agent": "tg-dashboard-monitor/7.69.0",
             },
         )
         opener = urllib.request.build_opener(_NoRedirect)
