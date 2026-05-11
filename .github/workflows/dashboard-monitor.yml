@@ -28,15 +28,21 @@ name: dashboard-monitor
 on:
   schedule:
     # Cron is UTC. v7.67.0 -- extended to cover US premarket through RTH.
+    # v7.70.0 -- bumped from */5 to */10 and offset away from :00.
+    # GitHub Actions documents that the scheduled-event delivery can
+    # be DELAYED or SKIPPED entirely during high load (especially at
+    # the top of the hour), so dropping to */10 with a :07 offset
+    # cuts the at-risk slot count in half and avoids the :00 spike
+    # period. See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule
     # Premarket: 04:00 -> 09:30 ET = 08:00 -> 13:30 UTC (EDT) / 09:00 -> 14:30 UTC (EST)
     # RTH:       09:30 -> 16:00 ET = 13:30 -> 20:00 UTC (EDT) / 14:30 -> 21:00 UTC (EST)
-    # Union covering both seasons (DST-safe): 08:00 -> 20:55 UTC, Mon-Fri.
-    # */5 8-20 covers 08:00, 08:05, ..., 20:55. Edge hours before EDT
-    # premarket open or after EST RTH close fall on weekends/PRE/POST mode
-    # so the invariants short-circuit (v10_live_mode_on skips when
-    # regime mode isn't RTH).
-    # Per-day firings: 13 hours x 12/hr = 156 GHA minutes/day at worst.
-    - cron: "*/5 8-20 * * 1-5"
+    # Union covering both seasons (DST-safe): 08:00 -> 20:57 UTC, Mon-Fri.
+    # 7-57/10 covers 08:07, 08:17, ..., 20:57 (6 ticks/hr). Edge hours
+    # before EDT premarket open or after EST RTH close fall on
+    # weekends/PRE/POST mode so the invariants short-circuit
+    # (v10_live_mode_on skips when regime mode isn't RTH).
+    # Per-day firings: 13 hours x 6/hr = 78 GHA minutes/day at worst.
+    - cron: "7-57/10 8-20 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -81,5 +87,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           MONITOR_DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '' }}
+          # v7.70.0 -- silent Telegram heartbeat (one ping per active
+          # hour, at the :07 tick) so the operator gets positive
+          # proof-of-life when no invariants fire. Set to "" to mute.
+          MONITOR_HEARTBEAT: "1"
         run: |
           python -m tools.dashboard_monitor

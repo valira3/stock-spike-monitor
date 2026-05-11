@@ -4,6 +4,64 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.70.0 (2026-05-11) -- Monitor: hourly heartbeat + reliability-tuned cron
+
+Operator reported no visible scheduled-cron runs in the Actions tab
+after v7.69.0 landed, despite the manual dry-run succeeding. GitHub
+Actions explicitly documents that scheduled cron deliveries can be
+delayed or silently skipped during high-load windows (especially at
+the top of every hour), so the previous `*/5 8-20 * * 1-5` schedule
+was particularly exposed -- 12 ticks/hr with one landing on :00 each
+hour gave the dispatcher the most room to drop runs.
+
+### Cron tuning
+
+Schedule moved from `*/5 8-20 * * 1-5` to `7-57/10 8-20 * * 1-5`.
+That's:
+
+- **Frequency dropped from every 5 min to every 10 min** -- still
+  catches a 1-bar-wide invariant violation within one tick of the
+  next 5-minute v10 evaluation cycle.
+- **Offset moved off `:00`** -- ticks now land at :07, :17, :27,
+  :37, :47, :57. None coincide with the top-of-hour peak that GHA
+  scheduler is known to throttle.
+- Per-day firings: 13 hours x 6/hr = 78 GHA minutes/day at worst
+  (down from 156).
+
+### Heartbeat
+
+New `MONITOR_HEARTBEAT` env (default `"1"` in the workflow): when
+set, the monitor emits a silent Telegram message at the first
+cron tick of each hour (`UTC minute < 10`, i.e. only the `:07`
+tick fires the heartbeat). Format:
+
+```
+❤️ dashboard-monitor ok
+https://tradegenius.up.railway.app
+regime: RTH · v10 live_mode: true · equity: 99552.28
+```
+
+Telegram `disable_notification=true` so the heartbeat doesn't push
+on the operator's phone -- it lives silently in chat history,
+giving positive proof-of-life (13 pings/day during the active
+window). Operator can mute entirely by setting `MONITOR_HEARTBEAT`
+to `""` in the workflow.
+
+Heartbeat fires regardless of whether invariants pass or fail --
+violations still raise a TG alert + GH issue as usual, and a
+violation run also drops the heartbeat at the next :07 tick so the
+operator can confirm the monitor is still alive.
+
+### Files touched
+
+- `tools/dashboard_monitor.py`: `_heartbeat_should_fire`,
+  `_heartbeat_text`, `_emit_heartbeat`; `send_telegram` gains a
+  `silent=` kwarg
+- `.github/workflows/dashboard-monitor.yml`: cron expression
+  swapped; `MONITOR_HEARTBEAT: "1"` added to env block
+
+---
+
 ## v7.69.0 (2026-05-11) -- Monitor: scheme-normalize URL + drop Origin/Referer (fix dry-run 403)
 
 Operator triggered the v7.68.0 dry run, hit two production-specific

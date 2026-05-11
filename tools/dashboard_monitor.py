@@ -36,6 +36,11 @@ Env vars (all required except where noted):
     MONITOR_DRY_RUN             optional; "1" disables Telegram + GH issue
                                 side effects (prints diagnostics only).
     MONITOR_LABEL               optional issue label (default: "dashboard-monitor")
+    MONITOR_HEARTBEAT           optional; "1" emits a silent Telegram
+                                heartbeat once per hour (at the first
+                                cron tick of each hour). Useful to
+                                confirm the cron is firing when no
+                                violations are surfacing on their own.
 
 Exit codes:
     0  all invariants passed (or violations were filed successfully)
@@ -124,7 +129,7 @@ class DashboardClient:
             method="POST",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "tg-dashboard-monitor/7.69.0",
+                "User-Agent": "tg-dashboard-monitor/7.70.0",
             },
         )
         opener = urllib.request.build_opener(_NoRedirect)
@@ -156,7 +161,7 @@ class DashboardClient:
             url,
             headers={
                 "Cookie": f"{SESSION_COOKIE_NAME}={self._cookie_value}",
-                "User-Agent": "tg-dashboard-monitor/7.68.0",
+                "User-Agent": "tg-dashboard-monitor/7.70.0",
             },
         )
         try:
@@ -173,15 +178,26 @@ class DashboardClient:
 # ---------------------------------------------------------------------------
 
 
-def send_telegram(token: str, chat_id: str, text: str, dry_run: bool = False) -> bool:
+def send_telegram(
+    token: str,
+    chat_id: str,
+    text: str,
+    dry_run: bool = False,
+    silent: bool = False,
+) -> bool:
     if dry_run:
         print(f"[dry-run] TG -> {chat_id}: {text[:200]}...")
         return True
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "parse_mode": "Markdown",
-         "disable_web_page_preview": "true"}
-    ).encode()
+    fields = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": "true",
+    }
+    if silent:
+        fields["disable_notification"] = "true"
+    payload = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(url, data=payload)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -297,6 +313,53 @@ def _format_violation_issue(
     return title, "\n".join(body_lines)
 
 
+def _heartbeat_should_fire() -> bool:
+    """v7.70.0 -- gate hourly heartbeat to one ping per hour.
+
+    Cron is `7-57/10` so ticks land at :07, :17, ..., :57. Firing the
+    heartbeat only at :07 yields one silent TG ping per active hour
+    (13/day at peak). Operator can globally disable by unsetting
+    MONITOR_HEARTBEAT.
+    """
+    if os.environ.get("MONITOR_HEARTBEAT", "").strip() != "1":
+        return False
+    return time.gmtime().tm_min < 10
+
+
+def _heartbeat_text(payloads: dict[str, Any], base_url: str) -> str:
+    state = payloads.get("state") or {}
+    mode = state.get("regime_mode") or state.get("mode") or "?"
+    v10 = state.get("v10") or {}
+    live_mode = v10.get("live_mode", "?")
+    equity = state.get("equity_usd")
+    if equity is None:
+        portfolio = state.get("portfolio") or {}
+        equity = portfolio.get("equity", "?")
+    return (
+        f"❤️ *dashboard-monitor ok*\n"
+        f"`{base_url}`\n"
+        f"regime: `{mode}` · v10 live\\_mode: `{live_mode}` · equity: `{equity}`"
+    )
+
+
+def _emit_heartbeat(payloads: dict[str, Any], base_url: str, dry_run: bool) -> None:
+    if not _heartbeat_should_fire():
+        return
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_chat = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+    if not (tg_token and tg_chat):
+        logger.info("heartbeat skipped (no TG creds)")
+        return
+    ok = send_telegram(
+        tg_token,
+        tg_chat,
+        _heartbeat_text(payloads, base_url),
+        dry_run=dry_run,
+        silent=True,
+    )
+    logger.info("heartbeat sent=%s", ok)
+
+
 def _emit_alerts(violations: list[dict], base_url: str, dry_run: bool) -> None:
     ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -383,9 +446,11 @@ def run_once() -> int:
 
     if not violations:
         logger.info("all %d invariants passed", len(INVARIANTS))
+        _emit_heartbeat(payloads, base_url, dry_run)
         return 0
 
     _emit_alerts(violations, base_url, dry_run)
+    _emit_heartbeat(payloads, base_url, dry_run)
     return 0
 
 

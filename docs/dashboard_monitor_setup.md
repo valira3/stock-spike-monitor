@@ -4,7 +4,8 @@ Shipped in **v7.65.0**. Live RTH validator for the production dashboard.
 
 ## What it does
 
-Every 5 minutes during US premarket + RTH (Mon-Fri, 08:00-20:55 UTC -- spans ~04:00-16:55 ET DST-safe; v7.67.0) a
+Every 10 minutes during US premarket + RTH (Mon-Fri, 08:07-20:57 UTC -- spans ~04:00-16:57 ET DST-safe;
+v7.67.0 added premarket, v7.70.0 tuned cron for reliability) a
 GitHub Actions cron job runs `tools/dashboard_monitor.py`, which:
 
 1. Logs into the dashboard by POST /login with `DASHBOARD_PASSWORD`
@@ -109,6 +110,27 @@ If the Claude Code GitHub app is **not** installed, the issue still
 gets filed with full diagnostic context for manual debugging; the
 `@claude` mention is harmless.
 
+## Heartbeat (v7.70.0)
+
+When `MONITOR_HEARTBEAT="1"` is set in the workflow env (default
+on), the monitor emits a **silent** Telegram message at the first
+cron tick of each hour (the `:07` tick). Format:
+
+```
+❤️ dashboard-monitor ok
+https://tradegenius.up.railway.app
+regime: RTH · v10 live_mode: true · equity: 99552.28
+```
+
+This gives positive proof-of-life when no invariants are firing,
+so a quiet Actions tab doesn't get mistaken for a stalled cron.
+~13 pings/day during the active window; Telegram
+`disable_notification=true` keeps them off the push-notification
+stream.
+
+To mute the heartbeat without disabling alerts, set
+`MONITOR_HEARTBEAT: ""` in the workflow env block.
+
 ## Disable / pause
 
 To temporarily disable monitoring:
@@ -120,6 +142,8 @@ To temporarily disable monitoring:
   carries on filing the GH issue.
 - **Pause GH issue filing only**: Set the workflow's `issues`
   permission to `read`.
+- **Pause heartbeat only**: Set `MONITOR_HEARTBEAT: ""` in the
+  workflow env block.
 
 ## Local testing
 
