@@ -4,6 +4,84 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.88.0 (2026-05-11) -- Val/Gene tab badge + layout matches Main
+
+Two operator complaints about the Val tab:
+
+1. **Tab badge keeps jumping between "P" and a paper icon.** Pre-
+   v7.88.0 the badge rendered `<span>✓</span><span>P</span>` --
+   two separate spans with different colors. During poll cycles
+   the mode value could arrive briefly empty before resolving to
+   "P" or "L", producing a visible flicker.
+2. **Val tab layout doesn't match Main.** Val showed v10 ORB +
+   Recent activity FIRST, then Open positions. Main shows Open
+   positions FIRST. Operator: "should match".
+
+### Fix 1: stable tab badge
+
+Replaces the dual-span checkmark+letter format with a single
+self-contained label matching the Main tab's `📄 Paper`:
+
+| State | Pre-v7.88.0 | v7.88.0 |
+|---|---|---|
+| Enabled + paper | `✓ P` (amber) | `📄 Paper` |
+| Enabled + live | `✓ L` (green) | `🔴 Live` |
+| Disabled | `✗` (grey) | `✗` (unchanged) |
+
+The whole label is written in one `innerHTML` assignment so
+there's no intermediate state during polling. Now visually
+consistent with Main's hardcoded `Main 📄 Paper` tab.
+
+Defaults to `📄 Paper` for any non-"live" mode value (covers
+"paper", "software", null, undefined) -- conservative since paper
+is the safer default to display.
+
+### Fix 2: Val/Gene skeleton reorder
+
+`execSkeleton()` in `dashboard_static/app.js` was building the
+panel in this order:
+
+```
+KPI row
+v10 ORB · ${label}
+Recent activity · ${label}
+Open positions             <-- buried below v10 cards
+v10 Proximity
+```
+
+Main's HTML has Open Positions at section #124 (above the KPI
+row at #185). v7.88.0 reorders Val/Gene to match:
+
+```
+Open positions             <-- now at top, like Main
+KPI row
+v10 ORB · ${label}
+Recent activity · ${label}
+v10 Proximity
+```
+
+The KPI row sits BELOW Open Positions on Val/Gene now, matching
+Main's HTML structure exactly. Positions table is the first
+visible card on every tab.
+
+### Files
+
+- `dashboard_static/app.js`: tab-badge render + `execSkeleton` reorder
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+Tests: unchanged (pure display-layer change; existing strategy
+suite of 492 stays at 492).
+
+### Operator action
+
+None. After Railway redeploys + browser reload:
+- Tab strip shows `Val 📄 Paper` (no more flicker) and
+  `Gene ✗` (unchanged when keys unset).
+- Val tab opens with the Open Positions card at the top,
+  matching Main's layout.
+
+---
+
 ## v7.87.0 (2026-05-11) -- Per-position Notional column on the positions table
 
 Operator: "Also, need to show total investment (short or long) on

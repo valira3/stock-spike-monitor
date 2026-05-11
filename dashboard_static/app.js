@@ -3129,28 +3129,38 @@
           if (mark) mark.textContent = "\u2014";
         }
       }
-      // (2) Tab-heading badge — the new visible surface in v6.11.9.
-      // v6.11.10 — also surface live/paper mode next to the ✓ so the
-      // tab strip shows both "enabled" and "which broker". Format:
-      //   ✓ L  = enabled, live broker (bright green)
-      //   ✓ P  = enabled, paper broker (amber)
-      //   ✗    = disabled (dim grey)
+      // (2) Tab-heading badge \u2014 visible surface in v6.11.9.
+      // v7.88.0 -- stabilized format. Pre-v7.88.0 the badge briefly
+      // showed just "\u2713" before the mode resolved to "P" or "L",
+      // producing a visible jump operator described as "keeps jumping
+      // between P and a paper icon". New format always renders a
+      // complete label, matching the Main tab's "\ud83d\udcc4 Paper" style:
+      //   \ud83d\udcc4 Paper  = enabled, paper broker
+      //   \ud83d\udd34 Live   = enabled, live broker
+      //   \u2717         = disabled (mode unknown OR keys unset)
+      // The whole label is rendered in one innerHTML write so there's
+      // no intermediate state during polling.
       const badge = document.getElementById(`tg-badge-${name}`);
       if (badge) {
         if (enabled) {
           const isLive = (mode === "live");
-          const modeMark = isLive ? "L" : "P";
-          const modeColor = isLive ? "#34d399" : "#fbbf24";
-          badge.innerHTML =
-            '<span style="color:#34d399">\u2713</span>' +
-            '<span style="color:' + modeColor +
-            ';font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">' +
-            modeMark + '</span>';
-          badge.style.color = ""; // colors are per-span now
-          badge.setAttribute(
-            "title",
-            `${label} executor enabled${mode ? ` (${mode} mode)` : ""}`
-          );
+          if (isLive) {
+            badge.innerHTML =
+              '<span style="color:#5b6572;font-size:10.5px" title="Live broker mode">\ud83d\udd34 Live</span>';
+            badge.setAttribute(
+              "title", `${label} executor enabled (live mode)`,
+            );
+          } else {
+            // Default to paper when mode is "paper", "software", or
+            // any non-"live" value (matches what the bot startup log
+            // reports for software-emulated paper mode).
+            badge.innerHTML =
+              '<span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">\ud83d\udcc4 Paper</span>';
+            badge.setAttribute(
+              "title", `${label} executor enabled (paper mode)`,
+            );
+          }
+          badge.style.color = "";
         } else {
           badge.innerHTML = "\u2717";
           badge.style.color = "#9aa6b2"; // dim grey
@@ -3740,45 +3750,12 @@
 
     <div class="banner hide" data-f="banner"></div>
 
-    <section class="kpi-row kpi-row-4">
-      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">\u2014</span><span class="kpi-sub" data-f="k-equity-sub">\u2014</span></div>
-      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">\u2014</span><span class="kpi-sub" data-f="k-pnl-sub">\u2014</span></div>
-      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">\u2014</span><span class="kpi-sub" data-f="k-open-sub">\u2014</span></div>
-      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">\u2014</span><span class="kpi-sub" data-f="k-session-sub">\u2014</span></div>
-    </section>
-
-    <!-- v7.47.0 -- per-portfolio v10 strip. Shows THIS portfolio's
-         trades / risk / daily-kill gauges + a filtered activity feed.
-         Renderer is renderV10PerPortfolio(name, state, panel) in
-         renderExecutor; reads from window.__tgLastState (the most
-         recent main /api/state snapshot). -->
-    <section class="grid" data-f="v10-pid-section">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">v10 ORB &middot; ${label}<span class="count" data-f="v10-pid-count">\u2014</span></span>
-          <span class="chip" data-f="v10-pid-summary">\u2014</span>
-        </div>
-        <div class="card-body flush" data-f="v10-pid-body">
-          <div class="empty">Waiting for v10 session start...</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="grid" data-f="v10-pid-activity-section">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">\u2014</span></span>
-          <span class="chip" data-f="v10-pid-act-summary">\u2014</span>
-        </div>
-        <div class="card-body flush" data-f="v10-pid-act-body">
-          <div class="empty">No v10 events on this portfolio yet today.</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- v5.20.0 \u2014 Open positions sits ABOVE the Weather Check banner so currently-held risk
-         is visible first; the Weather banner (a conditional "can I take a new entry?" verdict)
-         appears immediately below. Mirrors the Main panel reorder shipped in v5.19.4. -->
+    <!-- v7.88.0 -- Open positions moved to TOP of Val/Gene panels
+         (was below v10 ORB + Recent activity sections). Operator
+         spec: Val/Gene tab layout should match Main, which shows
+         the positions table as the first card. The KPI row stays
+         visible above it because that's where Main keeps its
+         KPI row too. v10 ORB + Recent activity follow below. -->
     <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title">Open positions<span class="count" data-f="pos-count">\u00b7 0</span></span></div>
@@ -3810,6 +3787,46 @@
               <div class="mono" style="font-size:12px;color:var(--down)" data-f="port-shortliab">\u2014</div>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- v7.88.0 -- KPI row now below Open Positions, matching Main's
+         layout (Main's HTML in dashboard_static/index.html has the
+         KPI row at section #185, immediately AFTER the Open Positions
+         section). -->
+    <section class="kpi-row kpi-row-4">
+      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">—</span><span class="kpi-sub" data-f="k-equity-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">—</span><span class="kpi-sub" data-f="k-pnl-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">—</span><span class="kpi-sub" data-f="k-open-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">—</span><span class="kpi-sub" data-f="k-session-sub">—</span></div>
+    </section>
+
+    <!-- v7.47.0 -- per-portfolio v10 strip. Shows THIS portfolio's
+         trades / risk / daily-kill gauges + a filtered activity feed.
+         Renderer is renderV10PerPortfolio(name, state, panel) in
+         renderExecutor; reads from window.__tgLastState (the most
+         recent main /api/state snapshot). -->
+    <section class="grid" data-f="v10-pid-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">v10 ORB &middot; ${label}<span class="count" data-f="v10-pid-count">—</span></span>
+          <span class="chip" data-f="v10-pid-summary">—</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-body">
+          <div class="empty">Waiting for v10 session start...</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid" data-f="v10-pid-activity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">—</span></span>
+          <span class="chip" data-f="v10-pid-act-summary">—</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-act-body">
+          <div class="empty">No v10 events on this portfolio yet today.</div>
         </div>
       </div>
     </section>
