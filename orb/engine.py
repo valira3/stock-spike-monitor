@@ -248,6 +248,27 @@ class OrbEngine:
             or_end_min=cfg.or_end_minutes,
         )
         if not added:
+            # v7.73.0 -- defensive fallback. Pre-v7.73.0 the OR lock was
+            # gated on `bar_bucket_min == or_end_minutes - 1` (a strict
+            # equality match on the very last bar). If that exact bar
+            # was missed -- bot down for a Railway redeploy during the
+            # OR window, bar source returned None for that minute, off-
+            # by-one in bucket math, etc. -- the OR window NEVER locked
+            # for the rest of the day. add_bar() rejects any bar with
+            # bucket >= or_end_min, so no subsequent bar could trigger
+            # the lock either. Symptom: WARMUP forever, 0/N tickers
+            # locked, no trades possible.
+            #
+            # Catch the missed-last-bar case here: if a post-window bar
+            # arrives and the OR is still unlocked, lock now using
+            # whatever data we accumulated. _lock_and_arm internally
+            # routes to BLOCKED_OR_INSUFFICIENT when bars_seen <
+            # or_minutes // 2, so a thin window correctly blocks
+            # entries rather than firing on garbage OR bounds.
+            if (not w.locked
+                    and bar_bucket_min >= cfg.or_end_minutes
+                    and w.bars_seen > 0):
+                self._lock_and_arm(ticker, w)
             return  # outside OR window or already locked
 
         # If this was the last bar in the OR window, lock now.

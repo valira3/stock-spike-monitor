@@ -4,6 +4,92 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.73.0 (2026-05-11) -- OR-lock fallback for missed last bar (production was stuck WARMUP today)
+
+Production today (2026-05-11 / Mon) showed the dashboard's v10
+Proximity Matrix stuck at **0/10 LOCKED** with all tickers in
+**WARMUP** at 09:14 CT (10:14 ET) -- ~14 min AFTER the 30-min OR
+window should have closed and locked. Prices were flowing (AAPL
+$292.02, NVDA $219.33, etc.), so the engine was alive, but no OR
+ever locked. Result: zero trades possible for the entire session.
+
+### Root cause
+
+`orb/engine.py:254` only locks the OR window when a bar arrives at
+the EXACT `or_end_minutes - 1` bucket (default 599 = 09:59 ET):
+
+```python
+if bar_bucket_min == cfg.or_end_minutes - 1:
+    self._lock_and_arm(ticker, w)
+```
+
+Subsequent bars (>= or_end_min) are rejected by `OrWindow.add_bar`
+(line 132 of `orb/state.py`), and there's no fallback path. Once
+that single 09:59 bar is missed -- for ANY reason -- the OR never
+locks for the rest of the day.
+
+Today's miss was almost certainly caused by the v7.71.0 Railway
+redeploy landing during the OR window (08:30-09:00 CT = 09:30-10:00
+ET): the bot restarted mid-window, no bars were fed during the
+gap, and the catch-up after restart was past `or_end_min` so every
+subsequent bar was silently rejected. Other miss-modes are also
+plausible: Alpaca/Yahoo returning None for that minute, bucket-min
+off-by-one, missing bars due to thin volume.
+
+### Fix
+
+Defensive fallback in `OrbEngine.on_bar_arrival`: when a bar
+arrives that `add_bar` rejected AND the window is past
+`or_end_minutes` AND we accumulated at least one bar AND the
+window isn't already locked, lock now using accumulated data.
+
+```python
+if (not w.locked
+        and bar_bucket_min >= cfg.or_end_minutes
+        and w.bars_seen > 0):
+    self._lock_and_arm(ticker, w)
+```
+
+`_lock_and_arm` already handles thin OR windows correctly: if
+`bars_seen < or_minutes // 2` (e.g. < 15 bars for a 30-min OR) it
+transitions to `BLOCKED_OR_INSUFFICIENT` rather than firing on
+garbage bounds. So a partial OR caused by mid-window downtime
+blocks new entries (correct), while a near-complete OR (missed
+only 1-2 bars) locks and arms normally.
+
+### What it does NOT do
+
+- Does not lock when `bars_seen == 0` (full OR-window downtime).
+  In that case the FSM stays WARMUP and the operator should
+  manually intervene via the dashboard kill switch.
+- Does not retroactively unblock tickers that already transitioned
+  through OR-lock-failure paths today -- the production bot needs
+  a redeploy after merge to re-attempt OR lock with the new logic.
+
+### Tests
+
+3 new tests in `tests/strategy/test_orb_engine.py`:
+
+- `test_missed_last_bar_post_window_bar_triggers_lock_fallback`:
+  feeds 29/30 OR bars (skips bucket 599), then a post-window bar
+  at 600. Expects: locked, bars_seen=29, FSM=ARMED (width OK).
+- `test_post_window_bar_with_empty_or_does_not_lock`:
+  feeds zero OR bars, then a post-window bar. Expects: NOT locked,
+  FSM stays WARMUP.
+- `test_already_locked_post_window_bar_is_noop`:
+  fully populates OR, locks normally, then a post-window bar.
+  Expects: still locked, `locked_at_iso` unchanged (no re-lock).
+
+Full suite: **391 passed** (up from 388), 8 skipped.
+
+### Files
+
+- `orb/engine.py`: `OrbEngine.on_bar_arrival` fallback path
+- `tests/strategy/test_orb_engine.py`: 3 new tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG.md: version trio
+
+---
+
 ## v7.72.0 (2026-05-11) -- Triage drop: monitor false-positive + paper_cash sync + OR-window banner + CT timezone
 
 First production payload from the live dashboard monitor surfaced
