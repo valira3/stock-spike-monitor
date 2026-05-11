@@ -1379,15 +1379,12 @@
       +   '<canvas class="pmtx-intraday-canvas" data-intraday-canvas width="1200" height="320"></canvas>'
       +   '<div class="pmtx-intraday-legend">'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-or">OR H/L</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-avwap">AVWAP \u00b11\u03c3</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-ema9">EMA9 (5m)</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-pdc">PDC</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-hod">HOD/LOD</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-vol">Volume</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-sentinel">Sentinel</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-entry">Entry</span>'
       +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-exit">Exit</span>'
-      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-trail">Trail stop</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-stop">Stop</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-be">1R (move-to-BE)</span>'
+      +     '<span class="pmtx-intraday-leg pmtx-intraday-leg-target">+2.5R target</span>'
       +     '<span class="pmtx-intraday-hint" title="Wheel zooms, drag pans, hover for OHLC tooltip, double-click resets the view">scroll \u00b7 drag \u00b7 dblclick</span>'
       +   '</div>'
       + '</div>';
@@ -1631,82 +1628,11 @@
     }
     ctx.setLineDash([]);
 
-    // v5.31.0 \u2014 PDC (prior-day close) dashed purple, HOD/LOD solid thin.
-    const pdc = (typeof payload.pdc === "number") ? payload.pdc : null;
-    const sessHod = (typeof payload.sess_hod === "number") ? payload.sess_hod : null;
-    const sessLod = (typeof payload.sess_lod === "number") ? payload.sess_lod : null;
-    if (pdc !== null && pdc >= yMin && pdc <= yMax) {
-      ctx.strokeStyle = "#a78bfa";
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(PAD_L, yOf(pdc)); ctx.lineTo(PAD_L + plotW, yOf(pdc));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#a78bfa";
-      ctx.font = "10px system-ui, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText("PDC", PAD_L + 4, yOf(pdc) - 2);
-    }
-    if (sessHod !== null && sessHod >= yMin && sessHod <= yMax) {
-      ctx.strokeStyle = "#34d399";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(PAD_L, yOf(sessHod)); ctx.lineTo(PAD_L + plotW, yOf(sessHod));
-      ctx.stroke();
-      ctx.fillStyle = "#34d399";
-      ctx.font = "10px system-ui, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText("HOD", PAD_L + 4, yOf(sessHod) - 2);
-    }
-    if (sessLod !== null && sessLod >= yMin && sessLod <= yMax) {
-      ctx.strokeStyle = "#f87171";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(PAD_L, yOf(sessLod)); ctx.lineTo(PAD_L + plotW, yOf(sessLod));
-      ctx.stroke();
-      ctx.fillStyle = "#f87171";
-      ctx.font = "10px system-ui, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText("LOD", PAD_L + 4, yOf(sessLod) + 10);
-    }
-
-    // v5.31.0 \u2014 AVWAP \u00b11\u03c3 band, filled translucent under the AVWAP line.
-    // Band points come from payload.bars[].avwap_hi / .avwap_lo (RTH-only,
-    // null in premarket). We build a top polyline forward then bottom backward.
-    {
-      const top = [];
-      const bot = [];
-      for (const b of bars) {
-        if (typeof b.et_min !== "number") continue;
-        const hi = b.avwap_hi, lo = b.avwap_lo;
-        if (hi === null || hi === undefined || lo === null || lo === undefined) {
-          if (top.length) {
-            ctx.fillStyle = "rgba(122,166,255,0.08)";
-            ctx.beginPath();
-            ctx.moveTo(top[0].x, top[0].y);
-            for (let i = 1; i < top.length; i++) ctx.lineTo(top[i].x, top[i].y);
-            for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
-            ctx.closePath();
-            ctx.fill();
-            top.length = 0; bot.length = 0;
-          }
-          continue;
-        }
-        const x = xOf(b.et_min);
-        top.push({x: x, y: yOf(hi)});
-        bot.push({x: x, y: yOf(lo)});
-      }
-      if (top.length) {
-        ctx.fillStyle = "rgba(122,166,255,0.08)";
-        ctx.beginPath();
-        ctx.moveTo(top[0].x, top[0].y);
-        for (let i = 1; i < top.length; i++) ctx.lineTo(top[i].x, top[i].y);
-        for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i].x, bot[i].y);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
+    // v7.61.0 -- PDC, sess HOD/LOD, AVWAP \u00b11\u03c3 band, AVWAP line, PM
+    // AVWAP, and EMA9(5m) overlays removed. None are part of the v10
+    // ORB decision path (they were Tiger Sovereign-era inputs). The
+    // intraday endpoint still returns the fields; the chart just
+    // doesn't render them anymore.
 
     // Candles (thin OHLC sticks). Body width scales with bar count.
     const bw = Math.max(1, Math.min(6, plotW / Math.max(bars.length, 1) - 1));
@@ -1745,60 +1671,59 @@
       }
     }
 
-    // AVWAP line. Pre-v5.31.0 reset on null bars (premarket); v5.31.0 also
-    // draws PM AVWAP when bars carry it (lighter alpha) so the band+line is
-    // continuous from 8am ET onward.
-    ctx.strokeStyle = "#7aa6ff";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let started = false;
-    for (const b of bars) {
-      if (typeof b.et_min !== "number") continue;
-      if (b.avwap === null || b.avwap === undefined) { started = false; continue; }
-      const x = xOf(b.et_min), y = yOf(b.avwap);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+    // v7.61.0 -- AVWAP / PM AVWAP / EMA9(5m) draws removed; not v10.
 
-    // v5.31.0 \u2014 Premarket AVWAP (anchored 8:00 ET, et_min<570) drawn at
-    // 0.55 alpha so it visually fades into the RTH AVWAP after 9:30.
-    {
-      ctx.save();
-      ctx.globalAlpha = 0.55;
-      ctx.strokeStyle = "#7aa6ff";
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      let pmStarted = false;
-      for (const b of bars) {
-        if (typeof b.et_min !== "number") continue;
-        if (b.et_min >= 570) break;
-        const v = b.pm_avwap;
-        if (v === null || v === undefined) { pmStarted = false; continue; }
-        const x = xOf(b.et_min), y = yOf(v);
-        if (!pmStarted) { ctx.moveTo(x, y); pmStarted = true; }
-        else ctx.lineTo(x, y);
+    // v7.61.0 -- v10 entry overlays: for each long/short admit today,
+    // draw the stop / 1R move-to-BE / 2.5R target as horizontal
+    // reference lines extending from the entry timestamp rightward.
+    // Stop is sourced from the OR band (LONG uses or_low, SHORT uses
+    // or_high) since v10's stop = opposite-side OR + buffer. Target
+    // is RR=2.5 from the v10 keystone (cfg.rr is 2.5).
+    if (_orFresh && oh !== null && ol !== null) {
+      const tradesForOverlay = (payload && Array.isArray(payload.trades)) ? payload.trades : [];
+      const v10rr = 2.5;
+      for (const t of tradesForOverlay) {
+        if (!t || typeof t.entry_price !== "number" || !t.entry_ts) continue;
+        const entryEtMin = utcIsoToEtMin(t.entry_ts);
+        if (entryEtMin === null) continue;
+        const side = (t.side || "").toString().toLowerCase();
+        const isLong = side !== "short";
+        const stopPx = isLong ? ol : oh;
+        const risk = Math.abs(t.entry_price - stopPx);
+        if (risk <= 0) continue;
+        const oneR = isLong ? t.entry_price + risk : t.entry_price - risk;
+        const target = isLong ? t.entry_price + v10rr * risk
+                              : t.entry_price - v10rr * risk;
+        // X range: from entry timestamp to exit timestamp (if exited)
+        // or to the right edge of the plot (if still open).
+        const exitEtMin = t.exit_ts ? utcIsoToEtMin(t.exit_ts) : null;
+        const x1 = xOf(Math.max(X_MIN, entryEtMin));
+        const x2 = (exitEtMin !== null && exitEtMin <= X_MAX)
+          ? xOf(Math.min(X_MAX, exitEtMin))
+          : (PAD_L + plotW);
+        function hline(price, color, label, dash) {
+          if (price < yMin || price > yMax) return;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.2;
+          if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x1, yOf(price));
+          ctx.lineTo(x2, yOf(price));
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = color;
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.textAlign = "left";
+          ctx.fillText(label, x1 + 4, yOf(price) - 2);
+        }
+        // Stop -- dashed red.
+        hline(stopPx, "#ef4444", "stop", [5, 4]);
+        // 1R move-to-BE marker -- thin amber.
+        hline(oneR, "#fbbf24", "1R", [3, 3]);
+        // Target (2.5R) -- dashed green.
+        hline(target, "#22c55e", "+2.5R target", [5, 4]);
       }
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
     }
-
-    // EMA9 (5m) line. v5.31.0: relax the reset so PM bars draw too
-    // (premarket EMA9 also produced when bars carry it).
-    ctx.strokeStyle = "#c084fc";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    started = false;
-    for (const b of bars) {
-      if (typeof b.et_min !== "number") continue;
-      if (b.ema9_5m === null || b.ema9_5m === undefined) { started = false; continue; }
-      const x = xOf(b.et_min), y = yOf(b.ema9_5m);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
 
     // v5.23.3 \u2014 ET minute-of-day mapper (DST-safe via Intl). v5.31.0
     // hoisted above sentinel/lifecycle markers so they can share it.
@@ -1826,25 +1751,10 @@
       }
     };
 
-    // v5.31.0 \u2014 Sentinel arm/trip markers (diamonds). Amber = armed/changed,
-    // red = fired. Source: payload.sentinel_events (ts_utc + price).
-    const sentinelEvents = (payload && Array.isArray(payload.sentinel_events))
-      ? payload.sentinel_events : [];
-    for (const ev of sentinelEvents) {
-      if (!ev || typeof ev.price !== "number") continue;
-      const etMin = utcIsoToEtMin(ev.ts_utc);
-      if (etMin === null) continue;
-      if (etMin < X_MIN || etMin > X_MAX) continue;
-      const x = xOf(etMin), y = yOf(ev.price);
-      ctx.fillStyle = ev.fired ? "#ef4444" : "#fbbf24";
-      ctx.beginPath();
-      ctx.moveTo(x, y - 5);
-      ctx.lineTo(x + 4, y);
-      ctx.lineTo(x, y + 5);
-      ctx.lineTo(x - 4, y);
-      ctx.closePath();
-      ctx.fill();
-    }
+    // v7.61.0 -- Sentinel arm/trip markers removed. Sentinel was a
+    // Tiger Sovereign Phase 4 instrumentation; v10 ORB doesn't emit
+    // these events. The intraday payload still carries
+    // sentinel_events (legacy field) but we no longer render them.
 
     // v5.23.3 \u2014 Entry/exit markers, sourced from paper_state (open
     // positions + closed history). Each ts is full ISO UTC; we map
@@ -2119,44 +2029,12 @@
       }
     }
 
-    // Trail-stop staircase + stage transition ticks. Backend supplies each
-    // point with ``et_min``, ``stop``, ``stage``.
-    const trail = Array.isArray(lc.trail_series) ? lc.trail_series : [];
-    if (trail.length) {
-      ctx.strokeStyle = "#fbbf24";
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      let prevX = null, prevY = null, prevStage = null;
-      for (const pt of trail) {
-        if (!pt) continue;
-        const m = (typeof pt.et_min === "number") ? pt.et_min : null;
-        if (!inWin(m)) continue;
-        if (typeof pt.stop !== "number" || !inPrice(pt.stop)) continue;
-        const x = xOf(m), y = yOf(pt.stop);
-        if (prevX === null) {
-          ctx.moveTo(x, y);
-        } else {
-          // Step: horizontal then vertical.
-          ctx.lineTo(x, prevY);
-          ctx.lineTo(x, y);
-        }
-        prevX = x; prevY = y;
-        if (prevStage !== null && pt.stage !== prevStage) {
-          // Notch tick on stage change.
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
-          ctx.beginPath();
-          ctx.setLineDash([4, 3]);
-          ctx.moveTo(x, y);
-        }
-        prevStage = pt.stage;
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+    // v7.61.0 -- trail-stop staircase removed. v10 ORB doesn't trail;
+    // its only post-entry stop adjustment is move-to-BE after +1R,
+    // which is already shown as a single horizontal "1R" line at
+    // entry-time in the main draw path. The legacy trail_series
+    // payload (chandelier stops with stage transitions) was a Tiger
+    // Sovereign Phase 4 mechanism.
 
     // Live position rail \u2014 horizontal at entry_price from entry_ts to "now".
     const open = Array.isArray(lc.open) ? lc.open : [];
