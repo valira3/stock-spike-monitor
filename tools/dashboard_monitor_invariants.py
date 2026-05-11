@@ -291,10 +291,27 @@ def inv_val_gene_trades_match_main(ctx):
             lf_suffix = ""
             if lines_fetched is not None:
                 lf_suffix = f" lines_fetched_on_10k_request={lines_fetched}"
+            # v7.97.0 -- surface resolved deployment so we can tell
+            # whether _resolve_latest_deployment_id picked a stale /
+            # non-running deployment. If lines_fetched=0 AND
+            # deployment_status is REMOVED / FAILED / CRASHED, the
+            # resolver is the bug -- it grabbed the first deployment
+            # in the list regardless of whether it was the running
+            # one. SUCCESS + lines_fetched=0 would be a real
+            # bot-logging issue (or a token scope problem).
+            dep_suffix = ""
+            dep_id = (probe.get("deployment_id") or "")
+            dep_status = (probe.get("deployment_status") or "")
+            if dep_id or dep_status:
+                dep_suffix = (
+                    f" deployment_id={dep_id[:12] or '?'}"
+                    f" deployment_status={dep_status or '?'}"
+                )
             detail = base_detail + (
                 f"\n\n_No Railway log slice attached. Diagnostic: "
                 f"status={status} token_set={probe.get('token_set')} "
-                f"service_set={probe.get('service_set')}{lf_suffix}. {reason}_"
+                f"service_set={probe.get('service_set')}{lf_suffix}{dep_suffix}. "
+                f"{reason}_"
             )
     except Exception as exc:
         detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"

@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.97.0 (2026-05-11) -- Deployment id + status in probe footer
+
+v7.96.0's `lines_fetched_on_10k_request=N` diagnostic landed in monitor issue #583 with the smoking-gun value **N=0**. Railway returned ZERO log lines for our limit=10000 request despite the bot actively trading (Main fired 14 trades today, so tens of thousands of log lines must exist on the running container).
+
+That can only mean one of:
+
+- `_resolve_latest_deployment_id` picked a non-running deployment (REMOVED / FAILED / CRASHED / older successful that's been replaced) — Railway returns deployments newest-first regardless of status, and we just take the first one.
+- The token's scope covers deployment metadata reads but not deployment-log reads.
+- Railway's `deploymentLogs` schema changed and our query targets a no-longer-populated field.
+
+To distinguish these we need to know **which** deployment is being resolved.
+
+### Fix
+
+`probe_railway_access()` already captured `deployment_id` but didn't surface it in the footer. v7.97.0:
+
+1. Adds `deployment_status` to the probe result (read from the same query response that returned `id`).
+2. Updates `inv_val_gene_trades_match_main`'s "no log slice attached" footer to include both as `deployment_id=<first 12 chars> deployment_status=<SUCCESS|REMOVED|FAILED|...>`.
+
+Reading the footer post-deploy:
+
+| Pattern | Interpretation |
+|---|---|
+| `lines_fetched=0 deployment_status=REMOVED` | Resolver bug — we picked a stale deployment. Fix by filtering `_LATEST_DEPLOYMENT_QUERY` to SUCCESS only. |
+| `lines_fetched=0 deployment_status=SUCCESS` | Token scope issue OR bot stdout isn't reaching Railway logs. Investigate Railway token permissions and the bot's stdout sink. |
+| `lines_fetched=N>0 deployment_status=SUCCESS` | Resolver + auth all good. Just no matching grep patterns in window. |
+
+### Tests
+
+`tests/strategy/test_railway_probe_v791.py` — 1 existing test updated to assert `deployment_status="SUCCESS"`, 1 new test covers the `status="REMOVED"` smoking-gun case. 532 strategy tests passed.
+
+### Files
+
+- `tools/railway_log_tail.py` — `probe_railway_access` returns `deployment_status`
+- `tools/dashboard_monitor_invariants.py` — footer includes `deployment_id` + `deployment_status`
+- `tests/strategy/test_railway_probe_v791.py` — updated + new test
+- `bot_version.py` / `trade_genius.py` — `7.96.0` → `7.97.0`
+
+---
+
 ## v7.96.0 (2026-05-11) -- Daily auto-replay + lines_fetched diagnostic + replay timestamp
 
 Three small additions stacked into one release:
