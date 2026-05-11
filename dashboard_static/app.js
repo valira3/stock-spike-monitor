@@ -2552,6 +2552,21 @@
     });
   }
 
+  // v7.53.0 -- expose the per-ticker chart pipeline to IIFE 2 so the
+  // v10 Proximity Matrix (which lives in the executor-render IIFE)
+  // can drop an intraday chart into an expanded row without
+  // duplicating the canvas / hydration / interaction code. Single
+  // entry point so callers don't depend on the internal helpers.
+  if (typeof window !== "undefined") {
+    window.__tgRenderTickerChart = function (tkr, containerEl) {
+      if (!tkr || !containerEl) return;
+      try {
+        containerEl.innerHTML = _pmtxIntradayChartPanel(tkr);
+        _pmtxHydrateIntradayCharts(containerEl);
+      } catch (e) { /* never break the v10 renderer */ }
+    };
+  }
+
   // v5.21.0 — Daily SMA stack panel. Renders the new per-row SMA
   // section inside the expanded Titan detail panel, just after the
   // pipeline-components comp-strip. Returns an HTML string.
@@ -6357,8 +6372,18 @@
            + '<span class="v10-prox-dist-label">' + esc(label) + '</span></span>';
     }
 
+    // v7.53.0 -- track which tickers are expanded across renders so the
+    // table can be rebuilt every state tick without collapsing the
+    // operator's open detail rows. Module-level so it survives the
+    // re-render but resets on page refresh.
+    if (!renderV10ProximityMatrix._expanded) {
+      renderV10ProximityMatrix._expanded = {};
+    }
+    var expanded = renderV10ProximityMatrix._expanded;
+
     var html = '<div class="v10-prox-table-wrap"><table class="v10-prox-table">';
     html += '<thead><tr>'
+         +    '<th></th>'
          +    '<th>Ticker</th>'
          +    '<th title="Last traded price">Last</th>'
          +    '<th title="Opening-range LOW">OR-low</th>'
@@ -6375,7 +6400,12 @@
         .filter(function (p) { return r.phases[p]; })
         .map(function (p) { return _phaseChip(p, r.phases[p]); })
         .join("");
-      html += '<tr>'
+      var isOpen = !!expanded[r.tkr];
+      var caret = isOpen ? "▼" : "▶";
+      var openCls = isOpen ? " v10-prox-row-open" : "";
+      html += '<tr class="v10-prox-row' + openCls + '" data-prox-ticker="' + esc(r.tkr) + '" '
+           +  'title="Click to ' + (isOpen ? 'hide' : 'show') + ' intraday chart">'
+           +   '<td class="v10-prox-caret">' + caret + '</td>'
            +   '<td class="v10-prox-tkr">' + esc(r.tkr) + '</td>'
            +   '<td class="mono">' + (r.px != null ? r.px.toFixed(2) : "—") + '</td>'
            +   '<td class="mono">' + r.orl.toFixed(2) + '</td>'
@@ -6384,9 +6414,42 @@
            +   '<td>' + _distCell(r.closer, r.closer_label) + '</td>'
            +   '<td>' + chips + '</td>'
            + '</tr>';
+      if (isOpen) {
+        html += '<tr class="v10-prox-detail-row" data-prox-detail="' + esc(r.tkr) + '">'
+             +   '<td colspan="8" class="v10-prox-detail-cell">'
+             +     '<div class="v10-prox-chart-mount" data-chart-mount="' + esc(r.tkr) + '"></div>'
+             +   '</td>'
+             + '</tr>';
+      }
     });
     html += '</tbody></table></div>';
     body.innerHTML = html;
+
+    // Hydrate every open chart mount via the legacy intraday pipeline
+    // exposed by IIFE 1 at window.__tgRenderTickerChart. The cache
+    // inside _pmtxHydrateIntradayCharts keys by ticker so a re-render
+    // mid-fetch reuses the in-flight payload instead of double-fetching.
+    var mountFn = (typeof window !== "undefined") && window.__tgRenderTickerChart;
+    if (typeof mountFn === "function") {
+      body.querySelectorAll('[data-chart-mount]').forEach(function (mount) {
+        var tk = mount.getAttribute("data-chart-mount");
+        if (tk) mountFn(tk, mount);
+      });
+    }
+
+    // Event delegation for row clicks. Re-attached on every render
+    // (innerHTML wipes prior listeners). Single listener on body to
+    // keep this O(1) attach.
+    body.onclick = function (ev) {
+      var tr = ev.target && ev.target.closest && ev.target.closest("tr.v10-prox-row");
+      if (!tr) return;
+      var tk = tr.getAttribute("data-prox-ticker");
+      if (!tk) return;
+      if (expanded[tk]) { delete expanded[tk]; }
+      else { expanded[tk] = true; }
+      // Re-render. Cheap; only this card paints.
+      renderV10ProximityMatrix(s);
+    };
   }
 
   // v7.45.0 -- recent activity feed renderer. Reads s.v10.activity

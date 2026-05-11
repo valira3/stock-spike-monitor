@@ -2566,6 +2566,24 @@ body.v10-live .legacy-v10-hidden {
   .v10-prox-table tbody td { padding: 6px 6px; }
   .v10-prox-dist-label { display: none; }
 }
+/* v7.53.0 -- expandable row + per-ticker chart mount */
+.v10-prox-row { cursor: pointer; user-select: none; }
+.v10-prox-row.v10-prox-row-open td { background: rgba(125, 211, 252, 0.04); }
+.v10-prox-row.v10-prox-row-open .v10-prox-caret { color: #7dd3fc; }
+.v10-prox-caret {
+  width: 14px;
+  padding-left: 14px !important;
+  padding-right: 0 !important;
+  color: var(--text-dim);
+  font-size: 9.5px;
+  vertical-align: middle;
+}
+.v10-prox-detail-row td { background: var(--surface-2); padding: 0 !important; border-bottom: 0; }
+.v10-prox-detail-cell { padding: 14px !important; }
+.v10-prox-chart-mount {
+  width: 100%;
+  min-height: 320px;
+}
 
 .act-kind.act-kind-session_start { background: #6b21a8; color: #f3e8ff; }
 .act-kind.act-kind-admit { background: #16a34a; color: #fff; }

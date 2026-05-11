@@ -4,6 +4,71 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.53.0 (2026-05-11) -- v10 Proximity rows expand to per-stock intraday chart
+
+PR46 of the dashboard-redesign loop. Brings back the second half of
+the retired per-stock-chart feature: clicking any row in the v10
+Proximity Matrix now expands to show that ticker's intraday chart
+with OR_high / OR_low overlays, AVWAP, EMA9, PDC, HOD/LOD,
+entries, exits, and trail-stop markers. Same canvas pipeline as
+the legacy Permit Matrix expansion (hidden in v7.27.0) -- now
+reachable from a v10-native entry point.
+
+### Cross-IIFE plumbing
+
+The legacy `_pmtxIntradayChartPanel`, `_pmtxHydrateIntradayCharts`,
+`_drawIntradayChart`, and `_wireIntradayChartInteraction` all live
+in IIFE 1 (lines 1647-2553). The v10 Proximity renderer lives in
+IIFE 2 (added in v7.52.0). Rather than duplicate the chart code,
+we exposed a single entry point on `window`:
+
+```js
+window.__tgRenderTickerChart(tickerSymbol, containerEl)
+```
+
+The helper composes the canvas panel + hydration in IIFE 1, where
+all the supporting code already lives. IIFE 2 calls it from the
+proximity renderer after the table is painted.
+
+### UI changes
+
+  - New caret column (leftmost) on the proximity table -- `▶`
+    when collapsed, `▼` when expanded. Whole row is clickable
+    (cursor: pointer + hover background).
+  - Expanded rows insert a detail `<tr>` with `colspan=8` carrying
+    a `<div data-chart-mount="${ticker}">` mount point that's
+    hydrated immediately via `window.__tgRenderTickerChart`.
+  - Module-level `renderV10ProximityMatrix._expanded` Set tracks
+    expansion state across re-renders so a state-tick poll mid-
+    inspection doesn't collapse the operator's open chart.
+  - Existing chart cache (TTL 60s, keyed by ticker) means a poll
+    cycle during inspection won't re-fetch bars unnecessarily.
+  - Event delegation on `#v10-prox-body` (single `onclick`
+    re-attached each render) instead of per-row listeners.
+
+### Files
+
+  - `dashboard_static/app.js` -- new `window.__tgRenderTickerChart`
+    helper + reworked `renderV10ProximityMatrix` with caret column,
+    expansion state, mount-point hydration, click delegation.
+  - `dashboard_static/app.css` -- `.v10-prox-row`, `.v10-prox-caret`,
+    `.v10-prox-detail-row`, `.v10-prox-chart-mount` rules.
+  - `bot_version.py` / `trade_genius.py` -- 7.52.0 -> 7.53.0
+  - `docs/dashboard_redesign_v2/pr46_screenshots/` -- desktop +
+    mobile showing AAPL expanded with chart canvas.
+
+### Risk
+
+Reuses the existing intraday-chart pipeline (which has shipped and
+been operational since v6.0.0). The new mount entry point is a
+thin wrapper around two already-exported internals. All v10
+state-driven re-renders happen inside try/catch in the Main poll
+loop, so a chart-hydration failure cannot break the Main panel.
+
+Tests: pytest tests/strategy/ -- 388 passed, 8 skipped.
+
+---
+
 ## v7.52.0 (2026-05-11) -- v10 Proximity Matrix + per-pid equity reads live NAV
 
 PR45 of the dashboard-redesign loop. Two fixes:
