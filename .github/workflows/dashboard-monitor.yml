@@ -26,15 +26,16 @@ name: dashboard-monitor
 
 on:
   schedule:
-    # Cron is UTC. US RTH = 09:30 -> 16:00 ET.
-    # In EDT (UTC-4): 13:30 -> 20:00 UTC.
-    # In EST (UTC-5): 14:30 -> 21:00 UTC.
-    # Cover the union: 13:30 UTC -> 21:00 UTC, Mon-Fri.
-    # GHA cron uses 5-field syntax; */5 13-20 covers 13:00, 13:05, ...,
-    # 20:55. The first poll at 13:00 might be before EDT open (09:00 ET),
-    # but the invariants short-circuit when v10 isn't in RTH (mode=PRE
-    # etc.) so they pass cheaply.
-    - cron: "*/5 13-20 * * 1-5"
+    # Cron is UTC. v7.67.0 -- extended to cover US premarket through RTH.
+    # Premarket: 04:00 -> 09:30 ET = 08:00 -> 13:30 UTC (EDT) / 09:00 -> 14:30 UTC (EST)
+    # RTH:       09:30 -> 16:00 ET = 13:30 -> 20:00 UTC (EDT) / 14:30 -> 21:00 UTC (EST)
+    # Union covering both seasons (DST-safe): 08:00 -> 20:55 UTC, Mon-Fri.
+    # */5 8-20 covers 08:00, 08:05, ..., 20:55. Edge hours before EDT
+    # premarket open or after EST RTH close fall on weekends/PRE/POST mode
+    # so the invariants short-circuit (v10_live_mode_on skips when
+    # regime mode isn't RTH).
+    # Per-day firings: 13 hours x 12/hr = 156 GHA minutes/day at worst.
+    - cron: "*/5 8-20 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:

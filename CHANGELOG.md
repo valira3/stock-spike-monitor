@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.67.0 (2026-05-11) -- Dashboard monitor extended to premarket hours
+
+Operator: "Can you update it to start running during premarket hours?"
+
+The v7.65.0 monitor cron only fired during RTH (13:00-20:00 UTC,
+Mon-Fri). Extended to cover **US premarket + RTH** so deviations
+that emerge during the 04:00-09:30 ET window (gap-day setup, OR
+collection, premarket positioning) get caught the same as RTH
+deviations.
+
+### Schedule
+
+  - **Was**: `*/5 13-20 * * 1-5` (every 5 min, 13:00-20:55 UTC,
+    Mon-Fri) -- covered EDT/EST RTH only.
+  - **Now**: `*/5 8-20 * * 1-5` (every 5 min, 08:00-20:55 UTC,
+    Mon-Fri) -- DST-safe union of premarket (04:00 ET) through RTH
+    close (16:00 ET). Maximum 156 runs/day (13 hours × 12/hour).
+
+### Invariant behavior during premarket
+
+No invariant code changes needed -- they're already premarket-safe.
+Only `v10_live_mode_on` gates on RTH session mode and short-circuits
+to OK when `regime.mode in (PRE, POST_CLOSE, AFTERHOURS, "")`. All
+other invariants (state reachability, equity-vs-baseline match,
+risk-cap math, OR window well-formedness, daily-kill consistency,
+etc.) apply outside RTH too.
+
+### Files
+
+  - `.github/workflows/dashboard-monitor.yml` -- cron expression
+    `*/5 13-20` -> `*/5 8-20` plus updated comment block
+  - `docs/dashboard_monitor_setup.md` -- schedule description
+    updated
+  - `bot_version.py` / `trade_genius.py` -- 7.66.0 -> 7.67.0
+
+Pure schedule change. No invariant or behavior change in the
+monitor itself.
+
+---
+
 ## v7.66.0 (2026-05-11) -- Align monitor workflow to existing GHA secret names
 
 Operator screenshot confirmed three of the four required GHA secrets
