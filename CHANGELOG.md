@@ -4,6 +4,82 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.85.0 (2026-05-11) -- Signal-bus emit/dispatch forensics + wider grep window
+
+v7.84.0 deployed and the operator confirmed Railway secrets work.
+Next monitor run (#552 at 13:56 CT) STILL filed the
+`val_gene_trades_match_main` violation but with the explainer
+fallback ("No Railway log slice attached") -- meaning `grep_logs`
+returned empty for the [V79-MIRROR-*] pattern despite v7.83.0's
+log lines being deployed.
+
+Two possible causes:
+  1. grep window only fetched the last 500 log lines (~6-10 min);
+     Main's most recent fire may have been off the back of the buffer.
+  2. Val's `_on_signal` is never actually being called (signal-bus
+     drift -- listener registered but emit doesn't reach it, OR
+     emit doesn't fire at all).
+
+Pre-v7.85.0 there was no way to distinguish (1) from (2). The
+`tg._emit_signal` function produced ZERO log output on the happy
+path -- only on listener exceptions. So a quiet bus could mean
+"all working, just past the window" OR "totally broken, no emits".
+
+### Two new forensic log lines in `trade_genius._emit_signal`
+
+- `[SIGNAL-BUS-EMIT] kind=ENTRY_LONG ticker=TSLA n_listeners=1`
+  -- one per call to _emit_signal
+- `[SIGNAL-BUS-DISPATCH] kind=ENTRY_LONG ticker=TSLA listener=TradeGeniusBase._on_signal`
+  -- one per listener, before the daemon thread spawns
+
+After this PR deploys, every Main fire produces a 3-tier log trail:
+
+```
+[SIGNAL-BUS-EMIT] kind=ENTRY_LONG ticker=TSLA n_listeners=1   <-- Main emits
+[SIGNAL-BUS-DISPATCH] ... listener=TradeGeniusBase._on_signal <-- bus dispatches
+[V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA ...         <-- Val receives
+[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181 ...         <-- Val builds order
+[Val] [ALPACA-REQ] sym=TSLA side=BUY ...                      <-- Val submits
+[Val] [ALPACA-RESP] id=... status=...                         <-- Alpaca responds
+```
+
+Any gap pinpoints the exact failure layer:
+  - EMIT count >0, DISPATCH count =0 -> listeners list empty at emit time
+  - DISPATCH count >0, RECV count =0 -> _on_signal silently dropped before logging
+  - RECV count >0, DISPATCH (V79-MIRROR-DISPATCH) count =0 -> qty<=0 or client=None
+  - DISPATCH count >0, ALPACA-REQ count =0 -> submission helper raised
+  - ALPACA-REQ count >0, ALPACA-RESP count =0 -> Alpaca returned non-200
+
+### Widened grep window
+
+`inv_val_gene_trades_match_main` now fetches `limit=3000` (was 1000)
+which covers ~1 hour of bot activity at typical scan-cycle log
+volume. Catches any Main fire within the last monitor cycle even
+if Main was quiet recently.
+
+Also added a new "Railway [SIGNAL-BUS-*] slice (emit + dispatch
+counts)" section to the issue body so the diagnostic chain is
+explicit at every layer.
+
+### Files
+
+- `trade_genius.py`: 2 new logger.info calls in `_emit_signal`
+- `tools/dashboard_monitor_invariants.py`: wider grep + new
+  bus_slice section in `inv_val_gene_trades_match_main`
+- `bot_version.py`, CHANGELOG: version trio
+
+Tests: **482 passed**, 8 skipped (no regressions; pure
+add-only changes).
+
+### Operator action
+
+Redeploy Railway. Next `val_gene_trades_match_main` violation will
+include the 3-tier log diagnostic (EMIT / DISPATCH / RECV) directly
+in the issue body. From the gap location we can pinpoint exactly
+where the mirror drops and ship the actual fix.
+
+---
+
 ## v7.84.0 (2026-05-11) -- Monitor auto-pulls Railway log slice into Val mirror failure detail
 
 Operator: "I thought you should be able to pull logs from railway
