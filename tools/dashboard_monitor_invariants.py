@@ -224,13 +224,52 @@ def inv_val_gene_trades_match_main(ctx):
         if log_sections:
             detail = base_detail + "\n\n" + "\n\n".join(log_sections)
         else:
-            # No log context (secrets unset OR no mirror logs in window).
+            # v7.91.0 -- distinguish "secrets missing" from "secrets
+            # work but window empty" so the operator knows which leg
+            # to chase. The probe issues one GraphQL call against
+            # Railway to verify auth + service resolution.
+            from tools.railway_log_tail import probe_railway_access
+            probe = probe_railway_access()
+            status = probe.get("status", "unknown")
+            footers = {
+                "missing_token": (
+                    "RAILWAY_API_TOKEN env var is empty in this "
+                    "workflow run. Add the secret at Settings -> "
+                    "Secrets and variables -> Actions -> Repository "
+                    "secrets with name RAILWAY_API_TOKEN."
+                ),
+                "missing_service": (
+                    "RAILWAY_SERVICE_ID env var is empty in this "
+                    "workflow run. Add the secret at Settings -> "
+                    "Secrets and variables -> Actions -> Repository "
+                    "secrets with name RAILWAY_SERVICE_ID (the "
+                    "service UUID, not the project id)."
+                ),
+                "auth_failed": (
+                    "Both env vars are set but the Railway GraphQL "
+                    "call failed. Most likely cause: the token "
+                    "is missing project log-read scope, OR "
+                    "RAILWAY_SERVICE_ID points at a project id "
+                    "instead of a service id."
+                ),
+                "no_deployment": (
+                    "Auth succeeded but the service has zero "
+                    "deployments. Verify RAILWAY_SERVICE_ID points "
+                    "at the running tradegenius service."
+                ),
+                "ok": (
+                    "Railway credentials probe OK -- the log "
+                    "fetch succeeded but the recent window genuinely "
+                    "contains no [SIGNAL-BUS-*] / [V79-MIRROR-*] / "
+                    "[Val|Gene] [ALPACA-*] lines. Main's signal "
+                    "emits may not be reaching Railway stdout."
+                ),
+            }
+            reason = footers.get(status, f"unexpected probe status: {status!r}")
             detail = base_detail + (
-                "\n\n_No Railway log slice attached -- "
-                "RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID may be unset, "
-                "OR no [V79-MIRROR-*] log lines in the recent window. "
-                "Set the secrets at Settings -> Secrets -> Actions to "
-                "enable automatic log context._"
+                f"\n\n_No Railway log slice attached. Diagnostic: "
+                f"status={status} token_set={probe.get('token_set')} "
+                f"service_set={probe.get('service_set')}. {reason}_"
             )
     except Exception as exc:
         detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"

@@ -188,6 +188,74 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     return out
 
 
+# v7.91.0 -- single-leg diagnostic probe. fetch_recent_logs swallows
+# every failure mode into [] (auth fail, schema drift, network
+# error, empty window). That uniformity is correct for callers but
+# made today's "Why is the log slice empty?" question unanswerable
+# without inspecting the dashboard monitor's workflow log. This
+# probe returns a structured status so the monitor can surface
+# WHICH leg is broken in the issue body and in stdout.
+#
+# Return values, in order of detection:
+#   "missing_token"     RAILWAY_API_TOKEN env var is empty
+#   "missing_service"   RAILWAY_SERVICE_ID env var is empty
+#   "auth_failed"       GraphQL call returned None (HTTP error / 401 /
+#                       network failure / schema drift). Most likely
+#                       cause when both env vars look set: token
+#                       missing the project log-read scope, or
+#                       service_id pointing at a project_id instead
+#                       of a service_id.
+#   "no_deployment"     auth ok but the service has zero deployments
+#                       (very unusual; either a freshly-created service
+#                       or wrong service_id pointing at an empty one).
+#   "ok"                fetched the latest deployment id without error.
+#                       At least confirms auth + service resolution
+#                       work; logs may still be empty due to retention
+#                       but not because of credentials.
+def probe_railway_access() -> dict:
+    """One-shot diagnostic of Railway credential health.
+
+    Returns a dict with keys:
+      status        one of the strings above
+      token_set     bool -- RAILWAY_API_TOKEN env var is non-empty
+      service_set   bool -- RAILWAY_SERVICE_ID env var is non-empty
+      deployment_id resolved deployment id when status=="ok", else ""
+    """
+    token = (os.environ.get("RAILWAY_API_TOKEN", "") or "").strip()
+    service_id = (os.environ.get("RAILWAY_SERVICE_ID", "") or "").strip()
+    out = {
+        "status": "ok",
+        "token_set": bool(token),
+        "service_set": bool(service_id),
+        "deployment_id": "",
+    }
+    if not token:
+        out["status"] = "missing_token"
+        return out
+    if not service_id:
+        out["status"] = "missing_service"
+        return out
+    api_url = (os.environ.get("RAILWAY_API_URL", "") or "").strip() or _DEFAULT_API
+    resp = _gql(token, _LATEST_DEPLOYMENT_QUERY, {"serviceId": service_id},
+                api_url=api_url)
+    if not resp or "data" not in resp:
+        out["status"] = "auth_failed"
+        return out
+    try:
+        edges = (resp["data"]["deployments"] or {}).get("edges") or []
+    except (KeyError, TypeError):
+        out["status"] = "auth_failed"
+        return out
+    if not edges:
+        out["status"] = "no_deployment"
+        return out
+    try:
+        out["deployment_id"] = str(edges[0]["node"]["id"])
+    except (KeyError, TypeError):
+        out["status"] = "auth_failed"
+    return out
+
+
 def scan_for_failures(logs: list[dict],
                       signatures: dict[str, str] | None = None,
                       ) -> dict[str, dict]:
