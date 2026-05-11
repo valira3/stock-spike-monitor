@@ -31,10 +31,17 @@ repository secret**:
 
 | Secret | Value |
 |---|---|
-| `DASHBOARD_BASE_URL` | `https://tradegenius.up.railway.app` (no trailing slash) |
-| `DASHBOARD_SESSION_SECRET` | Same hex value the live bot has for `DASHBOARD_SESSION_SECRET` on Railway (Settings → Environment Variables → `DASHBOARD_SESSION_SECRET`). Must be ≥ 32 bytes hex (= 64 hex chars). |
-| `TELEGRAM_BOT_TOKEN` | Existing bot token (the same `TELEGRAM_TOKEN` the live bot uses) |
-| `TELEGRAM_ADMIN_CHAT_ID` | Chat ID where alerts post. Get from `@userinfobot` on Telegram, or look up the existing `TELEGRAM_CHAT_ID` env var on Railway. |
+| `DASHBOARD_URL` | `https://tradegenius.up.railway.app` (no trailing slash). Operator already has this secret -- the workflow reads it. |
+| `DASHBOARD_SESSION_SECRET` | Hex; same value the live bot has on Railway under `DASHBOARD_SESSION_SECRET`. Must be ≥ 32 bytes hex (= 64 hex chars). **Add this one if missing.** |
+| `TELEGRAM_TP_TOKEN` | Existing TG bot token. Operator already has this secret. |
+| `TELEGRAM_TP_CHAT_ID` | Chat id to post alerts. Operator already has this secret. |
+
+The Python script itself uses neutral env names (`DASHBOARD_BASE_URL`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`); the workflow maps the
+operator's GHA secret names to those via the `env:` block in
+`.github/workflows/dashboard-monitor.yml`. To run locally with
+different naming, just set the script env names directly (see
+**Local testing** at the bottom).
 
 `GITHUB_TOKEN` for issue filing is provided automatically by the
 workflow runner; nothing to set.

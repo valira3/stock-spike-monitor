@@ -4,6 +4,41 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.66.0 (2026-05-11) -- Align monitor workflow to existing GHA secret names
+
+Operator screenshot confirmed three of the four required GHA secrets
+are already set under different names than v7.65.0 assumed:
+
+| v7.65.0 assumed | Operator's existing secret |
+|---|---|
+| `DASHBOARD_BASE_URL` | `DASHBOARD_URL` |
+| `TELEGRAM_BOT_TOKEN` | `TELEGRAM_TP_TOKEN` |
+| `TELEGRAM_ADMIN_CHAT_ID` | `TELEGRAM_TP_CHAT_ID` |
+
+### Fix
+
+`.github/workflows/dashboard-monitor.yml` now reads from the
+operator's existing secret names and maps them to the Python
+script's neutral env-var contract (the script keeps its
+provider-agnostic names so it stays runnable locally with any
+naming).
+
+The 4th secret `DASHBOARD_SESSION_SECRET` is the only one that may
+need to be added; same hex value the live bot has on Railway under
+the same name. The setup doc now flags it as "**Add this one if
+missing.**"
+
+### Files
+
+  - `.github/workflows/dashboard-monitor.yml` -- env: block remapped
+  - `docs/dashboard_monitor_setup.md` -- table updated, local-vs-GHA
+    naming distinction documented
+  - `bot_version.py` / `trade_genius.py` -- 7.65.0 -> 7.66.0
+
+Pure config rename. No behavior change. Monitor unchanged.
+
+---
+
 ## v7.65.0 (2026-05-11) -- RTH live dashboard monitor + auto-fix loop
 
 Operator request: "set up a live monitor to run during RTH hours to
