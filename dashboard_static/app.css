@@ -2584,6 +2584,22 @@ body.v10-live .legacy-v10-hidden {
   width: 100%;
   min-height: 320px;
 }
+/* v7.54.0 -- pre-OR-lock rows are dim so the operator can still see
+   the universe + per-pid phase chips but the eye lands on the locked
+   rows first. */
+.v10-prox-row.v10-prox-row-unlocked td { color: var(--text-dim); }
+.v10-prox-row.v10-prox-row-unlocked .v10-prox-tkr { color: #9ca3af; }
+.v10-prox-pending {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #1a2030;
+  color: #6b7280;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
 
 .act-kind.act-kind-session_start { background: #6b21a8; color: #f3e8ff; }
 .act-kind.act-kind-admit { background: #16a34a; color: #fff; }
