@@ -2210,3 +2210,117 @@ body.v10-live .legacy-v10-hidden {
   .v10-gauges-row { gap: 8px; }
   .v10-gauge { flex: 1 1 100%; }
 }
+
+/* ============================================================
+   v7.42.0 -- position progress bar
+   Renders below each open-position table row. Shows a single
+   axis from stop -> entry -> 1R -> target with the current
+   mark as a moving needle marked with the R-multiple gain.
+============================================================ */
+.pos-progress-row td.pos-progress-cell {
+  padding: 4px 12px 12px;
+  border-top: 0;
+  background: transparent;
+}
+.pos-progress {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+.pos-progress-track {
+  position: relative;
+  height: 10px;
+  background: #11161e;
+  border-radius: 5px;
+  overflow: visible;
+  margin-bottom: 14px;
+}
+.pos-progress-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 10px;
+  pointer-events: none;
+}
+.pos-progress-zone.red {
+  background: linear-gradient(90deg,
+              rgba(239, 68, 68, 0.55) 0%,
+              rgba(239, 68, 68, 0.15) 100%);
+  border-radius: 5px 0 0 5px;
+}
+.pos-progress-zone.neutral {
+  background: rgba(75, 85, 99, 0.25);
+}
+.pos-progress-zone.green {
+  background: linear-gradient(90deg,
+              rgba(34, 197, 94, 0.15) 0%,
+              rgba(34, 197, 94, 0.7) 100%);
+  border-radius: 0 5px 5px 0;
+}
+.pos-progress-tick {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 14px;
+  background: #6b7280;
+  transform: translateX(-1px);
+  border-radius: 1px;
+}
+.pos-progress-tick::after {
+  content: attr(data-label);
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: #6b7280;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.pos-progress-tick.end { background: #22c55e; }
+.pos-progress-tick.end::after { color: #22c55e; }
+.pos-progress-needle {
+  position: absolute;
+  top: -4px;
+  width: 4px;
+  height: 18px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  transform: translateX(-2px);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6),
+              0 0 8px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+}
+.pos-progress-needle.up { background: #22c55e; }
+.pos-progress-needle.down { background: #ef4444; }
+.pos-progress-needle .needle-label {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  color: #e5e7eb;
+  background: #0a0d12;
+  border: 1px solid #1f2937;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.pos-progress-needle.up .needle-label { color: #86efac; border-color: rgba(34,197,94,0.4); }
+.pos-progress-needle.down .needle-label { color: #fca5a5; border-color: rgba(239,68,68,0.4); }
+.pos-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+.pos-progress-meta .pp-meta-center {
+  color: #9ca3af;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .pos-progress-row td.pos-progress-cell { padding: 4px 8px 10px; }
+  .pos-progress-needle .needle-label { font-size: 9px; padding: 0 3px; }
+  .pos-progress-tick::after { font-size: 8px; }
+  .pos-progress-meta { font-size: 9px; }
+}

@@ -304,6 +304,62 @@
             && Number.isFinite(_unrNum)) {
           pctTxt = fmtPct((_unrNum / (_entryNum * _shNum)) * 100);
         }
+        // v7.42.0 -- progress bar geometry: single axis from stop to target
+        // with entry / 1R / current-mark needle. RR=2.5 (v10 keystone).
+        const _stopNum = Number(p.stop);
+        const _markNum = Number(p.mark);
+        var progressRow = "";
+        if (Number.isFinite(_stopNum) && _stopNum > 0
+            && Number.isFinite(_entryNum) && _entryNum > 0
+            && Number.isFinite(_markNum) && _markNum > 0
+            && Math.abs(_entryNum - _stopNum) > 1e-4) {
+          var isLong = p.side !== "SHORT";
+          var stopPx = _stopNum;
+          var entryPx = _entryNum;
+          var markPx = _markNum;
+          var targetPx = isLong
+            ? entryPx + 2.5 * (entryPx - stopPx)
+            : entryPx - 2.5 * (stopPx - entryPx);
+          var span = targetPx - stopPx; // signed; negative for short
+          function _toPct(px) {
+            if (Math.abs(span) < 1e-9) return 50;
+            var pos = (px - stopPx) / span * 100;
+            return Math.max(0, Math.min(100, pos));
+          }
+          var entryAt = _toPct(entryPx);
+          var oneRPx = isLong
+            ? entryPx + (entryPx - stopPx)
+            : entryPx - (stopPx - entryPx);
+          var oneRAt = _toPct(oneRPx);
+          var markAt = _toPct(markPx);
+          var r = isLong
+            ? (markPx - entryPx) / (entryPx - stopPx)
+            : (entryPx - markPx) / (stopPx - entryPx);
+          var rTxt = (r >= 0 ? "+" : "") + r.toFixed(2) + "R";
+          progressRow =
+            '<tr class="pos-progress-row" data-pos-ticker="' + escapeHtml(p.ticker) + '">' +
+              '<td colspan="8" class="pos-progress-cell">' +
+                '<div class="pos-progress">' +
+                  '<div class="pos-progress-track">' +
+                    '<div class="pos-progress-zone red"     style="left:0%; width:' + entryAt.toFixed(2) + '%"></div>' +
+                    '<div class="pos-progress-zone neutral" style="left:' + entryAt.toFixed(2) + '%; width:' + (oneRAt - entryAt).toFixed(2) + '%"></div>' +
+                    '<div class="pos-progress-zone green"   style="left:' + oneRAt.toFixed(2) + '%; width:' + (100 - oneRAt).toFixed(2) + '%"></div>' +
+                    '<span class="pos-progress-tick" style="left:' + entryAt.toFixed(2) + '%" data-label="entry"></span>' +
+                    '<span class="pos-progress-tick" style="left:' + oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
+                    '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                    '<span class="pos-progress-needle ' + (r >= 0 ? 'up' : 'down') + '" style="left:' + markAt.toFixed(2) + '%">' +
+                      '<span class="needle-label">' + escapeHtml(rTxt) + '</span>' +
+                    '</span>' +
+                  '</div>' +
+                  '<div class="pos-progress-meta">' +
+                    '<span class="pp-meta-left">stop ' + fmtPx(stopPx) + '</span>' +
+                    '<span class="pp-meta-center">1R ' + fmtPx(oneRPx) + '</span>' +
+                    '<span class="pp-meta-right">target ' + fmtPx(targetPx) + '</span>' +
+                  '</div>' +
+                '</div>' +
+              '</td>' +
+            '</tr>';
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
@@ -313,7 +369,7 @@
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
           <td class="right ${pnlCls}">${pctTxt}</td>
-        </tr>`;
+        </tr>${progressRow}`;
       }).join("");
       body.innerHTML = `<table>
         <thead><tr>
@@ -3992,6 +4048,8 @@
   if (typeof window !== "undefined") {
     window.__tgRenderWeatherCheck = renderWeatherCheck;
     window.__tgRenderPermitMatrix = renderPermitMatrix;
+    // v7.42.0 -- expose renderPositions for smoke render + future tests.
+    window.__tgRenderPositions = renderPositions;
     // (v7.40.0 kill-switch banner export lives in the next IIFE
     // where renderKillSwitchBanner is defined.)
     // v5.31.4 — expose Session color helper to the per-executor IIFE
@@ -4809,6 +4867,62 @@
               _stopTxt += ` <span class="trail-badge" title="Trail stop is armed \u2014 the effective stop now follows price, not the original hard stop">TRAIL</span>`;
             }
           }
+          // v7.42.0 -- progress bar uses stop from Main state (cross-
+          // referenced above), entry from broker (avg_entry), mark from
+          // broker (current_price). Target derived via RR=2.5.
+          var _progressRow = "";
+          var _stopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
+                              ? _stopInfo.eff : null;
+          var _entryForBar = Number(p.avg_entry);
+          var _markForBar  = Number(p.current_price);
+          if (_stopForBar != null
+              && Number.isFinite(_entryForBar) && _entryForBar > 0
+              && Number.isFinite(_markForBar)  && _markForBar  > 0
+              && Math.abs(_entryForBar - _stopForBar) > 1e-4) {
+            var _isLong = p.side !== "SHORT";
+            var _targetForBar = _isLong
+              ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
+              : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
+            var _span = _targetForBar - _stopForBar;
+            function _exPct(px) {
+              if (Math.abs(_span) < 1e-9) return 50;
+              var pos = (px - _stopForBar) / _span * 100;
+              return Math.max(0, Math.min(100, pos));
+            }
+            var _entryAt = _exPct(_entryForBar);
+            var _oneRPx = _isLong
+              ? _entryForBar + (_entryForBar - _stopForBar)
+              : _entryForBar - (_stopForBar - _entryForBar);
+            var _oneRAt = _exPct(_oneRPx);
+            var _markAt = _exPct(_markForBar);
+            var _r = _isLong
+              ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
+              : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
+            var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
+            _progressRow =
+              '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
+                '<td colspan="8" class="pos-progress-cell">' +
+                  '<div class="pos-progress">' +
+                    '<div class="pos-progress-track">' +
+                      '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
+                      '<div class="pos-progress-zone neutral" style="left:' + _entryAt.toFixed(2) + '%; width:' + (_oneRAt - _entryAt).toFixed(2) + '%"></div>' +
+                      '<div class="pos-progress-zone green"   style="left:' + _oneRAt.toFixed(2) + '%; width:' + (100 - _oneRAt).toFixed(2) + '%"></div>' +
+                      '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
+                      '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
+                      '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                      '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
+                        '<span class="needle-label">' + esc(_rTxt) + '</span>' +
+                      '</span>' +
+                    '</div>' +
+                    '<div class="pos-progress-meta">' +
+                      '<span class="pp-meta-left">stop ' + fmtNum(_stopForBar, 2) + '</span>' +
+                      '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
+                      '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
+                    '</div>' +
+                  '</div>' +
+                '</td>' +
+              '</tr>';
+          }
           return `<tr data-pos-ticker="${esc(p.symbol)}">
             <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span></td>
             <td><span class="${sideCls}">${esc(p.side)}</span></td>
@@ -4818,7 +4932,7 @@
             <td class="right">${_stopTxt}</td>
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
-          </tr>`;
+          </tr>${_progressRow}`;
         }).join("");
         posBody.innerHTML = `<table>
           <thead><tr>
