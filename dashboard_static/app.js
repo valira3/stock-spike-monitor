@@ -3897,6 +3897,33 @@
     var v10Trades = (myDayState && myDayState.trades_today) || 0;
     var trades = (brokerTrades != null) ? brokerTrades : v10Trades;
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
+    // v7.63.0 -- compute per-ticker top count for this pid so the
+    // Val/Gene Trades gauge matches Main's "X total · top ticker N/5"
+    // framing (v7.57.0). Per-ticker counts come from execData.trades_today
+    // (a list of trade dicts from the broker's trade_history); fall back
+    // to v10 day_states which only have per-(pid,ticker) FSM counts.
+    var perTickerCount = {};
+    if (execData && Array.isArray(execData.trades_today)) {
+      execData.trades_today.forEach(function (t) {
+        var tk = t && t.ticker;
+        if (!tk) return;
+        perTickerCount[tk] = (perTickerCount[tk] || 0) + 1;
+      });
+    }
+    // Augment with v10 FSM trades_today (covers the ORB_PORTFOLIO_FIRE=1
+    // case where v10 fired directly).
+    for (var k = 0; k < dayStates.length; k++) {
+      var d2 = dayStates[k];
+      if ((d2.portfolio_id || "").toLowerCase() !== pid) continue;
+      if (!d2.ticker) continue;
+      var n = d2.trades_today || 0;
+      if (n > (perTickerCount[d2.ticker] || 0)) perTickerCount[d2.ticker] = n;
+    }
+    var topTicker = 0;
+    Object.keys(perTickerCount).forEach(function (tk) {
+      if (perTickerCount[tk] > topTicker) topTicker = perTickerCount[tk];
+    });
+
     var openRisk = rb.open_risk || 0;
     var maxRisk = rb.max_risk_dollars || 0;
     var openCount = rb.open_count || 0;
@@ -3907,11 +3934,13 @@
     var killPct = (killThr > 0 && realizedToday < 0)
       ? Math.abs(realizedToday) / killThr * 100 : 0;
 
-    var tradesPct = maxTrades > 0 ? (trades / maxTrades * 100) : 0;
+    // v7.63.0 -- gauge fill follows top-ticker / cap (the actually-
+    // binding constraint), matching Main's framing.
+    var tradesPct = maxTrades > 0 ? (topTicker / maxTrades * 100) : 0;
     var riskPct = maxRisk > 0 ? (openRisk / maxRisk * 100) : 0;
 
     var countEl = execField(panel, "v10-pid-count");
-    if (countEl) countEl.textContent = "· " + trades + " / " + maxTrades;
+    if (countEl) countEl.textContent = "· " + trades + " today";
     var summaryEl = execField(panel, "v10-pid-summary");
     if (summaryEl) {
       if (killTriggered) {
@@ -3953,9 +3982,12 @@
     var body = execField(panel, "v10-pid-body");
     if (body) {
       var html = '';
-      html += _gaugeHtml('Trades',
-        trades + ' / ' + maxTrades +
-          ' (' + tradesPct.toFixed(0) + '%)',
+      // v7.63.0 -- label + value match Main's v7.57.0 framing so an
+      // operator switching tabs sees the same shape: "Trades today
+      // (cap 5/ticker)" / "X total · top ticker N/5".
+      html += _gaugeHtml(
+        'Trades today (cap ' + maxTrades + '/ticker)',
+        trades + ' total · top ticker ' + topTicker + '/' + maxTrades,
         tradesPct);
       html += _gaugeHtml('Concurrent risk',
         '$' + Math.round(openRisk).toLocaleString() +
@@ -5184,14 +5216,35 @@
 
     // Per-pid + per-ticker trade counts (used by both gauge math and
     // the per-pid strip below).
-    var perPidTrades = {};        // pid -> total trades_today on that book
-    var maxTickerPerPid = {};     // pid -> highest single-ticker count
+    // v7.63.0 -- fix double-counting bug. The backend writes
+    // broker_trades_today (book total) redundantly onto every
+    // day_state row of a pid, so summing across rows multiplied the
+    // total by the ticker count (e.g. main with 3 trades on AAPL+NVDA
+    // was being displayed as 6). Now:
+    //   - perPidTrades[pid]: take broker_trades_today ONCE per pid
+    //     (authoritative book total); fall back to summing v10
+    //     trades_today across this pid's rows when broker_* is absent.
+    //   - maxTickerPerPid[pid]: always use the per-ticker v10
+    //     trades_today; broker_trades_today is a book total, not a
+    //     per-ticker count, so using it for "top ticker" was a
+    //     second bug.
+    var perPidTrades = {};
+    var maxTickerPerPid = {};
+    var brokerSeenForPid = {};   // pid -> have we captured broker_trades_today yet?
     for (var j = 0; j < dayStates.length; j++) {
       var ds = dayStates[j];
       var p = ds.portfolio_id || "?";
-      var n = _tradesForDs(ds);
-      perPidTrades[p] = (perPidTrades[p] || 0) + n;
-      if (n > (maxTickerPerPid[p] || 0)) maxTickerPerPid[p] = n;
+      var vt = ds.trades_today || 0;
+      if (ds.broker_trades_today != null) {
+        if (!brokerSeenForPid[p]) {
+          perPidTrades[p] = ds.broker_trades_today;
+          brokerSeenForPid[p] = true;
+        }
+      } else {
+        // No broker hint -- accumulate per-ticker v10 counts.
+        perPidTrades[p] = (perPidTrades[p] || 0) + vt;
+      }
+      if (vt > (maxTickerPerPid[p] || 0)) maxTickerPerPid[p] = vt;
     }
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
 
