@@ -4,6 +4,98 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.48.0 (2026-05-11) -- Fix: route Main panel v10 renderers through window exports
+
+PR41 of the dashboard-redesign loop. Discovered while staging the
+visual-polish pass: the Main panel's v10 banner, ticker matrix,
+activity feed, and kill-switch banner have been **silently
+broken since v7.41.0** (the v10 banner) and v7.44.0/v7.45.0 (matrix
++ activity).
+
+### The hidden bug
+
+`dashboard_static/app.js` is split into two IIFEs:
+  - IIFE 1 (lines 1-4093) -- Main panel poll loop + applyState
+  - IIFE 2 (lines 4094-6213) -- tab switcher, executor (Val/Gene)
+    poll loop, and all of the new v10 renderers added during the
+    redesign loop.
+
+The v10 renderers (`renderV10DayStatus`, `renderV10TickerMatrix`,
+`renderV10ActivityFeed`, `renderKillSwitchBanner`) physically live
+in IIFE 2 because that's where the executor render path lives.
+But Main's `applyState` (in IIFE 1) called them as bare identifiers:
+
+```js
+try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
+try { renderV10TickerMatrix(s); } catch (e) { /* never break Main */ }
+try { renderV10ActivityFeed(s); } catch (e) { /* never break Main */ }
+try { renderKillSwitchBanner(s, "main"); } catch (e) { ... }
+```
+
+Each call threw `ReferenceError: renderV10DayStatus is not defined`
+the moment Main polled `/api/state`, and the `try { } catch (e) { }`
+swallowed it. The Main tab has been showing the static skeleton
+placeholders ("Waiting for v10 session start...") for the entire
+v7.41 -> v7.47 stretch -- ten paint cycles silently dropped per
+second.
+
+Same hidden-bug *pattern* as the v7.44.0 `escapeHtml -> esc()` fix:
+a renderer that worked in one IIFE was silently broken in the other,
+swallowed by the defensive try/catch, and the screenshots taken
+during development never caught it because they were against
+fixtures or live state on a tab where the function was actually in
+scope.
+
+### The fix
+
+The Object.defineProperty getters on `window.__tgRenderKillSwitchBanner`,
+`__tgRenderV10DayStatus`, `__tgRenderV10TickerMatrix`, and
+`__tgRenderV10ActivityFeed` were already added in v7.40.0 / v7.41.0
+/ v7.45.0 (originally for the executor panel render path). The
+Main panel just had to be switched over to use them:
+
+```js
+try {
+  if (typeof window.__tgRenderV10DayStatus === "function")
+    window.__tgRenderV10DayStatus(s);
+} catch (e) { /* never break Main */ }
+```
+
+Falls back to a no-op if the export isn't installed yet (initial
+page load before IIFE 2 has run); subsequent polls catch up.
+
+### Impact
+
+After this fix the Main tab v10 zone actually paints:
+  - kill-switch banner (red gradient when daily-loss tripped)
+  - LIVE/BOOT/LEGACY mode pill + VIX gate + Day OK/BLOCKED
+  - three full-width gauges (Trades / Concurrent risk / Daily-kill)
+  - per-portfolio strip with each pid's stats inline
+  - v10 Ticker Matrix card
+  - Recent Activity feed (newest events first, color-coded chips)
+
+Side note: the same window-export pattern is what made Val/Gene
+work end-to-end in v7.40.0+ -- they were never broken because
+`renderExecutor` (in IIFE 2) calls those renderers directly. Only
+Main was affected.
+
+### Files
+
+  - `dashboard_static/app.js` -- Main `applyState` switched to the
+    four window-exposed renderers.
+  - `bot_version.py` / `trade_genius.py` -- 7.47.0 -> 7.48.0
+  - `docs/dashboard_redesign_v2/pr41_screenshots/` -- desktop +
+    mobile Main tab showing the v10 zone now populated.
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped. Playwright smoke
+on stubbed state confirms the Main tab now renders the kill banner,
+3 gauges, per-pid strip, and 5 activity rows where v7.47.0 showed
+only the skeleton placeholders.
+
+---
+
 ## v7.47.0 (2026-05-11) -- Per-portfolio v10 parity on Val/Gene tabs
 
 PR40 of the dashboard-redesign loop. The v10 strip (trades / risk /

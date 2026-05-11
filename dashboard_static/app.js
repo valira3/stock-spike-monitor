@@ -3903,10 +3903,30 @@
     // v7.20.0 — v10 ORB Day Status banner. Renders s.v10 (config +
     // day_status + risk_books). Defensive: never breaks Main if v10
     // block is absent or runtime is unavailable.
-    try { renderKillSwitchBanner(s, "main"); } catch (e) { /* never break Main */ }
-    try { renderV10DayStatus(s); } catch (e) { /* never break Main */ }
-    try { renderV10TickerMatrix(s); } catch (e) { /* never break Main */ }
-    try { renderV10ActivityFeed(s); } catch (e) { /* never break Main */ }
+    // v7.48.0 -- these renderers physically live in IIFE 2 (where the
+    // executor render path was added). Calling them as bare identifiers
+    // from IIFE 1 threw ReferenceError silently — same hidden-bug
+    // pattern as the v7.44.0 Ticker Matrix fix. Route through the
+    // window exports (added in v7.40.0/v7.41.0/v7.45.0) so the Main
+    // panel's v10 banner / ticker matrix / activity feed actually
+    // render. Falls back to a no-op if exports aren't installed yet
+    // (initial page load before IIFE 2 has run).
+    try {
+      if (typeof window.__tgRenderKillSwitchBanner === "function")
+        window.__tgRenderKillSwitchBanner(s, "main");
+    } catch (e) { /* never break Main */ }
+    try {
+      if (typeof window.__tgRenderV10DayStatus === "function")
+        window.__tgRenderV10DayStatus(s);
+    } catch (e) { /* never break Main */ }
+    try {
+      if (typeof window.__tgRenderV10TickerMatrix === "function")
+        window.__tgRenderV10TickerMatrix(s);
+    } catch (e) { /* never break Main */ }
+    try {
+      if (typeof window.__tgRenderV10ActivityFeed === "function")
+        window.__tgRenderV10ActivityFeed(s);
+    } catch (e) { /* never break Main */ }
     try { renderWeatherCheck(s); } catch (e) { /* never break Main */ }
     try { renderPermitMatrix(s); } catch (e) { /* never break Main */ }
     try { renderEarningsWatcher(s); } catch (e) { /* never break Main */ }
