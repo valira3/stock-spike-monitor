@@ -2579,6 +2579,37 @@ body.v10-live .legacy-v10-hidden {
   width: 100%;
   min-height: 320px;
 }
+/* v7.59.0 -- leading-indicator gate cells (Range / Block columns) */
+.v10-prox-col-gate,
+.v10-prox-col-block {
+  white-space: nowrap;
+}
+.v10-prox-gate {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  background: #1a2030;
+  color: #6b7280;
+}
+.v10-prox-gate-pass    { background: rgba(34, 197, 94, 0.14);  color: #86efac; }
+.v10-prox-gate-fail    { background: rgba(239, 68, 68, 0.16);  color: #fca5a5; }
+.v10-prox-gate-pending { background: #1a2030;                  color: #6b7280; }
+.v10-prox-block-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 3px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.03em;
+}
+.v10-prox-block-side   { background: rgba(239, 68, 68, 0.14); color: #fca5a5; }
+.v10-prox-block-day    { background: rgba(185, 28, 28, 0.22); color: #fecaca; }
+.v10-prox-block-reason { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
 /* v7.54.0 -- pre-OR-lock rows are dim so the operator can still see
    the universe + per-pid phase chips but the eye lands on the locked
    rows first. */
