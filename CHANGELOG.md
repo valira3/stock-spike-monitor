@@ -4,6 +4,88 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.74.0 (2026-05-11) -- OR-window historical backfill on session start (auto-recover from mid-session restart)
+
+Follow-up to v7.73.0. The v7.73.0 fallback handled missed-LAST-bar
+but explicitly required `bars_seen > 0` -- a bot that started up
+AFTER OR-end with no bars accumulated would still hang in WARMUP.
+Production today confirmed: after merging + deploying v7.73.0
+mid-morning, the v10 Proximity Matrix was STILL empty because
+`bars_seen=0` for every ticker (the new container started fresh
+after 10:00 ET).
+
+### Design principle
+
+> The system should automatically recover and rebuild anything
+> missing on startup.
+
+v7.74.0 implements this for the OR window. No manual intervention,
+no operator clicks. On every freshly-initialized session, if the
+current time is past `or_end_minutes` and the OR window hasn't
+been populated, the scan loop now fetches historical 1m bars and
+replays them through the engine.
+
+### Implementation
+
+New `_maybe_backfill_or_window` helper in `engine/scan.py`:
+
+- Triggered only when `ensure_session_started` returns True (fresh
+  session). Idempotent.
+- No-ops when `cur_min < or_end_minutes` (still inside OR -- live
+  scan covers it normally).
+- For each ticker in scan universe: fetch_1min_bars (returns
+  08:00-18:00 ET window from Alpaca/Yahoo), filter to OR-window
+  buckets [09:30, 09:59], feed each in chronological order via
+  `_orb_runtime.feed_bar`. The 09:59 bar triggers normal OR lock;
+  if absent, one post-window bar is also fed to invoke the v7.73.0
+  fallback lock path.
+- Forensic: `[V79-ORB-BACKFILL] start ... backfilled_tickers=N
+  locked_tickers=M`.
+
+`_lock_and_arm` already handles the thin-OR case correctly
+(BLOCKED_OR_INSUFFICIENT if `bars_seen < or_minutes // 2`), so a
+ticker with stale/sparse historical data blocks rather than firing
+on garbage bounds.
+
+### Coverage matrix (with v7.73.0 + v7.74.0 combined)
+
+| Scenario | Pre-v7.73 | v7.73 only | v7.73 + v7.74 (this PR) |
+|---|---|---|---|
+| Normal: all 30 bars arrive live | OK | OK | OK |
+| Missed 09:59 bar; other bars OK | stuck WARMUP | recover via fallback | recover via fallback |
+| Bot restart mid-OR-window | stuck WARMUP | partial fallback | partial fallback |
+| Bot restart post-OR (bars_seen=0) | stuck WARMUP | stuck WARMUP | **recover via backfill** |
+| Bot restart post-EOD | (n/a) | (n/a) | no-op (live scan handles next day) |
+
+### Tests
+
+2 new tests in `tests/strategy/test_orb_scan_integration.py`:
+
+- `test_backfill_locks_or_when_bot_started_post_or`: simulates a
+  bot starting at 11:00 ET with 90 minutes of historical bars
+  (570-659). Backfill replays 30 in-window bars and the OR locks.
+- `test_backfill_skips_when_still_in_or_window`: simulates start
+  at 09:45 ET (inside OR). Backfill is a no-op; live scan handles
+  it.
+
+Full suite: **393 passed** (up from 391), 8 skipped.
+
+### Files
+
+- `engine/scan.py`: `_maybe_backfill_or_window` helper +
+  `_fresh = ensure_session_started(...)` capture + invoke
+- `tests/strategy/test_orb_scan_integration.py`: 2 new tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio
+
+### Operator action
+
+None. The bot self-heals on the next Railway redeploy/restart for
+any session where it boots post-OR. The v10 Proximity Matrix will
+transition from `0/N LOCKED` to `N/N LOCKED` within one scan cycle
+(60s) of bootstrap.
+
+---
+
 ## v7.73.0 (2026-05-11) -- OR-lock fallback for missed last bar (production was stuck WARMUP today)
 
 Production today (2026-05-11 / Mon) showed the dashboard's v10

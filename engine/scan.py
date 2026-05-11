@@ -429,7 +429,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                             _eq[pid] = float(getattr(book, "paper_cash", 0.0))
             except Exception:
                 _eq = {"main": float(getattr(tg, "paper_cash", 100_000.0))}
-            _orb_runtime.ensure_session_started(
+            _fresh = _orb_runtime.ensure_session_started(
                 date_iso=_date_iso,
                 tickers=list(_scan_universe),
                 vix_close_d1=_vix_d1,
@@ -437,6 +437,13 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
                 ticker_prev_close=_pdc,
                 equity_per_portfolio=_eq,
             )
+            # v7.74.0 -- if the session just got initialized AND we're
+            # already past OR end (i.e. the bot started up mid-session,
+            # post-OR), replay the 09:30-09:59 ET 1m bars into the ORB
+            # engine so it can still trade today. Pre-v7.74.0 this case
+            # left bars_seen=0 forever -> WARMUP forever -> 0 trades.
+            if _fresh:
+                _maybe_backfill_or_window(callbacks, now_et, _scan_universe)
     except Exception as _e:
         logger.warning("[V79-ORB-RESET] failed: %s", _e)
 
@@ -462,6 +469,129 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         time.time() - cycle_start,
         len(_scan_universe),
         _session,
+    )
+
+
+def _maybe_backfill_or_window(callbacks: EngineCallbacks,
+                              now_et: datetime,
+                              scan_universe: list) -> None:
+    """v7.74.0 -- replay historical 09:30-09:59 ET 1m bars into the
+    ORB engine for each ticker, then feed one post-OR bar so the
+    window locks.
+
+    Why: when the bot starts up mid-session (post-OR-end), the live
+    scan loop only feeds the LATEST bar per cycle -- never replays
+    history. Result: bars_seen stays at 0, OR never locks, FSMs
+    stuck in WARMUP, zero trades for the rest of the day.
+
+    Triggered only on the FIRST scan cycle of a fresh session
+    (`ensure_session_started` returned True). No-ops when we're
+    still inside or before the OR window, since the live scan will
+    cover those bars normally.
+
+    The fetch_1min_bars hook returns 1m bars from 08:00 ET onward
+    (Alpaca IEX feed window). We filter to the OR window
+    [09:30, 09:59] and feed in chronological order. The lock
+    triggers either on the 09:59 bar (normal path) or via the
+    v7.73.0 post-window-bar fallback if 09:59 is missing.
+    """
+    from orb.engine import OrbConfig
+    cfg = OrbConfig()  # default; or_start=570 (09:30), or_end=600 (10:00)
+    or_start = cfg.session_start_minutes
+    or_end = cfg.or_end_minutes
+    cur_min = now_et.hour * 60 + now_et.minute
+    if cur_min < or_end:
+        # Still inside OR window; live scan will populate it normally.
+        return
+    logger.info(
+        "[V79-ORB-BACKFILL] start cur_min=%d or_start=%d or_end=%d tickers=%d",
+        cur_min, or_start, or_end, len(scan_universe),
+    )
+    backfilled = 0
+    locked = 0
+    for ticker in scan_universe:
+        try:
+            bars = callbacks.fetch_1min_bars(ticker)
+        except Exception as _e:
+            logger.warning("[V79-ORB-BACKFILL] fetch failed %s: %s", ticker, _e)
+            continue
+        if not bars:
+            continue
+        timestamps = bars.get("timestamps") or []
+        opens = bars.get("opens") or []
+        highs = bars.get("highs") or []
+        lows = bars.get("lows") or []
+        closes = bars.get("closes") or []
+        volumes = bars.get("volumes") or []
+        # Two-pass: (1) in-window bars in chronological order;
+        # (2) one post-window bar to force lock via v7.73.0 fallback
+        # if the 09:59 bar was missing.
+        fed_in_window = 0
+        for i, ts in enumerate(timestamps):
+            if ts is None:
+                continue
+            try:
+                bucket = minutes_since_et_midnight(int(ts))
+            except Exception:
+                continue
+            if bucket < or_start or bucket >= or_end:
+                continue
+            if not (i < len(opens) and i < len(highs) and i < len(lows)
+                    and i < len(closes)):
+                continue
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+            if None in (o, h, l, c):
+                continue
+            v = volumes[i] if i < len(volumes) else 0.0
+            try:
+                _orb_runtime.feed_bar(
+                    ticker=ticker,
+                    bar_high=float(h), bar_low=float(l),
+                    bar_open=float(o), bar_close=float(c),
+                    bar_volume=float(v or 0.0),
+                    bar_bucket_min=bucket,
+                )
+                fed_in_window += 1
+            except Exception as _fe:
+                logger.warning("[V79-ORB-BACKFILL] feed_bar %s b=%d: %s",
+                               ticker, bucket, _fe)
+        if fed_in_window == 0:
+            continue
+        backfilled += 1
+        # Force lock via post-window bar (v7.73.0 fallback) in case
+        # the 09:59 bucket was missing from the source.
+        for i, ts in enumerate(timestamps):
+            if ts is None:
+                continue
+            try:
+                bucket = minutes_since_et_midnight(int(ts))
+            except Exception:
+                continue
+            if bucket < or_end:
+                continue
+            if not (i < len(opens) and i < len(highs) and i < len(lows)
+                    and i < len(closes)):
+                continue
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+            if None in (o, h, l, c):
+                continue
+            v = volumes[i] if i < len(volumes) else 0.0
+            try:
+                _orb_runtime.feed_bar(
+                    ticker=ticker,
+                    bar_high=float(h), bar_low=float(l),
+                    bar_open=float(o), bar_close=float(c),
+                    bar_volume=float(v or 0.0),
+                    bar_bucket_min=bucket,
+                )
+                locked += 1
+            except Exception as _fe:
+                logger.warning("[V79-ORB-BACKFILL] post-bar %s b=%d: %s",
+                               ticker, bucket, _fe)
+            break  # one post-window bar is enough to trigger lock
+    logger.info(
+        "[V79-ORB-BACKFILL] done backfilled_tickers=%d locked_tickers=%d",
+        backfilled, locked,
     )
 
 
