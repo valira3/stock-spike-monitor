@@ -784,18 +784,19 @@ def _today_trades() -> list[dict]:
             entry_price = 0.0
             shares_n = 0
         # short_positions stores entry_time as "HH:MM:SS"; the cover
-        # records it as "HH:MM CDT". Normalize live-pos to the cover's
-        # format (using the ISO-precise entry_ts_utc when present) so an
-        # open-then-cover sequence does not double-emit.
+        # records it as "HH:MM ET" (v7.89.0; pre-7.89 was "HH:MM CDT").
+        # Normalize live-pos to the cover's format (using the
+        # ISO-precise entry_ts_utc when present) so an open-then-cover
+        # sequence does not double-emit.
         entry_iso = pos.get("entry_ts_utc") or ""
         entry_time_raw = pos.get("entry_time") or ""
         entry_time_val = entry_time_raw
         try:
             if entry_iso:
-                entry_time_val = m._to_cdt_hhmm(entry_iso)
+                entry_time_val = m._to_et_hhmm(entry_iso)
             elif entry_time_raw and ":" in entry_time_raw:
                 # Fallback for legacy "HH:MM:SS" with no ISO companion.
-                entry_time_val = entry_time_raw[:5] + " CDT"
+                entry_time_val = entry_time_raw[:5] + " ET"
         except Exception:
             entry_time_val = entry_time_raw
         dedup_key = ((tkr or "").upper(), str(entry_time_val))

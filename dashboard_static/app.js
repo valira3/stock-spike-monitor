@@ -56,20 +56,24 @@
     return (v >= 0 ? "+" : "−") + abs.toFixed(d) + "%";
   }
 
-  // v7.82.0 -- timestamps shown to the operator are converted from
-  // UTC (the storage format) into the BROWSER's local timezone. The
-  // underlying data fields keep their `_utc` / `_iso` names because
-  // the wire format remains UTC ISO-8601; only the rendered text is
-  // local-zone. Chart x-axis math still uses ET buckets (see
-  // utcIsoToEtMin elsewhere in this file) -- this helper is for the
-  // display surfaces operators read directly.
+  // v7.89.0 -- timestamps shown to the operator are converted from
+  // UTC (the storage format) into US/Eastern (ET) regardless of the
+  // browser's local timezone, so two operators on different coasts
+  // see the same clock. Functions kept their utcIsoToLocal* names
+  // for backwards compatibility with all call sites; chart x-axis
+  // math still uses ET buckets (utcIsoToEtMin elsewhere) so display
+  // and bucketing now agree.
+  // v7.82.0 first introduced browser-local rendering; v7.89.0
+  // pinned the display zone to ET to match the bot's market clock.
   function utcIsoToLocalHHMM(iso) {
     if (!iso) return "";
     try {
       const d = new Date(iso);
       if (isNaN(d.getTime())) return String(iso);
-      return d.toLocaleTimeString([], {
+      return d.toLocaleTimeString("en-US", {
         hour: "2-digit", minute: "2-digit",
+        hour12: false,
+        timeZone: "America/New_York",
         timeZoneName: "short",
       });
     } catch (e) {
@@ -81,9 +85,11 @@
     try {
       const d = new Date(iso);
       if (isNaN(d.getTime())) return String(iso);
-      return d.toLocaleString([], {
+      return d.toLocaleString("en-US", {
         year: "numeric", month: "2-digit", day: "2-digit",
         hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+        timeZone: "America/New_York",
         timeZoneName: "short",
       });
     } catch (e) {
@@ -114,10 +120,13 @@
     try {
       const d = new Date(ts);
       if (isNaN(d.getTime())) return String(ts);
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      const ss = String(d.getSeconds()).padStart(2, "0");
-      return `${hh}:${mm}:${ss}`;
+      // v7.89.0 -- render in US/Eastern instead of browser-local so
+      // error timestamps line up with the rest of the dashboard.
+      return d.toLocaleTimeString("en-US", {
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+        timeZone: "America/New_York",
+      });
     } catch (e) { return String(ts); }
   }
   function applyHealthPill(executor, snap) {
@@ -296,41 +305,21 @@
     const positions = sl.positions || [];
     $("pos-count").textContent = `· ${positions.length}`;
     const body = $("pos-body");
-    const strip = $("port-strip");
-    const emptyStrip = $("port-strip-empty");
-    // v4.10.1 — also toggle the .is-empty modifier on the card itself so
-    // the grid-2 stretch + flex-column min-heights collapse cleanly. The
-    // CSS rule defeats grid stretch (align-self:start) so the card sizes
-    // to header + one-row strip instead of matching the Proximity card.
+    // v7.89.0 -- port-strip / port-strip-empty footer blocks were
+    // retired from the Open Positions card. Equity now lives in the
+    // KPI row above the table (see index.html v7.89.0 reorder); the
+    // Notional column (v7.87.0) inside the table covers per-position
+    // invested / short-liability dollars.
     const card = body && body.parentElement;
 
     if (positions.length === 0) {
-      // v4.10.0 — collapsed empty state. Hide the "No open positions."
-      // body + the 2-row Equity/BP/Cash/Invested/Shorted strip, and
-      // show a single-row condensed strip with just the three values
-      // an operator actually wants at a glance during off-hours.
-      body.innerHTML = "";
-      body.style.display = "none";
-      strip.style.display = "none";
+      body.innerHTML = `<div class="empty">No open positions.</div>`;
+      body.style.display = "";
       if (card) card.classList.add("is-empty");
-      const p = sl.portfolio || {};
-      if (emptyStrip) {
-        if (typeof p.equity === "number") {
-          const bp = (typeof p.cash === "number" && typeof p.short_liab === "number")
-            ? (p.cash - p.short_liab) : null;
-          $("pse-equity").textContent = fmtUsd(p.equity);
-          $("pse-bp").textContent = bp === null ? "—" : fmtUsd(bp);
-          $("pse-cash").textContent = fmtUsd(p.cash);
-          emptyStrip.style.display = "grid";
-        } else {
-          emptyStrip.style.display = "none";
-        }
-      }
       return;
     } else {
       body.style.display = "";
       if (card) card.classList.remove("is-empty");
-      if (emptyStrip) emptyStrip.style.display = "none";
       const rows = positions.map((p) => {
         const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
         const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
@@ -541,27 +530,10 @@
       body.__posClickWired = true;
     }
 
-    // portfolio strip always shows if portfolio data present
-    const p = sl.portfolio;
-    if (p && typeof p.equity === "number") {
-      strip.style.display = "block";
-      $("port-cash").textContent = fmtUsd(p.cash);
-      $("port-longmv").textContent = fmtUsd(p.long_mv);
-      $("port-shortliab").textContent = fmtUsd(p.short_liab);
-      $("port-equity").textContent = fmtUsd(p.equity);
-      // Buying power = cash unencumbered by short-sale liability.
-      // Short-sale proceeds sit in cash but are owed back, so
-      // (cash − short_liab) is the amount that's actually spendable
-      // without widening short exposure.
-      const bp = (typeof p.cash === "number" && typeof p.shortLiab === "number")
-        ? (p.cash - p.shortLiab)
-        : (typeof p.cash === "number" && typeof p.short_liab === "number"
-            ? (p.cash - p.short_liab)
-            : null);
-      $("port-bp").textContent = (bp === null) ? "—" : fmtUsd(bp);
-    } else {
-      strip.style.display = "none";
-    }
+    // v7.89.0 -- port-strip footer below the positions table is
+    // retired; Equity is shown in the KPI row above the table and
+    // per-position invested / short-liability dollars are in the
+    // Notional column. See index.html v7.89.0 reorder.
   }
 
   // v5.18.0 — the standalone Main-tab Proximity card was retired and its
@@ -3399,18 +3371,35 @@
   }
 
   // v4.2.2 — client-side 1Hz clock tick. Renders HH:MM:SS + tz
-  // label (e.g. "13:09:13 ET") in the row-2 clock. Uses browser local
-  // time so seconds advance smoothly; the tz token comes from the
-  // server's server_time_label tail, cached in window.__tgClockTz.
-  // If we haven't seen a server label yet, we render just HH:MM:SS.
+  // label (e.g. "13:09:13 ET") in the row-2 clock.
+  // v7.89.0 -- pinned to US/Eastern (was browser-local before).
+  // The market clock is ET-based on every other surface (Day Status
+  // banner, v10 schedule, archive bar timestamps); the brand clock
+  // now matches. The tz token still comes from server_time_label
+  // (cached in window.__tgClockTz) and defaults to "ET" when we
+  // haven't received a label yet.
   window.__tgTickClock = function () {
     const el = document.getElementById("tg-brand-clock");
     if (!el) return;
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    const ss = String(d.getSeconds()).padStart(2, "0");
-    const tz = window.__tgClockTz || "";
+    let hh = "--", mm = "--", ss = "--";
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+      }).formatToParts(new Date());
+      for (const p of parts) {
+        if (p.type === "hour") hh = p.value === "24" ? "00" : p.value.padStart(2, "0");
+        else if (p.type === "minute") mm = p.value.padStart(2, "0");
+        else if (p.type === "second") ss = p.value.padStart(2, "0");
+      }
+    } catch (e) {
+      const d = new Date();
+      hh = String(d.getHours()).padStart(2, "0");
+      mm = String(d.getMinutes()).padStart(2, "0");
+      ss = String(d.getSeconds()).padStart(2, "0");
+    }
+    const tz = window.__tgClockTz || "ET";
     // v4.3.1 — drop seconds on very narrow phones (<=360px) so
     // the HH:MM TZ label fits inline with logo/version/LIVE pill.
     // v6.0.7 — extend to <=480px (covers iPhone 13/14/15 standard
@@ -3750,56 +3739,29 @@
 
     <div class="banner hide" data-f="banner"></div>
 
-    <!-- v7.88.0 -- Open positions moved to TOP of Val/Gene panels
-         (was below v10 ORB + Recent activity sections). Operator
-         spec: Val/Gene tab layout should match Main, which shows
-         the positions table as the first card. The KPI row stays
-         visible above it because that's where Main keeps its
-         KPI row too. v10 ORB + Recent activity follow below. -->
+    <!-- v7.89.0 -- KPI row now ABOVE Open Positions on Val/Gene
+         tabs. Operator wants the equity / Day P&L / Open / Session
+         summary at the top of the panel so it's visible without
+         scrolling, then the positions table beneath it. The
+         duplicate port-strip block (Equity / Buying power / Cash
+         / Invested / Shorted) that used to sit inside the Open
+         Positions card is retired in this version: it repeated
+         data already shown in the KPI row above (Equity) and in
+         the positions table (Notional column added in v7.89.0). -->
+    <section class="kpi-row kpi-row-4">
+      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">—</span><span class="kpi-sub" data-f="k-equity-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">—</span><span class="kpi-sub" data-f="k-pnl-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">—</span><span class="kpi-sub" data-f="k-open-sub">—</span></div>
+      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">—</span><span class="kpi-sub" data-f="k-session-sub">—</span></div>
+    </section>
+
     <section class="grid">
       <div class="card">
         <div class="card-head"><span class="card-title">Open positions<span class="count" data-f="pos-count">\u00b7 0</span></span></div>
         <div class="card-body flush" data-f="pos-body">
           <div class="empty">No open positions.</div>
         </div>
-        <div data-f="port-strip" style="display:none">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
-            <div style="padding:10px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Equity</div>
-              <div class="mono" style="font-size:15px;color:var(--text)" data-f="port-equity">\u2014</div>
-            </div>
-            <div style="padding:10px 14px">
-              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:4px">Buying power</div>
-              <div class="mono" style="font-size:15px;color:var(--text)" data-f="port-bp">\u2014</div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border-top:1px solid var(--border);background:var(--surface-2)">
-            <div style="padding:8px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Cash</div>
-              <div class="mono" style="font-size:12px;color:var(--text-muted)" data-f="port-cash">\u2014</div>
-            </div>
-            <div style="padding:8px 14px;border-right:1px solid var(--border)">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Invested</div>
-              <div class="mono" style="font-size:12px;color:var(--text-muted)" data-f="port-longmv">\u2014</div>
-            </div>
-            <div style="padding:8px 14px">
-              <div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:2px">Shorted</div>
-              <div class="mono" style="font-size:12px;color:var(--down)" data-f="port-shortliab">\u2014</div>
-            </div>
-          </div>
-        </div>
       </div>
-    </section>
-
-    <!-- v7.88.0 -- KPI row now below Open Positions, matching Main's
-         layout (Main's HTML in dashboard_static/index.html has the
-         KPI row at section #185, immediately AFTER the Open Positions
-         section). -->
-    <section class="kpi-row kpi-row-4">
-      <div class="kpi"><span class="kpi-label">Equity</span><span class="kpi-value" data-f="k-equity">—</span><span class="kpi-sub" data-f="k-equity-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Day P&amp;L</span><span class="kpi-value" data-f="k-pnl">—</span><span class="kpi-sub" data-f="k-pnl-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Open</span><span class="kpi-value" data-f="k-open">—</span><span class="kpi-sub" data-f="k-open-sub">—</span></div>
-      <div class="kpi"><span class="kpi-label">Session</span><span class="kpi-value" data-f="k-session" style="font-size:20px">—</span><span class="kpi-sub" data-f="k-session-sub">—</span></div>
     </section>
 
     <!-- v7.47.0 -- per-portfolio v10 strip. Shows THIS portfolio's
@@ -4497,7 +4459,6 @@
 
     // Open positions card ----------------------------------------------
     const posBody = execField(panel, "pos-body");
-    const portStrip = execField(panel, "port-strip");
     const posCount = execField(panel, "pos-count");
     if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "\u2014" : positions.length);
 
@@ -4605,12 +4566,21 @@
                 '</td>' +
               '</tr>';
           }
+          // v7.89.0 -- Notional column (mirrors the Main table column
+          // added in v7.87.0). For longs it's the dollar amount
+          // invested; for shorts it's the dollar liability outstanding.
+          var _notionalTxt = (function(){
+            var s=Number(p.qty), e=Number(p.avg_entry);
+            if (!(s>0 && e>0)) return "\u2014";
+            return fmtUsd(s*e);
+          })();
           return `<tr data-pos-ticker="${esc(p.symbol)}">
             <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span></td>
             <td><span class="${sideCls}">${esc(p.side)}</span></td>
             <td class="right">${fmtNum(p.qty, 0)}</td>
             <td class="right">${fmtNum(p.avg_entry, 2)}</td>
             <td class="right">${fmtNum(p.current_price, 2)}</td>
+            <td class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">${_notionalTxt}</td>
             <td class="right">${_stopTxt}</td>
             <td class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">${(function(){var s=Number(p.qty),e=Number(p.avg_entry),st=_stopInfo&&Number.isFinite(_stopInfo.eff)?_stopInfo.eff:NaN;if(!(s>0&&e>0&&Number.isFinite(st)))return "\u2014";var rps=Math.abs(e-st);return rps>0?fmtUsd(rps*s):"\u2014";})()}</td>
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
@@ -4624,6 +4594,7 @@
             <th class="right" title="Number of shares">Sh</th>
             <th class="right" title="Average fill price when the position opened">Entry</th>
             <th class="right" title="Latest mark price">Mark</th>
+            <th class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">Notional</th>
             <th class="right" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
             <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
             <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
@@ -4633,15 +4604,10 @@
       }
     }
 
-    // Cash / BP / Invested / Shorted footer under positions card ------
-    if (portStrip) {
-      portStrip.style.display = disabled ? "none" : "";
-      setField(panel, "port-equity", equity === null ? "\u2014" : fmtUsd(equity));
-      setField(panel, "port-bp", bp === null ? "\u2014" : fmtUsd(bp));
-      setField(panel, "port-cash", cash === null ? "\u2014" : fmtUsd(cash));
-      setField(panel, "port-longmv", fmtUsd(invested));
-      setField(panel, "port-shortliab", fmtUsd(shorted));
-    }
+    // v7.89.0 -- port-strip footer (Cash / BP / Invested / Shorted)
+    // retired from the Open Positions card on Val/Gene tabs. Equity
+    // sits in the KPI row above and per-position notional is shown
+    // in the table's Notional column (v7.89.0).
 
     // v5.23.0 — Last signal card removed (was backed by in-memory
     // global that reset on redeploy, so almost always null).

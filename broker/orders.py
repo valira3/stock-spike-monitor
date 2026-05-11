@@ -1417,8 +1417,12 @@ def execute_breakout(ticker, current_price, side):
         return
 
     entry_num = daily_count.get(ticker, 0) + 1
-    now_str = tg._now_cdt().strftime("%H:%M:%S")
-    now_hhmm = tg._now_cdt().strftime("%H:%M CDT")
+    # v7.89.0 -- entry-time labels emitted in ET (was CDT). Dashboard +
+    # broker labels now share the market-clock zone; CLAUDE.md rule
+    # changed in the same release. The HH:MM:SS form follows suit so
+    # the two labels never disagree on which zone they reference.
+    now_str = tg._now_et().strftime("%H:%M:%S")
+    now_hhmm = tg._now_et().strftime("%H:%M ET")
     now_date = now_et.strftime("%Y-%m-%d")
 
     _entry_ts_utc = tg._utc_now_iso()
@@ -1958,11 +1962,13 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
         # Guardrail \u2014 never let it block an exit from settling.
         pass
     now_et = tg._now_et()
-    now_hhmm = tg._now_cdt().strftime("%H:%M CDT")
+    # v7.89.0 -- exit-time labels emitted in ET (was CDT). Matches the
+    # entry-time switch above and the dashboard rendering pass.
+    now_hhmm = now_et.strftime("%H:%M ET")
     now_date = now_et.strftime("%Y-%m-%d")
 
     entry_time_str = pos.get("entry_time", "")
-    entry_hhmm = tg._to_cdt_hhmm(entry_time_str) if entry_time_str else ""
+    entry_hhmm = tg._to_et_hhmm(entry_time_str) if entry_time_str else ""
 
     # Paper accounting: long credits sale proceeds, short debits cover cost.
     notional = price * shares  # "proceeds" for long, "cover_total" for short

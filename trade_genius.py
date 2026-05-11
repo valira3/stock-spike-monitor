@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.88.0"
+BOT_VERSION = "7.89.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -444,6 +444,33 @@ def _to_cdt_hhmmss(iso_str: str) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=ET)
         return dt.astimezone(CDT).strftime("%H:%M:%S")
+    except Exception:
+        return iso_str
+
+
+# v7.89.0 -- ET-zoned twins of the CDT helpers above. The dashboard
+# (and the broker order labels it consumes) now render times in ET
+# instead of CT so the web UI matches the market clock everywhere.
+# The CDT helpers above stay in place because the Telegram surface
+# still consumes them; they'll migrate in a follow-up release.
+def _to_et_hhmm(iso_str: str) -> str:
+    """Decode a stored ISO timestamp to 'HH:MM ET' for display."""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ET)
+        return dt.astimezone(ET).strftime("%H:%M ET")
+    except Exception:
+        return iso_str
+
+
+def _to_et_hhmmss(iso_str: str) -> str:
+    """Decode a stored ISO timestamp to 'HH:MM:SS' (ET) for display."""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ET)
+        return dt.astimezone(ET).strftime("%H:%M:%S")
     except Exception:
         return iso_str
 
