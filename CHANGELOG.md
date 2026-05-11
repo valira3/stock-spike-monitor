@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.44.0 (2026-05-11) -- v10 Ticker Matrix mobile card stack + hidden-bug fix
+
+PR37 of the dashboard-redesign loop. Two outcomes:
+
+### 1. Mobile card-stack twin
+
+The desktop ticker matrix is a 6-column table that forces horizontal
+scroll under 720 px. v7.44.0 emits a card-stack twin into the same
+`#v10-tm-body`; CSS @media swaps which is visible:
+  - `> 720 px`: `#v10-tm-table` shown, `#v10-tm-cards` hidden
+  - `<= 720 px`: `#v10-tm-cards` shown, `#v10-tm-table` hidden
+
+Each ticker becomes a 2-4 line card:
+  - **Line 1**: ticker name + headline phase chip
+  - **Line 2**: `OR low–high · width%`
+  - **Line 3+**: one per portfolio (Main/Val/Gene) with the per-pid
+    phase chip + trades-used + block reason
+
+Single-portfolio scenarios collapse to a single trades/reason line.
+
+### 2. Silent production bug fixed
+
+While building the smoke test, discovered that
+`renderV10TickerMatrix` (in IIFE 2) was calling `escapeHtml` (defined
+in IIFE 1). Every render failed with `escapeHtml is not defined` --
+but the error was swallowed by the `try/catch` wrapper in renderAll.
+**Net effect**: the v10 Ticker Matrix has been silently broken in
+production since it was introduced.
+
+Fix: define a local `esc(v)` helper inside `renderV10TickerMatrix`
+and replace all `escapeHtml(...)` calls with `esc(...)`. Same pattern
+used by `renderKillSwitchBanner` (which has its own local `esc`).
+
+This means PR37 also ships the **first working v10 Ticker Matrix in
+production**.
+
+### Tests
+
+No backend change → 379 strategy tests still pass. Playwright smoke
+renders desktop (3 armed / 2 in pos / 1 blocked, multi-pid AAPL) +
+mobile 390 px (same data as card stack).
+
+Screenshots in `docs/dashboard_redesign_v2/pr37_screenshots/`.
+
+### Exposed
+
+`window.__tgRenderV10TickerMatrix` via getter (same pattern as the
+other render exports).
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.43.0 → 7.44.0
+- `dashboard_static/app.js` -- card-stack HTML emitter inside
+  `renderV10TickerMatrix` + local `esc` helper + 15 `escapeHtml ->
+  esc` replacements + `window.__tgRenderV10TickerMatrix` export
+- `dashboard_static/app.css` -- `#v10-tm-cards`, `.v10-tm-card*`
+  family + @media swap
+- `docs/dashboard_redesign_v2/pr37_screenshots/` -- 2 reference images
+- `CHANGELOG.md`
+
+---
+
 ## v7.43.0 (2026-05-11) -- Broker P&L row + delta chip in Day P&L KPI
 
 PR36 of the dashboard-redesign loop. The backend has carried

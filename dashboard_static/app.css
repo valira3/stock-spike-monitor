@@ -2365,3 +2365,55 @@ body.v10-live .legacy-v10-hidden {
   .kpi-broker { font-size: 10px; }
   .kpi-delta-chip { font-size: 9px; padding: 0 3px; }
 }
+
+/* ============================================================
+   v7.44.0 -- v10 Ticker Matrix mobile card stack.
+   Table mode (default) for desktop; cards visible only at
+   <= 720 px. Both are rendered into the same body; CSS swaps
+   visibility.
+============================================================ */
+#v10-tm-cards { display: none; }
+@media (max-width: 720px) {
+  #v10-tm-table { display: none; }
+  #v10-tm-cards { display: block; }
+}
+
+.v10-tm-card {
+  padding: 12px 14px;
+  border-bottom: 1px solid #161c25;
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+.v10-tm-card:last-child { border-bottom: 0; }
+.v10-tm-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.v10-tm-card-ticker {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  color: #e5e7eb;
+}
+.v10-tm-card-line {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.6;
+}
+.v10-tm-card-line b {
+  color: #e5e7eb;
+  font-weight: 500;
+}
+.v10-tm-card-pidline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 0;
+}
+.v10-tm-card-reason {
+  color: #6b7280;
+  font-style: italic;
+  font-size: 10.5px;
+}

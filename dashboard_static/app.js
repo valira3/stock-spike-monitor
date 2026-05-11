@@ -5359,6 +5359,11 @@
       get: function () { return renderV10DayStatus; },
       configurable: true,
     });
+    // v7.44.0 -- expose ticker matrix renderer for smoke + future use
+    Object.defineProperty(window, "__tgRenderV10TickerMatrix", {
+      get: function () { return renderV10TickerMatrix; },
+      configurable: true,
+    });
   }
 
   function renderKillSwitchBanner(s, target) {
@@ -5735,6 +5740,17 @@
   // the legacy Permit Matrix below covers the pre-v10 path until the
   // v7.28.0 retirement removes it physically.
   function renderV10TickerMatrix(s) {
+    // Local HTML-escape -- v7.44.0 fix for a silent regression: this
+    // function lived in IIFE 2 but called `escapeHtml` from IIFE 1,
+    // failing every render with "escapeHtml is not defined" which was
+    // swallowed by the try/catch wrapper in renderAll. The matrix
+    // therefore never rendered in production. Local esc closes the gap.
+    function esc(v) {
+      return String(v == null ? "" : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
     var v10 = s && s.v10;
     var section = document.getElementById("v10-ticker-matrix-section");
     if (!section) return;
@@ -5815,19 +5831,80 @@
         var reason = d.block_reason || (d.in_position ? 'open ticket' : '');
         var tradesCell = (d.trades_today || 0) + ' / ' + maxTrades;
         rows.push('<tr class="' + rowCls + '">'
-          + (p === 0 ? '<td rowspan="' + pids.length + '">' + escapeHtml(tk) + '</td>' : '')
-          + (multiPid ? '<td><span class="v10-tm-pid">' + escapeHtml(pid2) + '</span></td>' : '')
-          + '<td><span class="v10-tm-phase ' + phaseCls + '">' + escapeHtml(phaseTxt) + '</span></td>'
+          + (p === 0 ? '<td rowspan="' + pids.length + '">' + esc(tk) + '</td>' : '')
+          + (multiPid ? '<td><span class="v10-tm-pid">' + esc(pid2) + '</span></td>' : '')
+          + '<td><span class="v10-tm-phase ' + phaseCls + '">' + esc(phaseTxt) + '</span></td>'
           + (p === 0
-              ? '<td class="v10-tm-col-or" rowspan="' + pids.length + '">' + escapeHtml(orCell) + '</td>'
+              ? '<td class="v10-tm-col-or" rowspan="' + pids.length + '">' + esc(orCell) + '</td>'
               : '')
-          + '<td>' + escapeHtml(tradesCell) + '</td>'
-          + '<td>' + escapeHtml(reason) + '</td>'
+          + '<td>' + esc(tradesCell) + '</td>'
+          + '<td>' + esc(reason) + '</td>'
           + '</tr>');
       }
     }
     rows.push('</tbody></table>');
-    body.innerHTML = rows.join("");
+
+    // v7.44.0 -- mobile card-stack twin. The table forces horizontal
+    // scroll under 720 px because of the 5-6 column shape; cards stack
+    // cleanly. Both are emitted into the same body; CSS @media swaps
+    // visibility so neither is mounted twice in the same viewport.
+    var cards = ['<div id="v10-tm-cards">'];
+    for (var k2 = 0; k2 < tickers.length; k2++) {
+      var tk2 = tickers[k2];
+      var w2 = orWindows[tk2] || {};
+      var orTxt2 = (w2.or_low != null && w2.or_high != null)
+        ? (w2.or_low.toFixed(2) + '–' + w2.or_high.toFixed(2)
+            + ' · ' + ((w2.or_width_pct || 0) * 100).toFixed(2) + '%')
+        : '—';
+      var perPid2 = byTicker[tk2];
+      var pids2 = Object.keys(perPid2).sort();
+      // One sub-row per pid; if multi-pid, group under the ticker
+      // header. If single-pid, render flat.
+      cards.push('<div class="v10-tm-card">');
+      cards.push('<div class="v10-tm-card-head">'
+                  + '<span class="v10-tm-card-ticker">' + esc(tk2) + '</span>');
+      // Show the FIRST pid's phase as the headline; per-pid details
+      // are listed below if multiPid.
+      var firstPidPh = (perPid2[pids2[0]].phase || "").toLowerCase();
+      var firstPidPhCls = firstPidPh.indexOf("blocked") === 0 ? "blocked" : firstPidPh;
+      var firstPidPhTxt = firstPidPh.replace(/_/g, " ").toUpperCase();
+      cards.push('<span class="v10-tm-phase ' + firstPidPhCls + '">'
+                  + esc(firstPidPhTxt) + '</span>');
+      cards.push('</div>');
+      cards.push('<div class="v10-tm-card-line">OR <b>'
+                  + esc(orTxt2) + '</b></div>');
+      if (multiPid) {
+        for (var pp = 0; pp < pids2.length; pp++) {
+          var pidX = pids2[pp];
+          var dX = perPid2[pidX];
+          var phX = (dX.phase || "").toLowerCase();
+          var phXCls = phX.indexOf("blocked") === 0 ? "blocked" : phX;
+          var phXTxt = phX.replace(/_/g, " ").toUpperCase();
+          var reasonX = dX.block_reason || (dX.in_position ? 'open ticket' : '');
+          cards.push('<div class="v10-tm-card-line v10-tm-card-pidline">'
+                      + '<span class="v10-tm-pid">' + esc(pidX) + '</span>'
+                      + '<span class="v10-tm-phase ' + phXCls + '" style="margin:0 6px">'
+                      + esc(phXTxt) + '</span>'
+                      + 'trades <b>' + (dX.trades_today || 0) + ' / ' + maxTrades + '</b>'
+                      + (reasonX ? ' · <span class="v10-tm-card-reason">'
+                                    + esc(reasonX) + '</span>' : '')
+                      + '</div>');
+        }
+      } else {
+        // Single-pid: collapse to one line
+        var d0 = perPid2[pids2[0]];
+        var reason0 = d0.block_reason || (d0.in_position ? 'open ticket' : '');
+        cards.push('<div class="v10-tm-card-line">trades <b>'
+                    + (d0.trades_today || 0) + ' / ' + maxTrades + '</b>'
+                    + (reason0 ? ' · <span class="v10-tm-card-reason">'
+                                  + esc(reason0) + '</span>' : '')
+                    + '</div>');
+      }
+      cards.push('</div>');
+    }
+    cards.push('</div>');
+
+    body.innerHTML = rows.join("") + cards.join("");
   }
 
   function renderV10Projection(p) {
