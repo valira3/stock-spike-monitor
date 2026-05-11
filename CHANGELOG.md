@@ -4,6 +4,107 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.58.0 (2026-05-11) -- Vestigial UI removal pass
+
+Comprehensive sweep of dashboard elements that no longer correlate
+with the running v10 ORB strategy. All removed elements were either
+(a) tied to retired Tiger Sovereign / v6.4.2 code paths the v10
+engine never consults, or (b) duplicate displays of data shown
+better elsewhere.
+
+### Removed
+
+  - **Post-loss cooldown chip + popover** (`#tg-cooldown-chip`,
+    `#tg-cooldown-pop`). v6.4.2 feature. The v10 engine has zero
+    references to the cooldown registry; the chip was vestigial.
+    Backend still emits `s.v642_flags` + `s.active_cooldowns` for
+    any non-dashboard consumer; nothing reads them here anymore.
+    JS render block + popover wiring (~130 lines) deleted.
+  - **Earnings Watcher panel** (`#ew-section` + the
+    `positionEarningsWatcherCard` repositioning logic). v6.18.0
+    system. v10 has its own earnings gate in
+    `orb/day_gates.py:skip_earnings_window` using
+    `tools.orb_earnings_calendar.is_earnings_window`. The separate
+    EW panel only ever showed "not enabled" in production.
+    `renderEarningsWatcher` (~187 lines) + `positionEarningsWatcherCard`
+    (~29 lines) removed.
+  - **Legacy Weather Check banner** (`#pmtx-weather` section).
+    Tiger Sovereign Phase 1 verdict surface, hidden under
+    `body.v10-live` since v7.27.0. Both the Main panel HTML and
+    the exec-skeleton copy (added in v7.55.0 with
+    `legacy-v10-hidden`) deleted. `renderWeatherCheck` (~70 lines)
+    removed.
+  - **Legacy Permit Matrix card** (`#pmtx-body` section). Same
+    treatment as Weather Check. `renderPermitMatrix` (~223 lines)
+    removed. The v10 Proximity Matrix (shipped v7.52.0+) is the
+    operator-visible replacement; it already carries the per-stock
+    chart expansion via `window.__tgRenderTickerChart` (v7.53.0).
+  - **Inline `Trades` and `Risk used` text labels** in the v10 ORB
+    banner header. Duplicates the gauges directly below which show
+    the same info with better labels + fill bars (v7.41.0). The
+    legacy text labels were the v7.20.0 design.
+
+### Reframed
+
+  - **`v10 Projection` card → `v10 Backtest Baseline`**. Renamed
+    because the numbers shown (CAGR 43%, Sharpe 2.85, Max DD 5%,
+    Win rate 57%, range 5.5-70.4%) are STATIC reference values
+    from the keystone backtest, not forward-looking projections.
+    Collapsed the 6-field grid into a single-line summary plus a
+    `Live $X · Δ +Y%` pair on the right side. ~80% vertical-space
+    reduction.
+
+### Preserved
+
+  - **Index strip** (SPY/QQQ/DIA/IWM/VIX) — operator-confirmed keep.
+  - **Lifecycle tab** — operator-confirmed keep.
+  - **Per-ticker intraday chart pipeline** (`_pmtxIntradayChartPanel`,
+    `_drawIntradayChart`, `_wireIntradayChartInteraction`,
+    `_pmtxHydrateIntradayCharts`) — REUSED by v10 Proximity Matrix
+    row expansion since v7.53.0. The `_pmtx*` naming is historical;
+    code is live.
+
+### Files
+
+  - `dashboard_static/index.html` -- 4 sections + cooldown chip
+    block removed (~70 lines net)
+  - `dashboard_static/app.js` -- 4 top-level renderers + cooldown
+    block + applyState call-site references (~640 lines net)
+  - `dashboard_static/app.css` -- vestigial `#tg-cooldown-chip`
+    media-query rule removed
+  - `bot_version.py` / `trade_genius.py` -- 7.57.0 -> 7.58.0
+  - `docs/dashboard_redesign_v2/pr51_screenshots/`
+
+### Tests
+
+`pytest tests/strategy/` -- 388 passed, 8 skipped. Playwright smoke
+on stubbed state confirms:
+  - No removed DOM ids present (cooldown chip, EW section, legacy
+    pmtx-body, legacy pmtx-weather, v10-trades-used, v10-projection)
+  - New `#v10-baseline` present with live CAGR + balance
+  - v10 Proximity card visible on both Main and Val
+  - No JS errors
+
+### Follow-ups (separate PRs)
+
+  - PR-A.5 (v7.59.0): add Range / Gap / Earnings / Blocklist /
+    Block-reason columns to v10 Proximity so it fully replaces the
+    legacy Permit Matrix gate breakdown.
+  - PR-A.6 (v7.60.0): refresh intraday chart overlays to v10
+    semantics -- drop Tiger Sovereign-era EMA9/AVWAP±1σ/sentinel
+    overlays; add v10 target line + move-to-BE 1R marker.
+  - PR-B (v7.61.0): visual polish + card style consistency.
+
+### Risk
+
+Pure frontend cleanup. No backend changes (the backend still emits
+the now-unused fields; no consumer left). No engine path touched.
+All removed code was reachable but rendered into hidden / vestigial
+DOM. The `_pmtx*` chart helpers stay because v10 Proximity expansion
+relies on them.
+
+---
+
 ## v7.57.0 (2026-05-11) -- Main tab is Main-only; trades-cap label clarified
 
 Operator feedback: the dashboard reads as "5 trades per portfolio"
