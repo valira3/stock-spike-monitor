@@ -91,5 +91,14 @@ jobs:
           # hour, at the :07 tick) so the operator gets positive
           # proof-of-life when no invariants fire. Set to "" to mute.
           MONITOR_HEARTBEAT: "1"
+          # v7.79.0 -- Railway log-tail credentials for the
+          # inv_railway_logs_clean invariant. Both must be present for
+          # the invariant to scan; missing values produce an OK-skip.
+          # RAILWAY_API_TOKEN: project or personal token from Railway
+          #   dashboard -> account -> tokens.
+          # RAILWAY_SERVICE_ID: the service UUID, visible in the
+          #   Railway dashboard URL when viewing the service.
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
         run: |
           python -m tools.dashboard_monitor
