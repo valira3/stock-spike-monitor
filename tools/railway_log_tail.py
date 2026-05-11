@@ -221,6 +221,26 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     return out
 
 
+# v7.96.0 -- tiny helper: actual lines returned from a real
+# fetch_recent_logs call. Lets the dashboard monitor footer
+# distinguish "Railway capped our limit silently" from "the bot's
+# recent log window genuinely contains zero matches for the grep
+# patterns we care about." A common Railway GraphQL behaviour is
+# to cap deploymentLogs(limit:) below the requested value with no
+# error -- the v7.95.0 bump 3000->10000 may have been silently
+# truncated to whatever Railway's per-query ceiling is.
+def count_recent_logs(limit: int = 10000) -> int:
+    """Return how many log rows fetch_recent_logs(limit) actually
+    returned. Mirrors fetch_recent_logs failure handling -- returns
+    0 on any error rather than raising. Callers compare the returned
+    count against the requested limit: count << limit means Railway
+    capped us; count >= limit means we asked for as much as Railway
+    is willing to give.
+    """
+    rows = fetch_recent_logs(limit=limit)
+    return len(rows)
+
+
 # v7.91.0 -- single-leg diagnostic probe. fetch_recent_logs swallows
 # every failure mode into [] (auth fail, schema drift, network
 # error, empty window). That uniformity is correct for callers but

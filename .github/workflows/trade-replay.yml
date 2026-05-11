@@ -19,6 +19,15 @@ name: trade-replay
 # not a guard. Run it when you want to see how a day played out.
 
 on:
+  schedule:
+    # v7.96.0 -- daily EOD snapshot. Runs at 22:15 UTC Mon-Fri, which
+    # is ~18:15 ET in DST (Mar-Nov) and ~17:15 ET in standard time
+    # (Nov-Mar). Both are well after RTH close (16:00 ET), giving the
+    # bot 1-2+ hours to settle final fills + write the last trade-log
+    # rows. The :15 offset avoids the top-of-hour scheduling spike
+    # GHA documents as at-risk-for-skip. Operator can still trigger
+    # the workflow manually any time via workflow_dispatch below.
+    - cron: "15 22 * * 1-5"
   workflow_dispatch:
     inputs:
       since:
@@ -58,9 +67,16 @@ jobs:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
           RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
-          SINCE: ${{ inputs.since }}
-          LIMIT: ${{ inputs.limit }}
-          INCLUDE_LOGS: ${{ inputs.include_logs == 'true' && '1' || '' }}
+          # v7.96.0 -- inputs.* is empty on schedule triggers, so
+          # provide schedule-friendly defaults via the || fallback.
+          # SINCE empty -> tools/trade_replay.py defaults to today ET.
+          # LIMIT defaults to 500. INCLUDE_LOGS defaults to "1" on
+          # schedule (we always want the Railway slice in the EOD
+          # snapshot); on workflow_dispatch the operator's choice
+          # is honored.
+          SINCE: ${{ inputs.since || '' }}
+          LIMIT: ${{ inputs.limit || '500' }}
+          INCLUDE_LOGS: ${{ (github.event_name == 'schedule' || inputs.include_logs == 'true') && '1' || '' }}
           ARTIFACT_PATH: trade_replay.md
         run: |
           python -m tools.trade_replay

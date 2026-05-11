@@ -4,6 +4,39 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.96.0 (2026-05-11) -- Daily auto-replay + lines_fetched diagnostic + replay timestamp
+
+Three small additions stacked into one release:
+
+### 1. Daily EOD auto-trigger on `trade-replay`
+
+The workflow now runs automatically at **22:15 UTC Mon-Fri** (~18:15 ET in DST, ~17:15 ET in standard time) — well after RTH close — and produces a daily snapshot in `trade-replay-archive/YYYY-MM-DD.md` without operator intervention. Manual `workflow_dispatch` still available. Schedule runs always include the Railway log slice (`INCLUDE_LOGS=1`) regardless of input defaults.
+
+### 2. `lines_fetched` diagnostic on empty log slices
+
+v7.95.0 bumped the grep window 3000 → 10000 lines, but today's first post-v7.95.0 trade-replay run still produced an empty Railway log slice. Two possible causes were indistinguishable: (a) Railway capped our `limit=10000` request silently, or (b) the bot truly isn't emitting `[SIGNAL-BUS-EMIT]` / `[TRADE_CLOSED]` lines.
+
+`tools.railway_log_tail.count_recent_logs(limit)` is new — calls `fetch_recent_logs` and returns the actual row count. `inv_val_gene_trades_match_main` calls it when `probe_railway_access` returns `status=ok` and embeds the count in the "no log slice attached" footer as `lines_fetched_on_10k_request=N`. The next monitor cycle's footer answers the cap-vs-bug question directly.
+
+### 3. Timestamp in trade_replay markdown header
+
+`render_markdown` now includes `_Generated at <ET timestamp>_` in the header. Re-runs of the same day produce unique markdown bodies, so the archive workflow's `git diff --cached --quiet` no-op-skip doesn't make a run look like it never happened (which is exactly the confusion we hit at 23:39 ET today when the wider-window re-run produced byte-identical output to the pre-v7.95.0 archive).
+
+### Tests
+
+`tests/strategy/test_trade_replay_v793.py` — 2 new tests covering the explicit-timestamp and default-timestamp branches. Full strategy suite at 531 passed.
+
+### Files
+
+- `.github/workflows/trade-replay.yml` — new `schedule` trigger + env defaults for schedule runs
+- `tools/railway_log_tail.py` — new `count_recent_logs` helper
+- `tools/dashboard_monitor_invariants.py` — footer enriched with `lines_fetched`
+- `tools/trade_replay.py` — `render_markdown` accepts + embeds `generated_at`
+- `tests/strategy/test_trade_replay_v793.py` — 2 new tests
+- `bot_version.py` / `trade_genius.py` — `7.95.0` → `7.96.0`
+
+---
+
 ## v7.95.0 (2026-05-11) -- Bump Railway log-grep window 3000 → 10000 lines
 
 Today's first trade-replay run (2026-05-11.md on the `trade-replay-archive` branch) showed 7 closed positions with $865.95 net P&L — but the Railway log slice that should have accompanied them came back empty:

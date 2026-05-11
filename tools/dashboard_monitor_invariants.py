@@ -237,9 +237,22 @@ def inv_val_gene_trades_match_main(ctx):
             # work but window empty" so the operator knows which leg
             # to chase. The probe issues one GraphQL call against
             # Railway to verify auth + service resolution.
-            from tools.railway_log_tail import probe_railway_access
+            # v7.96.0 -- also report how many log rows Railway
+            # actually returned for our limit=10000 grep window.
+            # If Railway capped the response (returned << 10000),
+            # widening the limit further can't help and we need a
+            # different fetch strategy. If it returned ~10000 but
+            # zero grep matches, the bot truly isn't emitting the
+            # patterns we expect -- a real bug downstream.
+            from tools.railway_log_tail import probe_railway_access, count_recent_logs
             probe = probe_railway_access()
             status = probe.get("status", "unknown")
+            lines_fetched = None
+            if status == "ok":
+                try:
+                    lines_fetched = count_recent_logs(limit=10000)
+                except Exception:
+                    lines_fetched = None
             footers = {
                 "missing_token": (
                     "RAILWAY_API_TOKEN env var is empty in this "
@@ -275,10 +288,13 @@ def inv_val_gene_trades_match_main(ctx):
                 ),
             }
             reason = footers.get(status, f"unexpected probe status: {status!r}")
+            lf_suffix = ""
+            if lines_fetched is not None:
+                lf_suffix = f" lines_fetched_on_10k_request={lines_fetched}"
             detail = base_detail + (
                 f"\n\n_No Railway log slice attached. Diagnostic: "
                 f"status={status} token_set={probe.get('token_set')} "
-                f"service_set={probe.get('service_set')}. {reason}_"
+                f"service_set={probe.get('service_set')}{lf_suffix}. {reason}_"
             )
     except Exception as exc:
         detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"
