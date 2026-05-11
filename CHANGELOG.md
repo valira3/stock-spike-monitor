@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.47.0 (2026-05-11) -- Per-portfolio v10 parity on Val/Gene tabs
+
+PR40 of the dashboard-redesign loop. The v10 strip (trades / risk /
+daily-kill gauges) and the Recent Activity feed shipped on the Main
+tab in v7.41.0 + v7.45.0 only -- Val/Gene saw nothing. This PR adds
+those same cards to the Val and Gene panels, scoped to that
+portfolio_id, so an operator switching tabs sees how each book is
+doing against its own limits.
+
+### Frontend (`dashboard_static/app.js`)
+
+New renderer `renderV10PerPortfolio(name, panel)` in IIFE 2. Reads
+the v10 block from `window.__tgLastState` (the most recent Main
+`/api/state` snapshot -- `/api/executor/<name>` does not carry v10
+state), filters by `name` ("val" or "gene"), and writes into two
+new sections injected by `execSkeleton`:
+
+  - `[data-f="v10-pid-section"]` -- card with three v10 gauges
+    (Trades, Concurrent risk, Daily-kill), summary chip in header
+    ("idle" / "N open . X% util" / "near limit" / "DAILY KILL
+    TRIPPED"), and a count badge of trades_today / max_trades.
+  - `[data-f="v10-pid-activity-section"]` -- the same activity-row
+    layout used on Main, but filtered to events whose `pid` matches
+    this portfolio_id. Newest first, hides when no events.
+
+Hooked into:
+  - `renderExecutor` -- right after the kill-switch banner mirror,
+    so it paints on every executor poll (15s).
+  - `window.__tgOnState` -- so the per-portfolio strip refreshes
+    whenever Main's `/api/state` lands, even on the tab that isn't
+    currently active (the panel only needs `data-tg-ready=1`).
+
+Both calls wrapped in `try { } catch (e) { }` so a renderer bug
+never breaks the exec panel paint.
+
+### Visual design
+
+  - Trades + risk gauges share the same green/amber/red gradient
+    palette as the Main banner.
+  - Daily-kill gauge gets a red border when triggered (>=100% of
+    threshold).
+  - Summary chip color tracks state: gray (idle), blue (open
+    positions), amber (near limit), red (kill tripped).
+  - Activity rows use the same chip color taxonomy as Main
+    (`act-kind-entry` / `act-kind-exit` / `act-kind-reject` /
+    `act-kind-info`).
+
+### Version
+
+`BOT_VERSION` bumped 7.46.0 -> 7.47.0 (mirrored in `trade_genius.py`).
+Builds on PR39 (v7.46.0 hero-zone reorder) which is the immediate
+parent on main.
+
+### Screenshots
+
+`docs/dashboard_redesign_v2/pr40_screenshots/` -- Val + Gene tabs,
+desktop + mobile. The fixture state demonstrates Val at "near
+limit" (4/5 trades, 75% risk) and Gene with daily-kill tripped at
+-$1,050 / -$1,000.
+
+### Risk
+
+  - Wraps both renderer calls in try/catch so a bug can't break the
+    exec poll loop.
+  - Sections hide entirely when v10 is not bootstrapped (graceful
+    fallback to the legacy Permit-Matrix-only layout).
+  - No backend changes -- pure dashboard read.
+
+---
+
 ## v7.46.0 (2026-05-11) -- Hero zone reorder + index strip demote
 
 PR39 of the dashboard-redesign loop. Two layout changes that
