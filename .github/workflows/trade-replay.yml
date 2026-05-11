@@ -37,7 +37,7 @@ on:
         options: ["true", "false"]
 
 permissions:
-  contents: read
+  contents: write   # v7.94.0 -- commit-back to trade-replay-archive branch
 
 jobs:
   replay:
@@ -73,3 +73,68 @@ jobs:
           path: trade_replay.md
           if-no-files-found: warn
           retention-days: 30
+
+      # v7.94.0 -- also commit the markdown to a dedicated archive
+      # branch (`trade-replay-archive`) so it's retrievable programmatically
+      # via the GitHub Contents API. Each run for the same date overwrites
+      # the previous YYYY-MM-DD.md file with the latest snapshot. Branch
+      # is created as an orphan on first run, then re-used. Failures here
+      # are non-fatal -- the artifact + step summary are the always-on
+      # outputs; archive commit is best-effort.
+      - name: Commit to trade-replay-archive branch
+        if: success()
+        env:
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -e
+          # Default SINCE to today (ET) when input is empty -- mirrors
+          # the same default tools/trade_replay.py applies.
+          if [ -z "$SINCE" ]; then
+            SINCE=$(TZ=America/New_York date +%Y-%m-%d)
+          fi
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BRANCH="trade-replay-archive"
+          FILE="${SINCE}.md"
+
+          # Stash the generated markdown outside the working tree so
+          # branch switches don't clobber it.
+          cp trade_replay.md "/tmp/replay-${SINCE}.md"
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          # Try to fetch the archive branch. If it doesn't exist yet,
+          # create it as an orphan so its history doesn't share commits
+          # with main.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH":"refs/remotes/origin/$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout --orphan "$BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+            # Seed with a tiny README so the first commit isn't empty.
+            cat > README.md <<EOF
+          # trade-replay archive
+
+          One markdown file per trading day (\`YYYY-MM-DD.md\`), produced
+          by the \`trade-replay\` workflow. Each run for the same day
+          overwrites that day's file with the latest snapshot. This
+          branch exists only to give the operator (and Claude Code
+          sessions reading via the GitHub Contents API) a stable,
+          queryable location for the per-trade reports.
+          EOF
+            git add README.md
+          fi
+
+          cp "/tmp/replay-${SINCE}.md" "$FILE"
+          git add "$FILE"
+
+          # Only commit if there's actually a change (re-runs with
+          # identical content are no-ops).
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "trade-replay: $SINCE ($TIMESTAMP)"
+            git push -u origin "$BRANCH"
+            echo "::notice::trade-replay archived to ${BRANCH}/${FILE}"
+          fi

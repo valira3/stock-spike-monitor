@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.94.0 (2026-05-11) -- trade-replay archive branch (programmatic retrieval)
+
+v7.93.0's trade-replay workflow wrote the markdown to `$GITHUB_STEP_SUMMARY` and uploaded it as a 30-day-retention artifact. Both surfaces are operator-friendly (you click through the Actions tab to read them) but neither is reachable through the GitHub Contents API the way a checked-in file is — so a Claude Code session has no way to pull the report after the fact without the operator pasting it.
+
+### Fix
+
+The `trade-replay` workflow now commits its markdown output to a dedicated `trade-replay-archive` branch at path `YYYY-MM-DD.md`. The branch is created as an orphan on first run (no shared history with `main`, just one tiny README + the per-day reports), and re-used thereafter. Each run for the same date overwrites that day's file with the latest snapshot.
+
+Retrieval pattern from a Claude Code session:
+
+```
+mcp__github__get_file_contents(
+  owner="valira3",
+  repo="stock-spike-monitor",
+  path="2026-05-11.md",
+  ref="refs/heads/trade-replay-archive",
+)
+```
+
+The artifact + step-summary outputs from v7.93.0 are kept as fallbacks. The commit-back step is best-effort: a push failure does not fail the workflow.
+
+### Files
+
+- `.github/workflows/trade-replay.yml` — added "Commit to trade-replay-archive branch" step; `permissions.contents` upgraded from `read` to `write`
+- `bot_version.py` / `trade_genius.py` — `7.93.0` → `7.94.0`
+
+---
+
 ## v7.93.0 (2026-05-11) -- On-demand per-trade replay tool
 
 Operator question after the v7.91/7.92 Railway-secrets fix landed: "Can you pull trade logs from anywhere else? Ie, jsonl?" The bot persists every closed-trade row to `/data/trade_log.jsonl` and the dashboard already exposes `/api/trade_log` to read from it — but there was no operator-facing tool that surfaced that data as a readable per-trade report. Every trade-quality / "how did today actually go?" question required someone to curl the endpoint and eyeball the raw JSON.
