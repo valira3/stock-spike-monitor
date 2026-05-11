@@ -564,6 +564,70 @@ def peek_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
         return _pending_v10_sizes.get((portfolio_id, ticker))
 
 
+def rollback_admit(portfolio_id: str, ticker: str,
+                   ticket_id: str = "", reason: str = "") -> bool:
+    """v7.81.0 -- unwind a v10 admit when the downstream broker call
+    returned without filling.
+
+    Pre-v7.81.0 the FSM transitioned to IN_POS and the RiskBook
+    reserved capacity in `OrbEngine.try_enter` BEFORE the broker call
+    ran. If `callbacks.execute_entry` early-returned (daily-loss
+    limit, new-position cutoff, post-loss cooldown, insufficient
+    cash, etc.) the FSM stayed stuck IN_POS with no actual position.
+    The dashboard surfaced this as the "phantom IN_POS" pattern
+    caught by `inv_v10_in_pos_has_internal_position`.
+
+    Same shape for Val/Gene in mirror mode (ORB_PORTFOLIO_FIRE=0):
+    they admit and transition IN_POS, but their broker fire is
+    deferred so no position is ever opened in their book.
+
+    This helper undoes both:
+      1. Releases the RiskBook ticket so capacity flows back.
+      2. Transitions the FSM back to ARMED so the ticker can re-fire
+         when the breakout condition still holds.
+
+    Idempotent and safe to call when the runtime isn't bootstrapped
+    (returns False). Returns True if any state was actually rolled
+    back.
+    """
+    if _engine is None:
+        return False
+    any_change = False
+    # 1. Release the RiskBook ticket (if we know the id).
+    if ticket_id:
+        try:
+            rb = _engine._risk.get(portfolio_id)
+            if rb is not None and rb.release_by_id(ticket_id):
+                any_change = True
+        except Exception as e:
+            logger.warning(
+                "[V79-ORB-ROLLBACK] release_by_id %s/%s ticket=%s: %s",
+                portfolio_id, ticker, ticket_id[:8], e,
+            )
+    # 2. Transition FSM back to ARMED so the ticker can re-fire.
+    try:
+        from orb import state as _state
+        ds = _engine._state.get_day_state(portfolio_id, ticker)
+        if ds.phase == _state.PHASE_IN_POS or ds.in_position:
+            ds.transition(_state.PHASE_ARMED)
+            ds.in_position = False
+            any_change = True
+    except Exception as e:
+        logger.warning(
+            "[V79-ORB-ROLLBACK] FSM rollback %s/%s: %s",
+            portfolio_id, ticker, e,
+        )
+    if any_change:
+        logger.warning(
+            "[V79-ORB-ROLLBACK] %s/%s ticket=%s reason=%s "
+            "-- FSM->ARMED, RiskBook released",
+            portfolio_id, ticker,
+            ticket_id[:8] if ticket_id else "?",
+            reason or "<none>",
+        )
+    return any_change
+
+
 def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
                          bar_high: float, bar_low: float, bar_close: float,
                          bar_bucket_min: int) -> ExitResult:

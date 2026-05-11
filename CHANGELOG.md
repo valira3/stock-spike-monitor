@@ -4,6 +4,135 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.81.0 (2026-05-11) -- Rollback v10 admit when broker call doesn't fill (kills phantom IN_POS)
+
+First post-v7.80.0 push-triggered monitor run filed Issue #543
+with 4 violations, including:
+
+```
+v10_in_pos_has_internal_position: 2 phantom IN_POS states
+  main/TSLA: phase='in_pos' in_position=True
+  val/TSLA: phase='in_pos' in_position=True
+val_gene_trades_match_main: trade-count mismatch: val=0 vs main=1
+```
+
+Main fired a TSLA trade (the first real trade since the fixes
+landed!), but the v10 FSM stayed in IN_POS for both Main AND Val
+even though `tg.positions[TSLA]` was empty. The v7.76.0 invariant
+caught it.
+
+### Root cause
+
+`orb/engine.py:OrbEngine.try_enter` transitions the FSM to
+IN_POS and reserves the RiskBook ticket BEFORE the broker call
+runs:
+
+```python
+# orb/engine.py:393-419
+ticket = rb.try_admit(...)              # ① reserve capacity
+...
+ds.transition(_state.PHASE_IN_POS)      # ② mark IN_POS
+ds.in_position = True
+ds.last_entry_iso = signal.signal_bar_close_iso
+```
+
+THEN the caller in `engine/scan.py` runs `callbacks.execute_entry`
+(Main) or `_v10_dispatch_executor_fire` (Val/Gene). If that call
+returns without populating `tg.positions[ticker]`, the v10 state
+is stuck IN_POS with no actual position.
+
+Both routes have several early-return paths that match exactly
+this failure mode:
+
+  - `execute_breakout` early-returns on: daily-loss limit,
+    new-position cutoff, post-loss cooldown, insufficient cash,
+    invalid price/shares, ticker-side blocklist, halt status,
+    plus a handful of others -- each one a silent `return`.
+  - `_v10_dispatch_executor_fire` returns early when
+    `ORB_PORTFOLIO_FIRE=0` (mirror mode -- Val/Gene admit but
+    Main does the actual fire via the legacy bus), when
+    `ORB_LIVE_MODE=0`, when the executor's Alpaca keys are
+    unset, or when the broker submit raises.
+
+For mirror-mode Val/Gene specifically, EVERY admit produces a
+phantom because their broker fire is gated off by design.
+
+### Fix
+
+Three coordinated changes:
+
+1. **`orb/risk_book.py`**: new `RiskBook.release_by_id(ticket_id)`
+   so callers can release a ticket using just the string id
+   (engine/scan.py keeps `result.ticket_id` from CheckEntryResult,
+   not the full ticket object).
+
+2. **`orb/live_runtime.py`**: new `rollback_admit(portfolio_id,
+   ticker, ticket_id, reason)` helper that:
+   - Releases the RiskBook ticket via `release_by_id`
+   - Transitions the FSM from IN_POS back to ARMED
+   - Sets `ds.in_position = False`
+   - Emits a `[V79-ORB-ROLLBACK]` WARNING-level forensic log
+   - Idempotent + safe to call on an un-bootstrapped runtime.
+
+3. **`engine/scan.py`**: post-call check after every broker fire,
+   on both long and short paths:
+   - **Main**: if `ticker not in tg.positions` (or `tg.short_positions`)
+     after `callbacks.execute_entry` returns, call `rollback_admit`.
+   - **Val/Gene**: `_v10_dispatch_executor_fire` now returns `bool`
+     (was `None`); callers rollback the admit when the fire was
+     deferred or unavailable. This catches the mirror-mode case
+     unconditionally.
+
+### What this fixes vs what stays
+
+- ✅ Phantom IN_POS on Main when execute_breakout silently
+  rejects (daily-loss, cutoff, cash, etc.).
+- ✅ Phantom IN_POS on Val/Gene in mirror mode
+  (`ORB_PORTFOLIO_FIRE=0`).
+- ✅ Phantom IN_POS when Val/Gene's executor isn't configured
+  (e.g. `GENE_ALPACA_PAPER_KEY` unset).
+- ⚪ Position-vs-FSM consistency during the brief window between
+  admit and `execute_entry` running (sub-second) is still
+  vulnerable -- but the monitor only samples every 10min, so
+  no production false-positives expected.
+
+### Tests
+
+- `tests/strategy/test_orb_risk_book.py` (+4): release_by_id
+  frees budget, returns False on unknown/empty id, idempotent.
+- `tests/strategy/test_orb_live_runtime.py` (+4): rollback_admit
+  is no-op when not bootstrapped; correctly transitions IN_POS
+  -> ARMED + releases ticket; safe with empty ticket_id; no-op
+  when FSM isn't in IN_POS.
+
+Full suite: **465 passed** (up from 457), 8 skipped.
+
+### Files
+
+- `orb/risk_book.py`: `release_by_id` helper
+- `orb/live_runtime.py`: `rollback_admit` helper
+- `engine/scan.py`: post-call checks on long + short paths;
+  `_v10_dispatch_executor_fire` signature changed to return bool
+- `tests/strategy/test_orb_risk_book.py`: +4 tests
+- `tests/strategy/test_orb_live_runtime.py`: +4 tests
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio.
+
+### Operator action after merge
+
+Redeploy Railway. Next time a v10 admit happens and the broker
+call doesn't follow through, the FSM will roll back to ARMED
+(visible in the dashboard's v10 Ticker Matrix going IN_POS -> ARMED
+within 60s) and the `inv_v10_in_pos_has_internal_position` invariant
+will no longer fire on those tickers.
+
+The "1 trade today on Main" from the v7.80.0 monitor run was the
+actual TSLA fire that DID succeed -- that one will continue to
+show up in trade_log.jsonl normally. The phantom companion
+admit (the same TSLA reaching IN_POS on a *subsequent* signal
+that didn't fill) is what gets cleared.
+
+---
+
 ## v7.80.0 (2026-05-11) -- Dashboard monitor runs on push to main (workaround for stalled cron)
 
 Operator request: "automatically run the dashboard monitor or
