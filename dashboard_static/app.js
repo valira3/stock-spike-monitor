@@ -442,12 +442,24 @@
           var _rps = Math.abs(_riskEntry - _riskStop);
           if (_rps > 0) _riskTxt = fmtUsd(_rps * _riskShareCount);
         }
+        // v7.87.0 -- notional value at cost (shares * entry). For longs
+        // this is the dollar amount invested; for shorts it's the
+        // dollar liability outstanding. Sums of these per direction
+        // feed the v7.86.0 total-exposure cap. Surfacing it per-row
+        // makes the cap math (longs_MV + shorts_liab + new <= 95% eq)
+        // traceable to specific tickers.
+        var _notionalTxt = "—";
+        if (Number.isFinite(_riskShareCount) && _riskShareCount > 0
+            && Number.isFinite(_riskEntry) && _riskEntry > 0) {
+          _notionalTxt = fmtUsd(_riskShareCount * _riskEntry);
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
           <td class="right">${p.shares}</td>
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
+          <td class="right" title="Notional at cost: shares × entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap.">${_notionalTxt}</td>
           <td class="right">${fmtPx(eff)}${trailBadge}</td>
           <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
@@ -461,6 +473,7 @@
           <th class="right" title="Number of shares">Sh</th>
           <th class="right" title="Average fill price when the position opened">Entry</th>
           <th class="right" title="Latest mark price">Mark</th>
+          <th class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">Notional</th>
           <th class="right" title="Effective stop \u2014 trail stop if armed (TRAIL badge), otherwise the hard stop">Stop</th>
           <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
