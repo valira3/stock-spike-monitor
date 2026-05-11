@@ -4,6 +4,72 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.41.0 (2026-05-11) -- Dashboard gauges: trades + risk + daily-kill
+
+PR34 of the dashboard-redesign loop. Replaces raw `7/15` and `$1.2k/$6k`
+text in the v10 banner with visual progress bars so an operator sees
+the state at-a-glance instead of mental-math.
+
+### 3 aggregate gauges (inside `#v10-day-status`)
+
+| Gauge | Source | Range | Color band |
+|---|---|---|---|
+| Trades | `sum(day_states.trades_today) / (max_trades × num_portfolios)` | 0-100% | green 0-50, amber 50-75, red 75-100+ |
+| Concurrent risk | `sum(open_risk) / sum(max_risk_dollars)` | 0-100% | same |
+| Daily-kill (worst pid) | `max(realized / threshold)` across portfolios | 0-110% | always uses the kill-gradient (green-amber-red shifted earlier) |
+
+The daily-kill gauge **only renders** when at least one portfolio has
+a negative `realized_pnl_today` OR a kill has triggered. Otherwise
+it's hidden to avoid visual noise.
+
+### Per-portfolio mini-gauge
+
+Each `v10-pid-row` (Main / Val / Gene) now carries an inline 40 × 4 px
+mini-gauge after `kill`, only when that portfolio has measurable
+realized loss. Operator can spot the closest-to-blown portfolio
+without parsing dollar amounts.
+
+### Color rules
+
+- **Border**: green (default) → amber at fill ≥ 70% → red at fill ≥ 90% (plus subtle red glow).
+- **Fill gradient**: green → amber → red with the inflection points at 50% / 75% / 100%.
+- **Kill-gauge gradient**: shifted to red earlier (50% amber, 90% red) because the threshold is what matters, not utilization.
+
+### Mobile (≤ 720 px)
+
+Three gauges stack vertically. Per-portfolio rows wrap one per line.
+Verified at 390 px (iPhone 13).
+
+### Exported via window
+
+`window.__tgRenderV10DayStatus` (was internal) is now exposed via a
+getter so the Val/Gene exec render path + smoke tests can invoke it
+without depending on the poll loop.
+
+### Tests
+
+No backend change → 379 strategy tests still pass. Playwright smoke
+render against 4 mocked states:
+1. Warn — main at 93% kill (visible amber border)
+2. Kill triggered — main at 108% (red border + glow)
+3. Clean — main green, val mild amber
+4. Mobile 390 px — gauges stacked
+
+Screenshots in `docs/dashboard_redesign_v2/pr34_screenshots/`.
+
+### Files
+
+- `bot_version.py` / `trade_genius.py` -- 7.40.0 → 7.41.0
+- `dashboard_static/app.css` -- `.v10-gauges-row` + `.v10-gauge`
+  variants + `.v10-mini-gauge`
+- `dashboard_static/app.js` -- gauge HTML generator inside
+  `renderV10DayStatus` + `window.__tgRenderV10DayStatus` export +
+  per-pid mini-gauges
+- `docs/dashboard_redesign_v2/pr34_screenshots/` -- 4 reference images
+- `CHANGELOG.md`
+
+---
+
 ## v7.40.0 (2026-05-10) -- Dashboard kill-switch banner (across all portfolios)
 
 PR33 of the dashboard-redesign loop. First user-facing change after
