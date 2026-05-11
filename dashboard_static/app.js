@@ -4541,7 +4541,17 @@
   // window.__tgLastState (the most recent Main /api/state snapshot)
   // since the /api/executor/<name> endpoint does not carry v10 state.
   // Section anchors live in execSkeleton under data-f="v10-pid-*".
-  function renderV10PerPortfolio(name, panel) {
+  //
+  // v7.50.0 -- the third arg `execData` is the /api/executor/<name>
+  // payload. Used to source `trades_today` from the broker side
+  // instead of the v10 FSM RiskBook. Reason: when
+  // ORB_PORTFOLIO_FIRE=0 (default until the 5-day paper-fire
+  // observation lands) Val/Gene mirror Main via the legacy signal
+  // bus -- their v10 RiskBook trades_today stays at 0 because the
+  // fire/exit doesn't route through the v10 FSM for those pids. The
+  // broker-reported count is correct in BOTH modes (mirror and
+  // standalone-fire) and is what the operator actually wants to see.
+  function renderV10PerPortfolio(name, panel, execData) {
     function esc(v) {
       return String(v == null ? "" : v)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -4571,7 +4581,20 @@
         break;
       }
     }
-    var trades = (myDayState && myDayState.trades_today) || 0;
+    // v7.50.0 -- broker-reported trade count is the source of truth
+    // for the UI. Three sources, preferred in order:
+    //   1. exec payload trades_today.length (live broker count)
+    //   2. backend-injected day_state.broker_trades_today (from
+    //      dashboard_server, falls back if exec poll hasn't landed)
+    //   3. v10 RiskBook trades_today (correct only when
+    //      ORB_PORTFOLIO_FIRE=1; stays at 0 in mirror mode)
+    var brokerTrades = (execData && Array.isArray(execData.trades_today))
+                        ? execData.trades_today.length
+                        : (myDayState && myDayState.broker_trades_today != null
+                            ? myDayState.broker_trades_today
+                            : null);
+    var v10Trades = (myDayState && myDayState.trades_today) || 0;
+    var trades = (brokerTrades != null) ? brokerTrades : v10Trades;
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
     var openRisk = rb.open_risk || 0;
     var maxRisk = rb.max_risk_dollars || 0;
@@ -4706,6 +4729,13 @@
     return el;
   }
 
+  // v7.50.0 -- last exec payload cache, keyed by name. The Main
+  // /api/state refresh path (window.__tgOnState below) needs to
+  // re-render the per-portfolio v10 strip with broker trades_today
+  // -- but it doesn't have access to the exec payload directly. We
+  // stash the latest one here so the refresh can read it.
+  var _execLastData = {};
+
   async function pollExecutor(name) {
     const panel = ensureExecSkeleton(name);
     if (!panel) return;
@@ -4713,6 +4743,7 @@
       const r = await fetch("/api/executor/" + name, { credentials: "same-origin" });
       if (!r.ok) throw new Error("http " + r.status);
       const data = await r.json();
+      _execLastData[name] = data;
       renderExecutor(name, data);
       // v4.11.0 — paint health pill from per-executor errors snapshot.
       try { applyHealthPill(name, (data && data.errors) || { count: 0, severity: "green", entries: [] }); } catch (e) {}
@@ -4954,7 +4985,9 @@
     } catch (e) { /* never break exec render */ }
 
     // v7.47.0 -- per-portfolio v10 strip + filtered activity feed.
-    try { renderV10PerPortfolio(name, panel); }
+    // v7.50.0 -- pass `data` so the renderer can read broker
+    // trades_today.length (correct in both ORB_PORTFOLIO_FIRE modes).
+    try { renderV10PerPortfolio(name, panel, data); }
     catch (e) { /* never break exec render */ }
 
     // Dim the whole panel when the executor is not configured so the
@@ -5244,7 +5277,9 @@
         // v7.47.0 -- refresh per-portfolio v10 strip + activity feed
         // when Main's /api/state lands (the v10 block lives there,
         // not on the /api/executor/<name> endpoint).
-        try { renderV10PerPortfolio(exec, panel); }
+        // v7.50.0 -- pass cached exec payload so broker trades_today
+        // stays correct across Main /api/state-driven refreshes too.
+        try { renderV10PerPortfolio(exec, panel, _execLastData[exec]); }
         catch (e) { /* never break shared refresh */ }
       }
     }
@@ -5610,11 +5645,22 @@
     var gates = (s && s.gates) || {};
     var conditions = [];
 
-    // 1. Operator paused the scan loop
-    if (gates.scan_paused) {
+    // 1. Operator paused the scan loop (manual /pause), OR auto-idle
+    //    because we're outside RTH. v7.50.0 -- the backend now exposes
+    //    these as two separate flags (scan_paused_user, scan_idle_hours)
+    //    while keeping the legacy scan_paused union for compat. We pick
+    //    the more specific message: outside-RTH wins because it's the
+    //    most common reason the banner appears (every night + weekends).
+    if (gates.scan_idle_hours) {
+      conditions.push({
+        title: "OUTSIDE MARKET HOURS",
+        detail: "US RTH is closed. Scan loop auto-idle until the next open. No operator action required.",
+        pid_chips: [],
+      });
+    } else if (gates.scan_paused_user || gates.scan_paused) {
       conditions.push({
         title: "SCAN PAUSED",
-        detail: "Operator pause active. New entries blocked; existing positions still managed to exit.",
+        detail: "Operator /pause active. New entries blocked; existing positions still managed to exit.",
         pid_chips: [],
       });
     }
@@ -5678,12 +5724,25 @@
 
     if (conditions.length === 0) {
       banner.classList.add("hide");
+      banner.classList.remove("killswitch-banner--info");
       banner.innerHTML = "";
       return;
     }
     banner.classList.remove("hide");
-    // Synthesize the banner: combine all active conditions
-    var html = '<span class="ks-icon" aria-hidden="true">⚠</span>'
+    // v7.50.0 -- soften the red styling when the ONLY active condition
+    // is "outside market hours" (just informational, not a kill state).
+    // Any of the actual alarm conditions (operator-pause, day-block,
+    // daily-kill, v10 disabled, legacy halt) brings the red back.
+    var informationalOnly = (conditions.length === 1
+                              && conditions[0].title === "OUTSIDE MARKET HOURS");
+    if (informationalOnly) {
+      banner.classList.add("killswitch-banner--info");
+    } else {
+      banner.classList.remove("killswitch-banner--info");
+    }
+    // Pick the icon: ℹ for the calm informational state, ⚠ otherwise.
+    var icon = informationalOnly ? 'ℹ' : '⚠';
+    var html = '<span class="ks-icon" aria-hidden="true">' + icon + '</span>'
              + '<div class="ks-text">';
     conditions.forEach(function (c, i) {
       var sep = (i > 0) ? ' · ' : '';
@@ -5783,10 +5842,18 @@
       }
     }
 
-    // Trades + risk used (sum across portfolios)
+    // Trades + risk used (sum across portfolios).
+    // v7.50.0 -- prefer the backend-injected broker_trades_today so
+    // the count matches what each pid's Alpaca account actually
+    // booked (mirror mode keeps v10's trades_today=0 for val/gene).
+    function _tradesForDs(d) {
+      return (d.broker_trades_today != null)
+              ? d.broker_trades_today
+              : (d.trades_today || 0);
+    }
     var dayStates = v10.day_states || [];
     var totalTrades = 0;
-    for (var i = 0; i < dayStates.length; i++) totalTrades += (dayStates[i].trades_today || 0);
+    for (var i = 0; i < dayStates.length; i++) totalTrades += _tradesForDs(dayStates[i]);
     var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
     var tradesEl = document.getElementById("v10-trades-used");
     // v7.23.0: per-portfolio breakdown in tooltip; aggregate in pill text.
@@ -5796,7 +5863,7 @@
     for (var j = 0; j < dayStates.length; j++) {
       var ds = dayStates[j];
       var p = ds.portfolio_id || "?";
-      perPidTrades[p] = (perPidTrades[p] || 0) + (ds.trades_today || 0);
+      perPidTrades[p] = (perPidTrades[p] || 0) + _tradesForDs(ds);
     }
     if (tradesEl) {
       tradesEl.textContent = totalTrades + "/" + (maxTrades * pidsAll.length);

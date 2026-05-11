@@ -2057,6 +2057,24 @@ body.v10-live .legacy-v10-hidden {
 .killswitch-banner.hide {
   display: none;
 }
+/* v7.50.0 -- informational variant: shown when the only active
+   condition is OUTSIDE MARKET HOURS (calm blue/gray, no red alarm).
+   Any actual kill condition keeps the red styling above. */
+.killswitch-banner.killswitch-banner--info {
+  background: linear-gradient(90deg,
+              rgba(59, 130, 246, 0.10) 0%,
+              rgba(100, 116, 139, 0.08) 100%);
+  border-color: rgba(59, 130, 246, 0.28);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.04),
+              0 0 18px rgba(59, 130, 246, 0.06);
+}
+.killswitch-banner.killswitch-banner--info .ks-icon {
+  color: #60a5fa;
+  animation: none; /* no pulse for the informational variant */
+}
+.killswitch-banner.killswitch-banner--info .ks-title {
+  color: #93c5fd;
+}
 .killswitch-banner .ks-icon {
   font-size: 22px;
   color: #ef4444;

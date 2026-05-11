@@ -1554,9 +1554,12 @@ def snapshot() -> dict[str, Any]:
         # set by scan_loop when it short-circuits outside market hours.
         # Before v4.4.1 this only reflected _scan_paused, so the UI said
         # "ACTIVE" all night even though no scanning was happening.
-        scan_paused = bool(
-            getattr(m, "_scan_paused", False) or getattr(m, "_scan_idle_hours", False)
-        )
+        # v7.50.0 — split into two flags so the kill-switch banner can
+        # tell the operator apart from outside-RTH idle. `scan_paused`
+        # keeps the union for backwards compat (existing consumers).
+        scan_paused_user = bool(getattr(m, "_scan_paused", False))
+        scan_idle_hours = bool(getattr(m, "_scan_idle_hours", False))
+        scan_paused = scan_paused_user or scan_idle_hours
         or_date = str(getattr(m, "or_collected_date", ""))
 
         # ticker_pnl / red list
@@ -1868,6 +1871,42 @@ def snapshot() -> dict[str, Any]:
         except Exception as _e_v10:
             v10_block = {"available": False, "error": str(_e_v10)[:120]}
 
+        # v7.50.0 -- enrich each day_state with the broker-reported
+        # trade count for that portfolio. The v10 FSM's trades_today
+        # only increments on v10-tracked exits, which means it stays
+        # at 0 for val/gene when ORB_PORTFOLIO_FIRE=0 (the default)
+        # -- those books mirror Main via the legacy signal bus. The
+        # dashboard shows broker_trades_today instead so all three
+        # tabs match. The engine itself keeps using trades_today for
+        # the max-trades-per-day gate.
+        try:
+            from engine.portfolio_book import PORTFOLIOS as _PB
+            try:
+                _today_s = _ssm()._now_et().strftime("%Y-%m-%d")
+            except Exception:
+                _today_s = ""
+            for _ds in (v10_block.get("day_states") or []):
+                _pid = _ds.get("portfolio_id")
+                if not _pid:
+                    continue
+                if _pid == "main":
+                    _ds["broker_trades_today"] = len(_today_trades())
+                    continue
+                _book = _PB.get(_pid)
+                if _book is None or not _today_s:
+                    _ds["broker_trades_today"] = 0
+                    continue
+                _n = 0
+                for _t in (getattr(_book, "trade_history", []) or []):
+                    if _t.get("date") == _today_s:
+                        _n += 1
+                for _t in (getattr(_book, "short_trade_history", []) or []):
+                    if _t.get("date") == _today_s:
+                        _n += 1
+                _ds["broker_trades_today"] = _n
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "version": version,
@@ -1929,6 +1968,11 @@ def snapshot() -> dict[str, Any]:
                 "trading_halted": halted,
                 "halt_reason": halt_reason,
                 "scan_paused": scan_paused,
+                # v7.50.0 -- distinguish operator /pause from outside-RTH
+                # auto-idle so the kill-switch banner shows the right
+                # reason instead of always saying "Operator pause active".
+                "scan_paused_user": scan_paused_user,
+                "scan_idle_hours": scan_idle_hours,
                 "or_collected_date": or_date,
                 # v3.4.21 — per-ticker entry-gate chips: Break / Vol / PDC / Idx.
                 "per_ticker": _ticker_gates(m, tickers),
