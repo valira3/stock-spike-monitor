@@ -395,7 +395,15 @@ class TestRefreshEquityFromBooks:
         assert rb.max_notional != before
 
     def test_swallows_book_failure(self, isolated_env, monkeypatch):
-        """A misbehaving PortfolioBook should NOT explode the refresh."""
+        """A misbehaving PortfolioBook should NOT explode the refresh.
+
+        v7.77.0 -- when book.current_equity() raises, the refresh now
+        falls through to resolve_equity which reads tg.paper_cash for
+        main. That's the canonical source of truth for main's cash
+        (v7.72.0 bridge), so this is more correct than the pre-v7.77.0
+        fallback to book.paper_cash. Test now patches both so we can
+        assert a deterministic chain.
+        """
         live_runtime.bootstrap()
 
         class _Broken:
@@ -404,8 +412,88 @@ class TestRefreshEquityFromBooks:
                 raise RuntimeError("simulated failure")
 
         import engine.portfolio_book as pb
+        import engine.portfolio_equity as pe
         monkeypatch.setattr(pb, "PORTFOLIOS", {"main": _Broken()})
         monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", ["main"])
+        # Force resolve_equity to fail too so we exercise the final
+        # book.paper_cash fallback that the test was originally
+        # validating.
+        monkeypatch.setattr(pe, "resolve_equity",
+                            lambda pid: 0.0)
         out = live_runtime.refresh_equity_from_books()
-        # Falls back to paper_cash
+        # Final fallback: book.paper_cash
         assert out.get("main") == 88000.0
+
+    def test_v7_77_0_main_resolve_equity_fallback_when_book_raises(
+            self, isolated_env, monkeypatch):
+        """v7.77.0 -- when main's book.current_equity() raises, the
+        refresh falls back to resolve_equity (= tg.paper_cash) instead
+        of book.paper_cash. tg.paper_cash is the canonical source."""
+        live_runtime.bootstrap()
+
+        class _Broken:
+            paper_cash = 88000.0
+            def current_equity(self, prices=None):
+                raise RuntimeError("simulated failure")
+
+        import engine.portfolio_book as pb
+        import engine.portfolio_equity as pe
+        monkeypatch.setattr(pb, "PORTFOLIOS", {"main": _Broken()})
+        monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", ["main"])
+        monkeypatch.setattr(pe, "resolve_equity",
+                            lambda pid: 105000.0 if pid == "main" else 0.0)
+        out = live_runtime.refresh_equity_from_books()
+        # resolve_equity wins over book.paper_cash.
+        assert out.get("main") == 105000.0
+
+    def test_v7_77_0_val_equity_from_alpaca_not_zero(
+            self, isolated_env, monkeypatch):
+        """v7.77.0 regression -- pre-fix the refresh path read
+        book.current_equity() directly, which for Val/Gene returns 0
+        (paper_cash defaults to 0, never bridged from Alpaca). Every
+        scan cycle would overwrite v7.76.0's session-start equity seed
+        back to 0, perpetuating the $0 notional cap.
+
+        Post-fix: refresh_equity_from_books goes through
+        engine.portfolio_equity.resolve_equity, which prefers Alpaca's
+        actual account equity for non-main books.
+        """
+        live_runtime.bootstrap()
+
+        # Stub: Val's book has paper_cash=0 (the broken default).
+        class _ValBookZero:
+            paper_cash = 0.0
+            def current_equity(self, prices=None):
+                return 0.0  # the pre-v7.77.0 wrong answer
+
+        import engine.portfolio_book as pb
+        monkeypatch.setattr(pb, "PORTFOLIOS", {"val": _ValBookZero()})
+        monkeypatch.setattr(pb, "ALL_PORTFOLIO_IDS", ["val"])
+
+        # Patch resolve_equity at the import site that
+        # refresh_equity_from_books pulls from -- engine.portfolio_equity.
+        import engine.portfolio_equity as pe
+        monkeypatch.setattr(pe, "resolve_equity",
+                            lambda pid: 99273.10 if pid == "val" else 0.0)
+
+        # Also seed the engine's risk registry so it has a 'val' book.
+        eng = live_runtime.get_engine()
+        if eng._risk.get("val") is None:
+            from orb.risk_book import RiskBook
+            eng._risk._books["val"] = RiskBook(
+                "val", equity=1.0,
+                max_risk_dollars=2000.0,
+                max_concurrent_notional_mult=2.0,
+                max_trade_notional_pct=75.0,
+                daily_loss_kill_pct=2.0,
+            )
+
+        out = live_runtime.refresh_equity_from_books()
+        # v7.77.0 -- equity should now be $99,273.10 (Alpaca), NOT 0.
+        assert out.get("val") == 99273.10, (
+            f"refresh path didn't pick up Alpaca equity: {out}"
+        )
+        rb_val = eng._risk.get("val")
+        assert abs(rb_val.equity - 99273.10) < 0.01
+        # max_notional = equity * 2.0 = $198K -- entries no longer reject.
+        assert abs(rb_val.max_notional - 198546.20) < 0.01

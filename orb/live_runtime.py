@@ -340,13 +340,23 @@ def reset_session() -> None:
 # emitted. The risk caps stay at their last-good values.
 def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
                               ) -> dict[str, float]:
-    """Pull current per-portfolio equity from engine.portfolio_book and
-    push it into each RiskBook via update_equity().
+    """Pull current per-portfolio equity and push it into each
+    RiskBook via update_equity().
+
+    v7.77.0 -- routes through engine.portfolio_equity.resolve_equity
+    instead of reading book.current_equity() directly. Pre-v7.77.0
+    this function read book.current_equity() (paper_cash + MTM)
+    every scan cycle and called update_equity() -- which for Val/Gene
+    silently overwrote v7.76.0's session-start equity seed back to
+    0 (their paper_cash defaults to 0 and is never bridged from
+    Alpaca). Result: notional cap stayed at $0 forever, every entry
+    rejected on notional_cap. Now uses the same Alpaca-first source
+    as session start, so the equity is consistent across both paths.
 
     Args:
-        prices: optional {ticker: float} for mark-to-market. Same shape
-            as PortfolioBook.current_equity expects. If None or missing
-            tickers, position.entry_price is used as fallback.
+        prices: optional {ticker: float} for mark-to-market. Used only
+            for the Main book; Val/Gene equity comes from Alpaca's
+            authoritative account balance and ignores `prices`.
 
     Returns:
         {portfolio_id: equity} that was actually applied. Empty dict if
@@ -356,6 +366,7 @@ def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
         return {}
     try:
         from engine.portfolio_book import PORTFOLIOS, ALL_PORTFOLIO_IDS
+        from engine.portfolio_equity import resolve_equity
     except Exception as e:
         logger.debug("[V79-ORB-EQUITY] portfolio_book unavailable: %s", e)
         return {}
@@ -364,11 +375,28 @@ def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
         book = PORTFOLIOS.get(pid)
         if book is None:
             continue
+        eq = 0.0
+        # 1. Try book.current_equity first. For main this returns
+        #    paper_cash + MTM (kept in sync with tg.paper_cash via the
+        #    v7.72.0 bridge). For val/gene this returns 0 because
+        #    paper_cash defaults to 0 and is never bridged from Alpaca.
         try:
             eq = float(book.current_equity(prices))
         except Exception as e:
             logger.debug("[V79-ORB-EQUITY] %s current_equity failed: %s",
                          pid, e)
+        # 2. v7.77.0 -- if the book gave us nothing useful (val/gene
+        #    or a misbehaving book), fall back to resolve_equity. That
+        #    pulls from Alpaca's authoritative account balance for
+        #    val/gene and from tg.paper_cash for main.
+        if eq <= 0:
+            try:
+                eq = float(resolve_equity(pid))
+            except Exception as e:
+                logger.debug("[V79-ORB-EQUITY] %s resolve_equity failed: %s",
+                             pid, e)
+        # 3. Last-ditch fallback: the book's raw paper_cash attribute.
+        if eq <= 0:
             try:
                 eq = float(getattr(book, "paper_cash", 0.0))
             except Exception:

@@ -4,6 +4,92 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.77.0 (2026-05-11) -- refresh_equity_from_books also uses resolve_equity + Alpaca request/response logging
+
+Two issues from post-v7.76.0 production observation:
+
+### Issue 1: v7.76.0 fix was only half complete
+
+After v7.76.0 deployed, operator confirmed Railway was on
+v7.76.0 but the Val tab STILL showed `risk_reject:notional_cap
+(would-be $293 > $0)` -- equity still 0. v7.76.0 only updated
+ONE of the two paths that seed RiskBook equity:
+
+- **Path A** (`engine/scan.py` -> `ensure_session_started`):
+  v7.76.0 routed this through `resolve_equity(pid)`. ✓
+- **Path B** (`orb/live_runtime.py:refresh_equity_from_books`):
+  v7.76.0 left this reading `book.current_equity()` directly. ✗
+
+Path B runs EVERY scan cycle (60s). For Val/Gene it returned 0
+(paper_cash defaults to 0, no MTM positions) and silently called
+`RiskBook.update_equity(0)`, overwriting v7.76.0's session-start
+seed within seconds. Result: notional cap clamped back to $0,
+every entry rejecting on notional_cap as before.
+
+**Fix:** `refresh_equity_from_books` now uses the same Alpaca-first
+source as session start. Order of preference per portfolio:
+
+  1. `book.current_equity(prices)` (Main: paper_cash+MTM via the
+     v7.72.0 sync bridge; Val/Gene: returns 0, falls through).
+  2. `resolve_equity(pid)` (Val/Gene: Alpaca account.equity;
+     Main: tg.paper_cash as canonical source).
+  3. `book.paper_cash` (last-ditch).
+
+This makes the refresh path consistent with the session-start
+path, so the equity stays correct across the full session
+instead of getting clobbered every 60 seconds.
+
+### Issue 2: Alpaca rejects opaque from Railway logs
+
+Operator asked for visibility into Alpaca request/response so
+broker-side issues (insufficient_buying_power, pattern_day_trader,
+wash_sale, halts, etc.) can be diagnosed without external tools.
+
+**Fix:** three new structured log lines around every
+`client.submit_order` call in `executors/base.py:_submit_order_idempotent`:
+
+  - `[ALPACA-REQ]` pre-flight: symbol, side, qty/notional, type,
+    tif, limit/stop price, extended_hours, client_order_id.
+  - `[ALPACA-RESP]` post-success: order_id, status, filled_qty,
+    filled_avg_price, side, sym. Also emitted on duplicate-coid
+    lookup (the idempotency path).
+  - `[ALPACA-ERR]` non-duplicate exception path: full request
+    summary + exception type + first 400 chars of the message.
+    Catches rate-limits, buying-power rejects, account-level
+    blocks, malformed requests.
+
+Operator can now `grep ALPACA` in Railway logs to get a complete
+audit trail of every order submission and broker response.
+
+### Files
+
+- `orb/live_runtime.py`: `refresh_equity_from_books` reorganized
+  to try book -> resolve_equity -> paper_cash in order.
+- `executors/base.py`: `_summarize_req`, `_summarize_order` helpers
+  + `[ALPACA-REQ]`/`[ALPACA-RESP]`/`[ALPACA-ERR]` logging in
+  `_submit_order_idempotent`.
+- `tests/strategy/test_orb_live_runtime.py`: 2 new tests
+  (`test_v7_77_0_val_equity_from_alpaca_not_zero` covering the
+  exact Val $0-equity scenario; `test_v7_77_0_main_resolve_equity_fallback_when_book_raises`).
+- `bot_version.py`, `trade_genius.py`, CHANGELOG: version trio.
+
+Full suite: **433 passed** (up from 431), 8 skipped.
+
+### Operator action after merge
+
+Redeploy Railway again. After bootstrap:
+
+- Val/Gene RiskBook equity will be ~$99K and **stay** there
+  across scan cycles (not get clobbered every 60s).
+- Notional cap jumps from $0 to ~$198K. Internal `notional_cap`
+  rejects stop.
+- Any orders that successfully fire will now produce
+  `[ALPACA-REQ] sym=AAPL side=BUY type=Market qty=N ...` and
+  `[ALPACA-RESP] id=... status=filled ...` log lines visible
+  in Railway. If Alpaca rejects, look for `[ALPACA-ERR]`.
+
+---
+
 ## v7.76.0 (2026-05-11) -- Val/Gene RiskBook equity sourced from Alpaca + 2 new cross-check invariants
 
 The 2026-05-11 production session surfaced two distinct failure
