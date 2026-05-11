@@ -80,31 +80,64 @@ FAILURE_SIGNATURES: dict[str, str] = {
 def _gql(token: str, query: str, variables: dict, *,
          api_url: str = _DEFAULT_API,
          timeout: float = 10.0) -> dict | None:
-    """POST a GraphQL query. Returns parsed JSON or None on any error."""
+    """POST a GraphQL query. Returns parsed JSON or None on any error.
+
+    v7.92.0 -- supports BOTH Railway token types: personal/team API
+    tokens (Authorization: Bearer header, from
+    https://railway.app/account/tokens) AND project-scoped tokens
+    (Project-Access-Token header, generated from a Project's Tokens
+    tab). Tries Bearer first; on 401/403 retries with the
+    Project-Access-Token header. Pre-v7.92.0 the helper only sent
+    Bearer, so project tokens silently failed with auth_failed
+    even when the operator had set RAILWAY_API_TOKEN correctly.
+    """
     payload = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(
-        api_url,
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "tg-railway-log-tail/7.79.0",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
+
+    def _try(headers: dict) -> dict | None:
+        req = urllib.request.Request(
+            api_url, data=payload, method="POST", headers=headers,
+        )
         try:
-            body = e.read().decode("utf-8")[:300]
-        except Exception:
-            body = "<unreadable>"
-        logger.debug("railway gql HTTP %d: %s", e.code, body)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8")[:300]
+            except Exception:
+                body = "<unreadable>"
+            logger.debug("railway gql HTTP %d: %s", e.code, body)
+            # Signal auth-failure variants to the caller so the
+            # outer function can decide whether to retry with the
+            # alternate header. Returning {"_auth_failed": True}
+            # keeps us inside the existing "None means hard fail"
+            # contract without confusing other paths.
+            if e.code in (401, 403):
+                return {"_auth_failed": True}
+            return None
+        except Exception as e:
+            logger.debug("railway gql error: %s: %s", type(e).__name__, str(e)[:200])
+            return None
+
+    common = {
+        "Content-Type": "application/json",
+        "User-Agent": "tg-railway-log-tail/7.92.0",
+    }
+    # Attempt 1 -- personal/team API token shape.
+    resp = _try({**common, "Authorization": f"Bearer {token}"})
+    if resp is None:
+        # Non-auth failure (network, 5xx, schema drift). No point
+        # retrying with a different header -- the server isn't
+        # rejecting the credential, it's failing for another reason.
         return None
-    except Exception as e:
-        logger.debug("railway gql error: %s: %s", type(e).__name__, str(e)[:200])
+    if not resp.get("_auth_failed"):
+        return resp
+    # Bearer was rejected with 401/403 -- retry with project-token
+    # header. If THIS one also returns _auth_failed, both auth
+    # shapes are wrong (bad token, missing scope) and we return None.
+    resp2 = _try({**common, "Project-Access-Token": token})
+    if resp2 is None or resp2.get("_auth_failed"):
         return None
+    return resp2
 
 
 _LATEST_DEPLOYMENT_QUERY = """
