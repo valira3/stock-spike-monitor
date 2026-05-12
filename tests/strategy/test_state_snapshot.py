@@ -168,9 +168,11 @@ class TestMainExitCodes:
 
 class TestEndpointConstant:
 
-    def test_endpoints_are_three(self):
+    def test_endpoints_pinned(self):
+        # v8.3.25 -- added /api/trade_log to the pull list.
         assert state_snapshot.ENDPOINTS_TO_PULL == (
             "/api/state",
             "/api/executor/val",
             "/api/executor/gene",
+            "/api/trade_log?limit=5000",
         )

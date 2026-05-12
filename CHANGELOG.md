@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.25 (2026-05-12) -- Add `/api/trade_log` to the snapshot bundle
+
+v8.3.24 shipped the snapshot stream against `/api/state` + `/api/executor/{val,gene}`. Operator request: "pull the actual trade log too". The `trades_today` slice inside `/api/state` only covers the current session; cross-day analysis needs the persistent `trade_log.jsonl` reader, exposed via the existing `/api/trade_log` endpoint.
+
+### Change
+
+`tools/state_snapshot.py:ENDPOINTS_TO_PULL` -- added `/api/trade_log?limit=5000`. 5000 is the server-side max (clamped in `dashboard_server.py:h_trade_log`), roughly 200 trading days at 25 trades/day. More than enough history for spotting regressions in entry/exit behavior.
+
+The path uses a literal query-string; the existing `DashboardClient.get_json` passes it through unchanged.
+
+### Snapshot shape (v8.3.25+)
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "...",
+  "dashboard_base_url": "...",
+  "endpoints": {
+    "/api/state":              { ...full dashboard state... },
+    "/api/executor/val":       { ...val executor diagnostics... },
+    "/api/executor/gene":      { ...gene executor diagnostics... },
+    "/api/trade_log?limit=5000": { rows: [...up to 5000 rows...] }
+  }
+}
+```
+
+### Tests
+
+`tests/strategy/test_state_snapshot.py:TestEndpointConstant` -- pinned to the 4-entry tuple; renamed from `test_endpoints_are_three` to `test_endpoints_pinned`. All 9 existing snapshot tests still pass.
+
+### Size note
+
+Each `trade_log.jsonl` row is ~500 bytes. 5000 rows -> ~2.5 MB JSON per snapshot. The daily JSONL accumulates 54 ticks/day at most -> ~135 MB/day worst case if every tick is unique. Git's delta compression will compact ~95% of that since consecutive trade-log payloads are append-only. Still, set a calendar to revisit retention if `snapshots-live` grows past ~500 MB.
+
+---
+
 ## v8.3.24 (2026-05-12) -- Live-state snapshot stream (cron) -> `snapshots-live` branch
 
 Motivation: the operator's Claude Code sandbox is firewalled away from `tradegenius.up.railway.app` (Host-not-in-allowlist on every egress). The agent can read GitHub via MCP but not the live dashboard. To analyze "what is the bot doing right now?" the agent had to ask the operator to paste `/api/state`. This release publishes that data automatically.
