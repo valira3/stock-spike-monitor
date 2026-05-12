@@ -4,6 +4,53 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.29 (2026-05-12) -- `pull-tick-data.yml` credential diagnostics + artifact fallback
+
+v8.3.28's first auto-fired run failed at the R2 upload step with:
+```
+botocore.exceptions.ClientError: (InvalidArgument) when calling PutObject:
+  Credential access key has length 64, should be 32
+```
+
+R2's spec: `ACCESS_KEY_ID` = 32 hex chars, `SECRET_ACCESS_KEY` = 64 hex chars. The 64-char value in the access-key slot means the credentials are misconfigured (either the secret key was stored under `R2_ACCESS_KEY_ID`, or the two were swapped). The Alpaca SIP fetch step itself succeeded — only the upload failed — so 120 MB of pulled tick data was lost when the runner cleaned up.
+
+### Two changes to `pull-tick-data.yml`
+
+**1. New `Diagnose R2 credentials` step (before upload)**
+
+Prints `len()` of each R2 secret (no value leak) with the expected length. When a mismatch is detected, surfaces an `::error::` annotation specifically calling out the most likely fix:
+- If `ACCESS_KEY_ID` is 64 AND `SECRET_ACCESS_KEY` is 32 → "swapped, exchange them in Settings"
+- If `ACCESS_KEY_ID` is 64 only → "secret was stored in access-key slot"
+
+The step uses `::error::` annotations but does NOT fail the job — it lets the upload attempt run so boto3's own error appears in the log for cross-reference.
+
+**2. Artifact fallback on R2 failure**
+
+The upload step now has `continue-on-error: true`, and a new `Save tick data as GHA artifact` step runs after it via `if: always()`. So even when R2 auth fails, the pulled tick data is saved as a GHA artifact (90-day retention) named `tick-data-<start>-to-<end>`. Sandbox-side retrieval:
+
+```bash
+gh run download <run-id> --name tick-data-2026-05-12-to-2026-05-12
+```
+
+This means we never have to re-pull from Alpaca after a creds typo — the data is preserved.
+
+**3. Final failure marker**
+
+A new `Fail job if R2 upload failed` step runs after the artifact upload and explicitly fails the job (red in Actions UI) when the R2 step had a non-zero outcome. Without this, `continue-on-error: true` would have made the job pass green despite the upload failure.
+
+### Operator action
+
+On the next run (after this PR merges and `sample-2026-05-12.json` re-triggers or you dispatch manually):
+1. Check the Diagnose R2 credentials step output for length mismatches
+2. Follow the surfaced ::warning:: annotation to fix Settings → Secrets
+3. Either re-dispatch the workflow, OR `gh run download` the artifact from this run + manually push to R2 via `aws s3 cp`
+
+### No new tests
+
+This PR only modifies a GHA YAML; the logic is observable in the workflow log on the next run. No unit-testable Python changes.
+
+---
+
 ## v8.3.28 (2026-05-12) -- Alpaca tick-data archive (`tools/fetch_alpaca_ticks.py` + GHA + R2)
 
 Investigation today found the live-replay's ATR(5m,14) is ~1.5x wider than production's, causing 1.5x wider stops and 5x larger positions, which makes the concurrent notional cap reject 99.8% of would-be entries (replay fires 2 trades/day vs production's 15-25). Hypothesis: production's ATR is computed from streaming tick data (sub-second intra-bar volatility) while the replay uses 1-min OHLC summaries. To validate, we need historical tick data.
