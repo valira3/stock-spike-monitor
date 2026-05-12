@@ -4,6 +4,48 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.9 (2026-05-12) -- Fix Gene equity=0 root cause (recurring dashboard-monitor alert)
+
+The dashboard-monitor's `inv_risk_book_notional_cap_nonzero` invariant has been firing for hours with:
+
+> 1 RiskBook(s) have zero equity/max_notional during RTH — entries will be rejected on notional_cap
+> gene: equity=0.0 max_notional=0.0 last_reject=''
+
+Root cause: `engine/scan.py:_resolve_portfolio_equity` called `book.current_equity()` directly. For Val/Gene that returns `0` whenever `PortfolioBook.paper_cash` is the default `0.0` (it's not auto-seeded from Alpaca). The `0` then propagates through `check_entry(equity=0)` which re-seeds `RiskBook.equity = 0` on every cycle, giving `max_notional = 0 × mult = 0` — every Gene admission is then notional-capped and rejected.
+
+The v7.76.0 helper `engine/portfolio_equity.py:resolve_equity` was built specifically to bridge Alpaca-account equity into the engine, but `_resolve_portfolio_equity` was never updated to consult it. Two other equity wirings (the session-seed at `engine/scan.py:436` and the per-cycle refresh in `orb/live_runtime.py:409`) already route through `resolve_equity`, so the seed-then-overwrite cycle order is:
+
+```
+session-start → resolve_equity → seeds Gene equity > 0
+per-bar refresh_equity_from_books → keeps it warm
+per-bar _orb_long_entry → _resolve_portfolio_equity → book.current_equity()=0
+                       → overwrites Gene back to 0
+```
+
+### Change
+
+`engine/scan.py:_resolve_portfolio_equity` — three-tier fallback:
+
+1. **Tier 1**: `engine.portfolio_equity.resolve_equity(portfolio_id)` (Alpaca-first for Val/Gene)
+2. **Tier 2**: `PortfolioBook.current_equity()` (correct for Main where paper_cash is source of truth)
+3. **Tier 3**: `tg.paper_cash` (legacy fallback)
+
+Any tier that returns `> 0` short-circuits; otherwise falls through. The tiered approach is safer than just calling `resolve_equity` alone — when Alpaca keys aren't configured for a portfolio, `resolve_equity` returns `0` silently, and we want to recover to book MTM rather than reject every entry.
+
+### Tests
+
+Existing 638 strategy tests still pass — `_resolve_portfolio_equity` has no direct test coverage today, but its callers (`_orb_long_entry`, `_orb_short_entry`) are exercised via `tests/strategy/test_orb_scan_integration.py`. No behavior change for the Main path (Tier 1 returns 0 for "main" by design → falls to Tier 2 which returns the same value the old code did).
+
+### Operator-side caveat (read this)
+
+This fix removes the EQUITY=0 path for Gene **as long as Gene's Alpaca paper-trading keys are configured in Railway**. If `GENE_ALPACA_PAPER_KEY` / `GENE_ALPACA_PAPER_SECRET` are unset (or fail the length sanity check in `engine/portfolio_equity.py:73`), `resolve_equity("gene")` will still return 0, Tier 1 falls through to Tier 2 which also returns 0 (paper_cash=0), and the alert will keep firing. **In that case the fix is operator-side**: either set the env keys, or set `GENE_ENABLED=0` in Railway so Gene's executor never starts.
+
+The recommended operator check: visit `https://tradegenius.up.railway.app/api/state` after the next deploy; if `risk_books.gene.equity` is still `0`, set `GENE_ENABLED=0` until you can wire the keys.
+
+### Rollback
+
+Revert `_resolve_portfolio_equity` to the pre-v8.1.9 single-line `return book.current_equity()`. No state to clean up.
+
 ## v8.1.8 (2026-05-12) -- Wash-sale risk tracker ([V81-WASH-RISK] log tag + dashboard chip)
 
 Operator-facing signaling for IRS §1091 wash-sale visibility on this high-frequency intraday strategy. **Not tax-grade** — for year-end tax filing, the operator should rely on the broker 1099-B + their accountant, NOT this counter.
