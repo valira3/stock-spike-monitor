@@ -42,6 +42,51 @@ Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE /
 
 - **Independent-mode default (added v8.3.23).** `ORB_PORTFOLIO_FIRE` env default is now `"1"`, so each portfolio runs its own `OrbEngine.try_enter` and dispatches entries via `engine/scan.py:_v10_dispatch_executor_fire` → `executor.fire_long`/`fire_short`. The legacy bus listener `executors/base.py:_on_signal` skips `ENTRY_LONG`/`ENTRY_SHORT` when the flag is `"1"` to prevent double-fire. **EXIT signals still flow through `_on_signal`** because `orb.live_runtime.check_exit` is implemented but has no production caller yet — Main's bus-emitted `EXIT_*` is the canonical exit path for all three portfolios. **Limitation**: a position Val/Gene admits that Main rejected (different RiskBook decision) won't get an exit signal from the bus — those Val-only positions close only at EOD flush. Set `ORB_PORTFOLIO_FIRE=0` in Railway env to revert to pre-v8.3.23 mirror mode. A future v8.3.24+ will wire `check_exit` into a per-portfolio sentinel loop to close this gap.
 
+## GHA-driven backtest via lever-sweep (added v8.3.26)
+
+When the operator asks for a multi-day or full-year backtest of a new
+theory, **do not build parallel infrastructure**. The existing path:
+
+1. **Corpus lives on `data-extensions/rth-expand` branch.** Bar files
+   at `data/<YYYY-MM-DD>/<TICKER>.jsonl`. Backfill missing dates by
+   dropping a JSON trigger under `.github/rth-trigger/` (e.g.
+   `fill-2026-05-12.json`) — the `pull-rth-bars.yml` workflow
+   auto-fires on push.
+2. **Add new theory env vars to `tools/orb_backtest.py`.** Pattern:
+   field on `ORBConfig`, default 0/False (off), `_envf`/`_envs` parse
+   in `from_env`, behavior in the simulate loop, surface in per-day
+   diagnostics. Keep changes minimal and tested in
+   `tests/strategy/test_orb_backtest_v18_rules.py` (or new file).
+3. **Write a sweep script** under `docs/research/r<N>_<theme>.py`
+   mirroring `r2`-`r5`. Theories are a list of
+   `(vid, env_overrides)` tuples layered on `BASE` (which encodes the
+   v12-winning config). Evaluate each theory on full-year + quarterly
+   slices to catch in-sample fits.
+4. **Dispatch the sweep via `Lever Sweep`** workflow (Actions tab ->
+   "Lever Sweep" -> "Run workflow"). The `variants` input takes the
+   JSON tuple from `python3 docs/research/r<N>_<theme>.py --print-variants`.
+   Results commit to the `sweep-results` branch under
+   `sweeps/run-<id>/<vid>/`.
+5. **Retrieve results via MCP**:
+   ```
+   mcp__github__get_file_contents(
+     owner="valira3", repo="stock-spike-monitor",
+     path="sweeps/run-<id>/<vid>/summary.json",
+     ref="sweep-results"
+   )
+   ```
+
+**Anti-pattern**: building a new `tools/corpus_backtest.py` or new
+`corpus-backtest.yml` workflow. The `lever-sweep.yml` +
+`tools/lever_sweep_runner.py` + `tools/orb_backtest.py` chain is the
+production research path. Falsified theories live in `r2`-`r5`'s
+top-of-file docstrings AND in `docs/pl_optimization_final_report_v12.md`
+("Falsified" section). Check there before re-running a dead theory.
+
+**Source-of-truth report**: `docs/pl_optimization_final_report_v<N>.md`
+(currently v12). v8.3.26's R6 results will land in v13 after the
+sweep runs.
+
 ## Retrieving live state from sandbox (added v8.3.24)
 
 The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `snapshots-live` branch via the GitHub MCP:

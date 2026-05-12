@@ -301,6 +301,22 @@ class ORBConfig:
     vol_target_atr_pct: float = 0.0      # target ATR as % of price; 0 = off
     vol_target_min_scale: float = 0.5    # cap downscale (less risk per trade)
     vol_target_max_scale: float = 2.0    # cap upscale (more risk per trade)
+    # v18 day-end-giveback defenses (2026-05-12). Two rules, configurable
+    # independently. Both default off; tested in r6_drawdown_rules.py and
+    # documented in docs/pl_optimization_final_report_v13.md.
+    loss_lock_threshold_usd: float = 0.0  # >0: after a closed leg with
+                                          #     pnl < -threshold, lock that
+                                          #     (ticker, side) pair for the
+                                          #     rest of the trading day --
+                                          #     no further entries on that
+                                          #     pair. 0 = off.
+    peak_dd_halt_usd: float = 0.0         # >0: when intraday realized PnL
+                                          #     drops this many $ below the
+                                          #     running peak, halt all new
+                                          #     entries for the rest of the
+                                          #     day (same effect as the
+                                          #     existing daily_loss_kill).
+                                          #     0 = off.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -369,6 +385,9 @@ class ORBConfig:
             vol_target_atr_pct=_envf("ORB_VOL_TARGET_ATR_PCT", 0.0),
             vol_target_min_scale=_envf("ORB_VOL_TARGET_MIN_SCALE", 0.5),
             vol_target_max_scale=_envf("ORB_VOL_TARGET_MAX_SCALE", 2.0),
+            # v18 day-end-giveback defenses
+            loss_lock_threshold_usd=_envf("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
+            peak_dd_halt_usd=_envf("ORB_PEAK_DD_HALT_USD", 0.0),
         )
 
 
@@ -1350,12 +1369,25 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         open_notional = 0.0
         open_risk = 0.0
         cum_pnl = 0.0
+        peak_pnl = 0.0
         kill_active = False
+        # v18 day-end-giveback defenses
+        #   locked_pairs[(ticker, side)] = ts when the pair was locked.
+        #   New entries on a locked pair after that ts are rejected.
+        locked_pairs: dict[tuple[str, str], int] = {}
+        r18_lock_rejects = 0
         for ts, kind, idx, p, notional, risk in events:
             if kind == "entry":
                 if kill_active:
                     rejected_idx.add(idx)
                     continue
+                # v18 rule #1 -- per-(ticker, side) lock after a losing leg
+                if cfg.loss_lock_threshold_usd > 0:
+                    key = (p["ticker"], p["side"])
+                    if key in locked_pairs and locked_pairs[key] < ts:
+                        rejected_idx.add(idx)
+                        r18_lock_rejects += 1
+                        continue
                 if open_notional + notional > max_notional:
                     rejected_idx.add(idx)
                     continue
@@ -1370,7 +1402,22 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     open_notional -= notional
                     open_risk -= risk
                     cum_pnl += p["pnl_dollars"]
+                    if cum_pnl > peak_pnl:
+                        peak_pnl = cum_pnl
                     if cum_pnl <= kill_threshold:
+                        kill_active = True
+                    # v18 rule #1 lock: this leg ended with a loss large
+                    # enough to lock the (ticker, side) for the rest of
+                    # the day.
+                    if (cfg.loss_lock_threshold_usd > 0
+                            and p["pnl_dollars"] < -cfg.loss_lock_threshold_usd):
+                        locked_pairs[(p["ticker"], p["side"])] = ts
+                    # v18 rule #2 halt: realized drawdown from peak crossed
+                    # the threshold. Same effect as kill_active but a
+                    # different trigger.
+                    if (cfg.peak_dd_halt_usd > 0
+                            and not kill_active
+                            and cum_pnl <= peak_pnl - cfg.peak_dd_halt_usd):
                         kill_active = True
 
         day_pairs = [
@@ -1409,6 +1456,10 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             "pnl_pairs": day_pairs,
             "rejected_concurrent_cap": rejected,
             "kill_switch_fired": kill_active,
+            # v18 diagnostics
+            "r18_lock_rejects": r18_lock_rejects,
+            "r18_locked_pairs": [list(k) for k in locked_pairs.keys()],
+            "r18_peak_pnl": round(peak_pnl, 2),
             "regime": regime,
             "regime_skip_day": regime_skip_day,
             "regime_skip_reason": regime_skip_reason,
