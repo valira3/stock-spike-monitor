@@ -4,6 +4,50 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.21 (2026-05-12) -- Section-order parity across Main / Val / Gene + new CLAUDE.md rule
+
+Operator: "Order of sections across Val and Gene should match to main. Fix and add it to rules."
+
+### Before (mismatch)
+
+| # | Main | Val/Gene |
+|---|---|---|
+| 4 | v10 Proximity | Recent activity ❌ |
+| 5 | Recent activity | v10 Proximity ❌ |
+
+Cards 4 + 5 were in opposite order on Val/Gene vs Main, breaking visual scan parity.
+
+### Change
+
+`dashboard_static/app.js:execSkeleton` — swap the `data-f="v10-pid-activity-section"` and `data-f="v10-prox-section-pid"` blocks so Val/Gene tabs render Proximity above Activity, matching Main's order.
+
+After v8.3.21, all three tabs render in this canonical sequence:
+
+1. Killswitch banner
+2. KPI row (Equity / Day P&L / Open / Session)
+3. Open positions
+4. v10 ORB header/gauges (Main: Day Status + Baseline + Ticker Matrix split across three sections; Val/Gene: rolled into one `v10 ORB · {label}` card)
+5. **v10 Proximity**
+6. **Recent activity**
+7. Today's trades
+8. Account diagnostics *(Val/Gene only)*
+
+### CLAUDE.md — new rule
+
+> **Section order parity across tabs (added v8.3.21).** The vertical order of cards/sections on Val and Gene tabs must mirror Main's order so the operator's eye-trace is identical across portfolios. Canonical order: (1) killswitch banner, (2) KPI row, (3) Open positions, (4) v10 ORB header/gauges, (5) v10 Proximity, (6) Recent activity, (7) Today's trades, (8) Account diagnostics (Val/Gene only). When adding or moving a card, audit BOTH `index.html` (Main, ~lines 107–301) AND `execSkeleton` in `app.js` (~lines 3870–3987). The Val/Gene `v10 ORB` gauges card is the analog of Main's `v10-day-status` + `v10-baseline` + `v10-ticker-matrix-section` rolled into one — it occupies the equivalent slot.
+
+Companion to the v8.3.18 "UI changes propagate across all tabs" rule: that one covers feature/column parity inside cards; v8.3.21 covers the ordering of the cards themselves.
+
+### Tests
+
+HTML/JS reorder; no Python state change. **784 strategy tests pass** unchanged.
+
+### Rollback
+
+Swap the two `<section>` blocks back in `execSkeleton`. The mismatch returns.
+
+---
+
 ## v8.3.20 (2026-05-12) -- Ticket-side phantom sweep + over-leverage protection (notional cap 2.0 → 0.95)
 
 Two fixes in one ship, both surfaced by the same watchdog/operator pair:
