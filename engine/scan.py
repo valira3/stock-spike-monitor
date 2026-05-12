@@ -459,6 +459,21 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.warning("[V79-ORB-RESET] failed: %s", _e)
 
+    # v8.3.0 -- automatic OR backfill on EVERY scan cycle (not just
+    # the first one after ensure_session_started). The v7.74.0 hook
+    # above only fired when `_fresh==True`, which is one-shot per
+    # date. If that single attempt failed silently (Alpaca returned
+    # empty bars, fetch raised, etc.) the OR stayed empty for the
+    # rest of the day. v8.3.0 retries on every cycle so a transient
+    # bar-source glitch can't cook today's trading.
+    #
+    # Cheap when all ORs are locked: the engine snapshot is consulted
+    # first and the per-ticker loop short-circuits on locked rows.
+    try:
+        _orb_post_or_backfill_sweep(callbacks, now_et, _scan_universe)
+    except Exception as _e:
+        logger.debug("[V83-OR-BACKFILL] sweep failed: %s", _e)
+
     # v7.24.0: intraday equity refresh. Pulls each PortfolioBook's
     # current_equity (paper_cash + MTM long_mv - short_liability) and
     # pushes into each per-portfolio RiskBook so notional caps track
@@ -605,6 +620,103 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
         "[V79-ORB-BACKFILL] done backfilled_tickers=%d locked_tickers=%d",
         backfilled, locked,
     )
+
+
+def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
+                                now_et: datetime,
+                                scan_universe: list) -> None:
+    """v8.3.0 -- per-cycle automatic OR backfill.
+
+    Runs on every scan cycle (not just the first after a fresh
+    session_start). For each ticker whose OR window isn't locked
+    AND we're past OR end, fetch today's 1m bars and feed them
+    through orb.live_runtime.backfill_or_windows. The engine handles
+    idempotency: locked windows reject bars silently, already-locked
+    tickers are skipped fast.
+
+    Why this exists in addition to _maybe_backfill_or_window:
+    the v7.74.0 hook fires once per date (when _fresh==True from
+    ensure_session_started). If that single attempt silently
+    failed -- Alpaca bar feed glitched, fetch raised, the bot
+    crashed between ensure_session_started and the backfill call --
+    the OR window stayed empty for the rest of the day. v8.3.0
+    retries on every cycle so we can't miss a trading day to a
+    transient glitch.
+
+    Fast-path: when current_et_minutes < or_end_minutes, the live
+    scan covers the active OR normally; the engine method returns
+    immediately. When all tickers are locked, the engine method
+    counts them as skipped without doing any fetch work.
+    """
+    from orb.engine import OrbConfig
+    cfg = OrbConfig()
+    cur_min = now_et.hour * 60 + now_et.minute
+    if cur_min < cfg.or_end_minutes:
+        return  # active OR; live scan handles it
+    engine = _orb_runtime.get_engine()
+    if engine is None:
+        return
+    # Identify tickers whose OR isn't yet locked. If everyone is
+    # locked, we're done -- skip the fetch entirely.
+    snap = engine.snapshot().get("or_windows", {})
+    unlocked = []
+    for tk in scan_universe:
+        row = snap.get(tk) or {}
+        if not row.get("locked"):
+            unlocked.append(tk)
+        else:
+            # Pre-locked: nothing to do for this ticker.
+            pass
+    if not unlocked:
+        return
+    bars_by_ticker: dict = {}
+    for ticker in unlocked:
+        try:
+            bars = callbacks.fetch_1min_bars(ticker)
+        except Exception as _e:
+            logger.debug("[V83-OR-BACKFILL] fetch failed %s: %s", ticker, _e)
+            continue
+        if not bars:
+            continue
+        timestamps = bars.get("timestamps") or []
+        opens = bars.get("opens") or []
+        highs = bars.get("highs") or []
+        lows = bars.get("lows") or []
+        closes = bars.get("closes") or []
+        volumes = bars.get("volumes") or []
+        rows: list = []
+        for i, ts in enumerate(timestamps):
+            if ts is None:
+                continue
+            try:
+                bucket = minutes_since_et_midnight(int(ts))
+            except Exception:
+                continue
+            if not (i < len(opens) and i < len(highs) and i < len(lows)
+                    and i < len(closes)):
+                continue
+            o, h, lo, c = opens[i], highs[i], lows[i], closes[i]
+            if None in (o, h, lo, c):
+                continue
+            v = volumes[i] if i < len(volumes) else 0.0
+            rows.append((bucket, float(h), float(lo), float(o),
+                         float(c), float(v or 0.0)))
+        if rows:
+            bars_by_ticker[ticker] = rows
+    if not bars_by_ticker:
+        return
+    result = _orb_runtime.backfill_or_windows(
+        bars_by_ticker=bars_by_ticker,
+        current_et_minutes=cur_min,
+    )
+    if result and (result.get("backfilled") or result.get("locked")):
+        logger.info(
+            "[V83-OR-BACKFILL] sweep cur_min=%d backfilled=%d locked=%d "
+            "skipped=%d failed=%d",
+            cur_min,
+            result.get("backfilled", 0), result.get("locked", 0),
+            result.get("skipped", 0), result.get("failed", 0),
+        )
 
 
 def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
