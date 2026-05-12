@@ -932,9 +932,82 @@ class TradeGeniusBase:
         Single hook for every position-close path. The dict pop is
         defensive (a stale-then-gone case is fine); the DB delete
         always runs so a stray row never lingers.
+
+        v8.3.12 -- also unmirror the engine FSM + RiskBook ticket that
+        v8.3.6 may have created on boot graft. Without this, the
+        engine stays IN_POS for a (pid, ticker) whose position has
+        actually closed, surfacing as the watchdog's
+        `v10_in_pos_has_internal_position` phantom alert.
         """
         self.positions.pop(ticker, None)
         self._delete_persisted_position(ticker)
+        self._unmirror_position_from_engine(ticker)
+
+    def _unmirror_position_from_engine(self, ticker: str) -> None:
+        """v8.3.12 -- symmetric inverse of v8.3.6's
+        _mirror_position_into_engine. Called when a position closes so
+        the engine FSM transitions out of IN_POS and the synthetic
+        RiskBook ticket releases its risk + notional reservations.
+
+        Without this, the engine remembers the position as open
+        forever, surfacing as:
+          - dashboard CONCURRENT RISK that never drops back to $0
+            after the last close
+          - watchdog `v10_in_pos_has_internal_position` (FSM IN_POS
+            but no matching position in book)
+          - opposite-side guard incorrectly continuing to block
+            opposite-side entries after the original closed
+
+        Idempotent: if the FSM is not IN_POS and the synthetic
+        ticket isn't present, no-op.
+        """
+        try:
+            import orb.live_runtime as _orb_runtime
+            from orb import state as _orb_state
+            engine = _orb_runtime.get_engine()
+            if engine is None:
+                return
+            pid = self.NAME.lower()
+            if pid not in engine.portfolio_ids:
+                return
+            # --- 1. FSM: flip in_position off, transition to CLOSED ---
+            # Only if the row was actually marked in_position by an
+            # earlier mirror; don't touch blocked rows or rows that
+            # never opened.
+            ds = engine._state.get_day_state(pid, ticker)
+            if ds.in_position:
+                ds.in_position = False
+                if ds.phase == _orb_state.PHASE_IN_POS:
+                    ds.transition(_orb_state.PHASE_CLOSED)
+            # --- 2. RiskBook: release the synthetic ticket if present ---
+            rb = engine._risk.get(pid)
+            if rb is None:
+                return
+            ticket_id = f"recover-{pid}-{ticker}"
+            with rb._lock:
+                ticket = rb._open_tickets.pop(ticket_id, None)
+                if ticket is not None:
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    # Defensive clamp: rounding could push these
+                    # slightly negative on edge cases.
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+            if ticket is not None:
+                logger.info(
+                    "[%s] [V8312-UNRECOVER] released synthetic ticket %s "
+                    "(risk=%.2f notional=%.2f)",
+                    self.NAME, ticker,
+                    ticket.risk_dollars, ticket.notional,
+                )
+        except Exception:
+            # Best-effort cleanup; never raise into the close path.
+            logger.exception(
+                "[%s] _unmirror_position_from_engine failed for %s",
+                self.NAME, ticker,
+            )
 
     def _stamp_action(self, ticker: str) -> None:
         """v6.0.7 \u2014 record wall-clock of the last ENTRY/EXIT submit

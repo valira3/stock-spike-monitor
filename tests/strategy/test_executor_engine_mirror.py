@@ -203,6 +203,103 @@ class TestMirrorPositionIntoEngine:
         assert rb.open_count == 0
 
 
+class TestUnmirrorPositionFromEngine:
+    """v8.3.12 -- the inverse of TestMirrorPositionIntoEngine. When a
+    position closes (_remove_position fires), the engine FSM should
+    flip out of IN_POS and the synthetic RiskBook ticket should
+    release its risk + notional reservations."""
+
+    def _setup_mirrored(self):
+        """Mirror a position in, return executor + engine."""
+        ex = _FakeExec()
+        ex.positions["AAPL"] = {
+            "ticker": "AAPL", "side": "LONG", "qty": 100,
+            "entry_price": 150.0, "stop": 148.5,
+            "entry_ts_utc": "2026-05-12T14:00:00Z",
+            "source": "RECONCILE",
+        }
+        ex._mirror_position_into_engine("AAPL")
+        engine = _orb_runtime.get_engine()
+        return ex, engine
+
+    def test_unmirror_flips_in_position_off(self):
+        ex, engine = self._setup_mirrored()
+        ds = engine._state.get_day_state("val", "AAPL")
+        assert ds.in_position is True
+        assert ds.phase == _orb_state.PHASE_IN_POS
+        ex._unmirror_position_from_engine("AAPL")
+        ds_after = engine._state.get_day_state("val", "AAPL")
+        assert ds_after.in_position is False
+        assert ds_after.phase == _orb_state.PHASE_CLOSED
+
+    def test_unmirror_releases_risk_book_ticket(self):
+        ex, engine = self._setup_mirrored()
+        rb = engine._risk.get("val")
+        assert rb.open_count == 1
+        assert rb.open_risk == pytest.approx(150.0)
+        assert rb.open_notional == pytest.approx(15000.0)
+        ex._unmirror_position_from_engine("AAPL")
+        assert rb.open_count == 0
+        assert rb.open_risk == pytest.approx(0.0)
+        assert rb.open_notional == pytest.approx(0.0)
+
+    def test_remove_position_fires_unmirror_end_to_end(self):
+        """The real close path: _remove_position() should call
+        _unmirror_position_from_engine() so engine state matches
+        executor reality."""
+        ex, engine = self._setup_mirrored()
+        # Sanity
+        ds_before = engine._state.get_day_state("val", "AAPL")
+        rb = engine._risk.get("val")
+        assert ds_before.in_position is True
+        assert rb.open_count == 1
+        # Close
+        ex._remove_position("AAPL")
+        # Executor side empty
+        assert "AAPL" not in ex.positions
+        # Engine FSM flipped + RiskBook released
+        ds_after = engine._state.get_day_state("val", "AAPL")
+        assert ds_after.in_position is False
+        assert ds_after.phase == _orb_state.PHASE_CLOSED
+        assert rb.open_count == 0
+
+    def test_unmirror_idempotent_no_position_open(self):
+        """Calling unmirror when nothing was mirrored is safe."""
+        ex = _FakeExec()
+        # AAPL never mirrored; FSM row doesn't exist (or is at WARMUP)
+        ex._unmirror_position_from_engine("AAPL")
+        engine = _orb_runtime.get_engine()
+        rb = engine._risk.get("val")
+        assert rb.open_count == 0
+
+    def test_unmirror_doesnt_clobber_blocked_phase(self):
+        """If FSM was BLOCKED_*, the unmirror sets in_position=False
+        but does NOT transition the phase (it's only allowed to
+        flip the IN_POS phase)."""
+        ex = _FakeExec()
+        engine = _orb_runtime.get_engine()
+        ds = engine._state.get_day_state("val", "AAPL")
+        ds.transition(_orb_state.PHASE_BLOCKED_BLOCKLIST,
+                      reason="test setup")
+        # Pretend in_position got set (e.g. legacy bug)
+        ds.in_position = True
+        ex._unmirror_position_from_engine("AAPL")
+        ds_after = engine._state.get_day_state("val", "AAPL")
+        assert ds_after.in_position is False
+        # Phase unchanged
+        assert ds_after.phase == _orb_state.PHASE_BLOCKED_BLOCKLIST
+
+    def test_double_unmirror_is_safe(self):
+        """Calling unmirror twice doesn't double-decrement RiskBook
+        risk / notional (the dict pop in _open_tickets guards this)."""
+        ex, engine = self._setup_mirrored()
+        ex._unmirror_position_from_engine("AAPL")
+        ex._unmirror_position_from_engine("AAPL")
+        rb = engine._risk.get("val")
+        assert rb.open_count == 0
+        assert rb.open_risk == pytest.approx(0.0)
+
+
 class TestLoadPersistedPositionsCallsEngineMirror:
     """v8.3.6 -- the state.db rehydrate path (boot, after Railway
     redeploy) should mirror each loaded row into BOTH the
