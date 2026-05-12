@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.0.1 (2026-05-12) -- Activate ATR-stop default + v8.1.0 design doc for partial-profit
+
+Two-part follow-up to v8.0.0:
+
+**1. Activate ATR-stop live.** The v8.0.0 release added the ATR-stop code path but kept `ORB_ATR_STOP_MULT=0.0` as the env-default (env-gated, opt-in via Railway flag). v8.0.1 flips the env-fallback default in `orb/live_runtime.py:from_env()` from `0.0` to `1.75`, activating ATR-based stops on the next deploy. Live-disable path remains: `ORB_ATR_STOP_MULT=0` in Railway env reverts to v7.111.0 OR-edge stop. Default-disable in code remains via `OrbConfig.atr_stop_mult = 0.0` so unit tests that construct `OrbConfig()` directly are unaffected.
+
+**2. v8.1.0 design doc.** `docs/v8_1_partial_profit_design.md` lays out the full implementation plan for the deferred partial-profit-at-1R lever: broker primitive, FSM additions, risk-book partial-release, caller integration, ~30 new tests, activation rollout. Drafted now so a future focused session can pick up cleanly without re-deriving the integration plan. Backtest evidence: stacking partial-profit lifts FY from $+34,486 → $+44,431 (+29% incremental, +79% vs pre-v7.109 baseline). High-stakes broker path warrants its own PR.
+
+### Change
+
+- `orb/live_runtime.py`: one-line env-fallback default flip (0.0 → 1.75) with explanatory comment.
+- `docs/v8_1_partial_profit_design.md`: new design document, ~300 lines.
+- No test changes -- the 13 ATR-stop tests in v8.0.0 explicitly pass `atr_stop_mult` and remain unaffected.
+
+### Behavioral diff on live (vs v8.0.0)
+
+Once Railway redeploys to 8.0.1, ORB entries will use ATR-derived stops by default. The first `[V79-ORB-ENTRY]` log lines per session will still show `stop_source=or_edge` for the ~10 minutes before the ATR window warms; from ~10:40 ET onward, `stop_source=atr` should dominate.
+
+### Rollback
+
+Two paths:
+1. `ORB_ATR_STOP_MULT=0` in Railway env (instant, no redeploy).
+2. `ORB_LIVE_MODE=0` reverts to legacy entirely.
+
 ## v8.0.0 (2026-05-12) -- ATR-based stop placement (Phase 15 stability lever)
 
 Major version bump for a real behavior change in the live ORB engine.
