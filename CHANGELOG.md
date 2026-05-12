@@ -4,6 +4,77 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.28 (2026-05-12) -- Alpaca tick-data archive (`tools/fetch_alpaca_ticks.py` + GHA + R2)
+
+Investigation today found the live-replay's ATR(5m,14) is ~1.5x wider than production's, causing 1.5x wider stops and 5x larger positions, which makes the concurrent notional cap reject 99.8% of would-be entries (replay fires 2 trades/day vs production's 15-25). Hypothesis: production's ATR is computed from streaming tick data (sub-second intra-bar volatility) while the replay uses 1-min OHLC summaries. To validate, we need historical tick data.
+
+### Why tick data and not 1-second bars
+
+1-second bars would be ~60x the 1-min storage (~1.5 GB FY) and likely close most of the gap. But the operator wants tick-level for full faithfulness to production. Trade-by-trade has ~50-100x the volume of 1-min bars on liquid mega-caps, so the FY corpus would be ~10 GB compressed — too big for a GitHub branch, so we use Cloudflare R2 (the existing storage infra used by `r2-export-results.yml`).
+
+### `tools/fetch_alpaca_ticks.py`
+
+Mirror of `tools/fetch_alpaca_bars.py` but for `StockTradesRequest` instead of bars:
+
+- Paginated fetch of all trades for `(ticker, date)` via Alpaca's SIP feed
+- Auto-fallback to IEX on SIP-permission errors (free paper tier)
+- Output: gzipped JSONL per ticker-day, ~3 MB compressed per ticker-day on a liquid stock
+- `--sleep-ms-between-tickers` throttle (default 100ms) to stay under Alpaca's 200 req/min rate cap
+
+Each row:
+```json
+{"ts": "2026-05-12T13:30:00.123456+00:00", "price": 264.41, "size": 100,
+ "exchange": "Q", "conditions": ["@"], "tape": "C", "id": 12345, "feed_source": "sip"}
+```
+
+### `.github/workflows/pull-tick-data.yml`
+
+Two trigger paths:
+1. `workflow_dispatch` (UI/manual) with `start_date`/`end_date`/`tickers`/`premarket` inputs
+2. Push to `main` on `.github/tick-trigger/*.json` (mirrors the existing rth-trigger pattern)
+
+Runner steps:
+1. Install `alpaca-py` + `boto3`
+2. Resolve params from input or trigger JSON
+3. Run `tools.fetch_alpaca_ticks` into `${{ github.workspace }}/tick-data/`
+4. Upload to `s3://$R2_BUCKET/tick-data/<DATE>/<TICKER>.jsonl.gz` via Cloudflare R2
+
+Required secrets (already configured for `r2-export-results.yml`):
+- `VAL_ALPACA_PAPER_KEY` / `VAL_ALPACA_PAPER_SECRET`
+- `R2_ACCOUNT_ID` / `R2_BUCKET_NAME` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`
+
+### `.github/tick-trigger/sample-2026-05-12.json`
+
+Initial 1-day, 12-ticker pull (~120 MB compressed). Goal: **validate the ATR-from-ticks vs ATR-from-1m-bars hypothesis BEFORE committing to a full-year pull** (~10 GB, ~6 hr runner time). If the gap holds, a follow-up trigger fills the corpus.
+
+### Retrieval pattern (replay-side)
+
+```bash
+aws --endpoint-url=https://<acct>.r2.cloudflarestorage.com \
+    s3 cp s3://<bucket>/tick-data/2026-05-12/AMZN.jsonl.gz .
+```
+
+A follow-up PR will modify `tools/orb_replay_day.py` to consume tick data when available (compute true intra-minute high/low + ATR-from-ticks) and fall back to 1-min OHLC when not.
+
+### Tests
+
+`tests/strategy/test_fetch_alpaca_ticks.py` — 13 new tests covering:
+- Weekday/weekend filtering, ET-window UTC conversion (RTH + premarket)
+- Trade-row normalization: basic fields, missing-data fallbacks, int-size preservation, naive-timestamp UTC attachment
+- `_write_jsonl_gz` round-trip + parent-dir creation
+- Default-universe constant pinning
+
+All 13 pass.
+
+### Storage / cost notes
+
+- R2: ~$0.015/GB/month. FY corpus (10 GB) = $0.15/mo. Trivial.
+- R2 egress: free for first 10 GB/mo. Replay sandbox pulling the corpus monthly stays under free tier.
+- Alpaca: free under existing Algo Trader Plus subscription.
+- GHA runner: ~30 min for the 1-day sample, ~4-8 hr for the full FY pull (rate-limited).
+
+---
+
 ## v8.3.26 (2026-05-12) -- Day-end-giveback defenses (v18 levers) + corpus backfill trigger + GHA-backtest skill doc
 
 Operator pushback to v8.3.x's 97%-of-peak profit giveback at EOD: ship two surgical rule variants in the **research harness only**, validate via GHA `lever-sweep` against the full 1-year corpus, then port the winning config to the live engine in a follow-up PR.
