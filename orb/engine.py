@@ -918,6 +918,78 @@ class OrbEngine:
                     cleared = True
         return cleared
 
+    def find_phantom_recover_tickets(self, *,
+                                     held_tickers_by_pid: dict) -> list:
+        """v8.3.20 -- second-level phantom sweep, finds orphan
+        `recover-{pid}-{ticker}` tickets in RiskBook._open_tickets
+        where the ticker isn't held by the corresponding portfolio.
+
+        Why v8.3.15's existing sweep isn't enough: that one only
+        catches phantoms where FSM `in_position=True` AND ticker not
+        held. But it's possible for `in_position` to be False (e.g.
+        rehydrated from disk that way, or set False by a partial
+        _unmirror that crashed mid-way) while the recover ticket
+        still sits in `_open_tickets`. Pre-v8.3.20 those tickets
+        leaked their reserved risk + notional forever, surfacing as
+        the watchdog `no_phantom_positions` invariant ("main has 1
+        position in /api/state but RiskBook reports open_count=4")
+        AND blocking new entries via `risk_reject:notional_cap`
+        because the cap was already consumed by ghosts.
+
+        Returns [(portfolio_id, ticket_id, ticker)] for each orphan
+        recover ticket. Caller releases each via
+        `release_recover_ticket(pid, ticket_id)`.
+
+        Scope: only `recover-{pid}-{ticker}`-prefixed tickets (the
+        deterministic ids v8.3.6 mirror creates). uuid-style tickets
+        from the normal `try_admit` path aren't touched -- they're
+        either real in-flight admits or v7.81.0 rollback failures
+        that need a separate solution (we'd need a ticket -> ticker
+        map on the position to identify them safely).
+        """
+        out: list = []
+        for pid, rb in self._risk._books.items():
+            held = held_tickers_by_pid.get(pid)
+            if held is None:
+                continue
+            prefix = f"recover-{pid}-"
+            with rb._lock:
+                ticket_ids = list(rb._open_tickets.keys())
+            for tid in ticket_ids:
+                if not tid.startswith(prefix):
+                    continue
+                ticker = tid[len(prefix):]
+                if ticker in held:
+                    continue
+                out.append((pid, tid, ticker))
+        return out
+
+    def release_recover_ticket(self, portfolio_id: str,
+                               ticket_id: str) -> bool:
+        """v8.3.20 -- pop a phantom `recover-*` ticket from
+        RiskBook._open_tickets and decrement open_risk +
+        open_notional. Used by the v8.3.20 sweep to free budget
+        held by leaked tickets without needing to also touch FSM
+        state (which v8.3.15's `clear_phantom_in_pos` handles
+        when applicable).
+
+        Returns True iff a ticket was actually released.
+        """
+        rb = self._risk.get(portfolio_id)
+        if rb is None:
+            return False
+        with rb._lock:
+            ticket = rb._open_tickets.pop(ticket_id, None)
+            if ticket is None:
+                return False
+            rb._open_risk -= float(ticket.risk_dollars)
+            rb._open_notional -= float(ticket.notional)
+            if rb._open_risk < 0:
+                rb._open_risk = 0.0
+            if rb._open_notional < 0:
+                rb._open_notional = 0.0
+        return True
+
     # --- snapshots / introspection ---
 
     def snapshot(self) -> dict:

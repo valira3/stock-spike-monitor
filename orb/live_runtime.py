@@ -161,7 +161,14 @@ def _build_config_from_env() -> OrbConfig:
         max_trades_per_day=_i("ORB_MAX_TRADES_PER_DAY", 5),
         risk_per_trade_pct=_f("ORB_RISK_PER_TRADE_PCT", 1.0),
         max_concurrent_risk_dollars=_f("ORB_MAX_CONCURRENT_RISK_DOLLARS", 2000.0),
-        max_concurrent_notional_mult=_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+        # v8.3.20 -- env default 2.0 -> 0.95. Operator directive: total
+        # notional (longs + shorts) must stay BELOW account equity with
+        # safety margins; no over-leverage. The 0.95 multiplier matches
+        # the broker-side legacy v7.86.0 cap so both v10 RiskBook AND
+        # paper-book ask the same question. Operator can override
+        # via ORB_MAX_CONCURRENT_NOTIONAL_MULT in Railway env for
+        # research backtests where higher exposure is intended.
+        max_concurrent_notional_mult=_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 0.95),
         max_trade_notional_pct=_f("ORB_MAX_TRADE_NOTIONAL_PCT", 75.0),
         daily_loss_kill_pct=_f("ORB_DAILY_LOSS_KILL_PCT", 2.0),
         move_to_be_after_1r=_b("ORB_MOVE_TO_BE_AFTER_1R", True),
