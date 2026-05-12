@@ -43,12 +43,31 @@ jobs:
         id: check
         env:
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+          # v7.108.0 (audit SEV-3 fix) -- read the actual merge
+          # timestamp from the PR event payload, not the workflow's
+          # execution time. GHA queue + runner-startup latency is
+          # 30s-several minutes, so `date` at workflow-run time can
+          # mis-classify a merge by minutes (a 15:58 ET merge that
+          # runs at 16:02 ET would report "outside RTH" -- false
+          # negative). The merged_at ISO timestamp is authoritative.
+          # Falls back to current time only on workflow_dispatch
+          # (no PR event payload there).
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         run: |
           set -e
-          # ET-minutes-of-day right now. zone-aware so DST is handled.
-          ET_HM=$(TZ='America/New_York' date '+%H:%M')
-          ET_DOW=$(TZ='America/New_York' date '+%u')
-          ET_FULL=$(TZ='America/New_York' date '+%Y-%m-%d %H:%M %Z')
+          # ET-minutes-of-day at MERGE TIME (not workflow-run time).
+          if [ -n "$PR_MERGED_AT" ]; then
+            # `date -d` understands ISO-8601 input. Convert merged_at
+            # (UTC) to ET, then extract HH:MM and day-of-week.
+            ET_HM=$(TZ='America/New_York' date -d "$PR_MERGED_AT" '+%H:%M')
+            ET_DOW=$(TZ='America/New_York' date -d "$PR_MERGED_AT" '+%u')
+            ET_FULL=$(TZ='America/New_York' date -d "$PR_MERGED_AT" '+%Y-%m-%d %H:%M %Z')
+          else
+            # workflow_dispatch path: no PR payload, use current time.
+            ET_HM=$(TZ='America/New_York' date '+%H:%M')
+            ET_DOW=$(TZ='America/New_York' date '+%u')
+            ET_FULL=$(TZ='America/New_York' date '+%Y-%m-%d %H:%M %Z')
+          fi
           ET_MIN=$(echo "$ET_HM" | awk -F: '{print $1*60 + $2}')
           echo "et_now=$ET_FULL" | tee -a "$GITHUB_OUTPUT"
           echo "et_min=$ET_MIN" | tee -a "$GITHUB_OUTPUT"

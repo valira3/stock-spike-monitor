@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.108.0 (2026-05-12) -- Audit fix: rth-merge-warning uses merged_at + CDT midnight overflow guard (SEV-3 cluster) + Lifecycle tab IIFE-scope bugfix
+
+Two SEV-3 fixes from tonight's audit + a user-visible Lifecycle tab bug, bundled.
+
+### Fix 0 (user-visible, urgent): Lifecycle tab `Can't find variable: utcIsoToLocalFull`
+
+Operator screenshot at ~21:47 ET showed the Lifecycle tab rendering an inline error:
+
+> `LIFECYCLE · 40   ERROR: CAN'T FIND VARIABLE: UTCISOTOLOCALFULL`
+
+Root cause: v7.89.0's ET-zone refactor moved the `utcIsoToLocalHHMM` / `utcIsoToLocalFull` helpers inside `dashboard_static/app.js`'s IIFE-1 (lines 68 + 83). The Lifecycle tab + v10-activity-feed code lives in IIFE-2 (separate closure), where those helpers are out of scope. Strict-mode JS produces `ReferenceError` on the bare identifier. Bug had been latent since v7.89.0 — surfaced when the operator clicked Lifecycle.
+
+Fix: expose both helpers to `window` from IIFE-1 (same pattern as `window.__tgApplyHealthPill`), and update the three IIFE-2 callers (`actSummary` at line 4064, lifecycle entry timestamp at line 4738, lifecycle event timestamp at line 4901) to read `window.utcIsoToLocalFull` / `window.utcIsoToLocalHHMM`.
+
+### Fix 1, Fix 2: SEV-3 audit cluster (unchanged from earlier)
+
+Two SEV-3 fixes from tonight's audit, bundled.
+
+### Fix 1: `rth-merge-warning.yml` uses `github.event.pull_request.merged_at`
+
+v7.104.0's workflow used `date '+%H:%M'` (workflow execution time) to decide whether a merge happened during RTH. But GHA queue + runner-startup latency is 30s–several minutes, so:
+
+- A merge at **15:58 ET** that runs at **16:02 ET** reports "outside RTH" — **false negative** (warning skipped when it should fire).
+- A merge at **09:28 ET** that runs at **09:31 ET** reports "inside RTH" — **false positive** (warning fires on an off-hours merge).
+
+v7.108.0 reads `github.event.pull_request.merged_at` (authoritative ISO timestamp from the PR event payload) and converts to ET via `date -d`. The current-time fallback is preserved only for `workflow_dispatch` (manual testing) where the PR payload isn't present.
+
+### Fix 2: `_parse_trade_time_to_et_minutes` clamps overflow
+
+The CT→ET conversion adds 60 minutes. For `"23:50 CDT"`, that produces 1490 ET-minutes — which is 24:50 ET on the NEXT calendar day, outside the 0–1439 minute-of-day range. The entry-window invariant compares against an absolute minute-of-day eligible_end (e.g. 955 for 15:55 ET), so 1490 would falsely trigger "after EOD cutoff."
+
+Practically harmless today (no production trade logs at 23:50 CT), but the parser should not silently return invalid values. v7.108.0 returns `None` for any computed value outside `[0, 1439]` — same as for un-parseable input. The caller (`inv_entries_inside_window`) already skips rows with `t_min is None`.
+
+### Tests
+
+`tests/strategy/test_entries_inside_window_v7103.py` — 2 new tests:
+- `test_parse_cdt_late_evening_overflow_returns_none` — explicit `"23:50 CDT"` → None, `"23:00 CST"` → None.
+- `test_parse_cdt_just_before_midnight_in_range` — `"22:59 CDT"` → 23*60+59 (the last valid minute-of-day). Guards against an off-by-one in the clamp.
+
+Full strategy suite: **575 passed**, 8 skipped.
+
+### Files
+
+- `.github/workflows/rth-merge-warning.yml` — `merged_at` ISO parsing path + `workflow_dispatch` fallback
+- `tools/dashboard_monitor_invariants.py` — clamp guard in `_parse_trade_time_to_et_minutes`
+- `tests/strategy/test_entries_inside_window_v7103.py` — 2 new tests
+- `bot_version.py` / `trade_genius.py` — `7.107.0` → `7.108.0`
+
+### Audit findings status (post-v7.108.0)
+
+- SEV-1 (RiskBook persistence dead code): **fixed in v7.106.0**
+- SEV-2 (R-multiple uses mutable stop): **fixed in v7.107.0**
+- SEV-3 (rth-merge-warning wrong time): **fixed here**
+- SEV-3 (CDT midnight overflow): **fixed here**
+- CODE-QUALITY (silent save log): fixed in v7.106.0
+- CODE-QUALITY (workflow emoji): cosmetic, no fix
+- CODE-QUALITY (invariant test coverage gaps): partially covered by new tests here
+
+All actionable audit findings resolved.
+
+---
+
 ## v7.107.0 (2026-05-12) -- Audit fix: R-multiple uses immutable entry_stop (SEV-2)
 
 Tonight's quality audit caught a SEV-2 in v7.102.0's R-multiple fix. The "use the original hard stop" change preferred `hard_stop_at_exit` (which the v7.102.0 commit message called "the stop at entry, before any trail movement"). But `_trade_log_snapshot_pos` reads `pos.get("stop")` AT EXIT TIME, and `pos["stop"]` is mutated in place by:

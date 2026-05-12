@@ -56,6 +56,25 @@ def test_parse_invalid_returns_none():
     assert _parse_trade_time_to_et_minutes(None) is None
 
 
+def test_parse_cdt_late_evening_overflow_returns_none():
+    """v7.108.0 (audit SEV-3 fix): '23:50 CDT' + 60 min = 24:50 ET-
+    minutes (1490). That overflows the 0-1439 minute-of-day range
+    and would falsely trigger 'after EOD cutoff' against the
+    invariant's absolute eligible_end (e.g. 955). The parser must
+    return None for any computed value outside the valid range so
+    the caller skips it gracefully.
+    """
+    assert _parse_trade_time_to_et_minutes("23:50 CDT") is None
+    assert _parse_trade_time_to_et_minutes("23:00 CST") is None
+
+
+def test_parse_cdt_just_before_midnight_in_range():
+    """'22:59 CDT' = 23:59 ET (1439) -- the LAST minute that still
+    fits in 0-1439. Should NOT return None.
+    """
+    assert _parse_trade_time_to_et_minutes("22:59 CDT") == 23 * 60 + 59
+
+
 # ---------------------------------------------------------------------------
 # inv_entries_inside_window
 # ---------------------------------------------------------------------------

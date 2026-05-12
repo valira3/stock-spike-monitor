@@ -170,6 +170,17 @@
   }
   window.__tgApplyHealthPill = applyHealthPill;
 
+  // v7.108.0 (lifecycle-tab fix) -- bridge the ET-zoned timestamp
+  // helpers across the IIFE-1 / IIFE-2 boundary. Lifecycle tab code
+  // (IIFE-2 at lines ~4727, ~4890) and the v10 activity feed
+  // (IIFE-2 at line ~4053) call these by bare name and get a
+  // ReferenceError ("Can't find variable: utcIsoToLocalFull"). Bug
+  // existed since v7.89.0 refactored these into IIFE-1 -- surfaced
+  // when the operator clicked Lifecycle. Same pattern as
+  // __tgApplyHealthPill above.
+  window.utcIsoToLocalHHMM = utcIsoToLocalHHMM;
+  window.utcIsoToLocalFull = utcIsoToLocalFull;
+
   // Pop dropdown wiring — runs once per page load.
   function __tgWireHealthPop() {
     const pill = document.getElementById("tg-health-pill");
@@ -4050,7 +4061,7 @@
       } else {
         var first = events[0];
         // v7.82.0 -- display in browser-local timezone (was raw UTC).
-        actSummary.textContent = "most recent · " + utcIsoToLocalHHMM(first.ts_iso || "");
+        actSummary.textContent = "most recent · " + window.utcIsoToLocalHHMM(first.ts_iso || "");
       }
     }
     var actBody = execField(panel, "v10-pid-act-body");
@@ -4724,7 +4735,7 @@
           posEl.innerHTML = '<option value="">— select a position —</option>' + rows.map(r => {
             // v7.82.0 -- display in browser-local timezone (was raw UTC).
             const label = (r.ticker || "?") + " " + (r.side || "") + " " +
-              utcIsoToLocalFull(r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
+              window.utcIsoToLocalFull(r.entry_ts_utc || "") + " (" + (r.status || "") + ")";
             // v5.13.10 — surface position_id and any cached realized P&L / latest stage in the option tooltip.
             const tipParts = ["position_id: " + (r.position_id || "")];
             if (r.realized_pnl !== undefined && r.realized_pnl !== null) tipParts.push("realized: $" + Number(r.realized_pnl).toFixed(2));
@@ -4887,7 +4898,7 @@
         row.innerHTML =
           '<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">' +
           '  <span style="font-size:10px;color:#5b6572;font-family:monospace" title="Per-position event sequence number (monotonically increasing)">#' + (ev.event_seq || 0) + '</span>' +
-          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace" title="Event timestamp in your local timezone (stored as UTC: ' + escAttr(ev.event_ts_utc || "") + ')">' + escHtml(utcIsoToLocalFull(ev.event_ts_utc || "")) + '</span>' +
+          '  <span style="font-size:10.5px;color:var(--text-dim);font-family:monospace" title="Event timestamp in your local timezone (stored as UTC: ' + escAttr(ev.event_ts_utc || "") + ')">' + escHtml(window.utcIsoToLocalFull(ev.event_ts_utc || "")) + '</span>' +
           '  <span class="lifecycle-chip" title="' + escAttr(typeTip) + '" style="background:' + color + '22;color:' + color + ';border:1px solid ' + color + '55;padding:1px 7px;border-radius:9px;font-size:10.5px;letter-spacing:.04em">' + escHtml(ev.event_type) + '</span>' +
           '</div>' + reason + facts +
           '<pre class="lifecycle-payload" title="Full raw event payload (JSON)" style="display:none;margin:6px 0 0;padding:8px;background:var(--surface-2);border-radius:4px;font-size:11px;color:var(--text-muted);max-height:300px;overflow:auto">' + escHtml(JSON.stringify(ev.payload || {}, null, 2)) + '</pre>';

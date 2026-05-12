@@ -491,6 +491,18 @@ def _parse_trade_time_to_et_minutes(time_str):
     # tags just say which season).
     if tz_tag in ("CT", "CDT", "CST"):
         base += 60
+    # v7.108.0 (audit SEV-3 fix) -- midnight-crossing edge case.
+    # "23:50 CDT" + 60 = 1490 ET-minutes -- that's 24:50 ET on the
+    # NEXT calendar day, which doesn't fit the 0-1439 minute-of-day
+    # invariant. The entry-window invariant compares against an
+    # absolute minute-of-day eligible_end (e.g. 955 = 15:55 ET), so
+    # an overflow value of 1490 would FALSELY trigger an "after EOD
+    # cutoff" violation. Real RTH trades never log at 23:50 CT, so
+    # this is practically harmless today -- but the parser should
+    # not silently return invalid values. Return None instead so
+    # the caller skips the row, same as for un-parseable input.
+    if base < 0 or base > 1439:
+        return None
     return base
 
 
