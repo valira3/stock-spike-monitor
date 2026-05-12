@@ -998,6 +998,12 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return  # no closed 5m bar yet
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        # v8.0.0 -- pass recent 5m HLC so the engine can compute ATR
+        # when ORB_ATR_STOP_MULT > 0. Cap to last (lookback+1) bars to
+        # keep payload small; engine averages internally.
+        _h5 = list(_5m.get("highs") or [])[-20:]
+        _l5 = list(_5m.get("lows") or [])[-20:]
+        _c5 = list(_5m.get("closes") or [])[-20:]
 
         # Resolve all enabled portfolio_ids from the live runtime
         engine = _orb_runtime.get_engine()
@@ -1012,6 +1018,9 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                recent_5m_highs=_h5,
+                recent_5m_lows=_l5,
+                recent_5m_closes=_c5,
             )
             if result.ok:
                 logger.info(
@@ -1094,6 +1103,10 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        # v8.0.0 -- 5m HLC for ATR (engine averages internally)
+        _h5 = list(_5m.get("highs") or [])[-20:]
+        _l5 = list(_5m.get("lows") or [])[-20:]
+        _c5 = list(_5m.get("closes") or [])[-20:]
         engine = _orb_runtime.get_engine()
         if engine is None:
             return
@@ -1105,6 +1118,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                recent_5m_highs=_h5,
+                recent_5m_lows=_l5,
+                recent_5m_closes=_c5,
             )
             if result.ok:
                 logger.info(

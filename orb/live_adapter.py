@@ -125,6 +125,9 @@ class LiveAdapter:
     def check_entry(self, ticker: str, *, side: str,
                     five_min_close: float, next_open: float,
                     equity: float, signal_iso: str = "",
+                    recent_5m_highs: Optional[list[float]] = None,
+                    recent_5m_lows: Optional[list[float]] = None,
+                    recent_5m_closes: Optional[list[float]] = None,
                     ) -> EntryResult:
         """Single-side entry decision.
 
@@ -149,6 +152,9 @@ class LiveAdapter:
             five_min_close=five_min_close,
             five_min_close_iso=signal_iso,
             next_open=next_open,
+            recent_5m_highs=recent_5m_highs,
+            recent_5m_lows=recent_5m_lows,
+            recent_5m_closes=recent_5m_closes,
         )
         if sig is None:
             return EntryResult(ok=False, reason_no="no_signal")

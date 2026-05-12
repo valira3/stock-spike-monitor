@@ -86,6 +86,13 @@ class OrbConfig:
     skip_gap_above_pct: float = 1.5
     fail_closed_on_missing_vix: bool = True   # True for live; False for backtest parity
     ticker_side_blocklist: dict = None  # type: ignore
+    # v8.0.0 -- ATR-based stop. If > 0, replaces the OR-edge stop with
+    # entry +/- atr_stop_mult * ATR(14) on 5m bars. Caller (scan.py)
+    # supplies the recent 5m HLC history to detect_breakout(). When the
+    # ATR window isn't warm yet (<2 bars), the engine silently falls
+    # back to the OR-edge stop so the strategy is never stop-less.
+    atr_stop_mult: float = 0.0
+    atr_lookback_5m: int = 14   # standard Wilder ATR lookback
 
     @property
     def or_end_minutes(self) -> int:
@@ -106,8 +113,14 @@ class BreakoutSignal:
     signal_bar_close: float    # close price at signal
     or_high: float
     or_low: float
-    proposed_stop: float       # raw stop (OR opposite + buffer)
+    proposed_stop: float       # final stop fed to risk-book sizing
     proposed_entry: float      # next 5m candle open (caller fills this in at fire)
+    # v8.0.0 -- forensic: how the stop was derived ("or_edge" | "atr"),
+    # plus the ATR value that fed the calc (None when atr branch off /
+    # not warm). Used by the [V79-ORB-ENTRY] log emitter to surface
+    # which stop mode actually fired live.
+    stop_source: str = "or_edge"
+    atr_used: Optional[float] = None
 
 
 @dataclass
@@ -115,6 +128,38 @@ class Admission:
     """Returned by try_enter() on success. None on rejection."""
     position: _exits.OrbPosition
     risk_ticket: object        # _risk_book._Ticket; opaque to caller
+
+
+# ----- ATR helper (v8.0.0) -------------------------------------------
+
+
+def atr_from_5m(highs: list[float], lows: list[float], closes: list[float],
+                lookback: int = 14) -> float:
+    """Wilder ATR on 5m bars. Returns 0.0 when fewer than 2 bars provided
+    (caller's contract: fall back to OR-edge stop). Closed-form mean of
+    True Range over the last `lookback+1` bars; the first TR can only be
+    computed against the previous bar's close, so a series of N bars
+    yields N-1 TRs and we average up to `lookback` of those.
+
+    Look-ahead clean: True Range for bar i uses bar i's high/low and
+    bar i-1's close. No data from i+1 or later contributes.
+    """
+    n = min(len(highs), len(lows), len(closes))
+    if n < 2:
+        return 0.0
+    trs: list[float] = []
+    for i in range(1, n):
+        h = highs[i]
+        lo = lows[i]
+        prev_close = closes[i - 1]
+        if h is None or lo is None or prev_close is None:
+            continue
+        tr = max(h - lo, abs(h - prev_close), abs(lo - prev_close))
+        trs.append(tr)
+    if not trs:
+        return 0.0
+    window = trs[-lookback:] if len(trs) > lookback else trs
+    return sum(window) / len(window)
 
 
 # ----- Public surface ------------------------------------------------
@@ -308,11 +353,22 @@ class OrbEngine:
                         five_min_close: float,
                         five_min_close_iso: str,
                         next_open: float,
+                        recent_5m_highs: Optional[list[float]] = None,
+                        recent_5m_lows: Optional[list[float]] = None,
+                        recent_5m_closes: Optional[list[float]] = None,
                         ) -> Optional[BreakoutSignal]:
         """Check whether a 5m bar's close just broke past the OR
         boundary AND the portfolio's FSM allows a new entry.
 
         Returns a BreakoutSignal on a fresh signal; None otherwise.
+
+        v8.0.0 -- if `cfg.atr_stop_mult > 0` AND `recent_5m_*` lists are
+        supplied AND the ATR(14) window is warm (>=2 bars), the
+        BreakoutSignal's `proposed_stop` is computed from ATR instead
+        of the OR edge. The `stop_source` field on the signal records
+        which branch fired ("or_edge" | "atr"). Cold-ATR ("warm-up")
+        falls back to the OR-edge stop transparently so the strategy
+        is never stop-less.
         """
         cfg = self.cfg
         ds = self._state.get_day_state(portfolio_id, ticker)
@@ -322,27 +378,56 @@ class OrbEngine:
         if w is None or not w.locked:
             return None
 
+        buffer_pct = cfg.stop_buffer_bps / 10000.0
+
+        # Pre-compute ATR (independent of side) so both branches can
+        # use the same value + same warmup-fallback decision.
+        atr = 0.0
+        if (cfg.atr_stop_mult > 0
+                and recent_5m_highs and recent_5m_lows
+                and recent_5m_closes):
+            atr = atr_from_5m(
+                recent_5m_highs, recent_5m_lows, recent_5m_closes,
+                lookback=cfg.atr_lookback_5m,
+            )
+
         # Long signal: 5m close strictly above OR_high
         if five_min_close > w.or_high:
-            buffer_pct = cfg.stop_buffer_bps / 10000.0
-            stop = w.or_low * (1.0 - buffer_pct)  # below OR_low for long
+            or_edge_stop = w.or_low * (1.0 - buffer_pct)
+            if atr > 0:
+                atr_stop = next_open - cfg.atr_stop_mult * atr
+                stop = atr_stop
+                stop_source = "atr"
+            else:
+                stop = or_edge_stop
+                stop_source = "or_edge"
             return BreakoutSignal(
                 portfolio_id=portfolio_id, ticker=ticker, side="long",
                 signal_bar_close_iso=five_min_close_iso,
                 signal_bar_close=five_min_close,
                 or_high=w.or_high, or_low=w.or_low,
                 proposed_stop=stop, proposed_entry=next_open,
+                stop_source=stop_source,
+                atr_used=(atr if atr > 0 else None),
             )
         # Short signal: 5m close strictly below OR_low
         if five_min_close < w.or_low:
-            buffer_pct = cfg.stop_buffer_bps / 10000.0
-            stop = w.or_high * (1.0 + buffer_pct)  # above OR_high for short
+            or_edge_stop = w.or_high * (1.0 + buffer_pct)
+            if atr > 0:
+                atr_stop = next_open + cfg.atr_stop_mult * atr
+                stop = atr_stop
+                stop_source = "atr"
+            else:
+                stop = or_edge_stop
+                stop_source = "or_edge"
             return BreakoutSignal(
                 portfolio_id=portfolio_id, ticker=ticker, side="short",
                 signal_bar_close_iso=five_min_close_iso,
                 signal_bar_close=five_min_close,
                 or_high=w.or_high, or_low=w.or_low,
                 proposed_stop=stop, proposed_entry=next_open,
+                stop_source=stop_source,
+                atr_used=(atr if atr > 0 else None),
             )
         return None
 
@@ -549,6 +634,8 @@ class OrbEngine:
                 "skip_gap_above_pct": self.cfg.skip_gap_above_pct,
                 "skip_earnings_window": self.cfg.skip_earnings_window,
                 "blocklist": self.cfg.ticker_side_blocklist or {},
+                "atr_stop_mult": self.cfg.atr_stop_mult,
+                "atr_lookback_5m": self.cfg.atr_lookback_5m,
             },
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,
