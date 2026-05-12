@@ -781,15 +781,38 @@ def _today_trades() -> list[dict]:
     seen: set = set()
 
     def _key(t: dict, side: str) -> tuple:
-        # Prefer the field each list actually carries; fall back
-        # through both so the key is stable no matter which list the
-        # row originated from.
-        time_key = t.get("time") or t.get("entry_time") or t.get("exit_time") or ""
+        # v8.3.11 -- action-aware time-key resolution.
+        #
+        # Pre-v8.3.11 the fallback chain was time > entry_time > exit_time
+        # uniformly. This produced different keys for the same close
+        # depending on which list it came from:
+        #   - in-memory short_trade_history COVER: "time" not set ->
+        #     key uses entry_time
+        #   - v8.3.3 synth_exit COVER from trade_log: "time" set to
+        #     exit_time -> key uses time
+        # Different keys -> dedup failed -> the same cover rendered
+        # twice (operator surfaced AMZN COVER appearing at 11:00 with
+        # entry_price displayed AND at 11:14 with the real cover
+        # price).
+        #
+        # Fix: for close actions (SELL / COVER / PARTIAL_*), prefer
+        # exit_time so both the trade_log synth row (which carries
+        # exit_time) and the in-memory history_record (also carries
+        # exit_time per broker/orders.py:2008) agree. For open
+        # actions, prefer entry_time symmetrically.
+        action = (t.get("action") or "").upper()
+        is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
+        if is_close:
+            time_key = (t.get("exit_time") or t.get("time")
+                        or t.get("entry_time") or "")
+        else:
+            time_key = (t.get("entry_time") or t.get("time")
+                        or t.get("exit_time") or "")
         return (
             (t.get("ticker") or "").upper(),
             str(time_key),
             side,
-            t.get("action") or "",
+            action,
         )
 
     for t in list(getattr(m, "paper_trades", []) or []):

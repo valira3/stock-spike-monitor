@@ -212,6 +212,48 @@ class TestTodayTradesLogMerge:
         buy = next(r for r in out if r["action"] == "BUY")
         assert buy["time"] == "10:16 ET"
 
+    def test_cover_dedup_inmem_vs_log_same_close(self, fake_ssm):
+        """v8.3.11 -- operator surfaced AMZN COVER rendering TWICE
+        (one at 11:00 with entry-price $264.05, one at 11:14 with
+        correct exit-price $265.12). Root cause: in-memory
+        short_trade_history COVER has no "time" field (history_record
+        shape), so pre-v8.3.11 _key() fell back to entry_time.
+        v8.3.3 synth_exit set "time" to exit_time, so its key fell
+        back to "time". Different keys -> no dedup -> double render.
+
+        After v8.3.11, both paths produce the same dedup key
+        keyed on exit_time for close actions. The same close
+        renders once.
+        """
+        fake, today = fake_ssm
+        # In-memory COVER from short_trade_history (history_record
+        # shape: NO "time" field, has entry_time + exit_time).
+        fake.short_trade_history = [{
+            "ticker": "AMZN", "side": "SHORT", "action": "COVER",
+            "shares": 58,
+            "entry_price": 264.05, "exit_price": 265.12,
+            "pnl": -62.13, "pnl_pct": -0.41,
+            "entry_time": "11:00 ET", "exit_time": "11:14 ET",
+            "date": today,
+        }]
+        # Same close present on disk in trade_log.jsonl with UTC ISO
+        # exit_time (will be normalized through _to_et_hhmm).
+        fake.trade_log_read_tail = lambda **_kw: [{
+            "date": today, "portfolio": "paper",
+            "ticker": "AMZN", "side": "SHORT", "shares": 58,
+            "entry_price": 264.05, "exit_price": 265.12,
+            "entry_time": "11:00:00",
+            "exit_time": "2026-05-12T15:14:00Z",  # UTC -> 11:14 ET
+            "pnl": -62.13, "pnl_pct": -0.41, "reason": "stop_atr",
+        }]
+        out = dashboard_server._today_trades()
+        # Filter to COVER rows
+        cover_rows = [r for r in out if r["action"] == "COVER"]
+        # Exactly one COVER row should render
+        assert len(cover_rows) == 1, (
+            f"expected 1 COVER, got {len(cover_rows)}: {cover_rows!r}"
+        )
+
     def test_sort_order_entry_before_exit(self, fake_ssm):
         """In the output, entry row sorts before exit row (entry_time <
         exit_time lexically when both ET-formatted as HH:MM)."""
