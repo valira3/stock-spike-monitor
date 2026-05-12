@@ -4,6 +4,60 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.19 (2026-05-12) -- Fix v8.3.13 false-positive: `signal_bus_status` uses runtime instance class, not `__qualname__`
+
+Watchdog issue #679 carried a Railway log slice that contradicted v8.3.14's root-cause note:
+
+```
+[SIGNAL-BUS-EMIT] kind=ENTRY_SHORT ticker=AMZN n_listeners=1
+[SIGNAL-BUS-DISPATCH] kind=ENTRY_SHORT ticker=AMZN listener=TradeGeniusBase._on_signal
+[V79-MIRROR-RECV] Val kind=ENTRY_SHORT ticker=AMZN price=263.97 main_shares=58
+[V79-MIRROR-DISPATCH] Val ENTRY_SHORT AMZN qty=58 price=263.97
+```
+
+Val WAS subscribed and dispatching. But the v8.3.13 `_is_executor_subscribed` probe returned `False`, so the v8.3.14 issue body flagged `val.subscribed = false` (and `gene.subscribed = false`) as the root cause — both false positives.
+
+### Root cause
+
+`TradeGeniusVal._on_signal` is **inherited** from `TradeGeniusBase`. Python's `__qualname__` reflects where the method is **defined**, not the runtime class of `self`. So when `Val.register_signal_listener(self._on_signal)` runs, `fn.__qualname__` returns `"TradeGeniusBase._on_signal"`. v8.3.13's `signal_bus_status` used `__qualname__` to populate the names list, so the listener name was `"TradeGeniusBase._on_signal"`. v8.3.13's `_is_executor_subscribed` looked for `"TradeGeniusVal."` prefix → no match → False.
+
+### Change
+
+`trade_genius.signal_bus_status` now extracts `type(fn.__self__).__name__` for bound methods (the runtime instance class) and falls back to `__qualname__` only for free-function listeners (used in tests / the synthetic harness):
+
+```python
+for fn in listeners:
+    inst = getattr(fn, "__self__", None)
+    if inst is not None:
+        cls_name = type(inst).__name__
+        meth_name = getattr(fn, "__name__", "_on_signal")
+        names.append(f"{cls_name}.{meth_name}")
+    else:
+        names.append(getattr(fn, "__qualname__", repr(fn)))
+```
+
+After v8.3.19, a subscribed Val executor surfaces as `"TradeGeniusVal._on_signal"` in `signal_bus_status().names`. v8.3.13's pattern match works correctly.
+
+### Tests
+
+The 11 v8.3.13 tests in `tests/strategy/test_executor_subscribed.py` still pass — they inject `signal_bus_status` return values directly via `monkeypatch`, so the v8.3.19 shape change doesn't affect them.
+
+A live-import test was attempted but `trade_genius` has too many initialization gates to import cleanly in sandbox (telegram-stub coverage + env-var requirements). v8.3.19's shape change is small and verified by the next watchdog tick after deployment: the existing v8.3.14 "Root cause likely" note should NOT fire for Val/Gene anymore, since both ARE actually subscribed per Issue #679's log slice.
+
+**772 strategy tests pass** unchanged.
+
+### What the operator will see
+
+After v8.3.19 deploys + next watchdog tick:
+- `val.subscribed = false` / `gene.subscribed = false` notes **stop appearing** in `val_gene_trades_match_main` issue bodies
+- The watchdog falls through to the v7.84.0 log-slice path — which is what the operator wants here because Val/Gene ARE subscribed; the real issue is downstream (Alpaca order outcome). The truncated `[Val] [ALPACA-*]` line in issue #679 hints at where to look next.
+
+### Rollback
+
+Revert `signal_bus_status` to use `__qualname__` for all listeners. The v8.3.14 false positives return.
+
+---
+
 ## v8.3.18 (2026-05-12) -- "Held" (time-in-position) column on OPEN POSITIONS + cross-tab rule in CLAUDE.md
 
 Operator: "Add time in position for open stocks in open positions section. Apply changes across all tabs (in fact, add this to the rules: ui changes need to propagate across all tabs if makes sense)."
