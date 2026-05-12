@@ -4,6 +4,80 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.13 (2026-05-12) -- Surface `executor.subscribed` on /api/state (signal-bus listener probe)
+
+The watchdog's `val_gene_trades_match_main` invariant kept firing (val=0 vs main=7) but diagnosing the root cause required grep-the-Railway-logs archaeology to find a `[Val] startup failed` or `[Val] skipped` from earlier in the day. The post-deploy 3-min log window the watchdog fetches isn't wide enough to catch a boot-time failure from before the latest redeploy. v8.3.13 surfaces a `subscribed` boolean per executor on `/api/state` so the dashboard + watchdog can directly answer "is Val listening to Main's emits?" without log forensics.
+
+### Change
+
+**`dashboard_server.py`** — new helper `_is_executor_subscribed(pid)`:
+
+- Main returns True (it's the bus emitter, not a listener; surfaced True for shape symmetry across the three portfolios)
+- Val / Gene return True iff their executor class name appears in `trade_genius.signal_bus_status().names` matched against the pattern `<ClassName>._on_signal`
+- Failure-tolerant: any import / read error returns False rather than corrupting the snapshot
+
+Wired into `_build_portfolio_block` so the per-portfolio block returned by `/api/state.portfolios.{pid}` carries:
+
+```json
+{
+  "portfolio_id": "val",
+  "equity": ...,
+  "day_pnl": ...,
+  "positions": [...],
+  "trades_today": [...],
+  "strip": {...},
+  "subscribed": false          // ← new
+}
+```
+
+### Watchdog integration
+
+The `inv_val_gene_trades_match_main` invariant in `tools/dashboard_monitor_invariants.py` can now check `subscribed` directly:
+
+```python
+val = _exec(ctx, "val")
+if val.get("subscribed") is False:
+    return _fail(
+        "val_gene_trades_match_main",
+        "Val executor not subscribed to signal bus -- start() never ran",
+        detail="Check VAL_ALPACA_PAPER_KEY env or [Val] startup failed logs"
+    )
+```
+
+That gives an immediate, log-window-independent diagnosis. (A follow-up PR will wire this into the watchdog itself.)
+
+### Tests
+
+**`tests/strategy/test_executor_subscribed.py`** — 11 new tests:
+
+| # | Test |
+|---|---|
+| 1 | Main always subscribed (it's the emitter) |
+| 2 | Val subscribed when `TradeGeniusVal._on_signal` in names |
+| 3 | Gene subscribed when `TradeGeniusGene._on_signal` in names |
+| 4 | Val NOT subscribed when only Gene listening (operator's exact scenario) |
+| 5 | Both subscribed |
+| 6 | Neither subscribed (boot failure) |
+| 7 | Unknown pid returns False |
+| 8 | Robust to `_ssm()` returning None |
+| 9 | Robust to `signal_bus_status()` raising |
+| 10 | Robust to missing `signal_bus_status` attr (pre-v7.90.0 trade_genius) |
+| 11 | Qualname match is strict — `TradeGeniusVal.start` doesn't count |
+
+**745 strategy tests pass** (734 + 11 new).
+
+### What the operator will see
+
+After v8.3.13 deploys, the operator can:
+- Check `/api/state.portfolios.val.subscribed` in DevTools to instantly know if Val is listening
+- The watchdog will (in a follow-up wiring PR) include `subscribed=false` directly in the invariant violation body, naming the root cause without needing log access
+
+### Rollback
+
+Remove the `_is_executor_subscribed(pid)` call in `_build_portfolio_block` and the helper itself. Per-pid block no longer carries the `subscribed` field; watchdog falls back to its pre-v8.3.13 log-archaeology heuristic.
+
+---
+
 ## v8.3.12 (2026-05-12) -- Unmirror engine FSM + RiskBook on `_remove_position` (cleanup phantom IN_POS)
 
 Watchdog post-v8.3.6 surfaced `v10_in_pos_has_internal_position`: `main/AMZN phase='in_pos' in_position=True last_entry=""` — FSM thinks open but no matching position in book.

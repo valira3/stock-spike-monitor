@@ -466,17 +466,64 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
         strip = _build_portfolio_strip(book, executor)
         strip["day_pnl"] = day_pnl
 
-        return {
+        # v8.3.13 -- per-executor signal-bus subscription status.
+        # Surfaces whether this executor's _on_signal has registered
+        # with trade_genius._signal_listeners so the dashboard +
+        # watchdog can answer "is Val listening to main's emits?"
+        # without grep-the-Railway-logs archaeology. Closes the
+        # diagnostic gap on val_gene_trades_match_main: a listener
+        # that fails to register at boot becomes invisible until
+        # trade-count divergence is flagged hours later.
+        #
+        # Main is implicitly "subscribed" (it IS the bus emitter, not
+        # a listener); we still expose subscribed=True for shape
+        # symmetry across the three portfolios.
+        result_payload = {
             "portfolio_id": pid,
             "equity": equity,
             "day_pnl": day_pnl,
             "positions": positions_list,
             "trades_today": trades_today,
             "strip": strip,
+            "subscribed": _is_executor_subscribed(pid),
         }
+        return result_payload
     except Exception:
         stub["portfolio_id"] = pid
         return stub
+
+
+def _is_executor_subscribed(pid: str) -> bool:
+    """v8.3.13 -- True iff the executor for `pid` has its _on_signal
+    callback registered on trade_genius._signal_listeners.
+
+    Main is the bus emitter (not a listener); always returns True
+    for shape symmetry. Val/Gene return True iff their executor
+    class name appears in signal_bus_status().names.
+
+    Failure-tolerant: any import or read error returns False rather
+    than blowing up the snapshot.
+    """
+    try:
+        if pid == "main":
+            return True
+        m = _ssm()
+        if m is None:
+            return False
+        bus = m.signal_bus_status() if hasattr(m, "signal_bus_status") else {}
+        names = bus.get("names") or []
+        expected = "TradeGeniusVal" if pid == "val" else (
+            "TradeGeniusGene" if pid == "gene" else ""
+        )
+        if not expected:
+            return False
+        for qn in names:
+            # Listener qualnames look like "TradeGeniusVal._on_signal"
+            if qn.startswith(expected + ".") and "_on_signal" in qn:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _build_portfolios_map(prices: dict | None = None) -> dict:
