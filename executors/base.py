@@ -728,6 +728,12 @@ class TradeGeniusBase:
         if not rows:
             return
         self.positions.update(rows)
+        # v8.2.0 -- mirror each rehydrated row into the PortfolioBook
+        # so the dashboard's per-pid positions feed isn't empty after
+        # a Railway redeploy. Steady-state ENTRY rows are written to
+        # the book by record_entry_with_fill; this is the BOOT path.
+        for _tkr in rows.keys():
+            self._mirror_position_into_book(_tkr)
         logger.info(
             "[%s] rehydrated %d persisted position(s) from state.db",
             self.NAME,
@@ -751,6 +757,50 @@ class TradeGeniusBase:
                 "[%s] persistence.save_executor_position failed for %s",
                 self.NAME,
                 ticker,
+            )
+
+    def _mirror_position_into_book(self, ticker: str) -> None:
+        """v8.2.0 -- mirror a position from self.positions into the
+        per-portfolio PortfolioBook so the dashboard's
+        /api/state.portfolios.<pid>.positions feed (which reads from
+        book.positions, NOT self.positions) sees grafted/persisted
+        rows. Closes the position_count_three_way phantom-at-broker
+        watchdog alert.
+
+        Idempotent: if the ticker is already in the book, no-op.
+        Steady-state live entries flow through record_entry_with_fill
+        which writes the book directly; this mirror only fires on the
+        boot paths (state.db load + Alpaca reconcile) where the book
+        would otherwise stay empty.
+        """
+        pos = self.positions.get(ticker)
+        if not pos:
+            return
+        try:
+            from engine.portfolio_book import PORTFOLIOS
+            book = PORTFOLIOS.get(self.NAME.lower())
+            if book is None:
+                return
+            side = str(pos.get("side", "LONG")).upper()
+            target = book.short_positions if side == "SHORT" else book.positions
+            if ticker in target:
+                # Already mirrored (or live-entered through
+                # record_entry_with_fill). Don't clobber a row that
+                # may have richer state (trail, stop, etc.) than ours.
+                return
+            target[ticker] = {
+                "ticker": ticker,
+                "shares": int(pos.get("qty", 0) or 0),
+                "entry_price": float(pos.get("entry_price", 0.0) or 0.0),
+                "entry_ts_utc": pos.get("entry_ts_utc"),
+                "source": pos.get("source", "BOOT_GRAFT"),
+                "stop": pos.get("stop"),
+            }
+        except Exception:
+            # Mirror is best-effort; never let it break a boot path.
+            logger.exception(
+                "[%s] _mirror_position_into_book failed for %s",
+                self.NAME, ticker,
             )
 
     def _delete_persisted_position(self, ticker: str) -> None:
@@ -1731,6 +1781,12 @@ class TradeGeniusBase:
                 "trail": None,
             }
             self._persist_position(ticker)
+            # v8.2.0 -- mirror grafted row into PortfolioBook so the
+            # dashboard's /api/state.portfolios.<pid>.positions feed
+            # sees the recovered position. Closes the recurring
+            # inv_position_count_three_way "phantom at broker" alert
+            # that fires whenever broker has rows the book doesn't.
+            self._mirror_position_into_book(ticker)
             grafted += 1
             logger.warning(
                 "[%s] [RECONCILE] grafted broker orphan: ticker=%s side=%s qty=%d entry=%.2f",
