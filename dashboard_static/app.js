@@ -49,6 +49,30 @@
     if (v === null || v === undefined || isNaN(v)) return "—";
     return "$" + Number(v).toFixed(2);
   }
+  // v8.3.18 -- time-in-position formatter for the OPEN POSITIONS
+  // "Held" column. Computes (now - entry_ts_utc) and renders as one
+  // of "Nm" / "Nh Nm" / "Nd Nh". Bot-internal stamps use UTC ISO
+  // strings; the math is timezone-agnostic so we stay correct in
+  // both EDT and EST without DST handling.
+  function fmtHeld(entryIso) {
+    if (!entryIso) return "—";
+    try {
+      const d = new Date(entryIso);
+      const t = d.getTime();
+      if (!isFinite(t)) return "—";
+      const seconds = Math.floor((Date.now() - t) / 1000);
+      if (seconds < 0) return "—";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      if (hours < 24) return hours + "h " + mins + "m";
+      const days = Math.floor(hours / 24);
+      const rem = hours % 24;
+      return days + "d " + rem + "h";
+    } catch (e) { return "—"; }
+  }
+  window.fmtHeld = fmtHeld;  // exposed for IIFE-2 (Val/Gene tabs)
   function fmtPct(v, digits) {
     if (v === null || v === undefined || isNaN(v)) return "—";
     const abs = Math.abs(v);
@@ -484,6 +508,7 @@
           <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
           <td class="right ${pnlCls}">${pctTxt}</td>
+          <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
         </tr>${progressRow}`;
       }).join("");
       body.innerHTML = `<table>
@@ -498,6 +523,7 @@
           <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
           <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+          <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
@@ -4720,6 +4746,7 @@
             <td class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">${(function(){var s=Number(p.qty),e=Number(p.avg_entry),st=_stopInfo&&Number.isFinite(_stopInfo.eff)?_stopInfo.eff:NaN;if(!(s>0&&e>0&&Number.isFinite(st)))return "\u2014";var rps=Math.abs(e-st);return rps>0?fmtUsd(rps*s):"\u2014";})()}</td>
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
+            <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${(typeof window.fmtHeld==='function'?window.fmtHeld(p.entry_ts_utc):'—')}</td>
           </tr>${_progressRow}`;
         }).join("");
         posBody.innerHTML = `<table>
@@ -4734,6 +4761,7 @@
             <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
             <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
             <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+            <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
           </tr></thead>
           <tbody>${rows}</tbody></table>`;
       }

@@ -4,6 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.18 (2026-05-12) -- "Held" (time-in-position) column on OPEN POSITIONS + cross-tab rule in CLAUDE.md
+
+Operator: "Add time in position for open stocks in open positions section. Apply changes across all tabs (in fact, add this to the rules: ui changes need to propagate across all tabs if makes sense)."
+
+### Change
+
+**Backend** (`dashboard_server.py`):
+
+- `_serialize_positions` (Main tab `/api/state.portfolios.main.positions`) — adds `entry_ts_utc` to both long + short row payloads from `pos["entry_ts_utc"]`
+- Per-executor handler (`/api/executor/{val|gene}.positions`) — Alpaca's `Position` object has no entry timestamp, so we look up `executor.positions[symbol]["entry_ts_utc"]` from the executor's own bookkeeping and attach it to the row
+
+**Frontend** (`dashboard_static/app.js`):
+
+- New helper `fmtHeld(entryIso)` — renders elapsed time as `Nm` / `Nh Nm` / `Nd Nh`. Exposed as `window.fmtHeld` for IIFE-2 (Val/Gene tabs).
+- `renderPositions` (Main tab) — new `Held` column appended after `%`; thead label updated
+- Val/Gene executor-tab positions renderer — same column + thead
+
+**Mobile** (`dashboard_static/app.css`):
+
+- Stacked-card layout (v8.3.10) gets a new `nth-child(11)::before { content: "HELD" }` label rule so the Held cell shows as `HELD: 1h 23m` on phones
+
+### CLAUDE.md — new rule
+
+Added explicit cross-tab propagation rule:
+
+> **UI changes propagate across all tabs (added v8.3.18).** When a feature lands on one tab (Main / Val / Gene), it must also land on the other two unless there's a documented reason it doesn't apply. [...] Audit every UI PR against both renderer paths before merge.
+
+Calls out the two parallel renderer paths (`renderPositions` / `renderTrades` / `renderV10ActivityFeed` in IIFE-1 vs `renderV10PerPortfolio` / `renderExecTrades` in IIFE-2) and points to the v8.3.1+v8.3.16 and v8.3.10+v8.3.18 PR pairs where this rule would have saved an extra release.
+
+### What the operator will see
+
+After Railway rolls v8.3.18, every open position on every tab shows a `Held` column:
+
+```
+TICKER  SIDE  SH   ENTRY    MARK     NOTIONAL    STOP     UNREAL    %       HELD
+META    LONG  31   $602.18  $600.24  $18,667.58  $599.17  −$47.69   −0.26%  2h 14m
+NFLX    LONG  698  $88.59   $88.93   $61,835.82  $88.15   $237.32   +0.38%  1h 47m
+```
+
+Updates per render. Mobile card layout shows `HELD: 2h 14m` in the 2-col grid.
+
+### Tests
+
+JS/CSS + server payload extension; **772 strategy tests pass** unchanged. The `fmtHeld` helper is pure and tested implicitly via render correctness.
+
+### Rollback
+
+Revert the `entry_ts_utc` adds in `_serialize_positions` + per-executor handler. Remove the JS `fmtHeld` helper + the two table-render `<td>`/`<th>` adds. CSS rule for `nth-child(11)::before` becomes a no-op.
+
+---
+
 ## v8.3.17 (2026-05-12) -- Proportional scaling of Val/Gene mirror qty by equity ratio
 
 Operator's Val tab showed repeated `risk_reject:notional_cap (would-be $75229 > $69857)` on AMZN SHORT signals. Root cause: Val's Alpaca paper account has ~$34,929 equity vs Main's $100K. RiskBook's notional cap = `equity × 2.0 = $69,857`. Mirroring Main's 284-share AMZN at $264.60 = $75,167 notional exceeds Val's cap, every time. The legacy v5.24.0 mirror handed Val Main's full share count (`main_shares`) regardless of Val's account size.

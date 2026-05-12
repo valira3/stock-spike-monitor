@@ -486,6 +486,9 @@
     [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9)::before { content: "UNREAL"; }
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10)::before,
     [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10)::before { content: "%"; }
+    /* v8.3.18 -- Held cell label on mobile card layout. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before { content: "HELD"; }
     /* Unreal $ + % visually paired -- emphasize. */
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9),
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10),

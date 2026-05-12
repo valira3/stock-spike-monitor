@@ -651,6 +651,12 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
+                # v8.3.18 -- entry_ts_utc surfaces the ISO timestamp the
+                # bot stamped when this position opened (see
+                # broker/orders.py:1470). The UI derives "Held N h N m"
+                # client-side so the timer updates per render without
+                # the server needing to recompute.
+                "entry_ts_utc": p.get("entry_ts_utc", ""),
                 "entry_count": int(p.get("entry_count", 1) or 1),
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
@@ -705,6 +711,8 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
+                # v8.3.18 -- entry_ts_utc for client-side "Held" column.
+                "entry_ts_utc": p.get("entry_ts_utc", ""),
                 "entry_count": 1,
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
@@ -3084,6 +3092,15 @@ def _executor_snapshot(name: str) -> dict:
             "status": str(getattr(acct, "status", "") or ""),
         }
         positions = client.get_all_positions()
+        # v8.3.18 -- pull entry_ts_utc from the executor's own
+        # positions dict so the UI can render a Held column. Alpaca's
+        # Position object has no opened_at/entered_at; the bot stamps
+        # entry_ts_utc when it opens (see executors/base.py:_record_position).
+        exec_positions = {}
+        try:
+            exec_positions = dict(getattr(executor, "positions", {}) or {})
+        except Exception:
+            exec_positions = {}
         rows = []
         for p in positions:
             qty = float(getattr(p, "qty", 0) or 0)
@@ -3097,15 +3114,23 @@ def _executor_snapshot(name: str) -> dict:
                 unreal_pct = float(unreal_pct_raw) * 100.0 if unreal_pct_raw is not None else 0.0
             except (TypeError, ValueError):
                 unreal_pct = 0.0
+            sym = str(getattr(p, "symbol", "") or "")
+            entry_ts = ""
+            exec_pos = exec_positions.get(sym) or exec_positions.get(sym.upper())
+            if isinstance(exec_pos, dict):
+                entry_ts = str(exec_pos.get("entry_ts_utc") or "")
             rows.append(
                 {
-                    "symbol": str(getattr(p, "symbol", "") or ""),
+                    "symbol": sym,
                     "side": side,
                     "qty": abs(qty),
                     "avg_entry": avg_entry,
                     "current_price": cur,
                     "unrealized_pnl": unreal,
                     "unrealized_pnl_pct": unreal_pct,
+                    # v8.3.18 -- ISO timestamp from the executor's own
+                    # bookkeeping; client renders Held = now - this.
+                    "entry_ts_utc": entry_ts,
                 }
             )
         payload["positions"] = rows
