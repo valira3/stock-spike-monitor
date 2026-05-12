@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.106.0 (2026-05-12) -- Audit fix: wire RiskBook persistence to actual engine registry (SEV-1)
+
+Tonight's quality audit (per Auto Agentic framework rules #6, #10, #22) caught a SEV-1 bug in v7.105.0: the RiskBook ticket persistence helpers reached for the **module-level singleton** `orb.risk_book.REGISTRY`, but production code never registers books into that singleton. The engine (`orb.engine.OrbEngine`) creates its own private `RiskBookRegistry` at `self._risk`, and that's what `live_runtime.get_engine()._risk` returns to all callers.
+
+Result: v7.105.0's helpers were **dead code**. `_risk_book_tickets_for_save()` always returned `{}`. `_risk_book_tickets_restore()` always silently no-op'd. The phantom-position pattern v7.105.0 was supposed to kill was **not actually killed**.
+
+The v7.105.0 tests passed because they constructed local `RiskBookRegistry` instances and registered books into them — never exercised the production wiring through `paper_state.save_paper_state` → engine's `self._risk`.
+
+### Fix (this PR)
+
+- **SEV-1**: `paper_state._get_active_risk_registry()` is the new single-source accessor — calls `orb.live_runtime.get_engine()._risk`. Returns None when the engine isn't yet bootstrapped (boot-path race). `_risk_book_tickets_for_save` / `_risk_book_tickets_restore` route through it instead of the module REGISTRY.
+- **SEV-3 (cross-day boot)**: `_risk_book_tickets_restore` now takes `saved_at_iso` and refuses to restore tickets when the saved date != today's ET date. Stale tickets from yesterday would otherwise poison today's risk-cap math during the 00:00–09:25 ET window (before the v10 session-start reset runs).
+- **CODE-QUALITY (save-side log)**: new `[V79-ORB-PERSIST] saving N tickets across M portfolio(s)` INFO log on the save path, symmetric with the existing restore-side log. Pre-v7.106.0 the save path was silent — which is exactly why SEV-1 was invisible until the audit caught it.
+- **Visibility WARN**: when a saved payload has portfolios that don't match any live book (e.g. a `val` ticket from a prior boot where Val was enabled, but the current boot disabled Val), the restore now logs a WARNING instead of silently dropping.
+
+### Tests
+
+`tests/strategy/test_riskbook_persist_engine_wiring_v7106.py` — 8 new tests:
+- **Save side**: reads engine._risk correctly (SEV-1 regression); empty when engine not bootstrapped.
+- **Restore side**: writes to engine._risk; warns when engine not bootstrapped; warns when no book matches saved pid.
+- **Cross-day guard**: cross-day refused; same-day accepted; missing saved_at falls through (back-compat).
+
+The v7.105.0 unit tests stay green — they still exercise the `RiskBook` / `RiskBookRegistry` round-trip in isolation. The v7.106.0 integration tests are the missing layer.
+
+Full strategy suite: **571 passed**, 8 skipped.
+
+### Why this lands tonight
+
+Per Auto Agentic framework rule #10: "Patch all bugs found in audit before continuing. Don't carry known issues forward." Tomorrow's first deploy would otherwise re-trigger the phantom-position pattern — v7.105.0's headline fix didn't actually fix it. Shipping the real fix tonight closes the gap before RTH opens.
+
+### Files
+
+- `paper_state.py` — new `_get_active_risk_registry` accessor; save/restore helpers route through engine._risk; save-side INFO log; restore-side WARN on empty match; cross-day guard
+- `tests/strategy/test_riskbook_persist_engine_wiring_v7106.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.105.0` → `7.106.0`
+
+---
+
 ## v7.105.0 (2026-05-12) -- RiskBook ticket disk persistence (Lesson 2 — root fix for phantom-position pattern)
 
 Today's monitor noise (28+ open `dashboard-monitor` issues from #532 through #596) shared one mechanical root cause: every Railway redeploy creates a fresh `RiskBook` with `open_count=0` while `tg.positions` reloads from disk via `paper_state.json`. The asymmetry — positions persisted, RiskBook tickets in-memory only — is exactly what `position_count_three_way` and `no_phantom_positions` invariants flag.
