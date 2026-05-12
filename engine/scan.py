@@ -838,16 +838,45 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
 # v7.15.0: per-side ORB entry helpers. Factored out of _per_ticker_tick
 # so each side is independently testable and the logic is symmetric.
 def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
-    """Get current equity for `portfolio_id`. Falls back to paper_cash
-    on PortfolioBook lookup failure."""
+    """Get current equity for `portfolio_id`.
+
+    v8.1.9 -- routes Val/Gene through engine.portfolio_equity.resolve_equity
+    FIRST so Alpaca's authoritative account equity wins over
+    book.current_equity() (which returns 0 when paper_cash is the
+    default 0.0 -- the root cause of the recurring [Gene equity=0]
+    watchdog alert). Falls back through book MTM and then paper_cash.
+
+    Why a layered fallback rather than just resolve_equity:
+      - resolve_equity returns 0 when Alpaca keys aren't configured
+        for that portfolio (silent fail by design); we want to recover
+        to book.current_equity() rather than return 0 and reject every
+        entry on the notional_cap.
+      - book.current_equity() is correct for Main (where paper_cash
+        is the source of truth) but returns 0 for Val/Gene with
+        un-seeded books.
+      - Final fallback to tg.paper_cash maintains v7.x semantics
+        for callers that pass an unknown portfolio_id.
+    """
+    # Tier 1: portfolio_equity (Alpaca-first for Val/Gene)
+    try:
+        from engine.portfolio_equity import resolve_equity
+        eq = float(resolve_equity(portfolio_id))
+        if eq > 0:
+            return eq
+    except Exception:
+        pass
+    # Tier 2: PortfolioBook current_equity (correct for Main)
     try:
         from engine.portfolio_book import PORTFOLIOS
         book = PORTFOLIOS.get(portfolio_id)
-        if book is None:
-            return float(getattr(tg, "paper_cash", 100_000.0))
-        return book.current_equity()
+        if book is not None:
+            eq = float(book.current_equity())
+            if eq > 0:
+                return eq
     except Exception:
-        return float(getattr(tg, "paper_cash", 100_000.0))
+        pass
+    # Tier 3: legacy tg.paper_cash fallback
+    return float(getattr(tg, "paper_cash", 100_000.0))
 
 
 def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
