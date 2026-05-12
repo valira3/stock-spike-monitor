@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.4 (2026-05-12) -- ARCHITECTURE.md doc-only: reflect v8.1.3 default-on
+
+Caught during the post-v8.1.3 verification sweep. ARCHITECTURE.md still described `ORB_PARTIAL_PROFIT_AT_1R` as "opt-in" with default `0` in the env-table row -- stale after v8.1.3 flipped the env-fallback default to `True`. Doc-only fix.
+
+### Changes
+
+- `ARCHITECTURE.md` -- "Partial profit at 1R" bullet now says "default-on since v8.1.3" + adds the disable instruction. Env table row flipped default `0 → 1`.
+
+No code, no test, no behavior change. 625 strategy tests pass unchanged.
+
 ## v8.1.3 (2026-05-12) -- Activate partial-profit-at-1R by default
 
 Final activation step in the partial-profit lineage. The lever has been:
