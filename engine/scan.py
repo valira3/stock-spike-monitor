@@ -792,9 +792,7 @@ def _orb_phantom_sweep(tg) -> None:
     except Exception:
         pass
     phantoms = engine.find_phantom_in_pos(held_tickers_by_pid=held)
-    if not phantoms:
-        return
-    # Clear each phantom via the right path.
+    # Clear each phantom via the right path (v8.3.15 FSM-side path).
     cleared: list = []
     for pid, ticker in phantoms:
         if pid == "main":
@@ -816,6 +814,34 @@ def _orb_phantom_sweep(tg) -> None:
         logger.warning(
             "[V8315-PHANTOM-SWEEP] cleared %d phantom IN_POS row(s): %s",
             len(cleared), cleared,
+        )
+    # v8.3.20 -- second-level sweep: orphan recover-* tickets in
+    # RiskBook._open_tickets where the FSM in_position is False but
+    # the ticket still consumes open_risk/open_notional budget. v8.3.15
+    # only catches in_position=True rows; this catches the in_position=
+    # False ones from partial v8.3.12 unmirrors / mid-write v8.3.4
+    # rehydrate snapshots. Without this sweep, leaked tickets blocked
+    # new entries with risk_reject:notional_cap because the cap was
+    # already consumed by ghost tickets.
+    try:
+        ticket_phantoms = engine.find_phantom_recover_tickets(
+            held_tickers_by_pid=held,
+        )
+    except Exception:
+        ticket_phantoms = []
+    ticket_cleared: list = []
+    for pid, tid, ticker in ticket_phantoms:
+        try:
+            if engine.release_recover_ticket(pid, tid):
+                ticket_cleared.append((pid, ticker))
+        except Exception:
+            logger.debug(
+                "[V8320-TICKET-SWEEP] release failed %s/%s", pid, tid,
+            )
+    if ticket_cleared:
+        logger.warning(
+            "[V8320-TICKET-SWEEP] released %d phantom recover-* "
+            "ticket(s): %s", len(ticket_cleared), ticket_cleared,
         )
 
 

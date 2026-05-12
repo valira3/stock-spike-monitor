@@ -22,6 +22,12 @@ def isolated_env(monkeypatch):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
+    # v8.3.20 -- the env default for ORB_MAX_CONCURRENT_NOTIONAL_MULT
+    # dropped from 2.0 -> 0.95 (over-leverage protection per operator
+    # directive). Tests that assert against the legacy 2.0 multiplier
+    # opt back in here so they continue exercising the same math; new
+    # production deploys get the safer 0.95 by default.
+    monkeypatch.setenv("ORB_MAX_CONCURRENT_NOTIONAL_MULT", "2.0")
     yield monkeypatch
 
 

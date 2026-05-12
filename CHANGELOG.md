@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.20 (2026-05-12) -- Ticket-side phantom sweep + over-leverage protection (notional cap 2.0 → 0.95)
+
+Two fixes in one ship, both surfaced by the same watchdog/operator pair:
+
+1. **Watchdog `no_phantom_positions`**: "main has 1 position in /api/state but RiskBook reports open_count=4". v8.3.15's sweep only catches FSM rows where `in_position=True`; leaked `recover-*` tickets with `in_position=False` slipped through, consuming open_risk + open_notional budget forever.
+2. **Operator screenshot of repeated `risk_reject:notional_cap (would-be $300976 > $202694)`** on Main tab. The would-be exceeded cap because 3 phantom tickets ate ~$129K of the $202K cap (leaving only ~$73K for the real GOOG position + new admits). Plus operator directive: "Our total notional (shorts + longs) should be below equity (w safety margins). Do not get into over leverage situation."
+
+### Change A — ticket-side phantom sweep (`orb/engine.py` + `engine/scan.py`)
+
+Two new public methods on `OrbEngine`:
+
+- `find_phantom_recover_tickets(held_tickers_by_pid)` — scans `_open_tickets` for `recover-{pid}-{ticker}` ids where the ticker isn't held by the corresponding portfolio. Returns `[(pid, ticket_id, ticker), ...]`. Scope-limited to deterministic recover-* ids; uuid-style tickets from `try_admit` aren't touched (no safe ticker mapping for those).
+- `release_recover_ticket(pid, ticket_id)` — pops the ticket from `_open_tickets`, decrements `_open_risk` + `_open_notional`, clamps non-negative. Returns True iff anything was released.
+
+`_orb_phantom_sweep` in `engine/scan.py` (which v8.3.15 added) now runs BOTH passes per cycle:
+- v8.3.15 FSM-side sweep (in_position=True orphans)
+- v8.3.20 ticket-side sweep (in_position=False ticket orphans)
+
+Logs `[V8320-TICKET-SWEEP] released N phantom recover-* ticket(s): [(pid, ticker), ...]` per cycle when anything was cleaned.
+
+### Change B — over-leverage protection (`orb/live_runtime.py`)
+
+Env default `ORB_MAX_CONCURRENT_NOTIONAL_MULT` lowered from **2.0** → **0.95** in `_build_config_from_env`. Aligns the v10 RiskBook cap with the legacy v7.86.0 paper-book 95%-of-equity cap so both layers ask the same question. Operator's directive: total notional below equity with safety margins.
+
+- Old: $100K equity × 2.0 = $200K cap (allowed ~2× exposure)
+- New: $100K equity × 0.95 = $95K cap (matches the broker-side cap; safety margin built in)
+
+Operators wanting the legacy 2.0 for research/backtests set `ORB_MAX_CONCURRENT_NOTIONAL_MULT=2.0` in Railway env. Tests that depend on the legacy 2.0 default opt back in via their `isolated_env` fixtures.
+
+### Tests
+
+`tests/strategy/test_orb_phantom_ticket_sweep.py` — **12 new tests**:
+
+`TestFindPhantomRecoverTickets` (6):
+1. Empty engine returns []
+2. Operator's scenario — recover-main-AMZN orphan with no AMZN held → detected
+3. Clean state (ticket exists, ticker held) → no phantoms
+4. Multiple orphans across pids
+5. Non-recover uuid tickets ignored (no safe mapping)
+6. Missing pid in held map skipped (defensive)
+
+`TestReleaseRecoverTicket` (4):
+7. Pops ticket + decrements risk/notional
+8. Missing ticket returns False
+9. Unknown pid returns False
+10. Negative-value clamps to 0 (fp drift defensive)
+
+`TestOperatorScenario` (2):
+11. **Exact operator setup**: 4 tickets, 1 held → sweep clears 3 phantoms, notional drops from $202K to $73K, cap unblocked
+12. v8.3.15 + v8.3.20 complementary — v8.3.15 catches in_position=True orphans; v8.3.20 catches in_position=False ticket-only orphans
+
+Three test fixtures (`test_orb_live_runtime`, `test_orb_accuracy`, `test_orb_coverage_gaps`) updated to opt back in to the legacy 2.0 multiplier via `ORB_MAX_CONCURRENT_NOTIONAL_MULT=2.0`.
+
+**784 strategy tests pass** (772 + 12 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.20:
+1. **Phantom tickets cleared on first scan cycle.** Watchdog `no_phantom_positions` invariant resolves automatically. `[V8320-TICKET-SWEEP]` log line per ticker released.
+2. **Notional cap drops from $200K → ~$95K** on Main. Real exposure (1 position × ~$73K notional) is well within. New entries that previously hit cap due to phantoms now admit cleanly.
+3. **No over-leverage path possible.** Engine + paper-book both gate at 95% of equity. Combined longs + shorts capped near equity with a small safety margin.
+
+### Rollback
+
+Remove the ticket-sweep call in `engine/scan.py:_orb_phantom_sweep` and restore `_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0)` in `orb/live_runtime.py`. The helper methods on OrbEngine stay defined (tested, no harm).
+
+---
+
 ## v8.3.19 (2026-05-12) -- Fix v8.3.13 false-positive: `signal_bus_status` uses runtime instance class, not `__qualname__`
 
 Watchdog issue #679 carried a Railway log slice that contradicted v8.3.14's root-cause note:
