@@ -73,7 +73,10 @@ def test_probe_no_deployment_when_edges_empty():
 
 
 def test_probe_ok_returns_deployment_id():
-    fake = {"data": {"deployments": {"edges": [{"node": {"id": "dep-123", "status": "SUCCESS"}}]}}}
+    fake = {"data": {"deployments": {"edges": [
+        {"node": {"id": "dep-123", "status": "SUCCESS",
+                  "createdAt": "2026-05-12T00:30:00Z"}}
+    ]}}}
     with patch.dict(
         "os.environ",
         {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
@@ -84,6 +87,8 @@ def test_probe_ok_returns_deployment_id():
     assert out["deployment_id"] == "dep-123"
     # v7.97.0 -- deployment status returned alongside the id
     assert out["deployment_status"] == "SUCCESS"
+    # v7.98.0 -- createdAt returned alongside id+status
+    assert out["deployment_created"] == "2026-05-12T00:30:00Z"
 
 
 def test_probe_ok_returns_deployment_status_when_stale():
@@ -92,7 +97,10 @@ def test_probe_ok_returns_deployment_status_when_stale():
     that so the monitor footer can flag it. This is the smoking-gun
     pattern from issue #583 (lines_fetched=0 with status=ok).
     """
-    fake = {"data": {"deployments": {"edges": [{"node": {"id": "dep-old", "status": "REMOVED"}}]}}}
+    fake = {"data": {"deployments": {"edges": [
+        {"node": {"id": "dep-old", "status": "REMOVED",
+                  "createdAt": "2026-04-01T12:00:00Z"}}
+    ]}}}
     with patch.dict(
         "os.environ",
         {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
@@ -102,6 +110,9 @@ def test_probe_ok_returns_deployment_status_when_stale():
     assert out["status"] == "ok"  # auth works
     assert out["deployment_id"] == "dep-old"
     assert out["deployment_status"] == "REMOVED"
+    # v7.98.0 -- old createdAt would tell the operator this
+    # deployment is stale even if Railway reports it as REMOVED.
+    assert out["deployment_created"] == "2026-04-01T12:00:00Z"
 
 
 def test_probe_token_only_whitespace_treated_missing():
