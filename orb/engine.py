@@ -223,6 +223,128 @@ class OrbEngine:
 
     # --- session lifecycle ---
 
+    def backfill_or_windows(self, *,
+                            bars_by_ticker: dict,
+                            current_et_minutes: int) -> dict:
+        """v8.3.0 -- replay pre-bucketed 1m bars to rebuild any OR
+        window that wasn't locked in real-time.
+
+        Why: a Railway redeploy mid-RTH wipes in-memory engine state.
+        On the next bootstrap + ensure_session_started, all OR windows
+        start empty. The live scan only feeds the latest bar per
+        cycle, so 09:30-09:59 bars are never replayed -> WARMUP
+        forever -> zero trades the rest of the day. Without this
+        function, a redeploy at 10:00 ET cooks the entire trading
+        day.
+
+        Idempotent: bars going to a locked OR window are silently
+        rejected by add_bar() (orb.state.OrWindow.add_bar drops
+        anything when locked=True). Safe to call on every scan cycle.
+        Tickers already locked are skipped fast.
+
+        No-op when current_et_minutes < or_end_minutes (the live scan
+        will populate OR windows normally during the active OR).
+
+        Args:
+            bars_by_ticker: {ticker: list[row]} where each row is a
+                tuple (or list / dict-like with index access) of
+                (bucket_min, high, low, open, close, volume). The
+                caller is responsible for converting raw timestamps
+                to ET-minute buckets (since orb/ doesn't import
+                from engine/ to keep the dependency graph clean).
+                Bars are filtered here -- in-OR bars feed
+                on_bar_arrival; the first post-OR bar feeds
+                on_bar_arrival to trigger the v7.73.0 lock fallback
+                if 09:59 was missing.
+            current_et_minutes: minutes since ET midnight (now).
+                Used to short-circuit when we're still inside or
+                before the OR window.
+
+        Returns:
+            {"backfilled": int, "locked": int, "skipped": int,
+             "failed": int} -- per-ticker counters. "skipped" counts
+             tickers that were already locked OR the entire call
+             when we're pre-or-end; "failed" counts tickers with no
+             usable bars; "backfilled" counts tickers that received
+             at least one in-window bar; "locked" counts tickers
+             that were force-locked via a post-window bar.
+        """
+        out = {"backfilled": 0, "locked": 0, "skipped": 0, "failed": 0}
+        cfg = self.cfg
+        if current_et_minutes < cfg.or_end_minutes:
+            out["skipped"] = len(bars_by_ticker)
+            return out
+        for ticker, rows in bars_by_ticker.items():
+            w = self._state.or_windows.get(ticker)
+            if w is not None and w.locked:
+                out["skipped"] += 1
+                continue
+            if not rows:
+                out["failed"] += 1
+                continue
+            fed_in_window = 0
+            for r in rows:
+                try:
+                    bucket = int(r[0])
+                    hi = float(r[1])
+                    lo = float(r[2])
+                    op = float(r[3])
+                    cl = float(r[4])
+                    vo = float(r[5] or 0.0) if len(r) > 5 else 0.0
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if bucket < cfg.session_start_minutes:
+                    continue
+                if bucket >= cfg.or_end_minutes:
+                    continue
+                try:
+                    self.on_bar_arrival(
+                        ticker=ticker, bar_high=hi, bar_low=lo,
+                        bar_open=op, bar_close=cl, bar_volume=vo,
+                        bar_bucket_min=bucket,
+                    )
+                    fed_in_window += 1
+                except Exception as e:
+                    logger.debug(
+                        "[V83-OR-BACKFILL] feed_bar %s b=%d: %s",
+                        ticker, bucket, e,
+                    )
+            if fed_in_window == 0:
+                out["failed"] += 1
+                continue
+            out["backfilled"] += 1
+            # Pass 2: force-lock via the first post-window bar so the
+            # OR locks even when the 09:59 bucket was missing from
+            # the source (Alpaca IEX occasionally drops a bar).
+            w2 = self._state.or_windows.get(ticker)
+            if w2 is not None and not w2.locked:
+                for r in rows:
+                    try:
+                        bucket = int(r[0])
+                        hi = float(r[1])
+                        lo = float(r[2])
+                        op = float(r[3])
+                        cl = float(r[4])
+                        vo = float(r[5] or 0.0) if len(r) > 5 else 0.0
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if bucket < cfg.or_end_minutes:
+                        continue
+                    try:
+                        self.on_bar_arrival(
+                            ticker=ticker, bar_high=hi, bar_low=lo,
+                            bar_open=op, bar_close=cl, bar_volume=vo,
+                            bar_bucket_min=bucket,
+                        )
+                        out["locked"] += 1
+                    except Exception as e:
+                        logger.debug(
+                            "[V83-OR-BACKFILL] post-bar %s b=%d: %s",
+                            ticker, bucket, e,
+                        )
+                    break  # one post-window bar is enough to lock
+        return out
+
     def start_new_session(self, *, date_iso: str,
                           tickers: list[str],
                           vix_close_d1: Optional[float],

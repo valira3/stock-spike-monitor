@@ -455,6 +455,30 @@ def feed_bar(*, ticker: str,
     )
 
 
+def backfill_or_windows(*, bars_by_ticker: dict,
+                        current_et_minutes: int) -> dict:
+    """v8.3.0 -- runtime wrapper for OrbEngine.backfill_or_windows.
+
+    Forwards pre-bucketed 1m bars (caller converts timestamps to ET
+    buckets) to the engine so any OR window not locked in real-time
+    gets rebuilt. Safe to call on every scan cycle; the engine
+    no-ops already-locked tickers + bars going to a locked window.
+
+    Returns the engine's counter dict, or an empty {} if runtime
+    isn't bootstrapped / live mode is off.
+    """
+    if not is_live_mode_on():
+        return {}
+    with _bootstrap_lock:
+        engine = _engine
+    if engine is None:
+        return {}
+    return engine.backfill_or_windows(
+        bars_by_ticker=bars_by_ticker,
+        current_et_minutes=current_et_minutes,
+    )
+
+
 def check_entry(*, portfolio_id: str, ticker: str, side: str,
                 five_min_close: float, next_open: float,
                 equity: float, signal_iso: str = "",

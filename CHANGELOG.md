@@ -4,6 +4,71 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.0 (2026-05-12) -- Automatic OR-window backfill on every scan cycle (Railway-redeploy-mid-RTH guard)
+
+A Railway redeploy mid-RTH wipes in-memory engine state. On the next bootstrap + `ensure_session_started`, all OR windows start empty. The live scan only feeds the latest 1m bar per cycle, so 09:30–09:59 ET buckets are never replayed — `bars_seen` stays 0, every ticker stays WARMUP, and **today is cooked for trading**. v7.74.0 had a one-shot `_maybe_backfill_or_window` hook gated on `_fresh == True` from `ensure_session_started`, but if that single attempt silently failed (Alpaca returned an empty bar list, the fetch raised, or the process crashed between the two calls) the OR stayed empty for the rest of the day. v8.3.0 makes backfill **automatic, per-cycle, idempotent**: "we can't miss trading just due to some glitches or fixes."
+
+### Change
+
+**`orb/engine.py`** — new pure method `OrbEngine.backfill_or_windows(*, bars_by_ticker, current_et_minutes)`:
+
+- Takes pre-bucketed 1m bars: `{ticker: [(bucket_min, high, low, open, close, volume), ...]}` (caller converts timestamps to ET buckets; keeps `orb/` clean of `engine/timing` dependency)
+- Per ticker: feeds in-window bars (`bucket ∈ [09:30, 09:59]`) through `on_bar_arrival`; then feeds the first post-window bar (`bucket >= 10:00`) so the v7.73.0 lock fallback fires even when the 09:59 bucket is missing from the source
+- **Idempotent**: locked OR windows reject new bars silently inside `OrWindow.add_bar`; already-locked tickers are skipped fast without touching state
+- **Guard**: no-op when `current_et_minutes < or_end_minutes` (live scan covers the active OR)
+- Returns counters: `{backfilled, locked, skipped, failed}` for forensic + dashboard surface
+
+**`orb/live_runtime.py`** — new thin wrapper `backfill_or_windows(bars_by_ticker, current_et_minutes)` that snapshots `_engine` under `_bootstrap_lock` and delegates. Returns `{}` when `is_live_mode_on()` is False or runtime is not bootstrapped.
+
+**`engine/scan.py`** — new `_orb_post_or_backfill_sweep(callbacks, now_et, scan_universe)` that runs on **every** scan cycle (not just the first after `ensure_session_started`):
+
+1. Skip when `current_et_minutes < or_end_minutes` (active OR; live scan handles it)
+2. Read `engine.snapshot().or_windows` and identify tickers whose OR isn't yet locked
+3. Fast-path: if all tickers are locked, return without any fetch work
+4. For each unlocked ticker, call `callbacks.fetch_1min_bars(ticker)`, convert timestamps to ET buckets via `minutes_since_et_midnight`, and forward to `_orb_runtime.backfill_or_windows`
+5. Log `[V83-OR-BACKFILL] sweep ...` only when at least one ticker was backfilled / locked
+
+The legacy `_maybe_backfill_or_window` (v7.74.0, fires once on `_fresh == True`) is **kept in place** for forensic continuity (`[V79-ORB-BACKFILL]` log tag) — the v8.3.0 sweep is strictly additive and provides the retry-until-success guarantee that the one-shot hook lacked.
+
+### Why per-cycle is cheap
+
+The expensive part of the legacy hook was the 12-ticker `fetch_1min_bars` round-trip. v8.3.0 short-circuits via the engine snapshot **before** calling `fetch_1min_bars`: when all OR windows are locked (the steady-state for the rest of the trading day), the sweep returns immediately without any I/O. Cost in steady state: one `engine.snapshot()["or_windows"]` dict-read per scan cycle (~µs).
+
+### Tests
+
+**`tests/strategy/test_orb_or_backfill.py`** — 10 new tests:
+
+1. `test_rebuilds_or_window_from_30_bars` — happy-path replay; window locks with correct `or_high` / `or_low` / `bars_seen=30`
+2. `test_post_or_locks_via_postwindow_bar_when_959_missing` — Alpaca-dropped-09:59 case; lock fires via post-window bar
+3. `test_idempotent_on_repeated_call` — second backfill hits the locked-skip fast-path; state unchanged
+4. `test_already_locked_ticker_skipped_without_change` — live-scan-locked OR with different bounds is **not** clobbered by backfill bars
+5. `test_pre_or_end_is_no_op` — `current_et_minutes < or_end_minutes` returns counters with `skipped == len(tickers)` without feeding any bar
+6. `test_empty_rows_marks_failed` — empty row list increments `failed` counter
+7. `test_bars_outside_window_are_filtered` — pre-09:30 / post-10:00 outlier bars don't pollute OR bounds
+8. `test_multiple_tickers_independent` — two tickers backfill independently with different OR bounds
+9. `test_malformed_rows_dropped` — `None` price / `None` bucket rows skipped silently; valid rows still process
+10. `test_thin_or_blocks_insufficient` — `<or_minutes // 2` bars transition to `PHASE_BLOCKED_OR_INSUFFICIENT` (not ARMED)
+
+**`tests/strategy/test_orb_live_runtime.py`** — 3 new tests:
+
+1. `test_returns_empty_when_not_bootstrapped` — pre-bootstrap wrapper returns `{}`
+2. `test_returns_empty_when_live_mode_off` — `ORB_LIVE_MODE=0` short-circuits
+3. `test_rebuilds_or_when_bootstrapped` — end-to-end: bootstrap → ensure_session → backfill → OR locked
+
+**657 strategy tests pass** (644 + 10 + 3 new).
+
+### What the operator will see
+
+- After **any** Railway redeploy past 09:59 ET, the first scan cycle following the boot rebuilds every ticker's OR window automatically. If the first attempt fails (Alpaca returns empty), the next cycle retries — until it succeeds.
+- Forensic log: `[V83-OR-BACKFILL] sweep cur_min=N backfilled=N locked=N skipped=N failed=N` fires whenever the sweep actually rebuilds at least one window.
+- Steady-state (all locked): no log line; the sweep skips silently after the snapshot check.
+
+### Rollback
+
+This is strictly additive. To disable, comment out the `_orb_post_or_backfill_sweep` call in `engine/scan.py` — the legacy v7.74.0 hook still covers the `_fresh == True` first cycle.
+
+---
+
 ## v8.2.0 (2026-05-12) -- Fix phantom-at-broker watchdog alert (executor → PortfolioBook mirror)
 
 The dashboard-monitor's `inv_position_count_three_way` invariant has been firing every tick for hours with:
