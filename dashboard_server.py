@@ -1588,21 +1588,24 @@ def snapshot() -> dict[str, Any]:
         long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, prices)
         start_cap = float(getattr(m, "PAPER_STARTING_CAPITAL", 100_000.0))
 
-        # Today realized P&L from paper_trades (long SELLs, today only) +
-        # short_trade_history (short COVERs, today only). Date-filter both
-        # lists — paper_trades may carry yesterday's rows after a
-        # post-midnight restart before reset_daily_state() runs at 09:30 ET.
+        # Today realized P&L. v8.3.9 -- this legacy `portfolio.day_pnl`
+        # block was missed by v8.3.7 (which only patched
+        # `_build_portfolio_block` for the per-pid `portfolios.main`
+        # path). The dashboard's Day P&L TILE reads from the legacy
+        # block (s.portfolio.day_pnl), not s.portfolios.main.day_pnl,
+        # so the v8.3.7 fix didn't take effect for the operator's
+        # main view. Symptom: 4 closes totaling $655.21 realized
+        # showed as Day P&L=$127.50 (just the latest -$62.13 AMZN
+        # cover + unrealized) because paper_trades had been wiped
+        # on a redeploy and only the most-recent close was visible
+        # in the in-memory list. v8.3.9 routes through
+        # _compute_realized_pnl_today so the merge with
+        # trade_log.jsonl (v8.3.7's actual fix) applies here too.
         try:
             today = m._now_et().strftime("%Y-%m-%d")
         except Exception:
             today = ""
-        realized = 0.0
-        for t in getattr(m, "paper_trades", []) or []:
-            if t.get("date") == today and t.get("action") == "SELL":
-                realized += float(t.get("pnl", 0.0) or 0.0)
-        for t in getattr(m, "short_trade_history", []) or []:
-            if t.get("date") == today:
-                realized += float(t.get("pnl", 0.0) or 0.0)
+        realized = _compute_realized_pnl_today(m, today)
 
         unreal_sum = 0.0
         for row in _serialize_positions(longs, shorts, prices):

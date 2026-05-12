@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.9 (2026-05-12) -- Day P&L: route legacy `portfolio.day_pnl` through `_compute_realized_pnl_today`
+
+Operator post-v8.3.7 screenshot showed Day P&L = $127.50 with TODAY'S TRADES summary line correctly displaying "realized $655.21". Math should net to $655.21 + open-unrealized $189.63 = $844.84 — but the tile read $127.50, which equals "open-unrealized + only the most recent AMZN cover (-$62.13)".
+
+### Root cause
+
+v8.3.7 routed `_build_portfolio_block` (which builds `portfolios.main.day_pnl`) through the new `_compute_realized_pnl_today` helper that merges `paper_trades` + `short_trade_history` + `trade_log.jsonl`. But the dashboard's Day P&L TILE reads from a **separate** legacy `s.portfolio.day_pnl` field (kept for back-compat per v7.0.0 §4, removal deferred to v7.1.0). That field is built ~600 lines lower (dashboard_server.py:1599-1610) by an inline realized-pnl loop that ONLY iterated in-memory `paper_trades` SELL rows + `short_trade_history` rows. After today's redeploys wiped `paper_trades`, only the most recent close that re-landed in memory was counted.
+
+### Change
+
+`dashboard_server.py:1599-1610` — replace the inline realized loop with a single call to `_compute_realized_pnl_today(m, today)`. Same helper that v8.3.7 used for the per-pid block. Both Day P&L paths now read from the same source and produce the same number.
+
+### Tests
+
+Helper is already covered by 12 tests in `tests/strategy/test_realized_pnl_log_merge.py` (v8.3.7). No new tests needed — the change wires the existing-tested helper into the legacy block. 727 strategy tests still pass.
+
+### What the operator will see
+
+Day P&L now reflects the full realized + unrealized math:
+
+```
+realized   $655.21   (4 closes from trade_log.jsonl)
+unreal      $189.63   (META -$47.69 + NFLX +$237.32)
+─────────────────
+Day P&L    $844.84   ← was $127.50 pre-v8.3.9
+```
+
+### About the "overflow" still visible
+
+The clipped column on the V10 PROXIMITY card screenshot is **by design** — `.pmtx-table-wrap` has its own horizontal scroller (added pre-v8.3.x; see CSS line 361 / 829 comments). The user can swipe left within the table to see the cut-off Mark / phase column. The OPEN POSITIONS table fix from v8.3.8 (nowrap + compact notional) is unrelated and confirmed working in the operator's screenshot (META/NFLX UNREAL cells render on one line).
+
+### Rollback
+
+Revert the call to `_compute_realized_pnl_today` and restore the inline loop at line 1599-1610.
+
+---
+
 ## v8.3.8 (2026-05-12) -- Mobile: no-wrap on positions-table cells + tighter notional font
 
 Operator screenshot showed the NFLX row's UNREAL. cell wrapping onto two lines:
