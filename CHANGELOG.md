@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.0.0 (2026-05-12) -- ATR-based stop placement (Phase 15 stability lever)
+
+Major version bump for a real behavior change in the live ORB engine.
+
+Phase 15 research (rounds R6-R8 in `/tmp/research_r{6,7,8}/all.json` -- artifacts to be archived under `docs/research/` in a follow-up PR) found that replacing the v10 anchor's OR-edge stop with an **ATR(14)-based stop on 5m bars** (`atr_stop_mult=1.75`) flips the full-year backtest from $+24,875 to **$+34,486** (+39%) with 0/4 negative quarters. Q3 jumps from $+8,621 to $+12,055 and Q4 from $+964 to $+1,989 (Q4 doubles). Worst-day stays at ~$-3,200.
+
+Mechanism: ORB stops kicked by 1-2-tick noise piercing the OR edge get a wider berth from an ATR stop. Stops trigger LESS often; the trades that survive farther into the trend more often reach the 2.5R target.
+
+### Changes
+
+- `orb/engine.py`:
+  - New `OrbConfig.atr_stop_mult: float = 0.0` (off by default; live default set in env to `1.75` post-deploy)
+  - New `OrbConfig.atr_lookback_5m: int = 14`
+  - New top-level helper `atr_from_5m(highs, lows, closes, lookback)` -- Wilder True Range mean, None-tolerant
+  - `BreakoutSignal` gains `stop_source: str` ("or_edge" | "atr") and `atr_used: Optional[float]` for forensic surface
+  - `detect_breakout()` accepts optional `recent_5m_highs/lows/closes` lists. When `atr_stop_mult > 0` AND ATR is warm (>=2 valid bars), the stop is computed as `entry +- atr_stop_mult * ATR`. Cold-ATR or no-bars-supplied falls back to the OR-edge stop transparently (strategy is never stop-less).
+- `orb/live_runtime.py`:
+  - Env wiring: `ORB_ATR_STOP_MULT` (default 0.0), `ORB_ATR_LOOKBACK_5M` (default 14)
+  - `check_entry()` accepts + forwards the new bar lists to the adapter
+- `orb/live_adapter.py`: `check_entry()` accepts + forwards the bar lists to `detect_breakout()`
+- `engine/scan.py`: both `_orb_long_entry()` and `_orb_short_entry()` slice the last 20 5m bars from `compute_5m_ohlc_and_ema9(bars_for_mtm)` and pass them through to `check_entry()`. 20 is `atr_lookback_5m + 6` headroom.
+
+### Tests
+
+- `tests/strategy/test_orb_atr_stop.py` -- 13 new tests covering ATR math (empty/1-bar/2-bar/3-bar/lookback-cap/None-entries), detect_breakout ATR branch fires when warm, cold-ATR falls back to OR-edge, no-bars-supplied falls back, long+short sign correctness, sizing math sees the wider ATR stop, snapshot exposes atr config
+- All 548 prior strategy tests still pass (561 total)
+
+### Deployment
+
+To activate live: set `ORB_ATR_STOP_MULT=1.75` in Railway env. With the env unset, behavior is **identical to v7.111.0** (atr_stop_mult defaults to 0.0). This makes v8.0.0 a strictly-additive release; rollback = `unset ORB_ATR_STOP_MULT` (no redeploy).
+
+### Why "v8.0.0"
+
+This is the first live-engine behavior addition since the v10 ORB anchor shipped (anchor was a config; this adds a code branch). The breakouts taken are the same as v7.x; the stop placement is new. Minor-version semver would imply pure additive config; the new code path warrants the major bump.
+
+### Deferred to v8.1.0
+
+The same research found that **stacking `partial_profit_at_1r=1` on top** lifts FY further to $+44,431 (+79% vs production). That feature ships separately because it requires a new broker primitive (`partial_close_shares` in `broker/orders.py` and `executors/base.py`) that's careful enough to ship in its own PR. The backtest knob `ORB_PARTIAL_PROFIT_AT_1R` already exists in `tools/orb_backtest.py` and was the source of the $+44k number; the live engine ignores it for now.
+
 ## v7.111.0 (2026-05-12) -- Post-deploy smoke posts outcome comment back on source PR
 
 Closes the agent-visibility gap surfaced during the v7.109.0 ship. The `post-deploy-smoke.yml` workflow already Telegram-alerted on failure, but agents in sandbox (without an Actions API in their MCP server) had no way to read the outcome back. Now the workflow parses the squash-merge `(#NNN)` PR number from the merge-commit subject and posts a status comment (PASSED / FAILED / CANCELLED + GHA run URL) on the source PR using the default `GITHUB_TOKEN`. Agents read it via the standard `pull_request_read get_comments` MCP call.
