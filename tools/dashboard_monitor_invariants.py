@@ -450,6 +450,125 @@ def inv_open_risk_within_cap(ctx):
     return _ok("open_risk_within_cap")
 
 
+def _parse_trade_time_to_et_minutes(time_str):
+    """Parse a trade-log `time` string to minutes-since-ET-midnight.
+
+    v7.103.0 -- handles post-v7.89.0 'HH:MM ET' and the v7.89.0-or-
+    older 'HH:MM CDT' format (CT was operator-preference 2026-04 to
+    2026-05; CT-to-ET offset is -1h during DST, -1h during ST).
+    Also tolerates bare 'HH:MM' (treat as ET) and ISO timestamps.
+    Returns None when parse fails.
+    """
+    if not time_str:
+        return None
+    s = str(time_str).strip()
+    # ISO with T -- treat as UTC and convert to ET. Tolerates Z + offset.
+    if "T" in s and (s.endswith("Z") or "+" in s[10:] or "-" in s[10:]):
+        try:
+            from datetime import datetime, timezone
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            et = dt.astimezone(ZoneInfo("America/New_York"))
+            return et.hour * 60 + et.minute
+        except Exception:
+            return None
+    # Match the HH:MM optionally followed by a tz tag.
+    import re
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*(ET|EDT|EST|CT|CDT|CST)?\s*$", s)
+    if not m:
+        return None
+    try:
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+    except (TypeError, ValueError):
+        return None
+    tz_tag = (m.group(3) or "ET").upper()
+    base = hh * 60 + mm
+    # CT is one hour BEHIND ET (10:30 ET = 09:30 CT). To convert a CT
+    # timestamp to ET, add 60 min. Same offset for DST/standard (the
+    # tags just say which season).
+    if tz_tag in ("CT", "CDT", "CST"):
+        base += 60
+    return base
+
+
+def inv_entries_inside_window(ctx):
+    """v7.103.0 -- entries should fire only inside the eligible window
+    `[session_start + or_minutes, eod_cutoff_minutes]` (in ET-minutes).
+
+    Today (2026-05-11) showed the late-entry pattern: first entry at
+    12:14 ET when the window opens at 10:00 ET (session_start=09:30
+    + or_minutes=30). That's >2 hours of missed intraday range. The
+    monitor previously had no way to flag this -- val_gene_trades_
+    match_main only fires once Main has traded, not on the empty
+    period before. This invariant catches both ends:
+
+    - Entries BEFORE eligible_start_min  (OR window still open, no break yet)
+    - Entries AFTER eligible_end_min    (EOD cutoff zone -- too close to close)
+
+    Window config is read from v10.config.{session_start_minutes,
+    or_minutes, eod_cutoff_minutes}; falls back to defaults
+    (570, 30, 955) -- match v10 keystone -- when v10 isn't bootstrapped
+    yet. ET-minutes parsing handles the v7.89.0 'HH:MM ET' format and
+    legacy 'HH:MM CDT' (auto-converts).
+    """
+    s = _state(ctx)
+    if not s:
+        return _ok("entries_inside_window", "skipped: state missing")
+    trades = s.get("trades_today") or []
+    if not trades:
+        return _ok("entries_inside_window", "skipped: no trades today")
+    v10 = _v10(ctx) or {}
+    cfg = (v10.get("config") or {}) if v10 else {}
+    session_start = int(cfg.get("session_start_minutes") or 9 * 60 + 30)
+    or_minutes = int(cfg.get("or_minutes") or 30)
+    eod_cutoff = int(cfg.get("eod_cutoff_minutes") or 15 * 60 + 55)
+    eligible_start = session_start + or_minutes
+    eligible_end = eod_cutoff
+    violations: list[str] = []
+    entries_seen = 0
+    for t in trades:
+        action = (t.get("action") or "").upper()
+        if action not in ("BUY", "SHORT"):
+            continue  # exits don't fall under the entry window
+        entries_seen += 1
+        t_min = _parse_trade_time_to_et_minutes(t.get("time"))
+        if t_min is None:
+            continue
+        ticker = (t.get("ticker") or "?")
+        if t_min < eligible_start:
+            violations.append(
+                f"{ticker} {action} at {t.get('time')} "
+                f"(t_min={t_min} < eligible_start={eligible_start})"
+            )
+        elif t_min >= eligible_end:
+            violations.append(
+                f"{ticker} {action} at {t.get('time')} "
+                f"(t_min={t_min} >= eligible_end={eligible_end})"
+            )
+    if not violations:
+        return _ok("entries_inside_window")
+    return _fail(
+        "entries_inside_window",
+        f"{len(violations)} of {entries_seen} entries fired "
+        f"outside [{eligible_start//60:02d}:{eligible_start%60:02d}, "
+        f"{eligible_end//60:02d}:{eligible_end%60:02d}] ET",
+        "Entries should only fire inside the v10 eligible window: "
+        "after the opening-range window closes "
+        f"(session_start + or_minutes = "
+        f"{eligible_start//60:02d}:{eligible_start%60:02d} ET) and "
+        f"before the EOD cutoff "
+        f"({eligible_end//60:02d}:{eligible_end%60:02d} ET). Fires "
+        "outside this window indicate either a gate bug (entry path "
+        "wasn't blocking the OR-window or EOD-cutoff) or a config "
+        "drift (the live bot's window doesn't match the snapshot).\n\n"
+        "Violations:\n"
+        + "\n".join(f"- {v}" for v in violations[:10]),
+    )
+
+
 def inv_or_window_well_formed(ctx):
     """For every locked OR window, or_low <= or_high and or_width_pct in
     a sane range [0, 0.2]. Sentinel against off-by-one / DST glitches.
@@ -1060,4 +1179,9 @@ INVARIANTS = [
     inv_risk_book_notional_cap_nonzero,
     # v7.79.0 -- Railway log-tail analysis
     inv_railway_logs_clean,
+    # v7.103.0 -- entry-window invariant (Lesson 3 from 2026-05-11
+    # trade analysis: first entry today was at 12:14 ET vs eligible
+    # start 10:00 ET, an unflagged late-entry pattern that cost the
+    # day's first 2 hours of intraday range).
+    inv_entries_inside_window,
 ]

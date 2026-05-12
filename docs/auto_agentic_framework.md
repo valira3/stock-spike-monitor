@@ -131,6 +131,21 @@ Add brief context if helpful (variants completed, top-3 so far, current sub-step
 **29. Hang-check every 2 minutes.** Long-running processes (background bashes, GHA sweeps, local screens, monitors, subagents) get a liveness check every ~2 minutes: PID alive? output file growing? log timestamps advancing? CI status changing? Webhook events arriving? Detect hung processes early — better to catch a stalled monitor at the 2-minute mark than to find out at the 30-minute timeout. If a process is suspected hung: investigate (check the output file, ps, signal trace), don't passively wait.
 *Established by: "Check all long running processes every 2 mins to make sure nothing is stuck"*
 
+**30. Don't wait passively for webhooks — poll on a 30-second timer.** After opening a PR (or triggering any external job whose completion we need to react to), do NOT sit idle waiting for the webhook to fire. Webhooks have latency, can be dropped, or may not arrive at all in some environments. Instead, kick off a 30-second-interval polling loop that rechecks completion state until either (a) the target state is reached (CI green → auto-merge per rule #3), (b) a failure terminal state is detected (action needed), or (c) a sensible cap is hit (e.g. 10 minutes for a typical CI run; surface as a hang per rule #29). Webhook events that DO arrive during the poll are bonus signal — they wake the recheck immediately — but never the sole signal. Pseudo-cadence:
+
+```
+submit PR
+loop every 30s:
+  status = read PR mergeable_state + check_runs
+  if all checks completed:
+     if all green: merge; break
+     else: surface failure with diff/log context; break
+  if elapsed > 10 min: hang-check (rule #29), surface stalled job
+```
+
+In environments where the polling primitive is constrained (e.g. harness blocks long leading sleeps), use the available alternative: `Monitor` tool with an until-loop, `run_in_background: true` Bash with a self-contained recheck, or a subagent that runs the loop on the parent's behalf. The OPERATING PRINCIPLE — "active reachable signal, not passive waiting" — is constant; the implementation primitive is environment-specific.
+*Established by: "Don't get stuck waiting for web hooks. Instead, kick off a 30 sec timer that keeps rechecking for completion in a loop. Write it down in rules"*
+
 ---
 
 ## V. Cost / infrastructure
