@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.5 (2026-05-12) -- Fix UTC display on trade_log-synthesized SELL/COVER rows
+
+Operator screenshot showed today's NFLX trade as:
+
+```
+10:16  NFLX  859  BUY   $75,244.10
+14:29  NFLX  859  SELL  +$450.80
+```
+
+The 14:29 was UTC time (10:29 ET). Bug introduced in v8.3.3.
+
+### Root cause
+
+`broker/orders.py:2049` writes `exit_time` to `trade_log.jsonl` as the full UTC ISO from `tg._utc_now_iso()` (e.g. `"2026-05-12T14:29:00Z"`). `entry_time` for the same close-row is `pos["entry_time"]` which is tz-naive ET `"HH:MM:SS"`. The dashboard's frontend just slices `HH:MM` out of whatever string the row carries, so a raw UTC ISO renders as "14:29" while a `"10:16:42"` renders as "10:16". v8.3.3's synth-SELL row from the trade_log passed the UTC ISO through as-is.
+
+### Change
+
+`dashboard_server._today_trades()` now routes both `entry_time` and `exit_time` from the trade_log through `tg._to_et_hhmm` before stuffing them into the synthesized rows. The helper converts ISO -> ET HH:MM and treats `HH:MM:SS` tz-naive strings as already-ET (returning `"HH:MM ET"`).
+
+```python
+entry_time_val = m._to_et_hhmm(entry_time_raw) if entry_time_raw else ""
+exit_time_val  = m._to_et_hhmm(exit_time_raw)  if exit_time_raw  else ""
+```
+
+Failure-tolerant: a malformed timestamp string falls back to the raw value (better than blowing up the render).
+
+### Tests
+
+**`tests/strategy/test_today_trades_log_merge.py`** — `test_utc_iso_exit_time_converted_to_et`. Feeds the exact scenario from the screenshot (`exit_time = "2026-05-12T14:29:00Z"`) and asserts the synth SELL row carries `time == "10:29 ET"`. The existing 8 tests' `_to_et_hhmm` stub was upgraded to mirror the real helper's ISO-aware logic.
+
+**706 strategy tests pass** (705 + 1 new).
+
+### Related: the empty CONCURRENT RISK / "top ticker 0/5"
+
+A different bug surfaced in the same screenshot session:
+
+```
+TRADES TODAY (CAP 5/TICKER)   2 total · top ticker 0/5
+CONCURRENT RISK               $0 / $2,000 (0%)
+```
+
+The "2 total" is correct (read from `trade_log.jsonl` via v8.3.3). The "top ticker 0/5" and "$0" both read from engine state (`_state.day_states.*.trades_today` and `_risk[main]._open_tickets`) — which were wiped during today's v8.3.x merge train. v8.3.4 prevents this for FUTURE redeploys, but the in-flight session's lost engine state needs a one-shot boot-time reconciliation from `executor.positions` to engine FSM + RiskBook. **Queued for v8.3.6.**
+
+### Rollback
+
+Revert `dashboard_server._today_trades()` two-line change. Tests then fail at `test_utc_iso_exit_time_converted_to_et` (regression-locked).
+
+---
+
 ## v8.3.4 (2026-05-12) -- All-in-one engine state persistence (`/data/orb_state_<date>.json`)
 
 The operator's broader directive ("Not just for OR. But for any data that should be preserved"): every in-memory engine artifact that previously got wiped by a Railway redeploy now persists to a JSON snapshot on `/data` and rehydrates on the next bootstrap. v8.3.0 patched the OR-window symptom via per-cycle backfill; v8.3.1/v8.3.3 added defense-in-depth caches at the UI and dashboard layer. v8.3.4 closes the root cause: a single authoritative snapshot covering all six categories the operator and I enumerated.

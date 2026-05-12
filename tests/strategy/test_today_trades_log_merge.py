@@ -38,12 +38,28 @@ def fake_ssm(monkeypatch):
     fake._now_et = _now_et
 
     def _to_et_hhmm(iso):
-        # Simplistic stub: extract HH:MM out of iso if present.
+        """Stand-in for trade_genius._to_et_hhmm.
+
+        v8.3.5 behavior: tz-aware UTC ISO -> ET; tz-naive "HH:MM:SS" or
+        pre-formatted strings pass through (after we lop off seconds).
+        """
         if not iso:
             return ""
-        if "T" in iso:
-            return iso.split("T")[1][:5] + " ET"
-        return iso[:5] + " ET"
+        if "T" in iso and ("Z" in iso or "+" in iso):
+            # Treat as UTC ISO; convert to ET (UTC-4 during EDT on 2026-05-12)
+            try:
+                from datetime import datetime, timezone, timedelta
+                s = iso.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                et_dt = dt.astimezone(timezone(timedelta(hours=-4)))
+                return et_dt.strftime("%H:%M ET")
+            except Exception:
+                return iso
+        if ":" in iso:
+            return iso[:5] + " ET"
+        return iso
     fake._to_et_hhmm = _to_et_hhmm
 
     monkeypatch.setattr(dashboard_server, "_ssm", lambda: fake)
@@ -169,6 +185,32 @@ class TestTodayTradesLogMerge:
         assert sell["reason"] == "stop_atr"
         assert sell["entry_price"] == 200.0
         assert sell["exit_price"] == 195.0
+
+    def test_utc_iso_exit_time_converted_to_et(self, fake_ssm):
+        """v8.3.5 -- broker/orders.py:2049 writes exit_time as a full
+        UTC ISO ('2026-05-12T14:29:00Z'). Pre-v8.3.5 the synth row
+        passed this raw to the dashboard, which sliced 'HH:MM' and
+        rendered '14:29' instead of the correct '10:29 ET'. The
+        synth path now routes through _to_et_hhmm.
+        """
+        fake, today = fake_ssm
+        fake.trade_log_read_tail = lambda **_kw: [{
+            "date": today, "portfolio": "paper",
+            "ticker": "NFLX", "side": "LONG", "shares": 859,
+            "entry_price": 87.59, "exit_price": 88.12,
+            "entry_time": "10:16:42",
+            "exit_time": "2026-05-12T14:29:00Z",   # raw UTC ISO
+            "pnl": 450.80, "pnl_pct": 0.60, "reason": "target",
+        }]
+        out = dashboard_server._today_trades()
+        sell = next(r for r in out if r["action"] == "SELL")
+        # The bug surfaced as '14:29' (sliced raw UTC). The fix shows '10:29 ET'.
+        assert sell["time"] == "10:29 ET", \
+            f"expected ET conversion, got {sell['time']!r}"
+        assert sell["exit_time"] == "10:29 ET"
+        # Entry side: "10:16:42" -> "10:16 ET"
+        buy = next(r for r in out if r["action"] == "BUY")
+        assert buy["time"] == "10:16 ET"
 
     def test_sort_order_entry_before_exit(self, fake_ssm):
         """In the output, entry row sorts before exit row (entry_time <
