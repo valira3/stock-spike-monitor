@@ -3235,9 +3235,71 @@
   // Idempotent: only moves if the current parent/sibling differs from
   // the desired anchor.
   // v7.58.0 -- positionEarningsWatcherCard removed (vestigial: card HTML deleted in this PR).
+  // v8.3.1 -- defense-in-depth localStorage cache for v10.or_windows.
+  // Why: a Railway redeploy mid-RTH clears the engine's in-memory OR
+  // windows; the v8.3.0 backfill rebuilds them within one scan cycle
+  // (~60s) but during that gap /api/state returns empty or_windows
+  // and the dashboard's OR rows render blank, then "come back" when
+  // backfill completes. Cache today's locked OR snapshot in
+  // localStorage so the UI keeps showing the last-known-good data
+  // through that gap. Engine-side persistence (v8.3.3) is the
+  // authoritative fix; this is the client-side belt-and-suspenders.
+  function _v10ORCacheKey(dateIso) {
+    return "tg.v10.or_windows." + String(dateIso || "");
+  }
+  function _v10ORCacheSaveIfNonEmpty(s) {
+    try {
+      var v10 = (s && s.v10) || {};
+      var ws = v10.or_windows || {};
+      var d = (v10.day_status && v10.day_status.session_date) || "";
+      if (!d) return;
+      // Save only if at least one ticker has a real (or_high, or_low)
+      // pair -- empty / not-yet-populated payloads must NOT overwrite
+      // a good cache.
+      var keys = Object.keys(ws);
+      var hasReal = false;
+      for (var i = 0; i < keys.length; i++) {
+        var w = ws[keys[i]] || {};
+        if (typeof w.or_high === "number" && typeof w.or_low === "number") {
+          hasReal = true; break;
+        }
+      }
+      if (!hasReal) return;
+      window.localStorage.setItem(_v10ORCacheKey(d), JSON.stringify(ws));
+    } catch (e) { /* localStorage may be disabled; ignore */ }
+  }
+  function _v10ORCacheRestoreIfEmpty(s) {
+    try {
+      if (!s || !s.v10) return;
+      var v10 = s.v10;
+      var ws = v10.or_windows || {};
+      var d = (v10.day_status && v10.day_status.session_date) || "";
+      if (!d) return;
+      // Only restore when live payload has no real OR data.
+      var keys = Object.keys(ws);
+      var hasReal = false;
+      for (var i = 0; i < keys.length; i++) {
+        var w = ws[keys[i]] || {};
+        if (typeof w.or_high === "number" && typeof w.or_low === "number") {
+          hasReal = true; break;
+        }
+      }
+      if (hasReal) return;
+      var raw = window.localStorage.getItem(_v10ORCacheKey(d));
+      if (!raw) return;
+      var cached = JSON.parse(raw);
+      if (!cached || typeof cached !== "object") return;
+      v10.or_windows = cached;
+      v10._or_windows_from_cache = true;  // surfaced on UI as "cached"
+    } catch (e) { /* parse / storage failure: render whatever came in */ }
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
+    // v8.3.1 -- cache-restore BEFORE any renderer reads v10.or_windows.
+    _v10ORCacheRestoreIfEmpty(s);
+    _v10ORCacheSaveIfNonEmpty(s);
     // Publish latest state so the executor-tab IIFE can read market-wide
     // widgets (proximity, regime, gates) from the same source as Main.
     try {
@@ -6221,10 +6283,11 @@
         summaryEl.textContent = "no events yet";
       } else {
         var first = events[0];
-        var t = first.ts_iso || "";
-        var hhmm = t && t.indexOf("T") > 0
-          ? t.split("T")[1].slice(0, 5) + " UTC"
-          : t;
+        // v8.3.1 -- convert UTC ISO to ET via the shared helper so the
+        // operator sees the market clock instead of the storage clock.
+        var hhmm = (typeof utcIsoToLocalHHMM === "function")
+          ? utcIsoToLocalHHMM(first.ts_iso || "")
+          : (first.ts_iso || "");
         summaryEl.textContent = "most recent · " + hhmm;
       }
     }
@@ -6236,10 +6299,11 @@
     var rows = [];
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
-      var t2 = e.ts_iso || "";
-      var hhmm2 = t2 && t2.indexOf("T") > 0
-        ? t2.split("T")[1].slice(0, 5)
-        : "—";
+      // v8.3.1 -- per-row time in ET (was raw HHMM from UTC ISO).
+      var hhmm2 = (typeof utcIsoToLocalHHMM === "function")
+        ? utcIsoToLocalHHMM(e.ts_iso || "")
+        : (e.ts_iso || "—");
+      if (!hhmm2) hhmm2 = "—";
       var kindCls = "act-kind-" + (e.kind || "info");
       var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
       var ticker = e.ticker || "—";
