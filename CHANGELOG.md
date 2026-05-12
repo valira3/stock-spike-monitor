@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.17 (2026-05-12) -- Proportional scaling of Val/Gene mirror qty by equity ratio
+
+Operator's Val tab showed repeated `risk_reject:notional_cap (would-be $75229 > $69857)` on AMZN SHORT signals. Root cause: Val's Alpaca paper account has ~$34,929 equity vs Main's $100K. RiskBook's notional cap = `equity × 2.0 = $69,857`. Mirroring Main's 284-share AMZN at $264.60 = $75,167 notional exceeds Val's cap, every time. The legacy v5.24.0 mirror handed Val Main's full share count (`main_shares`) regardless of Val's account size.
+
+### Change
+
+`executors/base.py` — new helper `_scaled_signal_qty(signal_qty) -> (scaled, ratio)`:
+
+- Reads Main's equity from `tg.paper_cash`
+- Reads this executor's equity from `engine.portfolio_equity.resolve_equity(self.NAME.lower())` (Alpaca account equity for Val/Gene)
+- When `ex_equity < main_equity`: `scaled = max(1, int(signal_qty × ex_equity / main_equity))`
+- When `ex_equity >= main_equity`: returns `(signal_qty, 1.0)` — no down-scaling (don't over-fire on a larger account)
+- Defensive: any read failure returns `(signal_qty, 1.0)` to preserve the legacy 1:1 mirror
+- Min-clamp at 1 share when scaling down — preserves direction + ticker signal even on a tiny account
+
+Wired into `_on_signal` right after `signal_qty = event["main_shares"]` so all downstream sizing decisions (entry, partial, exit) use the scaled value:
+
+```python
+if signal_qty > 0:
+    scaled_qty, scale_ratio = self._scaled_signal_qty(signal_qty)
+    if scale_ratio < 1.0:
+        logger.info(
+            "[V8317-SCALE] %s %s qty=%d -> %d (eq_ratio=%.3f)",
+            self.NAME, ticker, signal_qty, scaled_qty, scale_ratio,
+        )
+    signal_qty = scaled_qty
+```
+
+### Tests
+
+`tests/strategy/test_executor_scaled_qty.py` — **11 new tests**:
+
+`TestScaledSignalQty` (10):
+
+1. Smaller executor scales down (`Main $100K, Val $35K, ratio=0.35, 700 → 244`)
+2. Equal equity → no scaling
+3. Larger executor → no scaling (don't over-fire)
+4. `signal_qty=0` passthrough
+5. Negative `signal_qty` defensive passthrough
+6. `main_equity=0` no scaling (divide-by-zero guard)
+7. `ex_equity=0` no scaling (defensive: better to let Alpaca reject than to silently drop)
+8. Tiny ratio clamps to 1 share (preserves signal)
+9. `resolve_equity` raising → 1:1 fallback
+10. Missing `tg.paper_cash` → 1:1 fallback
+
+`TestOperatorAmznScenario` (1):
+
+11. Operator's exact AMZN scenario — 284 sh × $264.60 = $75,167 notional vs Val's $69,857 cap; with v8.3.17 scaling at ratio 0.349, 284 → 99 shares, notional ~$26K, **fits inside Val's cap**
+
+**772 strategy tests pass** (761 + 11 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.17:
+- Val's mirror qty shrinks proportionally to fit its smaller account
+- `risk_reject:notional_cap` rejects stop firing on Val for AMZN-class big-notional tickers
+- Forensic: `[V8317-SCALE] Val AMZN qty=284 -> 99 (eq_ratio=0.349)` per mirror event
+- Val's trade counts now match Main's *event* counts (every Main fire mirrors), even though share counts differ
+- Watchdog `val_gene_trades_match_main` invariant turns green (trade-count match by event count, not share count — the invariant compares `len(trades_today)`)
+
+### Tradeoff explicitly accepted
+
+Val's PnL is proportionally smaller than Main's (Val takes ~35% of the Main strategy's gross PnL on each trade). This is the design intent: smaller account, smaller position size, same percentage return on the smaller base. The strategy logic stays aligned across all three portfolios.
+
+### Rollback
+
+Revert the `_scaled_signal_qty` call in `_on_signal`. The legacy v5.24.0 1:1 mirror returns; Val/Gene will hit `notional_cap` rejects again on big-notional tickers.
+
+---
+
 ## v8.3.16 (2026-05-12) -- Val/Gene activity-feed ET conversion + suppress `opposite_side:*` reject noise
 
 Operator screenshot of Val tab showed two issues:
