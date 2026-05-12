@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.11 (2026-05-12) -- Fix duplicate COVER rendering (dedup key + price-field selection)
+
+Operator screenshot showed AMZN COVER appearing **twice** in TODAY'S TRADES for a single 58-share short:
+
+```
+11:00  AMZN  58  SHORT  $15,314.83  $264.05
+11:00  AMZN  58  COVER  -$62.13  -0.41%  $264.05   ← duplicate, wrong price
+11:14  AMZN  58  COVER  -$62.13  -0.41%  $265.12   ← legit cover
+```
+
+Two distinct bugs producing the duplicate-and-mis-priced row.
+
+### Bug 1 — dedup key fallback mismatch
+
+`dashboard_server._today_trades._key()` resolved the time-key via `time > entry_time > exit_time`. But:
+
+- **in-memory** `short_trade_history` COVER rows (history_record shape per `broker/orders.py:1997-2013`) have **no `"time"` field** — only `entry_time` + `exit_time`. So `_key()` fell back to `entry_time`.
+- **v8.3.3 synth_exit COVER rows** from `trade_log.jsonl` explicitly set `"time"` to the exit time. So `_key()` used `"time"`.
+
+Different keys → dedup failed → same close rendered twice.
+
+### Bug 2 — wrong price field for CLOSE actions
+
+`dashboard_static/app.js` rendered each row's price as `t.price ?? t.entry_price ?? t.exit_price`. For in-memory COVER rows that lack `"price"`, this fell through to `entry_price` ($264.05) — making the duplicate display the entry price instead of the actual cover price ($265.12).
+
+### Change
+
+**`dashboard_server.py:_key()`** — action-aware time-key resolution:
+
+```python
+action = (t.get("action") or "").upper()
+is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
+if is_close:
+    time_key = t.get("exit_time") or t.get("time") or t.get("entry_time") or ""
+else:
+    time_key = t.get("entry_time") or t.get("time") or t.get("exit_time") or ""
+```
+
+Close actions key off `exit_time` (which all close rows carry); open actions key off `entry_time`. Both in-memory and synth paths now produce identical dedup keys for the same close.
+
+**`dashboard_static/app.js`** — action-aware price-field selection:
+
+```js
+const px = isClose
+    ? (t.exit_price ?? t.price ?? t.entry_price)
+    : (t.entry_price ?? t.price ?? t.exit_price);
+```
+
+CLOSE rows prefer `exit_price`; OPEN rows prefer `entry_price`. Falls through to `price` for paper_trades rows (which set `price` rather than the typed fields). No change for rows that have only `price` set — same behavior as before.
+
+### Tests
+
+`tests/strategy/test_today_trades_log_merge.py:test_cover_dedup_inmem_vs_log_same_close` — the operator's exact AMZN scenario: in-memory `short_trade_history` row + matching `trade_log.jsonl` row → asserts exactly **1** COVER row in the merged output.
+
+**728 strategy tests pass** (727 + 1 new dedup regression).
+
+### Rollback
+
+Revert the v8.3.11 changes in both `dashboard_server._key()` and `dashboard_static/app.js`. The duplicate COVER + wrong-price symptoms return.
+
+---
+
 ## v8.3.10 (2026-05-12) -- OPEN POSITIONS mobile redesign: stacked card layout per position
 
 The desktop OPEN POSITIONS table (10 columns: Ticker / Side / Sh / Entry / Mark / Notional / Stop / Risk / Unreal / %) was wider than any phone viewport even after v7.0.3 + v8.3.8 column-drops and nowrap. Operator: "Open positions with bars overflow. They are too wide. Might need an updated design for mobile."

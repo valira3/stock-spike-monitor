@@ -678,7 +678,17 @@
       const side  = t.side || "LONG";
       const sym   = t.ticker || "—";
       const shares = t.shares;
-      const px    = t.price ?? t.entry_price ?? t.exit_price;
+      // v8.3.11 -- pick the action-relevant price. For close actions
+      // (SELL / COVER / PARTIAL_*) prefer exit_price; for opens
+      // prefer entry_price. The in-memory short_trade_history COVER
+      // row has no "price" field (only entry_price + exit_price),
+      // so the old chain `t.price ?? t.entry_price ?? t.exit_price`
+      // fell through to entry_price and displayed the wrong number
+      // for CLOSE rows (operator screenshot: AMZN COVER showing
+      // $264.05 entry instead of $265.12 cover).
+      const px = isClose
+        ? (t.exit_price ?? t.price ?? t.entry_price)
+        : (t.entry_price ?? t.price ?? t.exit_price);
 
       // Action chip — open (green) / close (red). Symbol still
       // carries LONG/SHORT colour coding to avoid double-cueing.
