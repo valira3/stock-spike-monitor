@@ -80,30 +80,39 @@ def _fmt_hold(seconds) -> str:
 def _r_multiple(row: dict) -> float | None:
     """R = (exit-entry)/(entry-stop) for long; flipped for short.
 
-    Uses the ORIGINAL hard stop (the stop at entry, before any
-    trail movement) as the risk denominator -- this is the
-    classic R-multiple definition. v7.96.0-and-earlier used
-    `effective_stop_at_exit` instead, which captures the trail's
-    final state and inverts the denominator sign once the trail
-    moves past breakeven. That produced negative R values on
-    profitable trades whenever the trail tightened beyond entry
-    (the NFLX SHORT on 2026-05-11 was -1.30R despite +$244 P&L --
-    classic mis-signed denominator). v7.102.0 switches to the
-    original-stop convention so Avg R is interpretable.
+    Uses the IMMUTABLE entry stop (captured at entry time, before
+    any trail/BE/ratchet mutation) as the risk denominator -- the
+    classic R-multiple definition.
 
-    Returns None when any required field is missing or stop==entry.
+    Stop preference chain (v7.107.0):
+      1. `entry_stop` -- immutable, set by _trade_log_snapshot_pos
+         from pos["initial_stop"]. The correct value.
+      2. `hard_stop_at_exit` -- pos["stop"] AT EXIT TIME. WRONG
+         for any trade where exits.maybe_arm_be / Alarm-F / Alarm-C
+         mutated pos["stop"] -- but kept as a fallback for rows
+         logged before v7.107.0 added entry_stop to the snapshot.
+      3. `effective_stop_at_exit` -- the trailed stop. Last-resort
+         fallback for very old rows.
+
+    v7.96.0-and-earlier used (2) but called it the "original stop"
+    (incorrect). v7.102.0 made (2) the preferred slot (still
+    incorrect, but the bug was masked by the BE-armed case
+    returning None instead of misleading values). v7.107.0 captures
+    the actually-immutable entry stop and uses it.
+
+    Returns None when any required field is missing or stop==entry
+    (zero-risk trades aren't meaningful R-multiples).
     """
     try:
         entry = float(row["entry_price"])
         exit_ = float(row["exit_price"])
     except (KeyError, TypeError, ValueError):
         return None
-    # v7.102.0 -- prefer the hard_stop_at_exit (original protective
-    # stop) as the risk denominator. The trail captures upside but
-    # is NOT the trade's initial risk; classic R is defined against
-    # initial risk. effective_stop_at_exit is kept as a last-resort
-    # fallback for legacy rows that pre-date the trail snapshot.
-    stop = row.get("hard_stop_at_exit") or row.get("effective_stop_at_exit")
+    stop = (
+        row.get("entry_stop")
+        or row.get("hard_stop_at_exit")
+        or row.get("effective_stop_at_exit")
+    )
     try:
         stop_v = float(stop)
     except (TypeError, ValueError):

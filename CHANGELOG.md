@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.107.0 (2026-05-12) -- Audit fix: R-multiple uses immutable entry_stop (SEV-2)
+
+Tonight's quality audit caught a SEV-2 in v7.102.0's R-multiple fix. The "use the original hard stop" change preferred `hard_stop_at_exit` (which the v7.102.0 commit message called "the stop at entry, before any trail movement"). But `_trade_log_snapshot_pos` reads `pos.get("stop")` AT EXIT TIME, and `pos["stop"]` is mutated in place by:
+
+- v10 `orb.exits.maybe_arm_be` — sets `pos["stop"] = entry_price` after 1R is hit
+- Sentinel velocity-ratchet (Alarm C) — tightens `pos["stop"]`
+- ALARM-F trail — tightens `pos["stop"]`
+
+So `hard_stop_at_exit` IS the trailed/BE'd stop for any winner where BE armed. When BE has armed, `entry_price == hard_stop_at_exit` exactly, and `_r_multiple` returned `None` (zero risk denominator), silently dropping the trade from `avg_r`. The v7.102.0 regression test passed only because it constructed a `hard_stop_at_exit` value that no production code path produces.
+
+### Fix
+
+`broker/orders.py` already sets `pos["initial_stop"] = stop_price` at entry time alongside `pos["stop"]`. Nothing mutates `initial_stop` thereafter — it's already the immutable entry stop we need.
+
+`_trade_log_snapshot_pos` now captures `pos["initial_stop"]` into a new `entry_stop` field on the trade-log row (fallback to `pos["stop"]` if `initial_stop` is absent on a legacy position). `tools.trade_replay._r_multiple`'s stop preference chain becomes:
+
+```
+entry_stop (immutable — correct)
+  → hard_stop_at_exit (back-compat for pre-v7.107 rows)
+    → effective_stop_at_exit (last-resort)
+```
+
+R-multiple now computes against the actual at-entry risk for every trade, regardless of BE / trail state at exit.
+
+### Tests
+
+`tests/strategy/test_trade_replay_v793.py` — 2 new regression tests + 1 updated:
+- `test_r_multiple_trail_past_breakeven_uses_original_risk` — updated to use realistic shape (`entry_stop` set, `hard_stop_at_exit` moved to entry, `effective_stop_at_exit` at trail).
+- `test_r_multiple_be_armed_does_not_silently_drop` — new. The BE-armed case (`hard_stop_at_exit == entry_price`) used to return None and drop the trade; now it returns a meaningful R using `entry_stop`.
+- `test_r_multiple_legacy_row_falls_back_to_hard_stop` — new. Confirms back-compat for trade-log rows logged before this version.
+
+Full strategy suite: **573 passed**, 8 skipped.
+
+### Why not also test `_trade_log_snapshot_pos` directly
+
+The snapshot helper lives in `trade_genius.py`, which requires `FMP_API_KEY` and `TELEGRAM_BOT_TOKEN` at import time — not available on the strategy-tests CI lane. The trade_replay tests cover the integration via realistic row shapes (matching what the snapshot produces). Adequate coverage without paying the import cost.
+
+### Files
+
+- `trade_genius.py` — `_trade_log_snapshot_pos` captures `entry_stop` from `pos["initial_stop"]`
+- `tools/trade_replay.py` — `_r_multiple` stop preference chain: `entry_stop` → `hard_stop_at_exit` → `effective_stop_at_exit`
+- `tests/strategy/test_trade_replay_v793.py` — 2 new tests, 1 updated
+- `bot_version.py` / `trade_genius.py` — `7.106.0` → `7.107.0`
+
+---
+
 ## v7.106.0 (2026-05-12) -- Audit fix: wire RiskBook persistence to actual engine registry (SEV-1)
 
 Tonight's quality audit (per Auto Agentic framework rules #6, #10, #22) caught a SEV-1 bug in v7.105.0: the RiskBook ticket persistence helpers reached for the **module-level singleton** `orb.risk_book.REGISTRY`, but production code never registers books into that singleton. The engine (`orb.engine.OrbEngine`) creates its own private `RiskBookRegistry` at `self._risk`, and that's what `live_runtime.get_engine()._risk` returns to all callers.

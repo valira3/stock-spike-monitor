@@ -132,25 +132,67 @@ def test_r_multiple_zero_risk_returns_none():
 
 
 def test_r_multiple_trail_past_breakeven_uses_original_risk():
-    """v7.102.0 regression: NFLX SHORT on 2026-05-11 showed -1.30R
-    despite a $244 winner because effective_stop_at_exit had
-    trailed past breakeven (below entry on a SHORT), inverting the
-    denominator sign. With the v7.102.0 fix, we use hard_stop_at_exit
-    (original stop = 86.0 above entry for a SHORT) so R stays
-    positive for the profitable trade.
+    """v7.107.0 regression (audit SEV-2): NFLX SHORT on 2026-05-11
+    showed -1.30R despite a $244 winner. v7.102.0 tried to fix by
+    preferring hard_stop_at_exit -- but the audit found that
+    hard_stop_at_exit IS mutated by maybe_arm_be / Alarm-F / Alarm-C
+    in production, so it's the trailed stop for most winners, not
+    the original. v7.107.0 captures the IMMUTABLE entry_stop and
+    uses that as the risk denominator. This test asserts the
+    realistic shape that _trade_log_snapshot_pos now produces:
+    entry_stop set to the original protective stop, hard_stop_at_exit
+    moved to breakeven (or beyond) after BE armed.
     """
     row = {
         "side": "SHORT",
         "entry_price": 85.43,
         "exit_price": 85.15,
-        "hard_stop_at_exit": 86.00,           # original protective stop
-        "effective_stop_at_exit": 85.15,      # trail has moved to exit price
+        "entry_stop": 86.00,                  # immutable, the actual original
+        "hard_stop_at_exit": 85.43,           # BE armed -- stop moved to entry
+        "effective_stop_at_exit": 85.15,      # trail has tightened further
     }
     r = _r_multiple(row)
     assert r is not None
-    assert r > 0  # winner -> positive R, not negative
-    # (entry-exit)/(stop-entry) = (85.43-85.15)/(86.00-85.43) = 0.28/0.57 ≈ 0.491
+    assert r > 0  # winner -> positive R
+    # (entry-exit)/(entry_stop-entry) = (85.43-85.15)/(86.00-85.43) = 0.28/0.57
     assert abs(r - (0.28 / 0.57)) < 1e-6
+
+
+def test_r_multiple_be_armed_does_not_silently_drop():
+    """v7.107.0 regression: when BE is armed (pos["stop"] mutated to
+    pos["entry_price"]), the old code computed entry-stop==0 and
+    returned None -- silently dropping the trade from avg_r stats.
+    With entry_stop captured at entry time, the denominator is
+    nonzero and R computes correctly.
+    """
+    row = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "exit_price": 103.0,
+        "entry_stop": 98.0,                   # original 2% stop
+        "hard_stop_at_exit": 100.0,           # BE armed -- mutated to entry
+        "effective_stop_at_exit": 102.0,      # trail moved past BE
+    }
+    r = _r_multiple(row)
+    assert r is not None
+    # (exit-entry)/(entry-entry_stop) = 3/2 = 1.5R
+    assert abs(r - 1.5) < 1e-9
+
+
+def test_r_multiple_legacy_row_falls_back_to_hard_stop():
+    """Back-compat: trade-log rows logged BEFORE v7.107.0 won't have
+    entry_stop. The fallback chain uses hard_stop_at_exit. This
+    matches v7.102.0 behavior for those rows.
+    """
+    row = {
+        "side": "LONG",
+        "entry_price": 100.0,
+        "exit_price": 105.0,
+        "hard_stop_at_exit": 95.0,
+        # entry_stop intentionally absent (legacy row)
+    }
+    r = _r_multiple(row)
+    assert r == 1.0
 
 
 # ---------------------------------------------------------------------------

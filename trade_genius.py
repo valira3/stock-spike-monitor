@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.106.0"
+BOT_VERSION = "7.107.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -3979,12 +3979,27 @@ def _trade_log_snapshot_pos(pos):
             "trail_anchor_at_exit": None,
             "hard_stop_at_exit": None,
             "effective_stop_at_exit": None,
+            # v7.107.0 (audit SEV-2 fix) -- entry_stop is the
+            # IMMUTABLE stop captured at entry time, before any
+            # trail/BE/ratchet mutation. The classic R-multiple
+            # denominator. Pre-v7.107.0 trade_replay used
+            # hard_stop_at_exit (= pos["stop"] AT EXIT) which is
+            # actually the trailed stop because exits.maybe_arm_be
+            # and Alarm-F/Alarm-C all mutate pos["stop"] in place.
+            "entry_stop": None,
         }
     trail_active = bool(pos.get("trail_active", False))
     trail_stop = pos.get("trail_stop")
     # Either long (trail_high) or short (trail_low) populates anchor.
     trail_anchor = pos.get("trail_high", pos.get("trail_low"))
     hard_stop = pos.get("stop")
+    # v7.107.0 -- read the immutable entry stop. broker.orders sets
+    # `initial_stop` at entry time alongside `stop`; nothing mutates
+    # `initial_stop` thereafter. Fall back to `stop` only when
+    # `initial_stop` is absent (legacy positions opened pre-init_stop).
+    initial_stop = pos.get("initial_stop")
+    if initial_stop is None:
+        initial_stop = hard_stop
     effective_stop = (
         trail_stop if (trail_active and trail_stop is not None) else hard_stop
     )
@@ -3996,6 +4011,7 @@ def _trade_log_snapshot_pos(pos):
         "trail_anchor_at_exit": _as_float(trail_anchor),
         "hard_stop_at_exit": _as_float(hard_stop),
         "effective_stop_at_exit": _as_float(effective_stop),
+        "entry_stop": _as_float(initial_stop),
     }
 
 
