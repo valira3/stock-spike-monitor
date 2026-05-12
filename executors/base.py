@@ -1148,6 +1148,121 @@ class TradeGeniusBase:
         logger.info(ok)
         self._send_own_telegram(ok)
 
+    def _partial_close_position_idempotent(self, client, ticker: str,
+                                            shares_to_close: int, label: str,
+                                            reason: str) -> None:
+        """v8.1.1 -- half-close `shares_to_close` shares of an open
+        position on Alpaca WITHOUT teardown.
+
+        Companion to _close_position_idempotent. Differences:
+          * Always submits a MARKET order (partial fires when 1R is
+            touched, momentum is favorable -- no need for STOP_LIMIT
+            geometry).
+          * Does NOT call _remove_position -- mutates
+            self.positions[ticker]["qty"] to the remainder so the
+            executor's view stays in sync with Alpaca's.
+          * Records a PARTIAL_FILL log line instead of CLOSE.
+
+        Returns None. On any submit failure, the local position state
+        is NOT mutated (caller may retry on the next tick) -- this
+        prevents the executor's view from drifting from Alpaca on a
+        partial that didn't actually submit.
+
+        40410000 (position already flat on Alpaca): treated as success
+        path but with a warning -- the local position dict is still
+        decremented so subsequent ticks see the remainder. Operator
+        should inspect Alpaca for drift if 40410000 fires repeatedly.
+        """
+        if shares_to_close is None or int(shares_to_close) <= 0:
+            return
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+        except Exception:
+            logger.exception(
+                "[%s] alpaca imports failed on partial-close, skipping",
+                self.NAME,
+            )
+            return
+
+        pos = self.positions.get(ticker) or {}
+        side = pos.get("side")
+        cur_qty = int(pos.get("qty") or 0)
+        closing = int(shares_to_close)
+        if side not in ("LONG", "SHORT"):
+            logger.warning(
+                "[%s] [V81-ALPACA-PARTIAL] %s skipped -- unknown side=%s",
+                self.NAME, ticker, side,
+            )
+            return
+        if cur_qty <= 0:
+            logger.info(
+                "[%s] [V81-ALPACA-PARTIAL] %s skipped -- no position tracked",
+                self.NAME, ticker,
+            )
+            return
+        if closing >= cur_qty:
+            # A "partial" that would close the full position is a
+            # caller bug. Refuse so we never lose half the position
+            # silently; caller should use EXIT_* for full close.
+            logger.warning(
+                "[%s] [V81-ALPACA-PARTIAL] %s REFUSED partial=%d "
+                ">= current qty=%d (use EXIT_* for full close)",
+                self.NAME, ticker, closing, cur_qty,
+            )
+            return
+
+        exit_side = OrderSide.SELL if side == "LONG" else OrderSide.BUY
+        coid = self._build_client_order_id(ticker, f"PARTIAL_{side}")
+        req = MarketOrderRequest(
+            symbol=ticker,
+            qty=closing,
+            side=exit_side,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=coid,
+        )
+        try:
+            order = self._submit_order_idempotent(client, req, coid)
+        except Exception as exc:
+            msg = str(exc)
+            if "40410000" in msg or "position not found" in msg.lower():
+                logger.warning(
+                    "[%s] [V81-ALPACA-PARTIAL] %s already flat on broker "
+                    "(%s) -- decrementing local qty %d -> %d",
+                    self.NAME, ticker, reason, cur_qty, cur_qty - closing,
+                )
+                pos["qty"] = cur_qty - closing
+                self._stamp_action(ticker)
+                return
+            # Non-position-flat error: leave local qty untouched so
+            # the next tick can retry, and surface the error.
+            logger.exception(
+                "[%s] [V81-ALPACA-PARTIAL] %s FAILED submit -- local "
+                "qty unchanged at %d so caller can retry",
+                self.NAME, ticker, cur_qty,
+            )
+            return
+
+        # Success: decrement local qty to the runner remainder.
+        pos["qty"] = cur_qty - closing
+        self._stamp_action(ticker)
+        # Persist the mutated position row so a Railway redeploy mid-
+        # session doesn't lose the partial state.
+        try:
+            self._persist_position(ticker)
+        except Exception:
+            logger.debug(
+                "[%s] [V81-ALPACA-PARTIAL] %s persist skipped",
+                self.NAME, ticker, exc_info=True,
+            )
+        oid = getattr(order, "id", "?")
+        ok = (
+            f"\U0001f504 {label}: {ticker} PARTIAL {closing}sh "
+            f"@ market ({reason}) remaining={pos['qty']} order_id={oid}"
+        )
+        logger.info(ok)
+        self._send_own_telegram(ok)
+
     def _legacy_close_position_idempotent(
         self, client, ticker: str, label: str, reason: str
     ) -> None:
@@ -2006,6 +2121,33 @@ class TradeGeniusBase:
                         "[%s] per-book record_entry_with_fill SHORT skipped: %s",
                         self.NAME, ticker, exc_info=True,
                     )
+            elif kind in ("PARTIAL_EXIT_LONG", "PARTIAL_EXIT_SHORT"):
+                # v8.1.1 -- partial-profit-at-1R mirror. main_shares
+                # carries the partial-close share count (NOT the
+                # remaining position size). Position stays open on
+                # this executor with qty -= partial_shares.
+                if ticker not in self.positions:
+                    logger.info(
+                        "[%s] %s %s skipped \u2014 no position tracked",
+                        self.NAME, kind, ticker,
+                    )
+                    return
+                partial_qty = 0
+                try:
+                    partial_qty = int(main_shares or 0)
+                except Exception:
+                    partial_qty = 0
+                if partial_qty <= 0:
+                    logger.warning(
+                        "[%s] [V81-MIRROR-SKIP] %s partial_qty=0 "
+                        "(main_shares=%s)",
+                        self.NAME, kind, main_shares,
+                    )
+                    return
+                self._partial_close_position_idempotent(
+                    client, ticker, partial_qty, label, reason,
+                )
+                return
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via

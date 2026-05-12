@@ -4,6 +4,39 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.1 (2026-05-12) -- Alpaca executor partial-close: paper-only caveat lifted
+
+Closes the paper-only gap shipped in v8.1.0. The partial-profit FSM and bookkeeping were complete in v8.1.0 but `partial_close_breakout` only mutated paper state -- live Alpaca books would have drifted from `tg.positions` on every partial fill. v8.1.1 wires the broker primitive end-to-end.
+
+### Changes
+
+- **`executors/base.py`**: new `_partial_close_position_idempotent(client, ticker, shares_to_close, label, reason)` submits a MARKET sell/buy for `shares_to_close` shares via the existing `_submit_order_idempotent` retry pattern. Mutates `self.positions[ticker]["qty"]` to the runner remainder on success. Treats Alpaca 40410000 ("position not found") as a soft success that still decrements local qty so subsequent ticks see the remainder. Any other error LEAVES LOCAL QTY UNCHANGED -- caller retries on next tick, no silent share leak. Refuses `shares_to_close >= cur_qty` (caller bug) and `shares_to_close <= 0`. Persists the mutated row through `_persist_position` so a Railway redeploy mid-session doesn't lose the partial state.
+- **`executors/base.py:_on_signal`**: new `kind in ("PARTIAL_EXIT_LONG", "PARTIAL_EXIT_SHORT")` branch routes to `_partial_close_position_idempotent` with `partial_qty = int(event["main_shares"])`. Skips silently if no position tracked or `main_shares <= 0`.
+- **`broker/orders.py:partial_close_breakout`**: now emits a `PARTIAL_EXIT_LONG` / `PARTIAL_EXIT_SHORT` signal-bus event after the paper-state mutation. `main_shares` carries the partial-close count (NOT the runner). Listener executors (Val / Gene) pick it up and mirror.
+
+### Tests
+
+`tests/strategy/test_executor_partial_close.py` -- 12 new unit tests with mocked Alpaca client + telegram/alpaca module stubs:
+- Happy path: long submits MARKET SELL with right qty; short submits MARKET BUY; qty decrements + persists
+- Refusals: partial >= cur_qty / partial > cur_qty / partial <= 0 / no position tracked
+- Errors: 40410000 -> soft success + local decrement; other errors -> qty unchanged for retry
+- `_on_signal` dispatch: PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT route to partial path; no-position skipped; zero-main_shares skipped
+
+All 624 strategy tests pass (585 prior + 12 new + 27 previously-uncollectable executor tests unlocked by the stub).
+
+### Live activation (now safe)
+
+Set `ORB_PARTIAL_PROFIT_AT_1R=1` in Railway env. The signal-bus pipeline now:
+1. Main `partial_close_breakout` mutates `tg.positions[ticker]["shares"]` (paper book).
+2. Signal-bus emits `PARTIAL_EXIT_LONG`/`SHORT` with `main_shares=partial_count`.
+3. Val + Gene executors receive the event, submit MARKET partial sells to their Alpaca accounts, decrement local `self.positions[ticker]["qty"]`.
+
+The paper-only caveat from v8.1.0 (in `partial_close_breakout` docstring + ARCHITECTURE.md) is now lifted -- documented in this CHANGELOG entry.
+
+### Rollback
+
+`ORB_PARTIAL_PROFIT_AT_1R=0` (or unset) -- engine partial branch gated, no signal-bus emit, no broker order. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
 ## v8.1.0 (2026-05-12) -- Partial-profit-at-1R live engine (Phase 15 stack lever)
 
 Implements the deferred partial-profit-at-1R lever per `docs/v8_1_partial_profit_design.md`. Backtest evidence: stacking partial-profit on top of v8.0 ATR-stop lifts FY from $+34,486 to $+44,431 (+29% incremental, +79% vs pre-v7.109 baseline). Q4-2025 jumps from $+1,989 to $+9,262. WR climbs to 59%.

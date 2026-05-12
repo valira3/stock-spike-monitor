@@ -2390,13 +2390,18 @@ def partial_close_breakout(ticker, shares_to_close, price, side,
     pops the position dict, fires cooldowns, clears phase state, emits
     a full EXIT signal, and writes a CLOSE row to trade_log, this
     function:
-      * Submits a market sell/buy for `shares_to_close` shares (paper
-        cash accounted via cfg.close_cash_delta);
-      * REDUCES `positions[ticker]["shares"]` by `shares_to_close`;
+      * Updates the paper-book position dict: REDUCES
+        `positions[ticker]["shares"]` by `shares_to_close`;
+      * Paper-cash accounted via cfg.close_cash_delta;
       * Appends a PARTIAL_1R row to trade_history + paper_trades for
         forensic visibility (NOT trade_log -- trade_log is closed
         trades only);
       * Emits a [V81-ORB-PARTIAL] log line;
+      * v8.1.1+: emits a PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT signal
+        on the bus so subscribed executors (Val / Gene via
+        executors/base.py:_partial_close_position_idempotent) submit
+        matching MARKET partial sells to their Alpaca accounts. Both
+        paper and live broker books stay in sync.
       * Does NOT trigger cooldowns, ratchet, or phase teardown -- the
         runner half is still open and re-arm semantics still apply on
         the FULL close.
@@ -2521,4 +2526,24 @@ def partial_close_breakout(ticker, shares_to_close, price, side,
         )
     except Exception:
         pass
+
+    # v8.1.1 -- fan PARTIAL_EXIT_* out to executors (Val / Gene) via
+    # the signal bus so their Alpaca clients submit matching half-sells.
+    # main_shares carries the partial-close share count, NOT the
+    # remaining position size, so the listener can directly submit
+    # for exactly the right qty.
+    try:
+        _kind = "PARTIAL_EXIT_LONG" if cfg.side.is_long else "PARTIAL_EXIT_SHORT"
+        tg._emit_signal({
+            "kind": _kind,
+            "ticker": ticker,
+            "price": float(partial_price),
+            "reason": str(reason),
+            "main_shares": int(closing),
+            "timestamp_utc": tg._utc_now_iso(),
+        })
+    except Exception as _e:
+        tg.logger.warning(
+            "[V81-ORB-PARTIAL] signal-bus emit %s: %s", ticker, _e,
+        )
     return True
