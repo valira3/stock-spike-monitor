@@ -4,6 +4,62 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.27 (2026-05-12) -- Live-engine corpus sweep (`tools/replay_corpus.py`)
+
+Operator insight: the classical `tools/orb_backtest.py` engine has fundamentally different re-entry behavior than the live `orb.live_runtime` engine. The classical fires ~1 entry per (ticker, side) per day; the live engine fires 4-5 (signal flips on bar-by-bar OR break checks). Rule #1 (per-(ticker, side) lock after loss) showed zero effect in the classical R6 sweep because there were almost no re-entries to lock against. To validate Rule #1 properly we need a sweep that drives the LIVE engine across the corpus.
+
+### `tools/replay_corpus.py`
+
+Wraps `orb.live_runtime.replay` (via `tools/orb_replay_day.py`) and applies Rule #1 / Rule #2 as POST-PROCESSING on the resulting admit/exit ledger:
+
+- Pairs admits with subsequent same-ticker exits into closed legs with computed PnL.
+- Walks legs chronologically per day; tracks running peak realized PnL.
+- Rule #1 (`loss_lock_threshold_usd`): once a leg closes with `pnl < -threshold`, lock that (ticker, side) for the rest of the day.
+- Rule #2 (`peak_dd_halt_usd`): once intraday realized PnL drops `$X` below the day's running peak, halt all subsequent entries.
+- Both rules are purely SUBTRACTIVE -- they BLOCK existing entries, never INTRODUCE new ones. Sound to apply post-replay because both correspond to admission-time gates in the live engine.
+
+Output: `summary.json` per run + `legs/<date>.json` per day for spot-checking.
+
+Performance: full 252-day FY sweep finishes in ~17 s on a single core. Fast enough to run interactively or in GHA without parallelization.
+
+### Validation run (252-day FY corpus, 12-ticker v10 universe, no blocklist)
+
+| Variant | PnL | Δ baseline | Same-side re-entries blocked |
+|---|---:|---:|---:|
+| baseline | -$160 | — | 0 |
+| Rule #1 @ -$25 | -$2,722 | -$2,561 | 934 (too aggressive!) |
+| Rule #1 @ -$100 | +$619 | +$780 | 196 |
+| Rule #2 @ $500 | +$1,067 | +$1,227 | 0 |
+| Rule #2 @ $1000 | -$263 | -$103 | 0 |
+| **combo_100_500** | **+$2,134** | **+$2,294** | 151 |
+| combo_100_1000 | +$409 | +$569 | 195 |
+
+Key finding: **Rule #1 at low thresholds HURTS, at high thresholds HELPS**. At -$25 it blocks 934 re-entries — many of which were winners. At -$100 it blocks only 196 (the ones following real losses), gaining +$780. The classical backtest hid this entirely because it fires almost no same-(ticker, side) re-entries.
+
+Winner: `combo_100_500` (Rule #1 @ -$100 + Rule #2 @ $500) = **+$2,294 over baseline**.
+
+### Important caveat
+
+The replay's exit logic produces dominantly-`eod` exits instead of real sentinel exits (chandelier, alarm-b, polarity-shift) that the live bot fires intraday. So absolute PnL is small (~$2K/yr) -- the direction of the result is reliable, the magnitude is a lower bound. A future tightening of `orb_replay_day.py`'s exit handling would close this gap; not in scope for this PR.
+
+### Tests
+
+`tests/strategy/test_replay_corpus.py` -- 12 new tests:
+- `pair_legs` admit/exit pairing + side-aware PnL + multi-leg same-ticker
+- `simulate` Rule #1 threshold behavior + per-(ticker, side) locking
+- `simulate` Rule #2 drawdown halting
+- Combined rules don't double-count
+
+All 12 pass.
+
+### Next steps
+
+If the magnitude gap can be closed (via exit-fidelity improvements to `orb_replay_day`), this becomes the canonical research path for any rule that affects per-(ticker, side) re-entry behavior. Until then, treat `tools/replay_corpus.py` as a DIRECTIONAL signal: a variant that improves PnL in this sweep should be validated against accumulated live trade-log history before deploying to production.
+
+The actual port of Rule #1 + Rule #2 to `orb.risk_book` for live trading remains a separate follow-up PR.
+
+---
+
 ## v8.3.26 (2026-05-12) -- Day-end-giveback defenses (v18 levers) + corpus backfill trigger + GHA-backtest skill doc
 
 Operator pushback to v8.3.x's 97%-of-peak profit giveback at EOD: ship two surgical rule variants in the **research harness only**, validate via GHA `lever-sweep` against the full 1-year corpus, then port the winning config to the live engine in a follow-up PR.
