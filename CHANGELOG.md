@@ -4,6 +4,73 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.26 (2026-05-12) -- Day-end-giveback defenses (v18 levers) + corpus backfill trigger + GHA-backtest skill doc
+
+Operator pushback to v8.3.x's 97%-of-peak profit giveback at EOD: ship two surgical rule variants in the **research harness only**, validate via GHA `lever-sweep` against the full 1-year corpus, then port the winning config to the live engine in a follow-up PR.
+
+### Two new env-var levers in `tools/orb_backtest.py`
+
+```
+ORB_LOSS_LOCK_THRESHOLD_USD  -- >0: after a closed leg with pnl <
+                                    -threshold, lock that (ticker, side)
+                                    pair for the rest of the day.
+                                    0 = off (default).
+ORB_PEAK_DD_HALT_USD         -- >0: when intraday realized PnL drops
+                                    this many $ below the day's running
+                                    peak, halt all new entries.
+                                    0 = off (default).
+```
+
+Both off by default. Live engine (`orb.live_runtime`, `orb.risk_book`) is **NOT modified by this PR** — the rules live only in the backtest harness. If the sweep validates the rules, a follow-up PR will port the winner to live trading.
+
+### Per-day diagnostics
+
+`per_day/<date>.json` now carries:
+- `r18_lock_rejects` — count of entries rejected by Rule #1 on that day
+- `r18_locked_pairs` — which (ticker, side) pairs got locked
+- `r18_peak_pnl` — running peak realized PnL for the day (used by Rule #2)
+
+### Research script
+
+`docs/research/r6_drawdown_rules.py` — 14 theories layered on v12 Config A baseline (risk=1.0% + v10 keystone, plus today's v8.3.20 notional cap 0.95). Sweep covers:
+- Rule #1 alone at thresholds: `0.01`, `25`, `50`, `100`, `150` (most-aggressive to most-conservative)
+- Rule #2 alone at thresholds: `300`, `500`, `750`, `1000`
+- 4 combined variants (`lock25+dd500`, `lock50+dd500`, `lock100+dd500`, `lock100+dd750`)
+
+Cross-validation slices: full year + 4 quarterly (Q2 2025, Q3 2025, Q4 2025, Q1Q2 2026) — same pattern as r3-r5 to catch in-sample fits.
+
+`--print-variants` emits the JSON tuple ready for the GHA Lever Sweep dispatch.
+
+### Corpus backfill trigger
+
+`.github/rth-trigger/fill-2026-05-12.json` — extends the
+`data-extensions/rth-expand` branch to include today's bars. Combined with the previously-merged `fill-2025-may-oct.json` + `fill-2026-jan-may.json`, the full-year corpus now ends at 2026-05-12 (~251 trading days, May 2025 → May 2026).
+
+### CLAUDE.md skill addition
+
+New section "GHA-driven backtest via lever-sweep". Documents the 5-step research workflow (corpus on branch → env-var on `ORBConfig` → sweep script → Lever Sweep dispatch → MCP retrieval) so future agent sessions reuse it instead of building parallel infrastructure. Explicitly calls out the anti-pattern of building `tools/corpus_backtest.py` or `corpus-backtest.yml`.
+
+### Tests
+
+`tests/strategy/test_orb_backtest_v18_rules.py` — 8 new tests:
+- Defaults off
+- Parse positive values for both env vars
+- Both env vars work simultaneously
+- Zero treated as off
+- Negative parsed but semantically off (`> 0` guards in simulate loop)
+- `ORBConfig` field-name + field-type schema guard
+
+**Behavioral validation** runs separately via the R6 sweep against the production corpus. This PR only ships the plumbing + the sweep harness.
+
+### What ships next
+
+1. Operator dispatches `pull-rth-bars.yml` (or merge auto-fires it via `fill-2026-05-12.json`) to fill in today's bars.
+2. Operator (or me via MCP if a workflow-dispatch tool surfaces) dispatches `lever-sweep.yml` with the R6 variants.
+3. Read R6 results from `sweep-results` branch via MCP, write `docs/pl_optimization_final_report_v13.md`.
+4. If winners exist, follow-up PR ports the chosen thresholds to `orb.risk_book` as live env-gated rules.
+
+---
+
 ## v8.3.25 (2026-05-12) -- Add `/api/trade_log` to the snapshot bundle
 
 v8.3.24 shipped the snapshot stream against `/api/state` + `/api/executor/{val,gene}`. Operator request: "pull the actual trade log too". The `trades_today` slice inside `/api/state` only covers the current session; cross-day analysis needs the persistent `trade_log.jsonl` reader, exposed via the existing `/api/trade_log` endpoint.
