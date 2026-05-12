@@ -4,6 +4,41 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.8 (2026-05-12) -- Mobile: no-wrap on positions-table cells + tighter notional font
+
+Operator screenshot showed the NFLX row's UNREAL. cell wrapping onto two lines:
+
+```
+...  $88.15   -      -0.29%
+              $181.48  target
+```
+
+The "−" character (Unicode minus, U+2212, what `fmtUsd` emits) was being treated as a soft-break opportunity by mobile Safari, splitting "−$181.48" across lines.
+
+### Change
+
+`dashboard_static/app.css` — two narrow-screen rules under the existing `@media (max-width: 480px)` block:
+
+1. **`white-space: nowrap`** on every `<th>` and `<td>` in the positions table. Numeric cells must never wrap; horizontal scroll on a single bar is strictly better than rendering "−" and "$181.48" on separate lines. Both Main (`#pos-body`) and Val/Gene (`[data-f="pos-body"]`) tables get the rule.
+2. **Compact notional cell** — `font-size: 11px; letter-spacing: -0.01em;` on `td:nth-child(6)` (the NOTIONAL column). The value `$61,835.82` is the widest cell on the row; compressing its visual footprint pulls the row width back inside the viewport without sacrificing readability of the digits.
+
+Risk column hiding (`nth-child(8)` at ≤480px) and Mark column hiding (`nth-child(5)` at ≤400px) from prior releases are unchanged.
+
+### What the operator will see
+
+- Negative P&L values like `−$181.48` stay on one line at any phone width.
+- Notional cell renders slightly smaller font on mobile so the whole row fits the iPhone viewport without horizontal scroll for typical $-magnitudes ($10K–$100K positions).
+
+### Tests
+
+Frontend-only change set; existing 727 strategy tests still pass.
+
+### Rollback
+
+Remove the `white-space: nowrap` rule and the `nth-child(6)` font block. The cells revert to wrapping under width pressure.
+
+---
+
 ## v8.3.7 (2026-05-12) -- Day P&L realized component reads from `trade_log.jsonl` (fix profitable-day-looks-like-loss)
 
 Operator screenshot showed Day P&L = -$241.56 with 4 trades, while open positions held META -$60.08 and NFLX -$181.48 (sum = -$241.56 unrealized exactly). The realized gains from earlier closed trades (~+$780) were missing from the Day P&L total. Result: a profitable session displayed as a loss.
