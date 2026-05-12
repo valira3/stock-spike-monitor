@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "8.3.18"
+BOT_VERSION = "8.3.19"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -304,12 +304,35 @@ _signal_listeners_lock = threading.Lock()
 def signal_bus_status() -> dict:
     """Return a snapshot of registered signal-bus listeners.
 
-    Shape: {"n_listeners": int, "names": [str, ...]}. Names are the
-    listener callables' qualnames so an operator can tell whether
-    Val / Gene / both registered.
+    Shape: {"n_listeners": int, "names": [str, ...]}.
+
+    v8.3.19 -- names use the RUNTIME instance class name, not the
+    Python `__qualname__` (which reflects where the method is
+    DEFINED, not its bound `self.__class__`). Pre-v8.3.19,
+    TradeGeniusVal._on_signal -> `__qualname__` was
+    "TradeGeniusBase._on_signal" (inherited) which broke the
+    v8.3.13 subscription probe: it matched "TradeGeniusBase." for
+    BOTH val and gene and surfaced both as `subscribed=false` even
+    when one or both were actually listening.
+
+    Now we extract `type(fn.__self__).__name__` when the listener is
+    a bound method, falling back to qualname for free-function
+    listeners (tests / synthetic harness use those).
     """
     with _signal_listeners_lock:
-        names = [getattr(fn, "__qualname__", repr(fn)) for fn in _signal_listeners]
+        listeners = list(_signal_listeners)
+    names: list[str] = []
+    for fn in listeners:
+        try:
+            inst = getattr(fn, "__self__", None)
+            if inst is not None:
+                cls_name = type(inst).__name__
+                meth_name = getattr(fn, "__name__", "_on_signal")
+                names.append(f"{cls_name}.{meth_name}")
+            else:
+                names.append(getattr(fn, "__qualname__", repr(fn)))
+        except Exception:
+            names.append(repr(fn))
     return {"n_listeners": len(names), "names": names}
 
 # v5.5.7 \u2014 Most recent signal emitted by the main paper book. The
