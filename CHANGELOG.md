@@ -4,6 +4,76 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.23 (2026-05-12) -- Independent-mode default (`ORB_PORTFOLIO_FIRE`: 0 → 1) + legacy-bus entry guard
+
+Operator directive: "We should switch to independent mode." This release flips Val/Gene from mirror-mode (entries dispatched via Main's legacy signal bus at scaled share count) to **independent-mode entries** (each portfolio runs its own `OrbEngine.try_enter` and dispatches via `executor.fire_long`/`fire_short` with its OWN equity-driven sizing math).
+
+### Change
+
+**Default flipped** — `engine/scan.py:_v10_dispatch_executor_fire`:
+```diff
+-    if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
++    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
+```
+
+**Entry guard added** — `executors/base.py:_on_signal`:
+```python
+if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
+    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
+        logger.info(
+            "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent mode "
+            "active; entry will fire via _v10_dispatch_executor_fire "
+            "(not legacy bus)", self.NAME, kind, ticker)
+        return
+```
+
+Without this guard, Val would receive Main's bus emit AND scan.py's per-portfolio dispatch → 2 Alpaca orders per signal.
+
+EXIT signals (`EXIT_LONG` / `EXIT_SHORT` / `PARTIAL_EXIT_*`) are NOT guarded — they continue flowing through `_on_signal` as the canonical exit path (`orb.live_runtime.check_exit` exists but has no production caller yet).
+
+### Important limitation
+
+Val/Gene-only positions (where Val admits but Main rejects due to different RiskBook decision) won't receive an exit signal from Main's bus. Those positions only close at EOD flush. v8.3.24+ will wire a per-portfolio sentinel loop to close this gap.
+
+### CLAUDE.md updated
+
+Added a new bullet under "Mandatory PR rules" documenting:
+- The default and the override path (`ORB_PORTFOLIO_FIRE=0` reverts to mirror mode)
+- The exit-path limitation (Val-only positions don't auto-exit)
+- The architectural pointer to `check_exit` which exists but isn't yet wired
+
+### Tests
+
+`tests/strategy/test_independent_mode_entry_guard.py` — **8 new tests**:
+
+1. Default (no env) → guard activates, entry skipped
+2. `ORB_PORTFOLIO_FIRE=1` explicit → `ENTRY_LONG` skipped
+3. `ORB_PORTFOLIO_FIRE=1` explicit → `ENTRY_SHORT` skipped
+4. `ORB_PORTFOLIO_FIRE=0` (mirror-mode override) → entry passes guard
+5. `EXIT_LONG` always passes guard (independent OR mirror mode)
+6. `EXIT_SHORT` always passes guard
+7. `PARTIAL_EXIT_LONG` always passes guard
+8. Unknown kind (e.g. `EOD_CLOSE_ALL`) always passes guard
+
+`tests/strategy/test_orb_executor_fire.py:test_explicit_zero_skips_fire` — renamed from `test_off_by_default_no_fire` and inverted to reflect the new default: now verifies `ORB_PORTFOLIO_FIRE=0` is the explicit opt-out path.
+
+**799 strategy tests pass** (791 + 8 new).
+
+### What changes operationally
+
+| Before (mirror) | After (independent) |
+|---|---|
+| Entry: Main fires → bus → Val.fire | Entry: Val's own engine.try_enter → Val.fire_long |
+| Sizing: `main_shares × Val_equity / Main_equity` (v8.3.17) | Sizing: Val's own equity × risk_per_trade_pct, capped by Val's RiskBook |
+| Val's engine RiskBook | Empty (all 0s) — operator's "Val ORB IDLE" complaint | Populated correctly with Val's own tickets/risk |
+| Exit | Main's bus → Val (works) | Main's bus → Val (still works for shared tickers; Val-only positions don't auto-exit until EOD) |
+
+### Rollback
+
+Set `ORB_PORTFOLIO_FIRE=0` in Railway env → mirror mode returns. No code revert needed.
+
+---
+
 ## v8.3.22 (2026-05-12) -- Boot-time purge of orphan uuid tickets (unblocks persistent notional_cap rejects)
 
 Operator screenshot post-v8.3.20 deploy showed `risk_reject:notional_cap (would-be $300976 > $96280)` STILL firing on Main. v8.3.20 reduced the cap from 2.0× to 0.95× and added a `recover-*` sweep, but the rejects continued because the orphans were **uuid-style tickets** from prior `try_admit` calls — NOT `recover-{pid}-{ticker}` ids. v8.3.20's sweep scope-limited to recover-* (uuid→ticker mapping isn't safe in the general per-cycle case).
