@@ -2496,20 +2496,27 @@ async def h_version(request):
 # (see CHANGELOG.md v8.1.3 projection table): LOW = 12% OOS-haircut,
 # MID = backtest result, HIGH = favorable-regime extrapolation.
 #
-# Sharpe is set to None until we re-compute from the per-day P&L
-# series under the v8.1.3 config (the old 2.85 was for the pre-v7.109
-# baseline and would be MISLEADING here; the strategy's per-trade
-# distribution has shifted with smaller positions + partial fills).
-# Slated for v8.1.6 once the Sharpe computation script is wired.
+# v8.1.6 -- Sharpe + max-DD + trades populated from the actual v8.1.3
+# backtest run (script: /tmp/compute_sharpe_v813.py, source method
+# documented in CHANGELOG.md v8.1.6). Run was 251 trading days on the
+# /tmp/rth-data/data corpus with the production env-fallback config
+# (risk=1.0%, atr_stop_mult=1.75, partial_profit_at_1r=True). Outputs:
+#   net_pnl      = $+44,431.10
+#   win_rate     = 58.64% -> displays as 59.0% on the plate
+#   entries      = 382 over 251d
+#   mean daily   = +0.1510%
+#   stdev daily  = 0.9441%
+#   Sharpe (ann) = 2.539  (rf=0; 252 trading days/yr annualization)
+#   max DD       = 6.31%  (peak-to-trough on compounded equity curve)
 _V10_PROJECTION_KEYSTONE = {
     "in_sample_cagr_pct": 44.4,
     "honest_cagr_low_pct": 12.0,
     "honest_cagr_mid_pct": 44.4,
     "honest_cagr_high_pct": 52.0,
-    "sharpe_ann": None,
-    "max_drawdown_pct": 3.20,
+    "sharpe_ann": 2.54,
+    "max_drawdown_pct": 6.31,
     "win_rate_pct": 59.0,
-    "trades_per_year": 209,
+    "trades_per_year": 382,
     "worst_day_dollars": -2575.0,
     "starting_balance": 100000.0,
     "in_sample_ending_balance": 144431.0,
