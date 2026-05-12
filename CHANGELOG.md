@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.14 (2026-05-12) -- Watchdog: name "executor not subscribed" as root cause in val_gene_trades_match_main body
+
+Companion to v8.3.13. Now that `/api/state.portfolios.{pid}.subscribed` exists, the watchdog's `inv_val_gene_trades_match_main` invariant can read it directly and explicitly name the root cause when an executor failed to register on the signal bus — instead of leaving the operator to grep Railway logs.
+
+### Change
+
+`tools/dashboard_monitor_invariants.py:inv_val_gene_trades_match_main` — before the existing v7.84.0 log-slice enrichment, the invariant now scans `s.portfolios.val.subscribed` and `s.portfolios.gene.subscribed`. For each executor whose `subscribed` is `False`, it prepends a "Root cause likely" section that calls out:
+
+- Which executor isn't subscribed
+- Three most likely causes (missing `<PID>_ALPACA_PAPER_KEY`, silent startup failure, Alpaca client probe raise)
+- Concrete next step (grep older logs for `[Val] startup failed` / `[Val] skipped`)
+
+When BOTH executors are subscribed, no root-cause note is prepended — the original v7.84.0 log-slice diagnosis (Alpaca rejection / mirror-bus drift) owns the explanation.
+
+When the state shape is pre-v8.3.13 (no `subscribed` key), the check is silently skipped — the watchdog falls through to its log-archaeology path. Backwards-compat preserved.
+
+### Example issue body after v8.3.14
+
+Pre-v8.3.14:
+```
+trade-count mismatch: val=0 vs main=7
+
+In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals
+as Main via the legacy bus, so their broker trade counts should match. A
+mismatch may indicate Alpaca-side rejection or a mirror-bus drift.
+
+_No Railway log slice attached. Diagnostic: status=ok lines_fetched=154..._
+```
+
+Post-v8.3.14 (when Val unsubscribed):
+```
+trade-count mismatch: val=0 vs main=7
+
+In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals
+as Main via the legacy bus, so their broker trade counts should match...
+
+### Root cause likely:
+
+**val.subscribed = false** -- VAL executor never registered its _on_signal
+callback on the signal bus. Most likely causes: (a) VAL_ALPACA_PAPER_KEY env
+var unset or empty in Railway; (b) executor construction or start() raised
+silently (grep older Railway logs for `[Val] startup failed` or
+`[Val] skipped`); (c) Alpaca client probe raised inside _ensure_client().
+Until VAL is subscribed, every Main emit goes into the void for this
+executor and the trade-count mismatch is guaranteed.
+
+_No Railway log slice attached. Diagnostic: ..._
+```
+
+The operator no longer needs to grep Railway logs first — the cause is named in the issue.
+
+### Tests
+
+`tests/strategy/test_dashboard_monitor_invariants.py::TestValGeneTradesMatchMainSubscribedNoteV8314` — 4 new tests:
+
+1. `test_val_unsubscribed_named_as_root_cause` — val subscribed=False → body calls out "val.subscribed = false" + "VAL_ALPACA_PAPER_KEY"; gene subscribed=True → no false-alarm for gene
+2. `test_both_unsubscribed_named` — both subscribed=False → both named, both env vars cited
+3. `test_both_subscribed_no_note` — mismatch with both subscribed=True → no "Root cause likely" section (the log-slice diagnosis takes over)
+4. `test_pre_v8313_state_shape_compat` — pre-v8.3.13 portfolios block without `subscribed` key → invariant doesn't crash, no false-positive note
+
+**749 strategy tests pass** (745 + 4 new).
+
+### Rollback
+
+Remove the v8.3.14 block (the loop that scans `portfolios.{pid}.subscribed` and appends to `base_detail`) from `inv_val_gene_trades_match_main`. Pre-v8.3.14 issue body returns.
+
+---
+
 ## v8.3.13 (2026-05-12) -- Surface `executor.subscribed` on /api/state (signal-bus listener probe)
 
 The watchdog's `val_gene_trades_match_main` invariant kept firing (val=0 vs main=7) but diagnosing the root cause required grep-the-Railway-logs archaeology to find a `[Val] startup failed` or `[Val] skipped` from earlier in the day. The post-deploy 3-min log window the watchdog fetches isn't wide enough to catch a boot-time failure from before the latest redeploy. v8.3.13 surfaces a `subscribed` boolean per executor on `/api/state` so the dashboard + watchdog can directly answer "is Val listening to Main's emits?" without log forensics.
