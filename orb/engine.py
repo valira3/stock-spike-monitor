@@ -201,6 +201,26 @@ class OrbEngine:
         self._day_result: Optional[_day_gates.DayGateResult] = None
         self._day_result_date: str = ""
 
+        # v8.1.8 -- wash-sale risk tracker. NOT tax-grade -- this is
+        # operator-facing signaling for §1091 wash-sale visibility.
+        # When a position closes at a LOSS, we record (ticker, side,
+        # ts, pnl_dollars) here. On the next try_enter() for the SAME
+        # (ticker, side), if a recorded loss falls within the last
+        # 30 calendar days, we log [V81-WASH-RISK] and increment the
+        # session counter. The entry is NEVER blocked -- the operator
+        # opted into this strategy knowing about the rule (and
+        # typically files §475(f) MTM which exempts them anyway).
+        #
+        # Bounded by recency (>30d entries are pruned on each check).
+        # No persistence across Railway restarts; this is in-memory
+        # session signaling only. For year-end tax reconciliation
+        # the operator should rely on the broker 1099-B + their
+        # accountant, NOT this counter.
+        from collections import defaultdict as _dd
+        self._recent_losses: dict = _dd(list)
+        # Session-scoped counter -- resets to 0 each new session.
+        self.wash_risk_count: int = 0
+
     # --- session lifecycle ---
 
     def start_new_session(self, *, date_iso: str,
@@ -217,6 +237,11 @@ class OrbEngine:
         """
         # 1. Reset state
         self._state.reset_for_new_session(date_iso)
+        # v8.1.8 -- reset session-scoped wash-risk counter. The
+        # _recent_losses buffer is INTENTIONALLY NOT cleared here --
+        # a losing close on Monday + new entry Tuesday still hits
+        # the 30-day window and should fire the flag.
+        self.wash_risk_count = 0
         # v7.33.0: update equity BEFORE reset_all_sessions so the
         # session-start equity snapshot inside RiskBook.reset_session
         # captures the actual session-start equity (not the stale
@@ -509,6 +534,35 @@ class OrbEngine:
         ds.last_signal_bucket = None
         ds.last_entry_iso = signal.signal_bar_close_iso
 
+        # v8.1.8 -- wash-sale check. If a losing close on the SAME
+        # (ticker, side) happened within the last 30 calendar days,
+        # log [V81-WASH-RISK] + bump the session counter. Operator-
+        # facing only; never blocks the entry. Pruning happens here
+        # so the buffer doesn't grow unbounded.
+        try:
+            import time as _time
+            key = (signal.ticker, signal.side)
+            cutoff = _time.time() - 30 * 24 * 3600
+            recent = [r for r in self._recent_losses.get(key, [])
+                      if r.get("ts_unix", 0) > cutoff]
+            self._recent_losses[key] = recent
+            if recent:
+                prior = recent[-1]
+                self.wash_risk_count += 1
+                logger.info(
+                    "[V81-WASH-RISK] %s %s entry @ $%.2f -- prior "
+                    "loss $%.2f on same (ticker, side) at %s. "
+                    "Counter: %d this session.",
+                    signal.ticker, signal.side, entry_price,
+                    prior.get("pnl_dollars", 0.0),
+                    prior.get("exit_iso") or "?",
+                    self.wash_risk_count,
+                )
+        except Exception:
+            # Wash-sale tracking is best-effort signaling. Never
+            # block the trading path on its bookkeeping.
+            pass
+
         return Admission(position=pos, risk_ticket=ticket)
 
     # --- exit path ---
@@ -618,6 +672,19 @@ class OrbEngine:
                     # remaining + partial_pnl_dollars.
                     pnl += float(getattr(pos, "partial_pnl_dollars", 0.0) or 0.0)
                     kill_just_triggered = rb.record_realized_pnl(pnl)
+                    # v8.1.8 -- record losing closes for the wash-sale
+                    # tracker. The threshold is a couple cents (not
+                    # strictly zero) to avoid recording rounding noise
+                    # from slippage at break-even. A re-entry on the
+                    # same (ticker, side) within 30 days will trigger
+                    # a [V81-WASH-RISK] log + counter bump.
+                    if pnl < -0.01:
+                        import time as _time
+                        self._recent_losses[(pos.ticker, pos.side)].append({
+                            "ts_unix": _time.time(),
+                            "pnl_dollars": float(pnl),
+                            "exit_iso": exit_iso or "",
+                        })
             except Exception as e:
                 logger.warning(
                     "[V79-ORB-KILL] pnl accounting failed pos=%s.%s: %s",
@@ -684,6 +751,9 @@ class OrbEngine:
                 "atr_lookback_5m": self.cfg.atr_lookback_5m,
                 "partial_profit_at_1r": self.cfg.partial_profit_at_1r,
             },
+            # v8.1.8 -- wash-sale risk counter (session-scoped).
+            # Operator-facing signaling for §1091 visibility.
+            "wash_risk_count": self.wash_risk_count,
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,
                 "block_reason": self._day_result.block_reason if self._day_result else "",

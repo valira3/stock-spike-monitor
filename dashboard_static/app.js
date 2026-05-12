@@ -5300,6 +5300,30 @@
         atrDiv.style.display = "none";
       }
     }
+    // v8.1.8 -- wash-sale risk counter chip. Hidden when count=0
+    // so the banner stays uncluttered on clean-trading days.
+    var washN = parseInt(v10.wash_risk_count || 0, 10) || 0;
+    var washPill = document.getElementById("v10-wash-pill");
+    var washDiv = document.getElementById("v10-wash-pill-divider");
+    if (washPill && washDiv) {
+      if (washN > 0) {
+        washPill.textContent = "Wash " + washN;
+        washPill.title = washN + " entr"
+          + (washN === 1 ? "y" : "ies")
+          + " this session re-opened a (ticker, side) within 30 "
+          + "days of a losing close. The IRS §1091 wash-sale rule "
+          + "may defer the loss for tax purposes. Strategy is "
+          + "unblocked -- this is operator visibility only. "
+          + "Most active intraday traders elect §475(f) MTM to "
+          + "exempt themselves from §1091.";
+        washPill.style.display = "";
+        washDiv.style.display = "";
+      } else {
+        washPill.style.display = "none";
+        washDiv.style.display = "none";
+      }
+    }
+
     var partialOn = !!cfg.partial_profit_at_1r;
     var pPill = document.getElementById("v10-partial-pill");
     var pDiv = document.getElementById("v10-partial-pill-divider");
