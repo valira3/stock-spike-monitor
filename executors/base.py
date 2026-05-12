@@ -1263,6 +1263,26 @@ class TradeGeniusBase:
         logger.info(ok)
         self._send_own_telegram(ok)
 
+        # v8.1.7 -- record this partial in the v10 activity ring
+        # buffer so the dashboard's v10 Activity Feed shows
+        # cross-portfolio partials (Main was already covered via
+        # orb.live_runtime.check_exit in v8.1.2; this adds Val/Gene
+        # which dispatch through executors, NOT through check_exit).
+        # The detail string mirrors the Main side's format so the
+        # dashboard renders the two consistently.
+        try:
+            from orb.live_runtime import _record_activity
+            _record_activity(
+                kind="partial",
+                ticker=ticker,
+                pid=self.NAME.lower(),
+                detail=f"{closing} sh @ market ({reason})",
+            )
+        except Exception:
+            # Activity recording is best-effort -- never block the
+            # broker path on a downstream import / lock issue.
+            pass
+
     def _legacy_close_position_idempotent(
         self, client, ticker: str, label: str, reason: str
     ) -> None:

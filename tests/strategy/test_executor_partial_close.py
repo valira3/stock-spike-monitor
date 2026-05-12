@@ -370,3 +370,72 @@ class TestOnSignalPartialDispatch:
         ex._on_signal(event)
         # Defensive guard: main_shares <= 0 -> skip without dispatching
         assert len(ex.partial_calls) == 0
+
+
+# ----- 5. v8.1.7 -- executor records activity for cross-portfolio
+# dashboard visibility ------------------------------------------------
+
+
+class TestExecutorRecordsPartialActivity:
+    """The Val + Gene executors don't route partials through
+    orb.live_runtime.check_exit (that's Main-only via
+    broker/positions.py:manage_positions). They receive a
+    PARTIAL_EXIT_* signal-bus event and call
+    _partial_close_position_idempotent directly. v8.1.7 wires that
+    method to ALSO call orb.live_runtime._record_activity so the
+    dashboard's v10 Activity Feed shows Val/Gene partials alongside
+    Main's."""
+
+    def test_successful_partial_records_activity_event(self):
+        from orb import live_runtime
+        live_runtime.clear_recent_activity()
+
+        ex = _FakeExecutor()
+        ex.NAME = "Val"
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
+                                 "entry_price": 100.0}
+        client = MagicMock()
+        client.submit_order = MagicMock(return_value=_make_order("ord-act-1"))
+
+        ex._partial_close_position_idempotent(
+            client, "AAPL", shares_to_close=50,
+            label="VAL paper", reason="PARTIAL_1R",
+        )
+
+        # Activity event landed in the ring buffer
+        events = live_runtime.get_recent_activity(limit=10)
+        assert len(events) >= 1
+        e = events[0]
+        assert e["kind"] == "partial"
+        assert e["ticker"] == "AAPL"
+        assert e["pid"] == "val"
+        # Detail includes the closed share count + reason
+        assert "50 sh" in e["detail"]
+        assert "PARTIAL_1R" in e["detail"]
+
+    def test_failed_partial_does_not_record_activity(self):
+        # When the partial-close errors out (non-40410000) and local
+        # qty stays unchanged, no activity event should fire -- the
+        # operator-facing feed should only show partials that
+        # actually mutated state.
+        from orb import live_runtime
+        live_runtime.clear_recent_activity()
+
+        ex = _FakeExecutor()
+        ex.NAME = "Gene"
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
+                                 "entry_price": 100.0}
+        client = MagicMock()
+        client.submit_order = MagicMock(side_effect=Exception(
+            "alpaca 500 server error"
+        ))
+
+        ex._partial_close_position_idempotent(
+            client, "AAPL", shares_to_close=50,
+            label="GENE paper", reason="PARTIAL_1R",
+        )
+
+        # No activity recorded (the function returned before the
+        # _record_activity call site).
+        events = live_runtime.get_recent_activity(limit=10)
+        assert events == [] or all(e["kind"] != "partial" for e in events)

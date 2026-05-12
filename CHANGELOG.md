@@ -4,6 +4,36 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.7 (2026-05-12) -- Val/Gene executor partials now appear in the dashboard activity feed
+
+Closes the cross-portfolio visibility gap from v8.1.2. When Main fires a partial, `orb/live_runtime.py:check_exit` calls `_record_activity(kind="partial", ...)` so the event appears in the dashboard's v10 Activity Feed. But Val and Gene executors don't route through that path — they receive a `PARTIAL_EXIT_*` signal-bus event and call `_partial_close_position_idempotent` directly. Their partials never landed in the feed.
+
+v8.1.7 wires the executor's partial-close to ALSO call `_record_activity` after a successful Alpaca submit, with `pid=self.NAME.lower()` so the dashboard's per-pid filter renders the row under the right portfolio chip.
+
+### Change
+
+`executors/base.py:_partial_close_position_idempotent` — on the success path (after `_persist_position` + telegram emit), call `orb.live_runtime._record_activity(kind="partial", ticker=ticker, pid=self.NAME.lower(), detail="<N> sh @ market (<reason>)")`. Best-effort try/except so an import or lock issue can't block the broker path.
+
+### Tests
+
+`tests/strategy/test_executor_partial_close.py::TestExecutorRecordsPartialActivity` — 2 new tests:
+- Successful partial appends to the ring buffer with the right `kind/ticker/pid/detail`
+- Failed partial (broker error, no local mutation) does NOT append (avoids polluting the feed with non-events)
+
+627 strategy tests pass (625 + 2 new).
+
+### What the operator now sees
+
+The v10 Activity Feed renders Val/Gene partials inline with Main's:
+
+```
+13:42 AAPL ½ PARTIAL val   50 sh @ market (PARTIAL_1R)
+13:42 AAPL ½ PARTIAL gene  50 sh @ market (PARTIAL_1R)
+13:42 AAPL ½ PARTIAL main  50 sh @ $101.04 (booked $52.00)
+```
+
+The Main row carries the booked-pnl detail (from `live_runtime.check_exit`); the Val/Gene rows carry the order-submission detail. Same `kind=partial` chip styling for all three, distinguished by the `pid` column already rendered by `renderV10ActivityFeed`.
+
 ## v8.1.6 (2026-05-12) -- Recompute Sharpe + max-DD under v8.1.3 config; populate baseline plate
 
 Closes the v8.1.5 follow-up. The baseline plate's Sharpe was set to `None` in v8.1.5 because the old 2.85 was for the pre-v7.109 strategy and carrying it forward would have misled the operator. v8.1.6 actually computes Sharpe from a fresh 251-day backtest under the v8.1.3 production config and populates the field.
