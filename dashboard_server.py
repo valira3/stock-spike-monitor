@@ -868,8 +868,25 @@ def _today_trades() -> list[dict]:
             exit_price = float(row.get("exit_price") or 0.0)
         except (TypeError, ValueError):
             exit_price = 0.0
-        entry_time_val = row.get("entry_time") or ""
-        exit_time_val = row.get("exit_time") or ""
+        # v8.3.5 -- normalize entry/exit times to ET HH:MM for display.
+        # trade_log.jsonl writes exit_time as full UTC ISO (tg._utc_now_iso(),
+        # e.g. "2026-05-12T14:29:00Z"); entry_time is "HH:MM:SS" tz-naive ET
+        # (pos["entry_time"] = now_et.strftime("%H:%M:%S")). The dashboard's
+        # JS just slices HH:MM out of whatever string we hand it, so a raw
+        # UTC ISO renders as "14:29" instead of the correct "10:29 ET".
+        # Route both through tg._to_et_hhmm which converts ISO -> ET HH:MM
+        # and passes through "HH:MM:SS"-shaped strings unchanged (it treats
+        # tz-naive as already-ET).
+        entry_time_raw = row.get("entry_time") or ""
+        exit_time_raw = row.get("exit_time") or ""
+        try:
+            entry_time_val = m._to_et_hhmm(entry_time_raw) if entry_time_raw else ""
+        except Exception:
+            entry_time_val = entry_time_raw
+        try:
+            exit_time_val = m._to_et_hhmm(exit_time_raw) if exit_time_raw else ""
+        except Exception:
+            exit_time_val = exit_time_raw
         # Synthesize the entry row (BUY for long, SHORT for short).
         entry_action = "BUY" if side == "LONG" else "SHORT"
         synth_entry = {
