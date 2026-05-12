@@ -1148,7 +1148,12 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             pid, side, ticker,
         )
         return False
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
+    # v8.3.23 -- env default flipped "0" -> "1". Independent mode
+    # is now the default. Operators wanting the old mirror-mode
+    # behavior set ORB_PORTFOLIO_FIRE=0 explicitly in Railway env.
+    # Companion change: executors/base.py:_on_signal guards ENTRY
+    # signals when this flag is "1" to prevent double-fire.
+    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
             "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",

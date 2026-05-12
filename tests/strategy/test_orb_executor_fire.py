@@ -196,9 +196,14 @@ class TestV10DispatchExecutorFire:
                 pytest.skip("telegram unavailable in sandbox")
             raise
 
-    def test_off_by_default_no_fire(self, monkeypatch):
+    def test_explicit_zero_skips_fire(self, monkeypatch):
+        """v8.3.23 -- default flipped from '0' to '1' so independent
+        mode is now on by default. Operators wanting legacy mirror
+        mode set ORB_PORTFOLIO_FIRE=0 explicitly; this test verifies
+        that override path still suppresses fire_long/fire_short."""
         dispatch = self._import_dispatch()
-        monkeypatch.delenv("ORB_PORTFOLIO_FIRE", raising=False)
+        monkeypatch.setenv("ORB_LIVE_MODE", "1")
+        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")  # explicit opt-out
         fake_ex = MagicMock()
         with patch("executors.bootstrap.get_executor",
                    return_value=fake_ex):

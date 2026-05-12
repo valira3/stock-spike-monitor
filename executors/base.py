@@ -2057,6 +2057,16 @@ class TradeGeniusBase:
         mirror produces val_gene_trades_match_main violations. Pre-
         v7.83.0 silent early-returns (qty<=0, exception in builder)
         gave no log trail post-receipt.
+
+        v8.3.23 -- INDEPENDENT MODE entry guard. When
+        ORB_PORTFOLIO_FIRE=1 (default since v8.3.23), entries are
+        dispatched per-portfolio by engine/scan.py:_v10_dispatch_executor_fire
+        -> executor.fire_long / fire_short. This listener still
+        handles EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_* (the
+        production code does not yet wire live_runtime.check_exit
+        to a per-portfolio exit loop, so bus exits are still the
+        canonical exit path). Skipping ONLY entries here prevents
+        a double-fire on independent mode.
         """
         kind = event.get("kind", "")
         ticker = event.get("ticker", "")
@@ -2069,6 +2079,18 @@ class TradeGeniusBase:
             "[V79-MIRROR-RECV] %s kind=%s ticker=%s price=%s main_shares=%s",
             self.NAME, kind, ticker, price, main_shares,
         )
+
+        # v8.3.23 -- skip ENTRY signals in independent mode. Exits
+        # still flow through here.
+        if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
+            if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
+                logger.info(
+                    "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
+                    "mode active; entry will fire via "
+                    "_v10_dispatch_executor_fire (not legacy bus)",
+                    self.NAME, kind, ticker,
+                )
+                return
 
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any
