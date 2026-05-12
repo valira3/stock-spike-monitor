@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.105.0 (2026-05-12) -- RiskBook ticket disk persistence (Lesson 2 — root fix for phantom-position pattern)
+
+Today's monitor noise (28+ open `dashboard-monitor` issues from #532 through #596) shared one mechanical root cause: every Railway redeploy creates a fresh `RiskBook` with `open_count=0` while `tg.positions` reloads from disk via `paper_state.json`. The asymmetry — positions persisted, RiskBook tickets in-memory only — is exactly what `position_count_three_way` and `no_phantom_positions` invariants flag.
+
+We shipped 27 deploys today. The pattern recurred all day.
+
+### Fix (root-level, not band-aid)
+
+`RiskBook._open_tickets` now round-trips through `paper_state_main.json` so the post-deploy state mirrors the pre-deploy state.
+
+New helpers on `orb.risk_book`:
+- `RiskBook.serialize_tickets()` → `list[dict]` with `{ticket_id, risk_dollars, notional}` per open ticket.
+- `RiskBook.restore_tickets(items)` → bulk-restore from a serialized list. Authoritative (clears existing first). Defensive against malformed input — skips bad items, never raises.
+- `RiskBookRegistry.serialize_all_tickets()` / `.restore_all_tickets()` → multi-portfolio bulk operations. Phantom portfolio IDs in the payload are silently dropped (no auto-create).
+
+`paper_state.py` wiring:
+- New `v10_risk_book_tickets` section in the JSON dict (in `save_paper_state`).
+- New `_risk_book_tickets_for_save` / `_risk_book_tickets_restore` helpers, both defensive against module-missing / registry-not-yet-bootstrapped / corrupt-payload failure modes.
+- Restore hook in `load_paper_state` placed right after `_ratchet_restore` so it follows the same date-aware semantics (same-day load restores; cross-day reset wipes via the v10 session-start path that follows).
+- New `[V79-ORB-PERSIST]` log tag — emits the per-portfolio restored count at INFO.
+
+### What this kills
+
+- The post-deploy `no_phantom_positions` invariant (`main has N positions in /api/state but RiskBook reports open_count=0`).
+- The `position_count_three_way` "broker has N open but all internal books empty" alert.
+- The `v10_in_pos_has_internal_position` phantom-FSM-state alerts that previously cleared only after the v10 session-start reset wiped everything.
+
+The 95%-of-equity exposure cap (v7.86.0) and the per-ticker concurrent-risk gate become consistent across restarts again. RiskBook stops being "lying about how much risk is open" — it actually knows.
+
+### Tests
+
+`tests/strategy/test_riskbook_persistence_v7105.py` — 11 tests:
+- 7 for `RiskBook.{serialize,restore}_tickets` (empty / non-empty / counter recomputation / authoritative-clear / empty-input / malformed-items / JSON round-trip).
+- 4 for `RiskBookRegistry.{serialize_all,restore_all}_tickets` (multi-portfolio / phantom-pid-dropped / garbage-payload / end-to-end).
+
+Full strategy suite: **563 passed**, 8 skipped.
+
+### Files
+
+- `orb/risk_book.py` — 2 new methods on `RiskBook`, 2 new methods on `RiskBookRegistry`
+- `paper_state.py` — new `v10_risk_book_tickets` section + 2 helper functions + restore hook
+- `tests/strategy/test_riskbook_persistence_v7105.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.104.0` → `7.105.0`
+
+### Why this lands NOW (during off-hours)
+
+Tomorrow's first deploy will not re-trigger the phantom-position pattern if this lands tonight. Every additional deploy without this fix is one more cycle of the same noise. Per Auto Agentic framework rules 1/2 (run autonomously, loop until complete) and rule 26 (notify only on branch decisions), shipping ahead of the next RTH window is the right move.
+
+---
+
 ## v7.104.0 (2026-05-12) -- RTH-merge warning workflow (Lesson 1)
 
 Today's 27-deploy day (v7.91 → v7.103) shipped 12+ merges during active RTH. Each Railway redeploy is a fresh container — the in-memory `RiskBook._open_tickets` is lost — which is the mechanical root cause of the phantom-position pattern that dominated monitor issues #532-#596. The Auto Agentic framework's Lesson 1 ("no deploys during RTH unless kill-switch-grade") needs an automated nudge so future days self-correct toward off-hours.

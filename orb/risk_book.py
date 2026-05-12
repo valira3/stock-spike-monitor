@@ -259,6 +259,71 @@ class RiskBook:
             self._open_notional = max(0.0, self._open_notional - existing.notional)
             return True
 
+    # --- v7.105.0: disk persistence (Lesson 2) ---
+    #
+    # The RiskBook holds open ticket state that previously lived only
+    # in process memory. Every Railway redeploy created a fresh
+    # RiskBook with open_count=0 while tg.positions (which IS
+    # persisted) reloaded from disk -- the exact mechanical root cause
+    # of the phantom-position pattern across monitor issues
+    # #532-#596. These helpers let paper_state.save_paper_state()
+    # round-trip the open tickets through paper_state_main.json so the
+    # post-deploy state mirrors the pre-deploy state.
+
+    def serialize_tickets(self) -> list[dict]:
+        """Return a JSON-serializable list of all currently-open tickets.
+
+        Each ticket carries `ticket_id`, `risk_dollars`, `notional` --
+        exactly the fields _Ticket holds. The aggregate `_open_risk`
+        and `_open_notional` derived counters are NOT serialized
+        separately because they're trivially re-derivable on restore.
+        """
+        with self._lock:
+            return [
+                {
+                    "ticket_id": str(t.ticket_id),
+                    "risk_dollars": float(t.risk_dollars),
+                    "notional": float(t.notional),
+                }
+                for t in self._open_tickets.values()
+            ]
+
+    def restore_tickets(self, items: list[dict]) -> int:
+        """Re-populate `_open_tickets` (and derived counters) from a
+        previously-serialized list. Clears any existing tickets first
+        -- restore is authoritative.
+
+        Returns the number of tickets restored. Defensive against
+        malformed input: any item that fails type coercion is skipped
+        (logged at debug level by caller, this method stays silent).
+        """
+        with self._lock:
+            self._open_tickets.clear()
+            self._open_risk = 0.0
+            self._open_notional = 0.0
+            restored = 0
+            for item in (items or []):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    tid = str(item.get("ticket_id") or "")
+                    if not tid:
+                        continue
+                    risk = float(item.get("risk_dollars", 0.0) or 0.0)
+                    notional = float(item.get("notional", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if risk < 0 or notional < 0:
+                    continue
+                ticket = _Ticket(ticket_id=tid,
+                                 risk_dollars=risk,
+                                 notional=notional)
+                self._open_tickets[tid] = ticket
+                self._open_risk += risk
+                self._open_notional += notional
+                restored += 1
+            return restored
+
     def reset_session(self) -> None:
         """Clear all open tickets. Call at session start to defensively
         clear any stale tickets that may have leaked across a restart.
@@ -342,6 +407,35 @@ class RiskBookRegistry:
         with self._lock:
             for rb in self._books.values():
                 rb.reset_session()
+
+    # --- v7.105.0: registry-level disk persistence ---
+
+    def serialize_all_tickets(self) -> dict[str, list[dict]]:
+        """Return {portfolio_id: serialized_tickets} for every book.
+        Empty dict when no books are registered (pre-bootstrap).
+        """
+        with self._lock:
+            return {pid: rb.serialize_tickets() for pid, rb in self._books.items()}
+
+    def restore_all_tickets(self, mapping: dict[str, list[dict]]) -> dict[str, int]:
+        """Bulk-restore tickets for every portfolio_id in `mapping`.
+
+        Only restores into books that ALREADY exist in the registry --
+        if a portfolio_id has no book yet (e.g. the executor for that
+        pid wasn't enabled at this boot), its tickets are silently
+        dropped rather than auto-creating a phantom book. Returns
+        {portfolio_id: count_restored} for each book actually touched.
+        """
+        out: dict[str, int] = {}
+        if not isinstance(mapping, dict):
+            return out
+        with self._lock:
+            for pid, items in mapping.items():
+                book = self._books.get(pid)
+                if book is None:
+                    continue
+                out[pid] = book.restore_tickets(items)
+        return out
 
 
 # Module-level registry; live engine accesses via REGISTRY.

@@ -238,6 +238,55 @@ def _ratchet_restore(state: dict) -> None:
         logger.warning("ratchet_restore failed: %s", _re)
 
 
+# v7.105.0 (Lesson 2) -- RiskBook ticket persistence helpers.
+#
+# Pre-v7.105.0, every Railway redeploy created a fresh RiskBook with
+# open_count=0 while tg.positions reloaded from disk -- the
+# mechanical root cause of the phantom-position pattern across
+# monitor issues #532-#596 on 2026-05-11. These helpers round-trip
+# the v10 ORB RiskBook._open_tickets dict through paper_state_main.json
+# so the post-deploy state mirrors the pre-deploy state.
+#
+# Both helpers are defensive: any failure to read the registry
+# (e.g. orb.risk_book module missing, registry not yet bootstrapped,
+# import error during a hot-patch) returns the empty-result default
+# rather than raising. paper_state.save_paper_state is on the
+# 5-min hot path and cannot tolerate exceptions; load_paper_state
+# is on the boot path and a corrupt section must not block the
+# cash/positions restore.
+
+def _risk_book_tickets_for_save() -> dict:
+    """Return {portfolio_id: [{ticket_id, risk_dollars, notional}]}
+    for every RiskBook in the v10 registry. Empty dict on any failure.
+    """
+    try:
+        from orb.risk_book import REGISTRY
+        return REGISTRY.serialize_all_tickets()
+    except Exception as exc:
+        logger.debug("[V79-ORB-PERSIST] serialize_all_tickets failed: %s", exc)
+        return {}
+
+
+def _risk_book_tickets_restore(raw):
+    """Restore tickets from a previously-saved payload. Logs counts
+    at INFO. Silent skip on missing/invalid payload.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return
+    try:
+        from orb.risk_book import REGISTRY
+        counts = REGISTRY.restore_all_tickets(raw)
+    except Exception as exc:
+        logger.warning("[V79-ORB-PERSIST] restore_all_tickets failed: %s", exc)
+        return
+    if counts:
+        total = sum(counts.values())
+        logger.info(
+            "[V79-ORB-PERSIST] restored %d tickets across %d portfolio(s): %s",
+            total, len(counts), counts,
+        )
+
+
 def save_paper_state():
     """Persist paper trading + strategy state to disk. Thread-safe, atomic."""
     tg = _tg()
@@ -310,6 +359,15 @@ def save_paper_state():
             # them back to tuples.
             "ratchet_long": _ratchet_long_for_save(),
             "ratchet_short": _ratchet_short_for_save(),
+            # v7.105.0 (Lesson 2) -- persist v10 RiskBook open tickets
+            # so the post-deploy state mirrors the pre-deploy state.
+            # Pre-v7.105.0 every Railway redeploy created a fresh
+            # RiskBook with open_count=0 while tg.positions reloaded
+            # from disk -- the phantom-position pattern across
+            # monitor issues #532-#596. Wrapped in try/except so a
+            # mid-refactor or missing-registry never blocks paper_state
+            # save (which is on a 5-min hot path).
+            "v10_risk_book_tickets": _risk_book_tickets_for_save(),
             "saved_at": tg._utc_now_iso(),
         }
         # v7.0.0 Phase 3 -- write to the new canonical path (paper_state_main.json).
@@ -512,6 +570,15 @@ def load_paper_state():
         # for the same-day case; the daily-reset block below will clear them
         # when the saved date differs from today.
         _ratchet_restore(state)
+
+        # v7.105.0 (Lesson 2) \u2014 restore v10 RiskBook open tickets.
+        # Same date-aware semantics as the rest of paper_state load:
+        # this populates tickets, and the daily-reset block below
+        # (when saved_at date != today) clears them via the v10
+        # session-start reset path. Tickets that survive a same-day
+        # restart prevent the post-deploy phantom-position pattern
+        # (monitor issues #532-#596).
+        _risk_book_tickets_restore(state.get("v10_risk_book_tickets"))
 
         # Reset daily counts if saved on a different day
         today = tg._now_et().strftime("%Y-%m-%d")
