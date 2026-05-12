@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.111.0 (2026-05-12) -- Post-deploy smoke posts outcome comment back on source PR
+
+Closes the agent-visibility gap surfaced during the v7.109.0 ship. The `post-deploy-smoke.yml` workflow already Telegram-alerted on failure, but agents in sandbox (without an Actions API in their MCP server) had no way to read the outcome back. Now the workflow parses the squash-merge `(#NNN)` PR number from the merge-commit subject and posts a status comment (PASSED / FAILED / CANCELLED + GHA run URL) on the source PR using the default `GITHUB_TOKEN`. Agents read it via the standard `pull_request_read get_comments` MCP call.
+
+Telegram alert path unchanged; this is additive.
+
+### Change
+
+- `.github/workflows/post-deploy-smoke.yml`:
+  - New `Comment outcome on source PR` step (`if: always()`) that runs after Telegram alert + log upload
+  - Explicit `permissions: { contents: read, pull-requests: write }` at job level
+  - Manual `main` pushes (no `(#NNN)` suffix in subject) skip the comment gracefully
+- No code, no test changes
+
 ## v7.110.0 (2026-05-12) -- CLAUDE.md doc fix: post-deploy smoke section disambiguated (GHA workflow vs local script)
 
 Documentation-only change. The `## Post-deploy smoke` section in CLAUDE.md was ambiguous about whether `bash scripts/post_deploy_smoke.sh <version>` (local script needing Railway API token) or `.github/workflows/post-deploy-smoke.yml` (auto-running GHA workflow needing only dashboard secrets) is the canonical post-release gate. Real-world answer surfaced during the v7.109.0 ship: the GHA workflow is the default path — it auto-fires on every push to main, polls Railway's `/api/version` for rollout, runs `smoke_test.py` (31 local + 9 prod) against the live dashboard, and Telegram-alerts the TP chat on failure. The local script is a different code path for the rare "GHA broken, need a manual smoke" case.
