@@ -239,51 +239,130 @@ def _ratchet_restore(state: dict) -> None:
 
 
 # v7.105.0 (Lesson 2) -- RiskBook ticket persistence helpers.
+# v7.106.0 -- SEV-1 fix from audit: route through the engine's
+# actual registry (`live_runtime.get_engine()._risk`), not the
+# module-level `orb.risk_book.REGISTRY` singleton -- the latter is
+# NEVER registered into by production code, so v7.105.0's helpers
+# were dead code (silently returning {} / no-op'ing). Tests passed
+# only because they constructed local registries. v7.106.0 audits
+# every saved/restored ticket count and emits an INFO log on both
+# sides so a regression like this can't recur silently.
 #
-# Pre-v7.105.0, every Railway redeploy created a fresh RiskBook with
-# open_count=0 while tg.positions reloaded from disk -- the
+# Pre-v7.105.0, every Railway redeploy created a fresh RiskBook
+# with open_count=0 while tg.positions reloaded from disk -- the
 # mechanical root cause of the phantom-position pattern across
 # monitor issues #532-#596 on 2026-05-11. These helpers round-trip
-# the v10 ORB RiskBook._open_tickets dict through paper_state_main.json
-# so the post-deploy state mirrors the pre-deploy state.
+# the v10 ORB engine's RiskBook._open_tickets dict through
+# paper_state_main.json so the post-deploy state mirrors the
+# pre-deploy state.
 #
-# Both helpers are defensive: any failure to read the registry
-# (e.g. orb.risk_book module missing, registry not yet bootstrapped,
-# import error during a hot-patch) returns the empty-result default
-# rather than raising. paper_state.save_paper_state is on the
-# 5-min hot path and cannot tolerate exceptions; load_paper_state
-# is on the boot path and a corrupt section must not block the
-# cash/positions restore.
+# Both helpers are defensive: any failure to read the engine's
+# registry (e.g. live_runtime not yet bootstrapped, import error
+# during a hot-patch) returns the empty-result default rather than
+# raising. paper_state.save_paper_state is on the 5-min hot path
+# and cannot tolerate exceptions; load_paper_state is on the boot
+# path and a corrupt section must not block the cash/positions
+# restore.
+
+def _get_active_risk_registry():
+    """v7.106.0 -- single accessor for the engine's live RiskBookRegistry.
+
+    Returns None when the v10 engine isn't bootstrapped yet (e.g.
+    boot is mid-restart and load_paper_state is running before
+    live_runtime.bootstrap). Callers MUST handle None.
+    """
+    try:
+        from orb.live_runtime import get_engine
+        engine = get_engine()
+        if engine is None:
+            return None
+        return getattr(engine, "_risk", None)
+    except Exception:
+        return None
+
 
 def _risk_book_tickets_for_save() -> dict:
     """Return {portfolio_id: [{ticket_id, risk_dollars, notional}]}
-    for every RiskBook in the v10 registry. Empty dict on any failure.
+    for every RiskBook in the live engine's registry. Empty dict
+    when the engine isn't bootstrapped or on any failure.
     """
+    registry = _get_active_risk_registry()
+    if registry is None:
+        return {}
     try:
-        from orb.risk_book import REGISTRY
-        return REGISTRY.serialize_all_tickets()
+        return registry.serialize_all_tickets()
     except Exception as exc:
         logger.debug("[V79-ORB-PERSIST] serialize_all_tickets failed: %s", exc)
         return {}
 
 
-def _risk_book_tickets_restore(raw):
-    """Restore tickets from a previously-saved payload. Logs counts
-    at INFO. Silent skip on missing/invalid payload.
+def _risk_book_tickets_restore(raw, *, saved_at_iso: str = "") -> None:
+    """Restore tickets from a previously-saved payload into the
+    engine's live registry. Logs counts at INFO. Silent skip on
+    missing/invalid payload.
+
+    v7.106.0 -- date-rollover guard (audit SEV-3): if the saved
+    paper_state is from a previous trading day, REFUSE to restore
+    -- those tickets belong to yesterday's session and would
+    poison today's risk-cap math. The v10 session-start reset
+    runs at 09:25 ET, but a boot between 00:00 and 09:25 would
+    otherwise see stale tickets. Refusing restore here is safe:
+    the engine starts fresh, and the daily-reset-already-happened
+    path is the same as a clean boot with no saved state.
     """
     if not isinstance(raw, dict) or not raw:
         return
+    # Date-rollover guard. Compare saved_at's ET date to today's ET date.
+    if saved_at_iso:
+        try:
+            from datetime import datetime, timezone
+            from zoneinfo import ZoneInfo
+            saved_dt = datetime.fromisoformat(saved_at_iso.replace("Z", "+00:00"))
+            if saved_dt.tzinfo is None:
+                saved_dt = saved_dt.replace(tzinfo=timezone.utc)
+            saved_date_et = saved_dt.astimezone(ZoneInfo("America/New_York")).date()
+            today_date_et = datetime.now(timezone.utc).astimezone(
+                ZoneInfo("America/New_York")
+            ).date()
+            if saved_date_et != today_date_et:
+                logger.info(
+                    "[V79-ORB-PERSIST] skipping ticket restore "
+                    "(saved_date=%s, today=%s) -- cross-day boot",
+                    saved_date_et, today_date_et,
+                )
+                return
+        except Exception as exc:
+            logger.debug(
+                "[V79-ORB-PERSIST] saved_at parse failed (%s); "
+                "proceeding with restore", exc,
+            )
+    registry = _get_active_risk_registry()
+    if registry is None:
+        logger.warning(
+            "[V79-ORB-PERSIST] live engine not bootstrapped yet -- "
+            "%d portfolio(s) of saved tickets dropped",
+            len(raw),
+        )
+        return
     try:
-        from orb.risk_book import REGISTRY
-        counts = REGISTRY.restore_all_tickets(raw)
+        counts = registry.restore_all_tickets(raw)
     except Exception as exc:
         logger.warning("[V79-ORB-PERSIST] restore_all_tickets failed: %s", exc)
         return
-    if counts:
-        total = sum(counts.values())
+    total = sum(counts.values()) if counts else 0
+    if total:
         logger.info(
             "[V79-ORB-PERSIST] restored %d tickets across %d portfolio(s): %s",
             total, len(counts), counts,
+        )
+    else:
+        # No tickets restored but payload was non-empty -- means none
+        # of the saved portfolio_ids have a corresponding book in the
+        # registry. Worth flagging so the operator notices.
+        logger.warning(
+            "[V79-ORB-PERSIST] payload had %d portfolio(s) but no live "
+            "book matched any pid -- saved=%s",
+            len(raw), list(raw.keys()),
         )
 
 
@@ -319,6 +398,28 @@ def save_paper_state():
     # half-mutated state dict while another save is iterating the same
     # globals for json.dump. Two saves racing on the same globals used to
     # risk "dictionary changed size during iteration".
+    # v7.106.0 (audit SEV-1 fix) -- pre-compute the v10 ticket
+    # payload OUTSIDE the lock so we can log its count for parity
+    # with the restore-side INFO. Inside the snapshot dict, we just
+    # reference the captured variable. Defensive: if anything raises,
+    # we land an empty {} and the load path silently no-ops -- same
+    # behavior as pre-v7.105.0.
+    try:
+        _v10_tickets_save_payload = _risk_book_tickets_for_save()
+    except Exception:
+        _v10_tickets_save_payload = {}
+    _v10_tickets_total = sum(
+        len(items) for items in _v10_tickets_save_payload.values()
+        if isinstance(items, list)
+    )
+    if _v10_tickets_total:
+        logger.info(
+            "[V79-ORB-PERSIST] saving %d tickets across %d portfolio(s): %s",
+            _v10_tickets_total,
+            len(_v10_tickets_save_payload),
+            {pid: len(items) for pid, items in _v10_tickets_save_payload.items()},
+        )
+
     with _paper_save_lock:
         state = {
             "paper_cash": tg.paper_cash,
@@ -364,10 +465,10 @@ def save_paper_state():
             # Pre-v7.105.0 every Railway redeploy created a fresh
             # RiskBook with open_count=0 while tg.positions reloaded
             # from disk -- the phantom-position pattern across
-            # monitor issues #532-#596. Wrapped in try/except so a
-            # mid-refactor or missing-registry never blocks paper_state
-            # save (which is on a 5-min hot path).
-            "v10_risk_book_tickets": _risk_book_tickets_for_save(),
+            # monitor issues #532-#596. v7.106.0 routes through the
+            # engine's actual registry (not the dead module REGISTRY)
+            # and adds the symmetric INFO log below.
+            "v10_risk_book_tickets": _v10_tickets_save_payload,
             "saved_at": tg._utc_now_iso(),
         }
         # v7.0.0 Phase 3 -- write to the new canonical path (paper_state_main.json).
@@ -572,13 +673,17 @@ def load_paper_state():
         _ratchet_restore(state)
 
         # v7.105.0 (Lesson 2) \u2014 restore v10 RiskBook open tickets.
-        # Same date-aware semantics as the rest of paper_state load:
-        # this populates tickets, and the daily-reset block below
-        # (when saved_at date != today) clears them via the v10
-        # session-start reset path. Tickets that survive a same-day
-        # restart prevent the post-deploy phantom-position pattern
-        # (monitor issues #532-#596).
-        _risk_book_tickets_restore(state.get("v10_risk_book_tickets"))
+        # v7.106.0 \u2014 pass saved_at so the helper can refuse to
+        # restore cross-day tickets (audit SEV-3 fix). The helper
+        # also routes through live_runtime.get_engine()._risk now
+        # (audit SEV-1 fix), not the dead module REGISTRY.
+        # Tickets that survive a same-day restart prevent the
+        # post-deploy phantom-position pattern (monitor issues
+        # #532-#596).
+        _risk_book_tickets_restore(
+            state.get("v10_risk_book_tickets"),
+            saved_at_iso=str(state.get("saved_at") or ""),
+        )
 
         # Reset daily counts if saved on a different day
         today = tg._now_et().strftime("%Y-%m-%d")
