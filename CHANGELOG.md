@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.12 (2026-05-12) -- Unmirror engine FSM + RiskBook on `_remove_position` (cleanup phantom IN_POS)
+
+Watchdog post-v8.3.6 surfaced `v10_in_pos_has_internal_position`: `main/AMZN phase='in_pos' in_position=True last_entry=""` — FSM thinks open but no matching position in book.
+
+### Root cause
+
+v8.3.6 added `_mirror_position_into_engine` which sets `_state.day_states[(pid, ticker)].in_position = True` and inserts a synthetic `_Ticket` into `_risk[pid]._open_tickets` on every boot graft (`_load_persisted_positions` + `_reconcile_broker_positions`). Symmetric inverse was missing: when the position later **closed**, the executor's `_remove_position(ticker)` cleared `self.positions[ticker]` and the state.db row but **never touched the engine FSM or RiskBook**. The FSM stayed at `PHASE_IN_POS` and the synthetic ticket stayed in `_open_tickets` forever. Net effect:
+
+- Dashboard `CONCURRENT RISK` never dropped back to $0 after the last close
+- Opposite-side guard kept blocking opposite entries on a closed ticker
+- Watchdog `v10_in_pos_has_internal_position` invariant fired indefinitely
+
+### Change
+
+**`executors/base.py`** — new helper `_unmirror_position_from_engine(ticker)`:
+
+1. Bails if engine isn't bootstrapped or `self.NAME.lower()` isn't a registered portfolio
+2. `_state.day_states[(pid, ticker)].in_position = False`; transitions `PHASE_IN_POS` → `PHASE_CLOSED` (only if currently IN_POS — doesn't clobber `BLOCKED_*` rows)
+3. Pops the synthetic ticket from `_risk[pid]._open_tickets` keyed by `"recover-{pid}-{ticker}"` (same id v8.3.6 used)
+4. Decrements `_open_risk` and `_open_notional` by the released ticket's reserved amounts; clamps non-negative
+5. Logs `[V8312-UNRECOVER]` per release
+
+Wired into `_remove_position(ticker)` — the single close-path hook used by every executor exit (record_exit_with_fill, broker-orphan delete on reconcile, etc.). Symmetric to `_persist_position` / `_delete_persisted_position`.
+
+### Tests
+
+`tests/strategy/test_executor_engine_mirror.py::TestUnmirrorPositionFromEngine` — 6 new tests:
+
+1. `test_unmirror_flips_in_position_off` — `in_position` → False, `phase` → CLOSED
+2. `test_unmirror_releases_risk_book_ticket` — open_count → 0, open_risk → 0, open_notional → 0
+3. `test_remove_position_fires_unmirror_end_to_end` — close path wires the unmirror automatically
+4. `test_unmirror_idempotent_no_position_open` — safe to call when nothing was mirrored
+5. `test_unmirror_doesnt_clobber_blocked_phase` — `BLOCKED_BLOCKLIST` row keeps its phase; `in_position` flips False
+6. `test_double_unmirror_is_safe` — second call doesn't double-decrement risk / notional
+
+**734 strategy tests pass** (728 + 6 new).
+
+### What the operator will see
+
+- After the next position close, `CONCURRENT RISK` drops by the released ticket's risk-dollar amount.
+- After the next ticker fully closes (no more open positions on that name), the engine FSM allows opposite-side re-entry on a fresh breakout signal.
+- Watchdog `v10_in_pos_has_internal_position` invariant stops firing on closed positions.
+- Forensic: `[V8312-UNRECOVER]` log line per release in Railway logs.
+
+### Related v8.3.x persistence work
+
+| Version | What |
+|---|---|
+| v8.3.4 | Engine state snapshot to /data |
+| v8.3.6 | Executor → engine FSM/RiskBook **mirror** (on open) |
+| **v8.3.12 (this PR)** | Executor → engine FSM/RiskBook **unmirror** (on close) |
+
+The pair (v8.3.6 + v8.3.12) closes the round-trip: engine state mirrors executor state both on entry AND on exit.
+
+### Rollback
+
+Remove the `self._unmirror_position_from_engine(ticker)` call site in `_remove_position`. The helper stays defined; the engine just stops cleaning up after closes (pre-v8.3.12 behavior).
+
+---
+
 ## v8.3.11 (2026-05-12) -- Fix duplicate COVER rendering (dedup key + price-field selection)
 
 Operator screenshot showed AMZN COVER appearing **twice** in TODAY'S TRADES for a single 58-share short:
