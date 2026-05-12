@@ -51,7 +51,12 @@ Run `bash scripts/preflight.sh` — mirrors CI checks locally:
 In sandbox where `telegram` is missing, `pytest tests/strategy/` is the focused alternative (231+ tests; the v10 path is fully covered there).
 
 ## Post-deploy smoke
-Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the script sources `scripts/lib/checks.sh` for the checks: deploy status, universe loaded, log-tag schema, no errors, bar archive today, dashboard /api/state). v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow strategy. Failures are informational — they do NOT block automated merges; post the output as a PR comment so the author sees it. CI will eventually invoke this automatically; the existing `post-deploy-smoke.yml` workflow remains the blocking gate.
+
+**Default path — already automated.** The `.github/workflows/post-deploy-smoke.yml` workflow auto-fires on every push to `main`. It uses GHA secrets (`DASHBOARD_PASSWORD`, `TELEGRAM_TP_TOKEN`, `TELEGRAM_TP_CHAT_ID`) — no Railway API token. It waits up to 5 min for Railway to roll out the new `BOT_VERSION` (polls `https://tradegenius.up.railway.app/api/version`), then runs **31 local + 9 prod smoke tests** via `python smoke_test.py` and `python smoke_test.py --prod`. On failure it Telegram-alerts the TP chat with the failing test names + the Action URL.
+
+→ **Do NOT propose running `scripts/post_deploy_smoke.sh <version>` from a local sandbox after a merge.** It's a different code path (sources `scripts/lib/checks.sh` for deploy-status / universe / log-tag / bar-archive / `/api/state` checks) that needs `RAILWAY_API_TOKEN` directly. Reserve it for the rare "GHA is broken, need a manual smoke" case. CI's `post-deploy-smoke.yml` is the canonical post-release gate; silence = pass, Telegram ping = fail.
+
+v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow strategy.
 
 ## Tests
 - `pytest tests/strategy/` — v10 ORB suite (231+ tests, fast)
