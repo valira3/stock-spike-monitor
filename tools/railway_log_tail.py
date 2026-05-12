@@ -257,16 +257,23 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     # v7.99.0 -- Railway's deploymentLogs query now requires startDate
     # and endDate (DateTime!). Pre-v7.99.0 we omitted both arguments
     # and Railway silently returned 0 rows even with valid auth and
-    # a fresh deployment_id (confirmed by issue #589 footer:
-    # deployment_created=2026-05-12T01:08:46Z, lines_fetched=0). Use
-    # a 24h window ending now as the default -- spans all of today's
-    # RTH activity plus the prior session for late-evening replays.
+    # a fresh deployment_id. Use a 24h window ending now as the
+    # default -- spans all of today's RTH activity plus the prior
+    # session for late-evening replays.
+    # v7.101.0 -- Railway also enforces a max value on `limit`.
+    # Issue #593's GraphQL error `Error in limit - Invalid input`
+    # revealed that our limit=10000 (bumped 3000->10000 in v7.95.0)
+    # exceeds Railway's accepted range. Clamp to 500 -- the
+    # historical v7.79.0 value, known to work -- and let callers
+    # request more if Railway's cap turns out to be higher in a
+    # future version.
+    _safe_limit = max(1, min(int(limit), 500))
     from datetime import datetime, timedelta, timezone as _tz
     _now = datetime.now(_tz.utc)
     _start = (_now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     _end = _now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
     resp = _gql(token, _DEPLOYMENT_LOGS_QUERY,
-                {"deploymentId": deployment_id, "limit": int(limit),
+                {"deploymentId": deployment_id, "limit": _safe_limit,
                  "startDate": _start, "endDate": _end},
                 api_url=api_url)
     if not resp or "data" not in resp:

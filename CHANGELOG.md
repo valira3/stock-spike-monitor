@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.101.0 (2026-05-12) -- Clamp Railway deploymentLogs `limit` to 500
+
+v7.100.0's `[GRAPHQL-ERROR]` capture immediately surfaced the actual schema complaint on issue #593:
+
+> ### Railway GraphQL errors
+> - `Error in limit - Invalid input`
+
+Not startDate/endDate — `limit`. Our `limit=10000` (bumped 3000 → 10000 in v7.95.0) exceeds Railway's accepted range. Railway returns HTTP 200 with `data: null` and rejects the entire query. That's been the silent failure mode through v7.91 → v7.100.
+
+### Fix
+
+`fetch_recent_logs` now clamps `limit` to `min(limit, 500)` before passing to Railway. 500 is the historical v7.79.0 value, known to work. Callers that pass 10000 (e.g., `count_recent_logs(limit=10000)`, the monitor invariant grep windows) silently get clamped — the data they actually need (recent forensic log lines) fits comfortably in 500.
+
+500 lines at ~50/min RTH log rate covers ~10 min of activity. That's enough for any single monitor-cycle worth of `[SIGNAL-BUS-EMIT]` / `[V79-MIRROR-RECV]` evidence; deeper history is available via wider date-range queries if we ever need it.
+
+### Files
+
+- `tools/railway_log_tail.py` — `fetch_recent_logs` clamps `limit` to 500 max
+- `bot_version.py` / `trade_genius.py` — `7.100.0` → `7.101.0`
+
+All 90 Railway + invariant tests still green.
+
+### Next
+
+Trigger any monitor cycle → expect `lines_fetched_on_10k_request=N>0` AND no `Railway GraphQL errors` section in the footer. Tomorrow's RTH window will then carry actual `[SIGNAL-BUS-*]` / `[V79-MIRROR-*]` log slices, finally revealing whether Val's mirror listener is firing.
+
+---
+
 ## v7.100.0 (2026-05-12) -- Surface Railway GraphQL errors in monitor footer
 
 v7.99.0's startDate/endDate fix didn't unblock the log slice — issue #591 still showed `lines_fetched=0` against the running deployment (`4050a929-f1f`, created 01:16:22Z, hit by the monitor at 01:18:43Z). That means Railway's `deploymentLogs` schema doesn't accept those args — but our `_gql` was silently swallowing the schema error so we couldn't see Railway's complaint.
