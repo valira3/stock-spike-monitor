@@ -4,6 +4,65 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.10 (2026-05-12) -- OPEN POSITIONS mobile redesign: stacked card layout per position
+
+The desktop OPEN POSITIONS table (10 columns: Ticker / Side / Sh / Entry / Mark / Notional / Stop / Risk / Unreal / %) was wider than any phone viewport even after v7.0.3 + v8.3.8 column-drops and nowrap. Operator: "Open positions with bars overflow. They are too wide. Might need an updated design for mobile."
+
+### Change
+
+`dashboard_static/app.css` — at `@media (max-width: 480px)`, transform each position row from a table row into a vertical card:
+
+- **`thead` hidden** — column labels are injected per-cell via `::before` with `content` matched on `nth-child`
+- **Data row** (`tr[data-pos-ticker]:not(.pos-progress-row)`) becomes a 2-column CSS Grid card with rounded top corners, border, padding
+- **Ticker cell** spans both columns at top as a header (15px bold, with the side dot/chip rendering inline as on desktop)
+- **Side cell** hidden on mobile (redundant — already in the ticker chip)
+- **Other cells** (Sh, Entry, Mark, Notional, Stop, Unreal, %) flow into the 2-col grid with `::before` labels like `SH`, `ENTRY`, `MARK`, etc.
+- **Risk cell** hidden on mobile (visible in Concurrent Risk gauge)
+- **Unreal $ + %** emphasized — `font-weight: 600; font-size: 13px;`
+- **Progress row** (`tr.pos-progress-row`) snaps flush below the data card with rounded bottom corners; the existing bar + stop/1R/target labels render unchanged
+
+Pure CSS — **no JS or HTML change required**. The desktop render path is unaltered; the same `<tr>` markup serves both layouts.
+
+### Approach
+
+Used the classic responsive-table-to-cards pattern via:
+1. `display: block` on `table > tbody > tr` to break the table layout
+2. `display: grid` on each data row for the 2-col card
+3. `display: flex` on each `td` with a `::before` pseudo-element for the column label
+4. `display: none` on `thead` since labels live per-cell now
+
+Labels are hardcoded in CSS via `nth-child(N)::before { content: "X" }` rules. Brittle if column order in the JS renderer changes, but the desktop table is the source of truth and reorderings will be obvious during code review.
+
+### What the operator will see
+
+At iPhone width (~390px), each position renders as:
+
+```
+┌─────────────────────────────────────┐
+│ META  ● ▲ LONG                      │  ← header (ticker + side chip)
+├─────────────────────────────────────┤
+│ SH     31         ENTRY    $602.18  │  ← 2-col labeled grid
+│ MARK   $600.24    NOTIONAL $18.6K   │
+│ STOP   $599.17    UNREAL   −$47.69  │
+│                                 −0.26% │
+├─────────────────────────────────────┤
+│ ━━━━━━━━●━━━━━━━━━━━━━━━━━━━━━━━━━━ │  ← progress bar (unchanged)
+│ stop $599.17   1R $605.19   target  │
+└─────────────────────────────────────┘
+```
+
+Desktop (≥481px) renders identically to pre-v8.3.10.
+
+### Tests
+
+CSS-only change. 727 strategy tests still pass; no visual-regression test infrastructure exists today (manual mobile verification on iPhone Safari recommended after deploy).
+
+### Rollback
+
+Revert the v8.3.10 `@media (max-width: 480px)` block in `dashboard_static/app.css`. The pre-v8.3.8 table layout returns (with the operator's overflow + wrap symptoms).
+
+---
+
 ## v8.3.9 (2026-05-12) -- Day P&L: route legacy `portfolio.day_pnl` through `_compute_realized_pnl_today`
 
 Operator post-v8.3.7 screenshot showed Day P&L = $127.50 with TODAY'S TRADES summary line correctly displaying "realized $655.21". Math should net to $655.21 + open-unrealized $189.63 = $844.84 — but the tile read $127.50, which equals "open-unrealized + only the most recent AMZN cover (-$62.13)".
