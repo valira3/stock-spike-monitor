@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.3 (2026-05-12) -- Activate partial-profit-at-1R by default
+
+Final activation step in the partial-profit lineage. The lever has been:
+- v8.1.0: engine FSM + bookkeeping
+- v8.1.1: Alpaca executor partial-close end-to-end
+- v8.1.2: dashboard UI surfacing
+- **v8.1.3: env-fallback default flipped `False → True`**
+
+After the next Railway deploy, the live engine emits `EXIT_PARTIAL` on first 1R touch automatically — no operator action needed. Backtest config now matches what's running in production:
+
+| Lever | env-fallback default | Live |
+|---|---|---|
+| `risk_per_trade_pct` | `1.0` (v7.109.0+) | ✅ |
+| `atr_stop_mult` | `1.75` (v8.0.1+) | ✅ |
+| `partial_profit_at_1r` | `True` (v8.1.3+) | **✅ now** |
+
+### Change
+
+Single line in `orb/live_runtime.py:from_env`:
+
+```python
+# before
+partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", False),
+# after
+partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
+```
+
+### Test scaffolding
+
+Flipping the default required updating ~20 strategy test files whose `isolated_env` fixtures wiped all `ORB_*` env vars (which previously left partial=False; now leaves partial=True and breaks tests written for the legacy path).
+
+- New `tests/strategy/conftest.py` — autouse fixture `_strategy_default_partial_off` sets `ORB_PARTIAL_PROFIT_AT_1R=0` before each test so the legacy non-partial path stays the strategy-suite default.
+- ~20 per-file `isolated_env` fixtures also setenv `=0` after their `delenv` loop (belt-and-suspenders since per-file fixtures wipe my autouse).
+- `tests/strategy/test_orb_partial_profit.py::test_off_disables_partial_branch` — was asserting False is the engine default; now explicitly sets env=0 and asserts.
+- `tests/strategy/test_v10_ticker_matrix_snapshot.py::test_config_v8_atr_and_partial_fields_present` — now explicitly `delenv`s `ORB_PARTIAL_PROFIT_AT_1R` and asserts the engine sees `True` (verifying the production env-fallback path).
+
+625 strategy tests pass.
+
+### Backtest projection (compounding $100k base, **both ATR + partial active**)
+
+| Scenario | Year 1 | Year 3 | Year 5 |
+|---|---:|---:|---:|
+| LOW (12% OOS-haircut) | $112k | $140k | $176k |
+| MED (44% backtest) | $144k | $300k | $622k |
+| HIGH (52% favorable) | $152k | $352k | $814k |
+
+### Rollback
+
+Set `ORB_PARTIAL_PROFIT_AT_1R=0` in Railway env (no redeploy). Partial branch is gated, no signal-bus emit, no broker order. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
 ## v8.1.2 (2026-05-12) -- Dashboard UI reflects v8.0 + v8.1 features
 
 Backend has been emitting all the new state since v8.0.0 but the frontend hadn't been wired to surface it. This release closes that gap with surgical edits to `dashboard_static/{app.js, app.css, index.html}` and a small backend serializer extension plus an activity-feed event kind.

@@ -26,6 +26,7 @@ def isolated_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
     yield monkeypatch
 
 

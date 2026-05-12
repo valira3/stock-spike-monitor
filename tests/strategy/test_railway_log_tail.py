@@ -14,6 +14,7 @@ def isolated_env(monkeypatch):
     influence test outcomes."""
     for k in ("RAILWAY_API_TOKEN", "RAILWAY_SERVICE_ID", "RAILWAY_API_URL"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
     yield
 
 
