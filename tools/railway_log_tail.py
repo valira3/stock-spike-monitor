@@ -269,10 +269,20 @@ def probe_railway_access() -> dict:
     """One-shot diagnostic of Railway credential health.
 
     Returns a dict with keys:
-      status        one of the strings above
-      token_set     bool -- RAILWAY_API_TOKEN env var is non-empty
-      service_set   bool -- RAILWAY_SERVICE_ID env var is non-empty
-      deployment_id resolved deployment id when status=="ok", else ""
+      status              one of the strings above
+      token_set           bool -- RAILWAY_API_TOKEN env var is non-empty
+      service_set         bool -- RAILWAY_SERVICE_ID env var is non-empty
+      deployment_id       resolved deployment id when status=="ok", else ""
+      deployment_status   Railway-reported status string for the resolved
+                          deployment (SUCCESS / FAILED / REMOVED /
+                          BUILDING / DEPLOYING / CRASHED / ...). v7.97.0
+                          added this because v7.96.0's
+                          lines_fetched_on_10k_request=0 on issue #583
+                          suggested the resolver was picking a wrong
+                          (non-running) deployment -- the bot is
+                          actively trading on Railway, so 0 returned
+                          log lines almost certainly means we resolved
+                          a REMOVED / FAILED deployment with no logs.
     """
     token = (os.environ.get("RAILWAY_API_TOKEN", "") or "").strip()
     service_id = (os.environ.get("RAILWAY_SERVICE_ID", "") or "").strip()
@@ -281,6 +291,7 @@ def probe_railway_access() -> dict:
         "token_set": bool(token),
         "service_set": bool(service_id),
         "deployment_id": "",
+        "deployment_status": "",
     }
     if not token:
         out["status"] = "missing_token"
@@ -303,7 +314,9 @@ def probe_railway_access() -> dict:
         out["status"] = "no_deployment"
         return out
     try:
-        out["deployment_id"] = str(edges[0]["node"]["id"])
+        node = edges[0]["node"] or {}
+        out["deployment_id"] = str(node.get("id") or "")
+        out["deployment_status"] = str(node.get("status") or "")
     except (KeyError, TypeError):
         out["status"] = "auth_failed"
     return out

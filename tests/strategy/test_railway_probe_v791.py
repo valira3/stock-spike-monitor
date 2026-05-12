@@ -73,7 +73,7 @@ def test_probe_no_deployment_when_edges_empty():
 
 
 def test_probe_ok_returns_deployment_id():
-    fake = {"data": {"deployments": {"edges": [{"node": {"id": "dep-123"}}]}}}
+    fake = {"data": {"deployments": {"edges": [{"node": {"id": "dep-123", "status": "SUCCESS"}}]}}}
     with patch.dict(
         "os.environ",
         {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
@@ -82,6 +82,26 @@ def test_probe_ok_returns_deployment_id():
         out = probe_railway_access()
     assert out["status"] == "ok"
     assert out["deployment_id"] == "dep-123"
+    # v7.97.0 -- deployment status returned alongside the id
+    assert out["deployment_status"] == "SUCCESS"
+
+
+def test_probe_ok_returns_deployment_status_when_stale():
+    """v7.97.0 -- regression: when the resolver picks a non-running
+    deployment (REMOVED / FAILED / CRASHED), the probe must surface
+    that so the monitor footer can flag it. This is the smoking-gun
+    pattern from issue #583 (lines_fetched=0 with status=ok).
+    """
+    fake = {"data": {"deployments": {"edges": [{"node": {"id": "dep-old", "status": "REMOVED"}}]}}}
+    with patch.dict(
+        "os.environ",
+        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+        clear=False,
+    ), patch("tools.railway_log_tail._gql", return_value=fake):
+        out = probe_railway_access()
+    assert out["status"] == "ok"  # auth works
+    assert out["deployment_id"] == "dep-old"
+    assert out["deployment_status"] == "REMOVED"
 
 
 def test_probe_token_only_whitespace_treated_missing():
