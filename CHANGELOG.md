@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.2.0 (2026-05-12) -- Fix phantom-at-broker watchdog alert (executor → PortfolioBook mirror)
+
+The dashboard-monitor's `inv_position_count_three_way` invariant has been firing every tick for hours with:
+
+> broker has 3 open position(s) but all three internal books are empty
+> main=0 val=0 gene=0 broker_open_n=3
+
+Root cause: the Val/Gene executor boot paths (`_load_persisted_positions` from `state.db` + `_reconcile_broker_positions` from Alpaca) only write to `self.positions` (the executor dict). They never mirror into `PORTFOLIOS[<pid>].positions` (the per-portfolio `PortfolioBook`). The dashboard's `/api/state.portfolios.<pid>.positions` feed reads from **`book.positions`**, not `self.positions`. So after a Railway restart in which Val/Gene grafted broker orphans, the executor knows about them and manages their exits — but the book stays empty. `val_count = gene_count = 0` while `broker_open_n = 3`, tripping the invariant indefinitely.
+
+### Change
+
+`executors/base.py` — new helper `_mirror_position_into_book(ticker)`:
+
+- Looks up `PORTFOLIOS[self.NAME.lower()]`
+- Maps `qty → shares`, copies `entry_price`, `entry_ts_utc`, `source`, `stop`
+- Routes to `book.positions` (long) or `book.short_positions` (short) based on `pos["side"]`
+- **Idempotent**: if the ticker is already in the book, no-op — protects live-entered rows (which carry richer state like `v531_max_favorable_price`) from being clobbered by a stale RECONCILE-shaped row
+
+Called from both boot paths:
+
+- `_load_persisted_positions` — after `self.positions.update(rows)`, mirror each
+- `_reconcile_broker_positions` — after `_persist_position(ticker)` inside the graft loop
+
+### Tests
+
+`tests/strategy/test_executor_book_mirror.py` — 6 new tests:
+
+1. `test_mirror_long_into_book` — long goes into `book.positions` with `qty → shares` mapping
+2. `test_mirror_short_into_short_book` — short goes into `book.short_positions`
+3. `test_mirror_idempotent_does_not_clobber_existing_row` — pre-existing live-fill row with `v531_max_favorable_price` is preserved
+4. `test_mirror_no_pos_no_op` — empty `self.positions` is safe
+5. `test_mirror_unknown_pid_no_crash` — `NAME = "UnknownPid"` falls through silently
+6. `test_load_persisted_mirrors_into_book` — `_load_persisted_positions` end-to-end mirrors into the book
+
+**644 strategy tests pass** (638 + 6 new).
+
+### What the operator will see
+
+After the next Railway deploy:
+- Watchdog `position_count_three_way` violations stop firing
+- Dashboard's per-portfolio positions feed correctly shows Val/Gene rows after any boot-time graft
+- Existing 58 open dashboard-monitor issues stop refilling and can be bulk-closed
+
+### Rollback
+
+Remove the `_mirror_position_into_book` method + the two call sites. Steady-state live entries via `record_entry_with_fill` write to the book directly, so reverting only re-creates the boot-path gap.
 ## v8.1.9 (2026-05-12) -- Fix Gene equity=0 root cause (recurring dashboard-monitor alert)
 
 The dashboard-monitor's `inv_risk_book_notional_cap_nonzero` invariant has been firing for hours with:
