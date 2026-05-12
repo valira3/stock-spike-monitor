@@ -534,6 +534,12 @@ class OrbEngine:
         return {
             "config": {
                 "or_minutes": self.cfg.or_minutes,
+                # v7.103.0 -- expose session window so the monitor's
+                # inv_entries_inside_window invariant can compute the
+                # eligible-entry window dynamically rather than
+                # hardcoding 09:30-15:55 ET.
+                "session_start_minutes": self.cfg.session_start_minutes,
+                "eod_cutoff_minutes": self.cfg.eod_cutoff_minutes,
                 "rr": self.cfg.rr,
                 "max_trades_per_day": self.cfg.max_trades_per_day,
                 "risk_per_trade_pct": self.cfg.risk_per_trade_pct,

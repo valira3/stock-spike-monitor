@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.103.0 (2026-05-12) -- Entry-window invariant (Lesson 3) + Auto Agentic rule 30
+
+Today's trade analysis revealed the late-entry pattern: first trade fired at 12:14 ET when the v10 eligible window opens at 10:00 ET (session_start=09:30 + or_minutes=30). The monitor had no way to flag this — `val_gene_trades_match_main` only fires once Main has traded, not during the empty period before.
+
+### Added
+
+- **`inv_entries_inside_window`** — new dashboard-monitor invariant. For each `BUY`/`SHORT` row in `s.trades_today`, parses the `time` field into ET-minutes and asserts `eligible_start_min <= t_min < eligible_end_min`. Window read dynamically from `v10.config.{session_start_minutes, or_minutes, eod_cutoff_minutes}` (newly exposed) with v10-keystone defaults `[10:00, 15:55] ET`.
+- **`_parse_trade_time_to_et_minutes`** — helper that handles the v7.89.0+ `HH:MM ET` format, the legacy `HH:MM CDT` (auto-converts +60 min), bare `HH:MM`, and ISO timestamps.
+- **v10 snapshot exposes `session_start_minutes` and `eod_cutoff_minutes`** on `v10.config` (already had `or_minutes`). Lets the monitor adapt to config changes without needing a redeploy.
+
+### What the invariant catches
+
+- **Entries BEFORE OR window closes** — e.g. an entry at 09:45 ET when OR hasn't completed. Indicates a gate bug.
+- **Entries AFTER EOD cutoff** — e.g. an entry at 15:58 ET past the 15:55 cutoff. Asymmetric-risk fires the operator flagged in today's analysis.
+
+The 12:14 ET "late but eligible" case still passes (it's inside the window). A more aggressive `inv_first_entry_promptness` invariant could layer on top later; deliberately keeping this one narrowly focused.
+
+### Auto Agentic Rule 30 added
+
+`docs/auto_agentic_framework.md` gains **Rule 30: Don't wait passively for webhooks — poll on a 30-second timer.** Codifies what we've been doing manually all evening: after submitting any PR/external job, kick off a 30-second-interval recheck loop until terminal state. Webhooks are bonus signal, never the sole signal.
+
+### Tests
+
+`tests/strategy/test_entries_inside_window_v7103.py` — 13 tests:
+- 5 for the time parser (ET / CDT-legacy / bare / ISO / invalid)
+- 8 for the invariant (skip-no-state, skip-no-trades, all-inside-pass, before-OR-flagged, after-EOD-flagged, exits-not-counted, v10-config-override, late-but-inside-passes)
+
+Full strategy suite at 552 passed.
+
+### Files
+
+- `tools/dashboard_monitor_invariants.py` — `_parse_trade_time_to_et_minutes` + `inv_entries_inside_window` + registered in `INVARIANTS`
+- `orb/engine.py` — `snapshot()` exposes 2 more config fields
+- `docs/auto_agentic_framework.md` — Rule 30 added
+- `tests/strategy/test_entries_inside_window_v7103.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.102.0` → `7.103.0`
+
+---
+
 ## v7.102.0 (2026-05-12) -- R-multiple uses original stop + signal-bus init audit
 
 Two improvements bundled into one release. Both came out of today's trade-replay analysis (`trade-replay-archive/2026-05-11.md`).
