@@ -4,6 +4,36 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.104.0 (2026-05-12) -- RTH-merge warning workflow (Lesson 1)
+
+Today's 27-deploy day (v7.91 → v7.103) shipped 12+ merges during active RTH. Each Railway redeploy is a fresh container — the in-memory `RiskBook._open_tickets` is lost — which is the mechanical root cause of the phantom-position pattern that dominated monitor issues #532-#596. The Auto Agentic framework's Lesson 1 ("no deploys during RTH unless kill-switch-grade") needs an automated nudge so future days self-correct toward off-hours.
+
+### Added
+
+`.github/workflows/rth-merge-warning.yml` — fires on `pull_request: closed` (with `merged == true`). Checks the ET-zoned merge time and the PR's labels:
+
+- **Inside RTH (Mon-Fri 09:30-16:00 ET) AND not labeled `kill-switch`** → posts a warning comment on the PR explaining the cost (RiskBook ticket loss → phantom-position monitor noise) and asking future UI/observability merges to defer to off-hours.
+- **Outside RTH** OR **labeled `kill-switch`** → no-op (workflow-summary annotation only).
+
+This is a **WARNING ONLY** gate. The PR has already merged by the time the workflow runs — there's no blocking. The intent is visible-paper-trail self-correction, not enforcement.
+
+### Why not block at PR-creation time
+
+Blocking-style gates (status check that fails when merging in-window) have two failure modes:
+- Operator overrides repeatedly → gate is noise, ignored.
+- Operator can't merge a real kill-switch fix → emergency friction.
+
+A post-merge comment is the right calibration: visible enough that the trend self-corrects, not friction-y enough to slow real emergencies.
+
+### Files
+
+- `.github/workflows/rth-merge-warning.yml` — new
+- `bot_version.py` / `trade_genius.py` — `7.103.0` → `7.104.0`
+
+No code changes outside the workflow; no new tests needed.
+
+---
+
 ## v7.103.0 (2026-05-12) -- Entry-window invariant (Lesson 3) + Auto Agentic rule 30
 
 Today's trade analysis revealed the late-entry pattern: first trade fired at 12:14 ET when the v10 eligible window opens at 10:00 ET (session_start=09:30 + or_minutes=30). The monitor had no way to flag this — `val_gene_trades_match_main` only fires once Main has traded, not during the empty period before.
