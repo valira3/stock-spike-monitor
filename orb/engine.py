@@ -93,6 +93,11 @@ class OrbConfig:
     # back to the OR-edge stop so the strategy is never stop-less.
     atr_stop_mult: float = 0.0
     atr_lookback_5m: int = 14   # standard Wilder ATR lookback
+    # v8.1.0 -- partial-profit-at-1R. When True, the exit evaluator
+    # emits EXIT_PARTIAL on first 1R touch, signalling the caller to
+    # sell half. Defaults False so v8.1.0 is strictly additive until
+    # the operator flips ORB_PARTIAL_PROFIT_AT_1R=1 in Railway env.
+    partial_profit_at_1r: bool = False
 
     @property
     def or_end_minutes(self) -> int:
@@ -514,13 +519,47 @@ class OrbEngine:
                                ) -> Optional[_exits.ExitDecision]:
         """Convenience wrapper. Returns the exit decision if the bar
         closes the position, else None.
+
+        v8.1.0 -- forwards cfg.partial_profit_at_1r so exits.evaluate()
+        can emit EXIT_PARTIAL on first 1R touch.
         """
         return _exits.evaluate(
             pos,
             bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
             bar_bucket_min=bar_bucket_min,
             eod_cutoff_min=self.cfg.eod_cutoff_minutes,
+            partial_profit_at_1r=self.cfg.partial_profit_at_1r,
         )
+
+    def on_partial_exit(self, pos: _exits.OrbPosition,
+                        partial_price: float) -> tuple[int, float]:
+        """v8.1.0 -- engine-side partial-fill bookkeeping.
+
+        Called by the adapter AFTER the broker partial-close order has
+        been submitted (caller's responsibility). Mutates the position
+        and releases proportional risk-book budget. Returns
+        (shares_closed, pnl_dollars_booked).
+
+        On (0, 0.0), the partial was a no-op (already taken or shares
+        too small). Caller should not have submitted the broker order
+        in that case; defensive guard against double-fire.
+
+        Idempotent on duplicate calls (apply_partial_fill is itself
+        idempotent on partial_taken=True).
+        """
+        # Apply partial bookkeeping on the position itself.
+        shares_closed, pnl = _exits.apply_partial_fill(pos, partial_price)
+        if shares_closed == 0:
+            return (0, 0.0)
+        # Release half the risk-book budget for this ticket so the
+        # remaining position carries only its remaining risk weight.
+        rb = self._risk.get(pos.portfolio_id)
+        if rb is not None and pos.risk_ticket_id:
+            with rb._lock:
+                ticket = rb._open_tickets.get(pos.risk_ticket_id)
+            if ticket is not None:
+                rb.release_partial(ticket, frac=0.5)
+        return (shares_closed, pnl)
 
     def on_exit(self, pos: _exits.OrbPosition,
                 exit_decision: _exits.ExitDecision,
@@ -571,6 +610,13 @@ class OrbEngine:
                         pnl = shares * (exit_price - entry_price)
                     else:  # short
                         pnl = shares * (entry_price - exit_price)
+                    # v8.1.0 -- include any partial-profit P&L booked
+                    # earlier in this position's lifecycle so the
+                    # daily-loss-kill gate sees the full realized P&L
+                    # of this trade, not just the runner half. Matches
+                    # backtest semantics where pnl = (exit-entry) *
+                    # remaining + partial_pnl_dollars.
+                    pnl += float(getattr(pos, "partial_pnl_dollars", 0.0) or 0.0)
                     kill_just_triggered = rb.record_realized_pnl(pnl)
             except Exception as e:
                 logger.warning(
@@ -636,6 +682,7 @@ class OrbEngine:
                 "blocklist": self.cfg.ticker_side_blocklist or {},
                 "atr_stop_mult": self.cfg.atr_stop_mult,
                 "atr_lookback_5m": self.cfg.atr_lookback_5m,
+                "partial_profit_at_1r": self.cfg.partial_profit_at_1r,
             },
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,

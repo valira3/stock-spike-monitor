@@ -1030,6 +1030,27 @@ def manage_positions():
                     tickers_to_close.append(
                         (ticker, _v10_res.price, f"V10_{_v10_res.reason.upper()}"))
                     _v10_handled = True
+                elif getattr(_v10_res, "partial", False):
+                    # v8.1.0 -- partial-profit-at-1R fire. Apply the
+                    # half-close on the paper book; position stays open
+                    # with the runner half. NOT appended to
+                    # tickers_to_close (full-close path).
+                    try:
+                        from broker.orders import partial_close_breakout
+                        from side import Side as _Side
+                        partial_close_breakout(
+                            ticker=ticker,
+                            shares_to_close=int(_v10_res.partial_shares),
+                            price=float(_v10_res.partial_price),
+                            side=_Side.LONG,
+                            reason="PARTIAL_1R",
+                        )
+                    except Exception as _e:
+                        logger.error(
+                            "[V81-ORB-PARTIAL] long %s broker apply error: %s",
+                            ticker, _e,
+                        )
+                    _v10_handled = True
                 elif _v10_res.reason != "no_open_v10_position":
                     # v10 owns this position; v10 said "stay" -> skip Sentinel
                     _v10_handled = True
@@ -1106,6 +1127,24 @@ def manage_short_positions():
                         ticker, _v10_res.price,
                         reason=f"V10_{_v10_res.reason.upper()}",
                     )
+                    _v10_handled_s = True
+                elif getattr(_v10_res, "partial", False):
+                    # v8.1.0 -- partial-profit-at-1R fire (short side).
+                    try:
+                        from broker.orders import partial_close_breakout
+                        from side import Side as _Side
+                        partial_close_breakout(
+                            ticker=ticker,
+                            shares_to_close=int(_v10_res.partial_shares),
+                            price=float(_v10_res.partial_price),
+                            side=_Side.SHORT,
+                            reason="PARTIAL_1R",
+                        )
+                    except Exception as _e:
+                        logger.error(
+                            "[V81-ORB-PARTIAL] short %s broker apply error: %s",
+                            ticker, _e,
+                        )
                     _v10_handled_s = True
                 elif _v10_res.reason != "no_open_v10_position":
                     _v10_handled_s = True

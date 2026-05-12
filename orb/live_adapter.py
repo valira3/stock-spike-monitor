@@ -60,10 +60,26 @@ class EntryResult:
 
 @dataclass
 class ExitResult:
-    """Result of a check_exit call."""
+    """Result of a check_exit call.
+
+    v8.1.0 -- adds partial-fill fields. When `partial=True`, the
+    position is HALF-CLOSED at `partial_price` and remains open with
+    `remaining_shares`. Caller MUST:
+      1. Submit a broker sell/buy for `partial_shares`.
+      2. Do NOT remove the position from any open-position map.
+      3. Continue calling check_exit on subsequent bars for the runner.
+    `partial=True` and `exit=True` are mutually exclusive.
+    """
     exit: bool
-    reason: str = ""             # "target", "stop", "be_stop", "eod", or ""
+    reason: str = ""             # "target", "stop", "be_stop", "eod", "partial_1r", or ""
     price: float = 0.0
+    # v8.1.0 partial-fill metadata. Populated when the engine emits
+    # EXIT_PARTIAL and the adapter applies the half-close bookkeeping.
+    partial: bool = False
+    partial_shares: int = 0
+    partial_price: float = 0.0
+    remaining_shares: int = 0
+    partial_pnl_dollars: float = 0.0
 
 
 class LiveAdapter:
@@ -206,7 +222,31 @@ class LiveAdapter:
         if decision is None:
             return ExitResult(exit=False)
 
-        # Exit triggered: release ticket + drop from open map
+        # v8.1.0 -- partial-profit fire: half-close, position stays open
+        # in the open map. Caller (scan.py / executor) submits the
+        # broker partial-sell using the partial_shares + partial_price
+        # surfaced on this ExitResult.
+        from orb.exits import EXIT_PARTIAL
+        if decision.reason == EXIT_PARTIAL:
+            shares_closed, pnl = self.engine.on_partial_exit(
+                pos, decision.price,
+            )
+            if shares_closed == 0:
+                # Engine-side guard rejected the partial (already taken
+                # or shares<2). Return no-op so caller doesn't fire a
+                # broker order.
+                return ExitResult(exit=False, reason="partial_noop")
+            return ExitResult(
+                exit=False, partial=True,
+                reason=EXIT_PARTIAL,
+                price=decision.price,
+                partial_shares=shares_closed,
+                partial_price=decision.price,
+                remaining_shares=int(pos.shares),
+                partial_pnl_dollars=float(pnl),
+            )
+
+        # Full exit: release ticket + drop from open map (existing path)
         self.engine.on_exit(pos, decision)
         self._open_positions.pop(ticket_id, None)
         # Drop from ticker map only if it points to this ticket (defensive

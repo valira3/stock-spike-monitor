@@ -242,6 +242,45 @@ class RiskBook:
             self._open_notional = max(0.0, self._open_notional - existing.notional)
             return True
 
+    def release_partial(self, ticket: "_Ticket", frac: float = 0.5) -> bool:
+        """v8.1.0 -- release a FRACTION of a ticket's budget.
+
+        Used by partial-profit-at-1R: the position is half-closed at 1R
+        but remains open with the other half. We free half the
+        risk-budget reservation so other tickers can take entries
+        against the freed capacity, while keeping the ticket in
+        `_open_tickets` so a final release on full exit still finds it.
+
+        Returns False if:
+          - ticket is None,
+          - ticket is not currently tracked (already released),
+          - frac is not in (0, 1).
+
+        Idempotent only at frac==0 or frac==1 boundary semantically;
+        callers should call release_partial(0.5) at MOST once per
+        ticket (v8.1.0 lever only takes one partial at 1R). Multiple
+        calls compound the fraction reduction on the CURRENT remaining
+        risk/notional, NOT on the original; callers depending on a
+        single 50% release should not call twice.
+        """
+        if ticket is None:
+            return False
+        if not (0.0 < frac < 1.0):
+            return False
+        with self._lock:
+            existing = self._open_tickets.get(ticket.ticket_id)
+            if existing is None:
+                return False
+            released_risk = existing.risk_dollars * frac
+            released_notional = existing.notional * frac
+            existing.risk_dollars -= released_risk
+            existing.notional -= released_notional
+            self._open_risk = max(0.0, self._open_risk - released_risk)
+            self._open_notional = max(
+                0.0, self._open_notional - released_notional
+            )
+            return True
+
     def release_by_id(self, ticket_id: str) -> bool:
         """v7.81.0 -- release a ticket by id when the caller doesn't
         hold the original ticket reference. Used by the v10 admit-
