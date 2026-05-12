@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.110.0 (2026-05-12) -- CLAUDE.md doc fix: post-deploy smoke section disambiguated (GHA workflow vs local script)
+
+Documentation-only change. The `## Post-deploy smoke` section in CLAUDE.md was ambiguous about whether `bash scripts/post_deploy_smoke.sh <version>` (local script needing Railway API token) or `.github/workflows/post-deploy-smoke.yml` (auto-running GHA workflow needing only dashboard secrets) is the canonical post-release gate. Real-world answer surfaced during the v7.109.0 ship: the GHA workflow is the default path — it auto-fires on every push to main, polls Railway's `/api/version` for rollout, runs `smoke_test.py` (31 local + 9 prod) against the live dashboard, and Telegram-alerts the TP chat on failure. The local script is a different code path for the rare "GHA broken, need a manual smoke" case.
+
+Rewrote the section to lead with the auto-fire path + explicitly tell future agents not to propose running the local script post-merge unless GHA is unavailable. No code or test changes.
+
 ## v7.109.0 (2026-05-12) -- Phase 14: v10 ORB risk-per-trade default 2.0% to 1.0% (full-year-validated stability lever)
 
 The single highest-confidence finding from Phase 14's full-year (251 trading day) P&L optimization research. v11's "+43% CAGR" was an in-sample artifact on a 124-day window. On the full 251-day corpus (May 2025 → May 2026) the v10 anchor with `ORB_RISK_PER_TRADE_PCT=2.0` is **net −$3,750 with 3/4 quarters losing**. Halving per-trade risk to **1.0%** flips that to **+$24,875 with 0/4 negative quarters** — same code paths, same gates, same FSM, just smaller dollar risk per trade.
