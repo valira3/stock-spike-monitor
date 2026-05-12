@@ -399,9 +399,29 @@
     [data-f="pos-body"] table thead th,
     [data-f="pos-body"] table tbody td {
       padding: 6px 6px;
+      /* v8.3.8 -- prevent negative-dollar cells like "−$181.48" from
+         wrapping onto two lines on mobile Safari. fmtUsd uses the
+         Unicode minus (U+2212) which Safari treats as a soft-break
+         opportunity, so a tight UNREAL. column collapsed onto two
+         lines (operator screenshot: "−" + "$181.48"). Numeric cells
+         must never wrap. Cells stay fixed-width and the row
+         horizontally scrolls if needed — a fragmented number is
+         worse than horizontal scroll. */
+      white-space: nowrap;
     }
     #pos-body table .ticker .mark,
     [data-f="pos-body"] table .ticker .mark { margin-left: 1px; }
+    /* v8.3.8 -- compact the notional cell on narrow phones so it
+       doesn't single-handedly drive row width past the viewport.
+       $61,835.82 is 10 chars; we replace the in-cell padding/font
+       with a tighter look so it occupies a similar footprint to
+       the other dollar cells. Numbers stay fully readable, just
+       in a compressed font size. */
+    #pos-body table tbody td:nth-child(6),
+    [data-f="pos-body"] table tbody td:nth-child(6) {
+      font-size: 11px;
+      letter-spacing: -0.01em;
+    }
   }
 
   /* v4.2.2 \u2014 <400px: drop the unit-price column so pnl/cost stays intact. */
