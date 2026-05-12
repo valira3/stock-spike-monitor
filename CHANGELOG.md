@@ -4,6 +4,35 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.98.0 (2026-05-12) -- Add deployment `createdAt` to probe diagnostic
+
+v7.97.0's probe surfaced `deployment_status=SUCCESS` alongside `lines_fetched_on_10k_request=0` on issues #585 and #586. The operator subsequently regenerated the Railway personal API token unscoped (vs the prior workspace-scoped one), but the next monitor cycle returned the **identical** diagnostic — same `deployment_id=28a6d4d2-7ba`, same `lines_fetched=0`.
+
+That rules out the token-scope hypothesis. With a full-account token, scope can't be the missing leg. Two hypotheses remain:
+
+- **Stale deployment.** Multiple SUCCESS-status deployments exist (each redeploy today created one); the resolver consistently picks one whose logs have been purged. The deployment_id stability across runs (same UUID across multiple cycles spanning hours) supports this — if it were truly "the latest" it should rotate as the bot is redeployed.
+- **Schema drift in `deploymentLogs`.** Railway's GraphQL field may need additional arguments (`filter: {source: STDOUT}`, `cursor`, ...) or has been replaced by a different query path since v7.79.0.
+
+### Fix
+
+Adds `deployment_created` (Railway-reported `createdAt` ISO timestamp) to the probe response and the dashboard-monitor footer. Differentiates the two remaining hypotheses:
+
+| `deployment_created` | Interpretation |
+|---|---|
+| Several days old | Stale-deployment bug — fix `_LATEST_DEPLOYMENT_QUERY` to filter+sort to the most recent SUCCESS. |
+| Today, recent | Schema drift — investigate Railway's current `deploymentLogs` shape. |
+
+Single-field addition to `_LATEST_DEPLOYMENT_QUERY`, single new field on the probe dict, single new fragment in the footer string. Tests updated to assert the new field; full strategy suite at 532 passed.
+
+### Files
+
+- `tools/railway_log_tail.py` — `_LATEST_DEPLOYMENT_QUERY` fetches `createdAt`; `probe_railway_access` returns `deployment_created`
+- `tools/dashboard_monitor_invariants.py` — footer surfaces `deployment_created`
+- `tests/strategy/test_railway_probe_v791.py` — 2 tests updated for the new field
+- `bot_version.py` / `trade_genius.py` — `7.97.0` → `7.98.0`
+
+---
+
 ## v7.97.0 (2026-05-11) -- Deployment id + status in probe footer
 
 v7.96.0's `lines_fetched_on_10k_request=N` diagnostic landed in monitor issue #583 with the smoking-gun value **N=0**. Railway returned ZERO log lines for our limit=10000 request despite the bot actively trading (Main fired 14 trades today, so tens of thousands of log lines must exist on the running container).

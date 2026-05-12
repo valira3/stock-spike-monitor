@@ -302,10 +302,16 @@ def inv_val_gene_trades_match_main(ctx):
             dep_suffix = ""
             dep_id = (probe.get("deployment_id") or "")
             dep_status = (probe.get("deployment_status") or "")
-            if dep_id or dep_status:
+            dep_created = (probe.get("deployment_created") or "")
+            if dep_id or dep_status or dep_created:
+                # v7.98.0 -- include deployment_created so the operator
+                # can tell whether the resolved deployment is the
+                # currently-running one (fresh createdAt) vs a stale
+                # SUCCESS deployment whose logs have been purged.
                 dep_suffix = (
                     f" deployment_id={dep_id[:12] or '?'}"
                     f" deployment_status={dep_status or '?'}"
+                    f" deployment_created={dep_created or '?'}"
                 )
             detail = base_detail + (
                 f"\n\n_No Railway log slice attached. Diagnostic: "

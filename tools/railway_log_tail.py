@@ -143,7 +143,7 @@ def _gql(token: str, query: str, variables: dict, *,
 _LATEST_DEPLOYMENT_QUERY = """
 query latestDeployment($serviceId: String!) {
   deployments(input: {serviceId: $serviceId}, first: 1) {
-    edges { node { id status } }
+    edges { node { id status createdAt } }
   }
 }
 """
@@ -279,10 +279,14 @@ def probe_railway_access() -> dict:
                           added this because v7.96.0's
                           lines_fetched_on_10k_request=0 on issue #583
                           suggested the resolver was picking a wrong
-                          (non-running) deployment -- the bot is
-                          actively trading on Railway, so 0 returned
-                          log lines almost certainly means we resolved
-                          a REMOVED / FAILED deployment with no logs.
+                          (non-running) deployment.
+      deployment_created  ISO timestamp of when the resolved deployment
+                          was created. v7.98.0 added this -- with a
+                          full-account Railway token, status=SUCCESS
+                          plus lines_fetched=0 means either the
+                          deployment is stale (createdAt is days old)
+                          or the deploymentLogs GraphQL schema has
+                          drifted. The createdAt timestamp differentiates.
     """
     token = (os.environ.get("RAILWAY_API_TOKEN", "") or "").strip()
     service_id = (os.environ.get("RAILWAY_SERVICE_ID", "") or "").strip()
@@ -292,6 +296,7 @@ def probe_railway_access() -> dict:
         "service_set": bool(service_id),
         "deployment_id": "",
         "deployment_status": "",
+        "deployment_created": "",
     }
     if not token:
         out["status"] = "missing_token"
@@ -317,6 +322,7 @@ def probe_railway_access() -> dict:
         node = edges[0]["node"] or {}
         out["deployment_id"] = str(node.get("id") or "")
         out["deployment_status"] = str(node.get("status") or "")
+        out["deployment_created"] = str(node.get("createdAt") or "")
     except (KeyError, TypeError):
         out["status"] = "auth_failed"
     return out
