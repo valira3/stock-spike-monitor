@@ -1,0 +1,174 @@
+name: Pull Alpaca tick data
+
+# v8.3.28 -- pulls historical trade ticks via Alpaca SIP and uploads
+# the gzipped per-ticker-day archive to Cloudflare R2 (NOT a git branch,
+# because tick data for the full year is ~10 GB compressed and would
+# blow past GitHub's branch size limits).
+#
+# Storage layout in R2:
+#   s3://$R2_BUCKET/tick-data/<YYYY-MM-DD>/<TICKER>.jsonl.gz
+#
+# Retrieval (replay-side):
+#   aws --endpoint-url=$R2_ENDPOINT s3 cp \
+#       s3://$R2_BUCKET/tick-data/2026-05-12/AMZN.jsonl.gz .
+#
+# Triggers:
+#   1. workflow_dispatch (UI/manual) with explicit start/end/tickers
+#   2. push to main on .github/tick-trigger/*.json (auto-fire pattern,
+#      mirrors .github/rth-trigger/* for bars)
+#
+# Cost:
+#   - GHA runner: ~30 min for 1-month sample, ~4-8 hr for full year
+#   - Alpaca API: free (under Algo Trader Plus subscription)
+#   - R2 storage: ~$0.015/GB/month (1.5 GB FY corpus -> $0.02/mo)
+#   - R2 egress: free for first 10 GB/mo
+#
+# Why R2 instead of a git branch:
+#   - 10 GB compressed tick data >> GitHub 5 GB soft limit
+#   - tick data is read-only / append-only; doesn't need git's diff/merge
+#   - R2 access from the replay sandbox is straightforward (aws CLI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD inclusive)"
+        required: true
+        default: "2026-05-12"
+      end_date:
+        description: "End date (YYYY-MM-DD inclusive)"
+        required: true
+        default: "2026-05-12"
+      tickers:
+        description: "Comma-separated tickers (default: 12-ticker v10 universe)"
+        required: false
+        default: "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ"
+      premarket:
+        description: "Include premarket trades (04:00-09:30 ET)"
+        required: false
+        type: choice
+        options: ["false", "true"]
+        default: "false"
+  push:
+    branches: [main]
+    paths:
+      - ".github/tick-trigger/**.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-tick-data
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6h ceiling for full-year pulls
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Alpaca + S3 SDKs
+        run: |
+          python -m pip install --upgrade pip
+          pip install alpaca-py boto3
+
+      - name: Resolve params
+        id: params
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "start=${{ inputs.start_date }}"   >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end_date }}"       >> "$GITHUB_OUTPUT"
+            echo "tickers=${{ inputs.tickers }}"    >> "$GITHUB_OUTPUT"
+            echo "premarket=${{ inputs.premarket }}" >> "$GITHUB_OUTPUT"
+          else
+            # push event: pick the latest changed trigger JSON
+            CHANGED=$(git diff --name-only HEAD^ HEAD -- '.github/tick-trigger/*.json' | tail -1)
+            if [ -z "$CHANGED" ]; then
+              echo "No tick-trigger JSON changed; nothing to do."
+              echo "skip=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "start=$(jq -r '.start_date' "$CHANGED")"      >> "$GITHUB_OUTPUT"
+            echo "end=$(jq -r '.end_date' "$CHANGED")"          >> "$GITHUB_OUTPUT"
+            echo "tickers=$(jq -r '.tickers' "$CHANGED")"       >> "$GITHUB_OUTPUT"
+            PM=$(jq -r '.premarket // "false"' "$CHANGED")
+            echo "premarket=$PM" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull tick data into local archive
+        if: steps.params.outputs.skip != '1'
+        env:
+          VAL_ALPACA_PAPER_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          VAL_ALPACA_PAPER_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          TG_TICKDATA_ROOT: ${{ github.workspace }}/tick-data
+        run: |
+          set -euo pipefail
+          mkdir -p "$TG_TICKDATA_ROOT"
+          PM_FLAG=""
+          if [ "${{ steps.params.outputs.premarket }}" = "true" ]; then
+            PM_FLAG="--premarket"
+          fi
+          python3 tools/fetch_alpaca_ticks.py \
+            --start "${{ steps.params.outputs.start }}" \
+            --end   "${{ steps.params.outputs.end }}" \
+            --tickers "${{ steps.params.outputs.tickers }}" \
+            --base-dir "$TG_TICKDATA_ROOT" \
+            $PM_FLAG
+          du -sh "$TG_TICKDATA_ROOT"
+
+      - name: Upload to Cloudflare R2
+        if: steps.params.outputs.skip != '1'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TG_TICKDATA_ROOT: ${{ github.workspace }}/tick-data
+        run: |
+          python <<'EOF'
+          import os, sys
+          from pathlib import Path
+          import boto3
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+          )
+          bucket = os.environ["R2_BUCKET"]
+          root = Path(os.environ["TG_TICKDATA_ROOT"])
+
+          n_files = 0
+          n_bytes = 0
+          for p in sorted(root.rglob("*.jsonl.gz")):
+              # Map local path tick-data/<DATE>/<TK>.jsonl.gz -> remote tick-data/<DATE>/<TK>.jsonl.gz
+              rel = p.relative_to(root)
+              key = f"tick-data/{rel.as_posix()}"
+              s3.upload_file(
+                  str(p), bucket, key,
+                  ExtraArgs={"ContentType": "application/gzip"},
+              )
+              n_files += 1
+              n_bytes += p.stat().st_size
+              if n_files % 50 == 0:
+                  print(f"  uploaded {n_files} files, {n_bytes/1024/1024:.1f} MB", flush=True)
+          print(f"DONE: uploaded {n_files} files, {n_bytes/1024/1024:.1f} MB to s3://{bucket}/tick-data/")
+          EOF
+
+      - name: Print summary
+        if: always() && steps.params.outputs.skip != '1'
+        run: |
+          echo "Tick-data pull complete."
+          echo "  range: ${{ steps.params.outputs.start }} -> ${{ steps.params.outputs.end }}"
+          echo "  tickers: ${{ steps.params.outputs.tickers }}"
+          echo "  R2 prefix: tick-data/<DATE>/<TICKER>.jsonl.gz"
