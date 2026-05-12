@@ -45,7 +45,7 @@ Cross-portfolio coordination is none by design: Val rejecting on its risk cap do
 
 ### Risk per trade
 
-- 2.0% of portfolio equity (`risk_per_trade_pct=2.0`).
+- **1.0% of portfolio equity** (`risk_per_trade_pct=1.0`, v7.109.0+). Bumped down from 2.0% on 2026-05-12 after Phase 14 research (`docs/pl_optimization_final_report_v12.md`) found that halving per-trade risk flips the full-year backtest from 3/4 losing quarters to 0/4 — daily-loss-kill triggers less often, the strategy stays active to take post-stop recovery setups, WR climbs 53% → 56%.
 - Capped by single-trade notional (≤ 75% of equity).
 - Capped by concurrent risk ($2,000 default `max_concurrent_risk_dollars`).
 - Capped by concurrent notional (equity × 2.0 default `max_concurrent_notional_mult`).
@@ -83,7 +83,7 @@ Local: `pytest tests/strategy/` runs all 231 tests in ~2s.
 | `ORB_PORTFOLIO_FIRE` | `0` | `1` enables Val/Gene to fire on their own admissions via `fire_long`/`fire_short` (v7.26.0). |
 | `ORB_OR_MINUTES` | `30` | OR window length. |
 | `ORB_RR` | `2.5` | Target reward/risk multiple. |
-| `ORB_RISK_PER_TRADE_PCT` | `2.0` | Per-trade risk budget as % of equity. |
+| `ORB_RISK_PER_TRADE_PCT` | `1.0` | Per-trade risk budget as % of equity (v7.109.0+, was 2.0). |
 | `ORB_MAX_CONCURRENT_RISK_DOLLARS` | `2000.0` | Hard cap on open risk across positions per portfolio. |
 | `ORB_MAX_TRADES_PER_DAY` | `5` | Per-portfolio per-ticker daily cap. |
 | `ORB_SKIP_VIX_ABOVE` | `22.0` | VIX D-1 close above this kills the day. |

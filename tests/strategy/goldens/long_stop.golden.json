@@ -8,7 +8,7 @@
     "ticker": "AAPL",
     "pid": "main",
     "side": "long",
-    "shares": 742,
+    "shares": 645,
     "stop": 99.4503,
     "target": 104.8744,
     "reason_no": ""

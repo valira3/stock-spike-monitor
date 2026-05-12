@@ -102,8 +102,8 @@ class TestBootstrap:
         """Manager-flagged regression test: rule #11b says compounding
         is the DEFAULT. The live_runtime bootstrap must not silently
         drop this. We verify by checking that risk-per-trade-pct (which
-        is the compounding-driven sizing percentage) stays at 2.0 (v10
-        keystone) so per-trade $ scales with current account balance.
+        is the compounding-driven sizing percentage) stays at 1.0 (v10
+        keystone post-v7.109) so per-trade $ scales with current account balance.
 
         The actual COMPOUND_DAILY toggle lives in tools/orb_backtest.py
         config; the live engine compounds implicitly via per-day
@@ -126,8 +126,8 @@ class TestBootstrap:
         # configured ceiling but per-trade sizing percent applies to the
         # current balance ($105k), not the static $100k.
         assert rb.equity == 105000.0
-        # Cfg risk_per_trade_pct is preserved (2% of current equity)
-        assert eng.cfg.risk_per_trade_pct == 2.0
+        # Cfg risk_per_trade_pct is preserved (1% of current equity in v7.109+)
+        assert eng.cfg.risk_per_trade_pct == 1.0
         # max_concurrent_risk_dollars is the absolute cap ($2k), not %
         assert rb.max_risk_dollars == 2000.0
 

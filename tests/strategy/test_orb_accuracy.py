@@ -96,7 +96,7 @@ def reference_geometry(*, side: str, or_high: float, or_low: float,
                        entry: float, equity: float,
                        rr: float = 2.5,
                        stop_buffer_bps: float = 5.0,
-                       risk_per_trade_pct: float = 2.0,
+                       risk_per_trade_pct: float = 1.0,
                        max_trade_notional_pct: float = 75.0,
                        ) -> RefPosition:
     """Spec-derived geometry. Does NOT use orb/* code."""
@@ -130,7 +130,7 @@ def assert_admission_math_correct(*, entry_result, equity: float,
                                   or_high: float, or_low: float,
                                   rr: float = 2.5,
                                   stop_buffer_bps: float = 5.0,
-                                  risk_per_trade_pct: float = 2.0,
+                                  risk_per_trade_pct: float = 1.0,
                                   max_trade_notional_pct: float = 75.0,
                                   ) -> None:
     """Assert every keystone math invariant on a single admission."""

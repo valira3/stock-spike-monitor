@@ -4,6 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.109.0 (2026-05-12) -- Phase 14: v10 ORB risk-per-trade default 2.0% to 1.0% (full-year-validated stability lever)
+
+The single highest-confidence finding from Phase 14's full-year (251 trading day) P&L optimization research. v11's "+43% CAGR" was an in-sample artifact on a 124-day window. On the full 251-day corpus (May 2025 → May 2026) the v10 anchor with `ORB_RISK_PER_TRADE_PCT=2.0` is **net −$3,750 with 3/4 quarters losing**. Halving per-trade risk to **1.0%** flips that to **+$24,875 with 0/4 negative quarters** — same code paths, same gates, same FSM, just smaller dollar risk per trade.
+
+See `docs/pl_optimization_final_report_v12.md` for the full research loop (5 rounds, 62 theories, 310 backtests) and Configs B/C alternatives.
+
+### The change
+
+| File | Line | Before | After |
+|---|---|---|---|
+| `orb/engine.py` | 73 | `risk_per_trade_pct: float = 2.0` | `1.0` |
+| `orb/live_runtime.py` | 162 | `_f("ORB_RISK_PER_TRADE_PCT", 2.0)` | `1.0` |
+
+Both the dataclass default and the env-fallback are bumped together so the canonical anchor in code matches the live env when `ORB_RISK_PER_TRADE_PCT` is unset.
+
+### Why halving risk improves stability (not just reduces variance)
+
+Counterintuitive but measured. The full-year backtest delta from the change is only **−$456** on the headline (\$25,331 → $24,875); the structural change is in **path**:
+
+1. **Daily-loss-kill triggers less often.** `ORB_DAILY_LOSS_KILL_PCT=2.0` of equity = $2,000/day. With 1% risk-per-trade, a single stop costs ~$1k instead of ~$2k, so the daily-kill threshold is hit less often. The strategy stays active to take the NEXT setup instead of locking out for the day.
+2. **WR climbs 53% → 56%.** The recovered-after-first-loss trades that would have been killed under 2% sizing now get taken.
+3. **Q4-2025 flips from −$1,634 to +$964.** Marginal positive but flips the sign — what was a losing quarter becomes a winning one. Same goes for Q2-2025 (now +$3,659 vs +$1,579) — bigger swing thanks to compounding-base effects.
+
+### Behavioral diff (live)
+
+- Every entry sizes to ~½ the share count vs v7.108.
+- Reg-T DTBP / margin utilization halved.
+- Concurrent risk cap (`ORB_MAX_CONCURRENT_RISK_DOLLARS=2000`) was already binding 0% of the time under 2% per-trade sizing in the corpus; with 1% it stays at 0% — no behavioral change there.
+- Notional cap (`ORB_MAX_TRADE_NOTIONAL_PCT=75`) was rarely binding; now even less.
+- Forensic tags unchanged. `[V79-ORB-ENTRY]` still emits proposed_risk_dollars; observers will see ~½ the magnitude.
+
+### Rollback
+
+Set `ORB_RISK_PER_TRADE_PCT=2.0` in Railway env to instantly revert without redeploy. Or `ORB_LIVE_MODE=0` to fall back to legacy entirely.
+
+### Tests
+
+- `tests/strategy/test_orb_live_runtime.py:130` — assertion updated to expect default 1.0
+- `tests/strategy/test_orb_session_sim.py:320` — `test_concurrent_risk_cap_blocks_second` now overrides `ORB_RISK_PER_TRADE_PCT=2.0` locally so a single trade still exhausts the $2k concurrent cap (test intent preserved)
+- All other test fixtures pass `risk_per_trade_pct=2.0` explicitly to `OrbConfig`, so they're unaffected by the default change
+
+### Forensic / dashboard
+
+No new log tags. The v12 research report lives at `docs/pl_optimization_final_report_v12.md`; sweep scripts and per-theory results under `docs/research/`.
+
+### Projection (compounding, MEDIUM scenario)
+
+$100k base, 25% annual: Y1 $124,875 / Y2 $155,909 / Y3 $194,665 / Y5 $304,061. LOW (12% OOS-haircut): Y3 $140,493. HIGH (35% favorable): Y3 $246,038.
+
+---
+
 ## v7.108.0 (2026-05-12) -- Audit fix: rth-merge-warning uses merged_at + CDT midnight overflow guard (SEV-3 cluster) + Lifecycle tab IIFE-scope bugfix
 
 Two SEV-3 fixes from tonight's audit + a user-visible Lifecycle tab bug, bundled.

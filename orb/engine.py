@@ -70,7 +70,7 @@ class OrbConfig:
     range_min_pct: float = 0.008
     range_max_pct: float = 0.025
     max_trades_per_day: int = 5
-    risk_per_trade_pct: float = 2.0
+    risk_per_trade_pct: float = 1.0
     max_concurrent_risk_dollars: float = 2000.0
     max_concurrent_notional_mult: float = 2.0
     max_trade_notional_pct: float = 75.0
