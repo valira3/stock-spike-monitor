@@ -50,6 +50,13 @@ ENDPOINTS_TO_PULL: tuple[str, ...] = (
     "/api/state",
     "/api/executor/val",
     "/api/executor/gene",
+    # v8.3.25 -- persistent trade-log reader. limit=5000 is the
+    # server-side max (h_trade_log clamps higher values). That's
+    # roughly 200 trading days at 25 trades/day -- more than enough
+    # history to spot regressions in entry/exit behavior. The full
+    # trades_today is already inside /api/state; this gives the
+    # cross-day backfill for post-hoc analysis.
+    "/api/trade_log?limit=5000",
 )
 
 
