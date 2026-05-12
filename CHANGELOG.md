@@ -4,6 +4,56 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.8 (2026-05-12) -- Wash-sale risk tracker ([V81-WASH-RISK] log tag + dashboard chip)
+
+Operator-facing signaling for IRS §1091 wash-sale visibility on this high-frequency intraday strategy. **Not tax-grade** — for year-end tax filing, the operator should rely on the broker 1099-B + their accountant, NOT this counter.
+
+### How it works
+
+`orb/engine.py` gains two new in-memory structures:
+
+- `_recent_losses: dict[(ticker, side), list[loss_record]]` — records (`ts_unix`, `pnl_dollars`, `exit_iso`) whenever `on_exit` realizes a loss (pnl < -$0.01).
+- `wash_risk_count: int` — session-scoped counter. Resets to 0 each `start_new_session`. The loss buffer is INTENTIONALLY preserved across sessions so a Monday loss + Tuesday re-entry still triggers the flag.
+
+In `try_enter`, before returning the Admission, the engine checks `_recent_losses[(signal.ticker, signal.side)]` for any record within the trailing 30 calendar days. If found:
+- Logs `[V81-WASH-RISK] AAPL long entry @ $101.30 -- prior loss $-200.00 on same (ticker, side) at 2026-01-14T15:00Z. Counter: N this session.`
+- Bumps `wash_risk_count`
+- Prunes records older than 30d
+- **Does NOT block the entry** — operator opted into this strategy knowing about §1091
+
+Long vs short on the same ticker is **NOT** considered substantially identical per IRS, so a long-side loss does not flag a subsequent short entry (and vice versa).
+
+### Dashboard chip
+
+`v10 Day Status` banner gets a new `Wash N` chip (amber) when `wash_risk_count > 0`. Hidden when 0 so the banner stays uncluttered on clean-trading days. Tooltip points the operator at §475(f) MTM election as the standard professional fix.
+
+### Files
+
+| File | Change |
+|---|---|
+| `orb/engine.py` | `_recent_losses` + `wash_risk_count` on `OrbEngine`; record on losing `on_exit`; check + log on `try_enter`; reset counter on `start_new_session`; expose in `snapshot()` |
+| `dashboard_static/index.html` | New `#v10-wash-pill` element (hidden by default) |
+| `dashboard_static/app.js` | `renderV10DayStatus` populates the chip from `v10.wash_risk_count` |
+| `tests/strategy/test_orb_wash_risk.py` | 11 new unit tests covering recording, counter increment, opposite-side / different-ticker / winning-close / >30d no-op, snapshot exposure, session reset semantics |
+
+### Tests
+
+**638 strategy tests pass** (627 + 11 new).
+
+### Why no broker / executor changes
+
+The tracker is centralized in `OrbEngine`. Both Main and (eventually) Val/Gene admissions go through `try_enter`, so the flag fires once per signal regardless of portfolio. The per-portfolio attribution lives in the log line (no `pid` field on the counter yet; could be added in a v8.1.9 if useful).
+
+### Caveats (documented inline in `orb/engine.py`)
+
+- In-memory only. Railway restart loses the 30-day loss buffer. Most wash sales are same-day or next-day so this misses only a small tail.
+- Not cross-broker. If you trade the same tickers in another account (TD, Schwab, IRA), this counter won't see those.
+- IRA + taxable cross-account wash sales are the actual trap. **No code can fix that** — only operator discipline (don't trade the v10 universe in IRA while running this in taxable).
+
+### Rollback
+
+Trivial — set `wash_risk_count` reads in JS to constant 0 + skip the chip render, OR revert the engine block + revert the dashboard files.
+
 ## v8.1.7 (2026-05-12) -- Val/Gene executor partials now appear in the dashboard activity feed
 
 Closes the cross-portfolio visibility gap from v8.1.2. When Main fires a partial, `orb/live_runtime.py:check_exit` calls `_record_activity(kind="partial", ...)` so the event appears in the dashboard's v10 Activity Feed. But Val and Gene executors don't route through that path — they receive a `PARTIAL_EXIT_*` signal-bus event and call `_partial_close_position_idempotent` directly. Their partials never landed in the feed.
