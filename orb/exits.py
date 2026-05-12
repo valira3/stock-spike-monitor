@@ -35,6 +35,16 @@ EXIT_STOP = "stop"
 EXIT_BE_STOP = "be_stop"
 EXIT_EOD = "eod"
 EXIT_SESSION_CLOSE = "session_close"
+# v8.1.0 -- partial-profit-at-1R fire. Caller must:
+#   1. submit a broker sell for `position.shares // 2` shares;
+#   2. mutate position.shares to the remainder, set partial_taken=True
+#      and record partial_pnl_dollars on the position;
+#   3. RELEASE proportional risk-book budget (not the full ticket);
+#   4. continue evaluating the remaining position on subsequent bars.
+# Unlike target/stop/eod/be_stop, EXIT_PARTIAL does NOT close the
+# position -- it half-closes it. The caller must NOT call on_exit() on
+# this decision; instead, see engine.on_partial_exit().
+EXIT_PARTIAL = "partial_1r"
 
 
 @dataclass
@@ -54,10 +64,19 @@ class OrbPosition:
     one_r: float                 # entry +/- 1*risk; trigger for BE-arm
     rr: float = 2.5              # configured RR; informational only after construction
     be_moved: bool = False       # whether stop has been bumped to entry
-    shares: int = 0              # for diagnostics + risk book release
+    shares: int = 0              # CURRENT open shares (mutated by partial fill)
     risk_dollars: float = 0.0    # for diagnostics + risk book release
     notional: float = 0.0        # for diagnostics + risk book release
     risk_ticket_id: str = ""     # tied to RiskBook ticket; release on exit
+    # v8.1.0 -- partial-profit-at-1R state. partial_taken flips True the
+    # first time the engine emits EXIT_PARTIAL for this position and the
+    # caller acts on it. partial_pnl_dollars records the realized P&L of
+    # the half closed at 1R (always >= 0 since 1R is profit by definition).
+    # original_shares is the pre-partial count, preserved for forensic
+    # logging and percent-position-remaining math.
+    partial_taken: bool = False
+    partial_pnl_dollars: float = 0.0
+    original_shares: int = 0
 
 
 @dataclass
@@ -108,6 +127,12 @@ def make_position(*, portfolio_id: str, ticker: str, side: str,
         risk_dollars=risk_dollars,
         notional=notional,
         risk_ticket_id=risk_ticket_id,
+        # v8.1.0 -- partial state begins false; original_shares mirrors
+        # initial shares so post-partial code can reason about the
+        # original sizing.
+        partial_taken=False,
+        partial_pnl_dollars=0.0,
+        original_shares=int(max(0, shares)),
     )
 
 
@@ -138,34 +163,75 @@ def maybe_arm_be(pos: OrbPosition, bar_high: float, bar_low: float) -> bool:
 def evaluate(pos: OrbPosition, *,
              bar_high: float, bar_low: float, bar_close: float,
              bar_bucket_min: int, eod_cutoff_min: int,
+             partial_profit_at_1r: bool = False,
              ) -> Optional[ExitDecision]:
-    """Decide whether the bar triggers an exit.
+    """Decide whether the bar triggers an exit OR a partial-profit fill.
 
     Order of checks (pessimistic):
+      0. Partial-profit at 1R (v8.1.0; only if `partial_profit_at_1r=True`
+         AND `pos.partial_taken` is False AND `pos.shares >= 2`).
       1. Stop (current stop, which may be the BE stop after arming)
       2. Target
       3. EOD cutoff (force close at last bar of session)
 
     Returns ExitDecision on exit; None if still open.
 
-    The BE-arm check happens BEFORE the stop check on the same bar, so a
-    bar that touches BOTH the target and the stop will exit at target if
-    BE was just armed (because stop becomes the BE stop = entry, which
-    isn't hit by any sensible bar that also touches the target). This
-    matches the backtest semantics.
+    On a same-bar 1R + stop touch:
+      - The partial-fire check happens BEFORE the stop check, so the
+        half-close at 1R books profit AND the BE-arm hands the runner
+        a stop at entry. A subsequent bar that pierces entry triggers
+        be_stop on the remaining half. This matches backtest order.
+      - In the rare same-bar 1R + target case (only possible if RR <= 1,
+        which we don't trade), partial would fire first and the runner
+        would exit at target on the very same bar. Caller is expected
+        to handle the back-to-back exits.
+
+    The caller's contract on EXIT_PARTIAL:
+      - Submit broker sell/buy for `pos.shares // 2`.
+      - Mutate the position: set partial_taken=True, set
+        partial_pnl_dollars = (one_r - entry_price) * half (long) or
+        (entry_price - one_r) * half (short), reduce pos.shares by half.
+      - Release proportional risk-book budget.
+      - Re-call evaluate() on the SAME bar's exit side -- in case the
+        bar also pierced the stop or target (rare but possible on
+        explosive moves). evaluate() will return None if the remaining
+        position's stop/target weren't touched by this bar.
 
     Bar-data audit: only bar_high, bar_low, bar_close are read. No future
     bars consulted.
     """
-    # First, see if BE should be armed by this bar (before stop check)
+    # Order preserves the pre-v8.1.0 live-engine semantics:
+    #   1. BE arm (existing, BEFORE stop check -- optimistic on a same-
+    #      bar 1R+stop touch, exits at the new BE stop rather than the
+    #      original).
+    #   2. Partial fire (v8.1.0, gated on partial_profit_at_1r AND 1R
+    #      touch AND not yet taken AND shares >= 2). Fires AFTER BE
+    #      arm so the runner inherits stop=entry on the same bar.
+    #   3. Stop check (using current stop, which is BE if just armed).
+    #   4. Target check.
+    #   5. EOD.
+    # Divergence from backtest: backtest checks stop FIRST so a
+    # same-bar 1R+stop pierce exits at the original stop. The
+    # pre-v8.1.0 live engine deliberately chose the optimistic
+    # BE-first ordering; v8.1.0 preserves that and slots partial in
+    # AFTER BE-arm. Live therefore OUTPERFORMS backtest by a small
+    # margin on stop-pierce-then-recover days.
     maybe_arm_be(pos, bar_high, bar_low)
 
+    # v8.1.0 partial fire (after BE arm so be_moved is already True
+    # and pos.stop = entry when partial returns).
+    if (partial_profit_at_1r and not pos.partial_taken and pos.shares >= 2):
+        if pos.side == "long" and bar_high >= pos.one_r:
+            return ExitDecision(reason=EXIT_PARTIAL, price=pos.one_r)
+        if pos.side == "short" and bar_low <= pos.one_r:
+            return ExitDecision(reason=EXIT_PARTIAL, price=pos.one_r)
+
     if pos.side == "long":
-        # 1. Stop check (pessimistic on simultaneous touch)
+        # Stop check (pessimistic on simultaneous touch)
         if bar_low <= pos.stop:
             reason = EXIT_BE_STOP if pos.be_moved else EXIT_STOP
             return ExitDecision(reason=reason, price=pos.stop)
-        # 2. Target check
+        # Target check
         if bar_high >= pos.target:
             return ExitDecision(reason=EXIT_TARGET, price=pos.target)
     else:  # short
@@ -175,8 +241,41 @@ def evaluate(pos: OrbPosition, *,
         if bar_low <= pos.target:
             return ExitDecision(reason=EXIT_TARGET, price=pos.target)
 
-    # 3. EOD flush
+    # EOD flush
     if bar_bucket_min >= eod_cutoff_min:
         return ExitDecision(reason=EXIT_EOD, price=bar_close)
 
     return None
+
+
+# ----- v8.1.0: partial-profit accounting helper ----------------------
+
+
+def apply_partial_fill(pos: OrbPosition, partial_price: float) -> tuple[int, float]:
+    """Mutate the position to reflect a half-close at `partial_price`.
+
+    Returns (shares_closed, pnl_dollars_booked). Caller is responsible
+    for the broker-side sell and the risk-book partial release.
+
+    On long: pnl = (partial_price - entry_price) * shares_closed
+    On short: pnl = (entry_price - partial_price) * shares_closed
+
+    Idempotent: a second call when partial_taken is already True is a
+    no-op returning (0, 0.0) -- this defends against double-fire on a
+    single bar.
+    """
+    if pos.partial_taken:
+        return (0, 0.0)
+    if pos.shares < 2:
+        return (0, 0.0)
+    half = pos.shares // 2
+    if half <= 0:
+        return (0, 0.0)
+    if pos.side == "long":
+        pnl = (partial_price - pos.entry_price) * half
+    else:
+        pnl = (pos.entry_price - partial_price) * half
+    pos.shares -= half
+    pos.partial_taken = True
+    pos.partial_pnl_dollars += pnl
+    return (half, pnl)

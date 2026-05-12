@@ -4,6 +4,59 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.0 (2026-05-12) -- Partial-profit-at-1R live engine (Phase 15 stack lever)
+
+Implements the deferred partial-profit-at-1R lever per `docs/v8_1_partial_profit_design.md`. Backtest evidence: stacking partial-profit on top of v8.0 ATR-stop lifts FY from $+34,486 to $+44,431 (+29% incremental, +79% vs pre-v7.109 baseline). Q4-2025 jumps from $+1,989 to $+9,262. WR climbs to 59%.
+
+### What it does
+
+When the bar's high crosses 1R (long; mirror for short) for the first time on an open position AND `ORB_PARTIAL_PROFIT_AT_1R=1`:
+1. The engine emits `EXIT_PARTIAL`.
+2. `LiveAdapter.check_exit` applies engine-side bookkeeping: sets `pos.partial_taken=True`, halves `pos.shares`, records `partial_pnl_dollars`, releases half the risk-book ticket's budget. Position stays open with the runner half.
+3. `broker/positions.py:manage_positions` sees `result.partial=True` and calls `broker/orders.py:partial_close_breakout` which mutates the legacy paper-position dict + records a `PARTIAL_SELL` row to paper_trades + emits `[V81-ORB-PARTIAL]`.
+4. Subsequent bars evaluate against the remaining position with stop=entry (BE armed on the same bar as partial).
+5. Final exit credits the kill-gate with `(exit-entry) * remaining_shares + partial_pnl_dollars` so realized P&L matches backtest semantics.
+
+### Strictly off by default
+
+`ORB_PARTIAL_PROFIT_AT_1R` defaults to **False** in both `OrbConfig` (dataclass) and `live_runtime.py` (env-fallback). With the env unset, behavior is **identical** to v8.0.1 (the partial branch in `exits.evaluate()` is gated). Operator must explicitly set `ORB_PARTIAL_PROFIT_AT_1R=1` in Railway env to activate, ideally after 5 trading days of paper observation.
+
+### Files
+
+| File | Change |
+|---|---|
+| `orb/exits.py` | `EXIT_PARTIAL` constant; `OrbPosition` gains `partial_taken`, `partial_pnl_dollars`, `original_shares`; `evaluate()` partial-fire branch (after BE-arm, before stop); `apply_partial_fill()` helper |
+| `orb/risk_book.py` | `release_partial(ticket, frac)` -- halves ticket's risk_dollars + notional without popping |
+| `orb/engine.py` | `OrbConfig.partial_profit_at_1r`; `on_partial_exit()` engine-side bookkeeping; `on_exit()` credits `partial_pnl_dollars` to kill-gate; snapshot exposes new flag |
+| `orb/live_runtime.py` | `ORB_PARTIAL_PROFIT_AT_1R` env-fallback (default False) |
+| `orb/live_adapter.py` | `ExitResult` gains partial fields; `check_exit()` returns `partial=True` envelope without closing position |
+| `broker/orders.py` | New `partial_close_breakout(ticker, shares_to_close, price, side, reason)` -- half-closes paper position WITHOUT teardown (no cooldowns / ratchet / phase clear) |
+| `broker/positions.py` | `manage_positions` + `manage_short_positions` detect `partial=True` ExitResult and route to `partial_close_breakout` |
+
+### Tests
+
+`tests/strategy/test_orb_partial_profit.py` -- 24 new tests:
+- `evaluate()` partial-fire ordering (off / long / short / before-stop / fires-once / shares<2 guard)
+- `apply_partial_fill()` math (long / short / odd-shares-rounds-down / second-call-noop / too-few-shares-noop)
+- `release_partial()` (half / quarter / invalid-frac / none-ticket / then-full-release / after-full-release-noop)
+- `on_partial_exit()` (releases half risk / idempotent)
+- `on_exit()` credits partial_pnl
+- Adapter envelope (partial=True keeps position open)
+- Full lifecycle (partial then be_stop credits both; partial then target credits both)
+- Strict no-op when flag off
+
+All 585 strategy tests pass (561 prior + 24 new).
+
+### Live-trading caveat (read before activating)
+
+`partial_close_breakout` mutates the **paper-state** position dict and paper_trades. It does NOT emit a broker-side sell order through the executor pipeline (signal bus / Val/Gene executors). For Main running on Alpaca paper, the position on Alpaca's books WILL DRIFT from `tg.positions[ticker]["shares"]` until end-of-day reconciliation. The fix -- wiring `partial_close_position_idempotent` into `executors/base.py` -- is deferred to a follow-up release. Until then, treat v8.1.0 as **paper-only**; **do not** flip `ORB_PARTIAL_PROFIT_AT_1R=1` on a live-money Alpaca account.
+
+This caveat is repeated in the inline docstring of `partial_close_breakout`.
+
+### Rollback
+
+`ORB_PARTIAL_PROFIT_AT_1R=0` (or unset) in Railway env -- partial branch is gated. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
 ## v8.0.1 (2026-05-12) -- Activate ATR-stop default + v8.1.0 design doc for partial-profit
 
 Two-part follow-up to v8.0.0:
