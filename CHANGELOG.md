@@ -4,6 +4,41 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.1 (2026-05-12) -- Dashboard ET time + OR-window localStorage cache (no more disappearing OR)
+
+Two dashboard-side fixes that close visible-but-misleading gaps the operator surfaced today.
+
+### 1. Activity feed renders ET, not UTC
+
+The v10 Recent Activity card was raw-extracting `HH:MM` from the UTC ISO string and labeling it "UTC" — bypassing the existing `utcIsoToLocalHHMM()` helper that converts to ET via `timeZone: "America/New_York"`. Every other timestamp on the dashboard (positions, trades, error pill, lifecycle) was already on ET per v7.89.0; the activity feed was the lone holdout. v8.3.1 routes both the "most recent · HH:MM" header line and the per-row time column through `utcIsoToLocalHHMM`. The operator now sees the market clock everywhere.
+
+### 2. OR-window localStorage cache (defense-in-depth)
+
+A Railway redeploy mid-RTH clears the engine's in-memory `_state.or_windows`. The v8.3.0 backfill rebuilds them within one scan cycle (~60s), but during that gap `/api/state.v10.or_windows` returns empty and the dashboard's OR rows render blank, then "come back" when backfill completes.
+
+v8.3.1 adds a client-side `localStorage` cache:
+
+- `renderAll()` saves `v10.or_windows` to `localStorage["tg.v10.or_windows.<session_date>"]` whenever the live payload contains at least one ticker with real `(or_high, or_low)`.
+- Before any downstream renderer reads `v10.or_windows`, `_v10ORCacheRestoreIfEmpty(s)` checks whether the live payload is empty; if so, it overlays the cached snapshot.
+- Empty payloads NEVER overwrite a good cache (the save side is gated on `hasReal`).
+
+This is the client-side belt-and-suspenders. The engine-side authoritative fix (persist `or_windows` to `/data/orb_or_state_<date>.json` and rehydrate after `start_new_session`'s reset) is queued for v8.3.3 — it eliminates the underlying transient empty rather than just hiding it.
+
+### Tests
+
+Frontend-only change set. No new pytest assertions; the existing 657 strategy tests pass unchanged.
+
+### What the operator will see
+
+- Activity feed "MOST RECENT" + per-row times now display in ET (e.g. "10:07" instead of "14:07 UTC" during EDT).
+- After any Railway redeploy mid-RTH, the OR ticker matrix no longer goes blank for 30–60s while v8.3.0 backfill repopulates — cached snapshot fills the gap.
+
+### Rollback
+
+`localStorage` writes are idempotent and bounded (one key per session_date). Operator can flush via DevTools `localStorage.clear()` or by waiting for the next day's session_date to roll the cache key.
+
+---
+
 ## v8.3.0 (2026-05-12) -- Automatic OR-window backfill on every scan cycle (Railway-redeploy-mid-RTH guard)
 
 A Railway redeploy mid-RTH wipes in-memory engine state. On the next bootstrap + `ensure_session_started`, all OR windows start empty. The live scan only feeds the latest 1m bar per cycle, so 09:30–09:59 ET buckets are never replayed — `bars_seen` stays 0, every ticker stays WARMUP, and **today is cooked for trading**. v7.74.0 had a one-shot `_maybe_backfill_or_window` hook gated on `_fresh == True` from `ensure_session_started`, but if that single attempt silently failed (Alpaca returned an empty bar list, the fetch raised, or the process crashed between the two calls) the OR stayed empty for the rest of the day. v8.3.0 makes backfill **automatic, per-cycle, idempotent**: "we can't miss trading just due to some glitches or fixes."
