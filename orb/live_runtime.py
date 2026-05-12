@@ -536,6 +536,21 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
             )
         except Exception:
             pass
+    # v8.1.2 -- partial-fills surface in the activity feed too.
+    elif result and getattr(result, "partial", False):
+        try:
+            _record_activity(
+                kind="partial",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(int(getattr(result, "partial_shares", 0) or 0))
+                        + " sh @ "
+                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                        + " (booked $"
+                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                        + ")",
+            )
+        except Exception:
+            pass
     return result
 
 
@@ -679,6 +694,21 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
                 ticker=ticker, pid=portfolio_id,
                 detail=str(result.reason or "") + " @ "
                         + ("%.2f" % (result.price or 0)),
+            )
+        except Exception:
+            pass
+    # v8.1.2 -- partial-fills surface in the activity feed too.
+    elif result and getattr(result, "partial", False):
+        try:
+            _record_activity(
+                kind="partial",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(int(getattr(result, "partial_shares", 0) or 0))
+                        + " sh @ "
+                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                        + " (booked $"
+                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                        + ")",
             )
         except Exception:
             pass

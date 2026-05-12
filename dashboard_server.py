@@ -614,6 +614,11 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
                 "trail_pill": _long_trail_pill,
+                # v8.1.2 -- surface partial_fills (written by
+                # broker/orders.py:partial_close_breakout) so the UI
+                # can render a "½ taken @ $X" indicator on the qty
+                # cell. Empty list when no partial has fired yet.
+                "partial_fills": list(p.get("partial_fills") or []),
             }
         )
     for tkr, p in shorts.items():
@@ -663,6 +668,8 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
                 "trail_pill": _short_trail_pill,
+                # v8.1.2 -- partial_fills (see long-side comment above)
+                "partial_fills": list(p.get("partial_fills") or []),
             }
         )
     return rows
