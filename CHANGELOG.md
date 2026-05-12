@@ -4,6 +4,57 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.3 (2026-05-12) -- Today's trades survive redeploy (trade_log.jsonl merge in `_today_trades`)
+
+Operator surfaced: after a Railway redeploy mid-day, the Main tab's "Today's Trades" section went blank — trades that had clearly happened weren't on the dashboard. The dashboard wasn't the source of truth; in-memory `paper_trades` was, and it had been wiped.
+
+### Root cause
+
+- `paper_state.json` (which rehydrates `paper_trades` + `short_trade_history` on boot via `paper_state.load_paper_state`) is saved on a **5-minute** cadence by a daemon thread (`trade_genius.py:7278`).
+- `trade_log.jsonl` is appended **synchronously per trade-close** (`broker/orders.py:2057` → `trade_log_append` → atomic file write under `_trade_log_lock`).
+- After a redeploy, `trade_log.jsonl` is current to the millisecond; `paper_state.json` is up to 5 minutes stale. The 0–5 min gap of trades exists on disk but is missing from in-memory state — and the dashboard reads only in-memory state.
+
+### Change
+
+**`dashboard_server._today_trades()`** now backfills from `trade_log.jsonl` after the in-memory pass:
+
+1. After processing `paper_trades` (long BUY/SELL rows) and `short_trade_history` (short COVER + synth SHORT entry rows) and the live `short_positions` sweep (open shorts), call `m.trade_log_read_tail(limit=500, since_date=today, portfolio="paper")`.
+2. For each log row dated today: synthesize the entry row (`BUY` for long, `SHORT` for short) and the exit row (`SELL` / `COVER`), each carrying the proper `pnl` / `pnl_pct` / `reason` / `entry_price` / `exit_price` / `entry_time` / `exit_time`.
+3. De-dup against the existing `seen` set keyed by `(ticker, time, side, action)` — so a trade that's already in `paper_trades` won't double-count.
+4. Failure-tolerant: `trade_log_read_tail` raising or returning empty doesn't break the in-memory path.
+
+The existing `seen`-set de-dup is the key invariant: when both `paper_trades` and `trade_log.jsonl` have the same row (steady state), only the in-memory version is emitted; when only `trade_log.jsonl` has it (the redeploy gap), the log row fills in.
+
+### Tests
+
+**`tests/strategy/test_today_trades_log_merge.py`** — 8 new tests:
+
+1. `test_empty_state_returns_empty` — sanity
+2. `test_log_only_long_round_trip_synthesized` — operator's redeploy scenario; LONG BUY+SELL appear from trade_log alone
+3. `test_log_short_round_trip_synthesized` — same for SHORT/COVER
+4. `test_inmem_paper_trade_takes_precedence_no_duplicate` — when both sources have the BUY, no duplicate emitted
+5. `test_log_rows_filtered_to_today_only` — yesterday's row from trade_log doesn't leak into today's view
+6. `test_log_read_failure_doesnt_break_inmem_path` — `trade_log_read_tail` raising still surfaces the in-memory rows
+7. `test_pnl_fields_preserved_on_synth_sell` — `pnl`, `pnl_pct`, `reason`, `entry_price`, `exit_price` survive synthesis
+8. `test_sort_order_entry_before_exit` — entry sorts before exit via the existing `_sort_key`
+
+**665 strategy tests pass** (657 + 8 new).
+
+### What the operator will see
+
+- After any Railway redeploy, the Main tab's Today's Trades panel renders the **complete** day's history — including the 0–5 min gap that was previously dropped. P&L tail, reason, entry/exit prices all preserved.
+- No change for steady-state operation (no redeploy): in-memory path covers everything; the log-merge step de-dups to zero adds.
+
+### Why this is the immediate fix, not the final one
+
+v8.3.4 (queued next) implements the comprehensive A–F engine state persistence to `/data/orb_state_<date>.json` — that's the broader "no in-memory-only state survives a redeploy" guarantee. v8.3.3 ships the surgical dashboard fix now so the operator stops seeing blank Today's Trades panels while v8.3.4 lands.
+
+### Rollback
+
+Strictly additive: skipping the new trade_log merge block leaves `_today_trades` at its v8.3.2 behavior (in-memory only).
+
+---
+
 ## v8.3.2 (2026-05-12) -- SIP→IEX merge fallback on thin result (fix "9 of 30 OR bars")
 
 The operator surfaced a `BLOCKED OR INSUFFICIENT` state on AVGO / NVDA / ORCL / TSLA showing `9 bars seen, expected 30`. Investigation traced it to `_fetch_1min_bars_alpaca` in `trade_genius.py`: the SIP→IEX fallback only fired when SIP returned **zero** bars (line 4491 pre-v8.3.2). If SIP returned a thin partial result (e.g. 9 of 30 OR-window bars due to a transient consolidated-tape feed glitch), we accepted the thin data, the OR window locked with `bars_seen < or_minutes // 2`, and the FSM transitioned to `PHASE_BLOCKED_OR_INSUFFICIENT` for the rest of the day. Account is already on Algo Trader Plus (SIP) per v6.5.0; switching feeds wasn't the fix — the fallback heuristic was.
