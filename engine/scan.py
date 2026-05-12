@@ -474,6 +474,19 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.debug("[V83-OR-BACKFILL] sweep failed: %s", _e)
 
+    # v8.3.4 -- engine state persistence. Snapshot OR windows +
+    # DayState FSM + RiskBook + Activity feed + Wash-sale tracker +
+    # Pending v10 sizes to /data/orb_state_<date>.json after each
+    # scan cycle. Rehydrated on next bootstrap so a Railway redeploy
+    # mid-day no longer loses in-memory state.
+    #
+    # Cheap: ~5 KB JSON, atomic write (tempfile + os.replace). Errors
+    # are swallowed and debug-logged; never blocks the trading path.
+    try:
+        _orb_runtime.dump_engine_state_now()
+    except Exception as _e:
+        logger.debug("[V834-PERSIST] dump failed: %s", _e)
+
     # v7.24.0: intraday equity refresh. Pulls each PortfolioBook's
     # current_equity (paper_cash + MTM long_mv - short_liability) and
     # pushes into each per-portfolio RiskBook so notional caps track
