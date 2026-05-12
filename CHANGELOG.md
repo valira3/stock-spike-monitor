@@ -4,6 +4,59 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.2 (2026-05-12) -- SIP→IEX merge fallback on thin result (fix "9 of 30 OR bars")
+
+The operator surfaced a `BLOCKED OR INSUFFICIENT` state on AVGO / NVDA / ORCL / TSLA showing `9 bars seen, expected 30`. Investigation traced it to `_fetch_1min_bars_alpaca` in `trade_genius.py`: the SIP→IEX fallback only fired when SIP returned **zero** bars (line 4491 pre-v8.3.2). If SIP returned a thin partial result (e.g. 9 of 30 OR-window bars due to a transient consolidated-tape feed glitch), we accepted the thin data, the OR window locked with `bars_seen < or_minutes // 2`, and the FSM transitioned to `PHASE_BLOCKED_OR_INSUFFICIENT` for the rest of the day. Account is already on Algo Trader Plus (SIP) per v6.5.0; switching feeds wasn't the fix — the fallback heuristic was.
+
+### Change
+
+**New module: `engine/data_completeness.py`** — four pure helpers (no I/O, no alpaca-py dependency):
+
+| Function | Purpose |
+|---|---|
+| `_or_expected_bars(now_et)` | How many [09:30, 10:00) ET bars to expect given the current ET clock (0 pre-09:30, partial during, 30 after) |
+| `_count_alpaca_rows_in_or_window(rows, et)` | Count duck-typed Bar objects whose ET timestamp falls in [09:30, 10:00) |
+| `_is_or_coverage_thin(got, expected, hard=False)` | Soft (<80%) triggers IEX retry; hard (<50%) triggers Yahoo fallback. No-op when `expected < 5` |
+| `_merge_alpaca_rows_by_timestamp(*row_lists)` | Merge SIP + IEX by UNIX timestamp; one bar per minute; earliest-source-wins on duplicate |
+
+**`trade_genius.py:_fetch_1min_bars_alpaca`** rewrites the fallback logic:
+
+1. Fetch SIP as primary (unchanged)
+2. Count bars in [09:30, 10:00) ET. Compute `or_expected` from `now_et`
+3. If SIP returned zero **OR** `_is_or_coverage_thin(sip_or_count, or_expected)` → fetch IEX and merge by timestamp
+4. Log `[V83-SIP-COMPLETENESS] sym=X sip=N iex=M merged=K sip_or=A merged_or=B or_expected=E` whenever the merge actually fired
+5. If merged OR-window coverage is still <50% of expected (`hard=True`) → return None so the caller's Yahoo fallback kicks in
+
+### Forensic
+
+`[V83-SIP-COMPLETENESS]` log fires only on thin-result events. Steady-state SIP-full-coverage is silent. Example for the operator's scenario:
+
+```
+[V83-SIP-COMPLETENESS] sym=AVGO sip=9 iex=30 merged=30 sip_or=9 merged_or=30 or_expected=30
+```
+
+### Tests
+
+**`tests/strategy/test_sip_completeness.py`** — 24 new tests across 4 test classes:
+
+- `TestOrExpectedBars` (5 tests): pre-market 0, mid-OR partial, post-OR 30
+- `TestCountAlpacaRowsInOrWindow` (8 tests): boundary inclusivity at 09:30:00 / 10:00:00, naive-datetime handling, malformed-row skipping
+- `TestIsOrCoverageThin` (6 tests): 80% soft threshold, 50% hard threshold, no-op below 5-bar expected window
+- `TestMergeAlpacaRowsByTimestamp` (5 tests): disjoint union, SIP-wins-on-duplicate, the operator's exact failure mode (9 SIP + 30 IEX → 30 merged in-OR), unparseable-timestamp skipping
+
+**681 strategy tests pass** (657 + 24 new).
+
+### What the operator will see
+
+- After v8.3.2 deploys, AVGO / NVDA / ORCL / TSLA OR windows lock with `bars_seen` reflecting the SIP+IEX consolidated coverage, not whichever feed had a transient gap. `BLOCKED OR INSUFFICIENT` should become rare-to-never for liquid names.
+- `[V83-SIP-COMPLETENESS]` log line surfaces in Railway logs whenever SIP coverage was thin — making the underlying SIP feed health visible going forward.
+
+### Rollback
+
+The new code path is strictly additive: when SIP returns full coverage, the IEX retry never fires (same as pre-v8.3.2). To force pre-v8.3.2 behavior, replace the call to `_is_or_coverage_thin(sip_or_count, or_expected)` with `False` in `trade_genius.py:_fetch_1min_bars_alpaca`.
+
+---
+
 ## v8.3.1 (2026-05-12) -- Dashboard ET time + OR-window localStorage cache (no more disappearing OR)
 
 Two dashboard-side fixes that close visible-but-misleading gaps the operator surfaced today.

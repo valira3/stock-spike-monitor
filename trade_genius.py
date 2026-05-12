@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "8.3.1"
+BOT_VERSION = "8.3.2"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -4428,6 +4428,17 @@ def _alpaca_pdc(ticker: str, client) -> float | None:
         return None
 
 
+# v8.3.2 \u2014 SIP completeness helpers live in engine/data_completeness.py
+# so they're independently importable + unit-testable without dragging
+# in trade_genius's telegram / alpaca / FMP deps.
+from engine.data_completeness import (
+    _or_expected_bars,
+    _count_alpaca_rows_in_or_window,
+    _is_or_coverage_thin,
+    _merge_alpaca_rows_by_timestamp,
+)
+
+
 def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
     """v6.0.5 \u2014 Alpaca-IEX 1m bar fetch in the same dict shape as the
     legacy Yahoo path. Covers 08:00\u201318:00 ET so the premarket warm-up
@@ -4488,8 +4499,21 @@ def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
             rows = resp.data.get(sym, []) or resp.data.get(ticker, []) or []
     except Exception:
         rows = []
-    if not rows:
-        logger.debug("Alpaca %s: SIP empty, retrying IEX (%.2fs)", sym, time.time() - t0)
+    sip_count = len(rows)
+    # v8.3.2 — SIP→IEX merge fallback on thin result, not just empty.
+    # Why: pre-v8.3.2, the IEX retry only fired when SIP returned ZERO
+    # bars. If SIP returned a partial result (e.g. 9 of an expected 30
+    # OR-window bars due to a transient feed glitch), we accepted the
+    # thin data, the OR window locked with bars_seen<15, and the FSM
+    # transitioned to PHASE_BLOCKED_OR_INSUFFICIENT for the rest of
+    # the day. v8.3.2 counts in-OR-window bars (09:30–09:59 ET) and
+    # retries IEX + merges by timestamp if SIP's coverage is thin.
+    # Yahoo via _fetch_1min_bars_yahoo() remains the last-ditch
+    # fallback when even SIP+IEX merged comes up short.
+    or_expected = _or_expected_bars(now_et)
+    sip_or_count = _count_alpaca_rows_in_or_window(rows, et)
+    iex_count = 0
+    if not rows or _is_or_coverage_thin(sip_or_count, or_expected):
         try:
             req_iex = StockBarsRequest(
                 symbol_or_symbols=sym,
@@ -4499,12 +4523,37 @@ def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
                 feed=DataFeed.IEX,
             )
             resp_iex = client.get_stock_bars(req_iex)
+            iex_rows = []
             if hasattr(resp_iex, "data"):
-                rows = resp_iex.data.get(sym, []) or resp_iex.data.get(ticker, []) or []
+                iex_rows = (resp_iex.data.get(sym, [])
+                            or resp_iex.data.get(ticker, []) or [])
+            iex_count = len(iex_rows)
+            if iex_rows:
+                rows = _merge_alpaca_rows_by_timestamp(rows, iex_rows)
         except Exception as e_iex:
             logger.debug("Alpaca %s: IEX fallback failed: %s", sym, e_iex)
+    merged_count = len(rows)
+    merged_or_count = _count_alpaca_rows_in_or_window(rows, et)
+    # Forensic: one log line per fetch when we had to fire the IEX
+    # retry. Silent on the steady-state happy path (SIP full coverage).
+    if sip_or_count != merged_or_count or sip_count != merged_count:
+        logger.info(
+            "[V83-SIP-COMPLETENESS] sym=%s sip=%d iex=%d merged=%d "
+            "sip_or=%d merged_or=%d or_expected=%d",
+            sym, sip_count, iex_count, merged_count,
+            sip_or_count, merged_or_count, or_expected,
+        )
     if not rows:
         logger.debug("Alpaca %s: empty rows after SIP+IEX (%.2fs)", sym, time.time() - t0)
+        return None
+    # If merged result is STILL thin on the OR window, return None so
+    # the caller falls through to the Yahoo branch (last-ditch).
+    if _is_or_coverage_thin(merged_or_count, or_expected, hard=True):
+        logger.warning(
+            "[V83-SIP-COMPLETENESS] sym=%s thin-after-merge "
+            "sip=%d iex=%d merged_or=%d/%d — falling back to Yahoo",
+            sym, sip_count, iex_count, merged_or_count, or_expected,
+        )
         return None
     timestamps: list[int] = []
     opens: list[float] = []
