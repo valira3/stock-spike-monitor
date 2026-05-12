@@ -4,6 +4,47 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.102.0 (2026-05-12) -- R-multiple uses original stop + signal-bus init audit
+
+Two improvements bundled into one release. Both came out of today's trade-replay analysis (`trade-replay-archive/2026-05-11.md`).
+
+### 1. R-multiple formula uses the ORIGINAL stop
+
+The 2026-05-11 archive showed `Avg R = -0.79R` despite a profitable day ($865.95 net, 71.4% win rate). Inspection revealed `_r_multiple` was using `effective_stop_at_exit` as the risk denominator. Once the chandelier trail moves past breakeven, that "stop" inverts the sign of `entry - stop`, producing negative R values on winning trades. NFLX SHORT on 2026-05-11 was -1.30R despite +$244 P&L — same pattern across all trailed winners.
+
+Classic R-multiple is defined against the **initial** risk, not the trailed risk. `tools/trade_replay.py:_r_multiple` now prefers `hard_stop_at_exit` (the original protective stop captured by `_trade_log_snapshot_pos`) and falls back to `effective_stop_at_exit` only for legacy rows that pre-date the snapshot. Tomorrow's daily replay will show meaningful Avg R.
+
+### 2. Signal-bus init audit at boot (Lesson 4 observability half of PR-1)
+
+`emit_signal_bus_init_complete(val=, gene=)` runs once at startup after both `build_val_executor` and `build_gene_executor` finish. Emits:
+
+```
+INFO  [SIGNAL-BUS-INIT-COMPLETE] expected=2 actual=2 val=on gene=on
+ERROR [SIGNAL-BUS-INIT-COMPLETE] expected=2 actual=1 ... -- BUS LEAK ...
+```
+
+Pre-v7.102.0 a bus-leak (executor's `start()` raised before `register_signal_listener` ran) only surfaced HOURS later when the `val_gene_trades_match_main` invariant tripped mid-RTH. Now we get the leak as a startup ERROR that Railway's deploy logs will flag immediately. Same diagnostic surface as the v7.90.0 dashboard-monitor invariant, but inside the bot's own boot path so it fires even without an external monitor.
+
+This is the observability half of PR-1; the actual Symptom 2 fix (whatever the Val mirror is doing wrong) waits for tomorrow's RTH `signal_bus_has_listeners` invariant data so we know which fix to ship.
+
+### Tests
+
+- `tests/strategy/test_trade_replay_v793.py` — 6 R-multiple tests updated, 1 regression test added for the trail-past-breakeven smoking-gun case.
+- `tests/strategy/test_signal_bus_init_v7102.py` — 4 new tests: happy path, bus-leak ERROR, all-disabled, status-lookup failure swallowed.
+
+Full strategy suite: 539 passed.
+
+### Files
+
+- `tools/trade_replay.py` — `_r_multiple` flips preference: `hard_stop_at_exit` first, `effective_stop_at_exit` fallback
+- `executors/bootstrap.py` — new `emit_signal_bus_init_complete` helper
+- `trade_genius.py` — wires the new helper at the existing executor bootstrap call site
+- `tests/strategy/test_trade_replay_v793.py` — updated + new regression test
+- `tests/strategy/test_signal_bus_init_v7102.py` — new
+- `bot_version.py` / `trade_genius.py` — `7.101.0` → `7.102.0`
+
+---
+
 ## v7.101.0 (2026-05-12) -- Clamp Railway deploymentLogs `limit` to 500
 
 v7.100.0's `[GRAPHQL-ERROR]` capture immediately surfaced the actual schema complaint on issue #593:

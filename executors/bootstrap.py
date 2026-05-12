@@ -87,6 +87,16 @@ def install_globals(
     telegram_commands.gene_executor = gene
 
 
+# v7.102.0 (Lesson 4) -- emit_signal_bus_init_complete is implemented
+# in tools/signal_bus_audit.py (NOT executors/) so the strategy-tests
+# CI lane (which only installs `pytest tzdata`) can exercise it
+# without triggering the executors/__init__.py import chain that
+# pulls executors.base -> telegram. Re-exported here so the existing
+# `from executors.bootstrap import ..., emit_signal_bus_init_complete`
+# call site keeps working unchanged.
+from tools.signal_bus_audit import emit_signal_bus_init_complete  # noqa: F401
+
+
 def get_executor(portfolio_id: str):
     """v7.26.0 -- look up the TradeGeniusBase instance by portfolio_id.
 
