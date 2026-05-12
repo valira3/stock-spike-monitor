@@ -381,6 +381,51 @@ class TradeGeniusBase:
         return (False, f"unknown mode: {new_mode!r} (expected 'paper' or 'live')")
 
     # ---------- signal listener ----------
+    def _scaled_signal_qty(self, signal_qty: int) -> tuple[int, float]:
+        """v8.3.17 -- scale a Main-emitted signal_qty by this executor's
+        equity-ratio so smaller Val/Gene accounts don't hit Main's
+        notional cap.
+
+        Returns (scaled_qty, ratio). When ex_equity >= main_equity OR
+        either equity read fails, returns (signal_qty, 1.0) -- a no-op
+        falls back to the legacy v5.24.0 1:1 mirror.
+
+        Math:
+          ratio = min(1.0, ex_equity / main_equity)
+          scaled_qty = max(1, int(signal_qty * ratio))
+
+        We clamp at >= 1 share when scaling down so a tiny-account
+        executor still mirrors direction + ticker (even if just 1
+        share); going to 0 would drop the trade entirely, which
+        loses the side-tracking signal and the opposite-side guard.
+        """
+        if signal_qty <= 0:
+            return (signal_qty, 1.0)
+        # Read Main's equity. tg.paper_cash is the source of truth;
+        # PortfolioBook's current_equity adds MTM but that introduces
+        # noise into the scale factor and is mostly cancelled by the
+        # symmetric MTM on Val's account.
+        try:
+            tg = _tg()
+            main_equity = float(getattr(tg, "paper_cash", 0.0) or 0.0)
+        except Exception:
+            return (signal_qty, 1.0)
+        if main_equity <= 0:
+            return (signal_qty, 1.0)
+        # Read this executor's equity (Alpaca account-equity).
+        try:
+            from engine.portfolio_equity import resolve_equity
+            ex_equity = float(resolve_equity(self.NAME.lower()) or 0.0)
+        except Exception:
+            return (signal_qty, 1.0)
+        if ex_equity <= 0:
+            return (signal_qty, 1.0)
+        if ex_equity >= main_equity:
+            return (signal_qty, 1.0)
+        ratio = ex_equity / main_equity
+        scaled = max(1, int(signal_qty * ratio))
+        return (scaled, ratio)
+
     def _shares_for(self, price: float, ticker: "str | None" = None) -> int:
         """v5.1.4 \u2014 equity-aware live sizing.
 
@@ -2172,6 +2217,27 @@ class TradeGeniusBase:
         # ``main_shares`` keeps every executor's per-ticker quantity
         # aligned with the paper book and with each other.
         signal_qty = int(event.get("main_shares") or 0)
+
+        # v8.3.17 -- proportional scaling. Val/Gene Alpaca accounts may
+        # be smaller than Main's $100K paper book. Mirroring
+        # main_shares 1:1 then puts AMZN ($75K notional) through Val's
+        # ~$70K notional cap and gets risk_reject:notional_cap. Scale
+        # the qty by ex_equity / main_equity so the executor stays
+        # within its risk budget while still mirroring direction +
+        # ticker. No-op when ex_equity >= main_equity.
+        if signal_qty > 0:
+            try:
+                scaled_qty, scale_ratio = self._scaled_signal_qty(signal_qty)
+            except Exception:
+                # Best-effort -- never break the mirror path on a
+                # scaling math error. Fall through to legacy 1:1.
+                scaled_qty, scale_ratio = signal_qty, 1.0
+            if scale_ratio < 1.0:
+                logger.info(
+                    "[V8317-SCALE] %s %s qty=%d -> %d (eq_ratio=%.3f)",
+                    self.NAME, ticker, signal_qty, scaled_qty, scale_ratio,
+                )
+            signal_qty = scaled_qty
 
         try:
             if kind == "ENTRY_LONG":
