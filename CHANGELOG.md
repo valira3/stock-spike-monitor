@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.7 (2026-05-12) -- Day P&L realized component reads from `trade_log.jsonl` (fix profitable-day-looks-like-loss)
+
+Operator screenshot showed Day P&L = -$241.56 with 4 trades, while open positions held META -$60.08 and NFLX -$181.48 (sum = -$241.56 unrealized exactly). The realized gains from earlier closed trades (~+$780) were missing from the Day P&L total. Result: a profitable session displayed as a loss.
+
+### Root cause
+
+`dashboard_server._build_portfolio_block` (main pid) computed realized P&L by summing `pnl` from in-memory `paper_trades` SELL rows + `short_trade_history` COVER rows for today's date. Both lists are wiped on Railway redeploy and rehydrated from `paper_state.json` — which saves on a **5-minute** daemon-thread cadence (`trade_genius.py:7278`). So the latest 0–5 min of SELL rows live only on disk in `trade_log.jsonl` (synchronous-per-trade append) and never reached the realized sum.
+
+This is the same gap v8.3.3 fixed for the **Today's Trades panel**. v8.3.7 closes the parallel gap on the **P&L summation side**.
+
+### Change
+
+New helper `dashboard_server._compute_realized_pnl_today(m, today_s)`:
+
+1. Iterate `paper_trades` SELL rows for today; accumulate pnl + record dedup key `(ticker.upper(), time)`
+2. Iterate `short_trade_history` rows for today; same accumulate + dedup
+3. Call `m.trade_log_read_tail(since_date=today_s, portfolio="paper")`; for each log row dated today:
+   - Compute dedup key using `m._to_et_hhmm(exit_time)` so it matches the "HH:MM ET" format in-memory rows use
+   - Skip if already in the seen set (in-memory wins for de-dup; same pnl value either way)
+   - Add the log row's pnl to the running total
+4. Failure-tolerant: a `trade_log_read_tail` exception returns the in-memory sum alone
+
+`_build_portfolio_block` (main pid) now calls `_compute_realized_pnl_today(m, today_s)` instead of computing inline. Val / Gene path unchanged (they read from `book.trade_history` / `book.short_trade_history` already kept in sync by record_entry/exit_with_fill).
+
+### Tests
+
+**`tests/strategy/test_realized_pnl_log_merge.py`** — 12 new tests across 2 test classes:
+
+`TestRealizedFromInMemoryOnly` (5):
+- empty state returns 0
+- paper_trades SELL row summed
+- paper_trades BUY row ignored (no pnl semantics)
+- short_trade_history summed
+- other-day rows ignored
+
+`TestRealizedFromTradeLog` (7):
+- **log-only row summed** (operator's redeploy scenario)
+- **dedup: paper_trades wins on duplicate** (no double-count)
+- **full operator scenario** — 2 log rows summing to +$780 (was the missing piece)
+- log read failure falls back to in-memory sum (no crash)
+- other-day log row ignored
+- dedup: short_trade_history wins on duplicate
+- malformed log rows skipped (not-a-dict, non-numeric pnl)
+
+**727 strategy tests pass** (715 + 12 new).
+
+### What the operator will see
+
+- Day P&L now reflects the **net** of realized closes + open-position unrealized. The screenshot scenario would render as:
+  - `Day P&L: +$538.44 (+0.54%)` (= realized $780 − unrealized $241.56)
+- Steady state (no redeploy gap): no change, because in-memory + trade_log agree and dedup zeroes out the on-disk-only adds
+
+### Related v8.3.x persistence work
+
+- **v8.3.3**: Today's Trades panel reads from trade_log.jsonl
+- **v8.3.4**: All-in-one engine state persistence to /data
+- **v8.3.5**: UTC → ET conversion in synth SELL rows
+- **v8.3.6**: Executor → engine FSM/RiskBook mirror
+- **v8.3.7** (this PR): realized P&L reads from trade_log.jsonl
+
+The dashboard's three displays of "today's activity" (Today's Trades, CONCURRENT RISK / top ticker, Day P&L) now all consult the same authoritative on-disk sources.
+
+### Rollback
+
+Revert the call to `_compute_realized_pnl_today` and restore the inline loop in `_build_portfolio_block`. Tests then fail at `test_log_row_only_summed` (regression-locked).
+
+---
+
 ## v8.3.6 (2026-05-12) -- Executor → OrbEngine FSM + RiskBook mirror (recover "$0 / top ticker 0/5")
 
 Operator screenshot post-redeploy showed:
