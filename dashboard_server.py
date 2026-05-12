@@ -408,13 +408,8 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 today_s = m._now_et().strftime("%Y-%m-%d")
             except Exception:
                 today_s = ""
-            realized = 0.0
-            for t in getattr(m, "paper_trades", []) or []:
-                if t.get("date") == today_s and t.get("action") == "SELL":
-                    realized += float(t.get("pnl", 0.0) or 0.0)
-            for t in getattr(m, "short_trade_history", []) or []:
-                if t.get("date") == today_s:
-                    realized += float(t.get("pnl", 0.0) or 0.0)
+            # v8.3.7 -- realized P&L now merges in-memory + on-disk.
+            realized = _compute_realized_pnl_today(m, today_s)
             unreal = sum(
                 r.get("unrealized", 0.0)
                 for r in _serialize_positions(longs, shorts, _px)
@@ -673,6 +668,88 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             }
         )
     return rows
+
+
+def _compute_realized_pnl_today(m, today_s: str) -> float:
+    """v8.3.7 -- realized P&L for today summed across BOTH in-memory
+    lists (paper_trades SELL rows + short_trade_history COVER rows)
+    AND the synchronous on-disk trade_log.jsonl. De-dups by
+    (ticker, exit_time_in_ET) so the same close doesn't count twice
+    when both sources have it.
+
+    Why it's needed: paper_state.json (which rehydrates paper_trades
+    on boot) is saved on a 5-minute daemon-thread cadence; the
+    trade_log.jsonl is appended synchronously per trade. After a
+    Railway redeploy, the latest 0-5 min of SELL rows live on disk
+    but are missing from in-memory state. Pre-v8.3.7 the dashboard's
+    Day P&L computed realized only from paper_trades, so a session
+    that closed profitable trades just before redeploy looked like a
+    loss (operator screenshot: NFLX +$450.80 closed earlier, Day P&L
+    showed only the open-position unrealized = -$241.56).
+
+    Returns the sum in dollars (positive = profit, negative = loss).
+    Failure-tolerant: a trade_log read error returns the in-memory
+    sum alone rather than zero.
+    """
+    realized = 0.0
+    realized_keys: set = set()
+    for t in (getattr(m, "paper_trades", None) or []):
+        if not isinstance(t, dict):
+            continue
+        if t.get("date") != today_s:
+            continue
+        if t.get("action") != "SELL":
+            continue
+        try:
+            realized += float(t.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((
+            (t.get("ticker") or "").upper(),
+            str(t.get("time") or t.get("exit_time") or ""),
+        ))
+    for t in (getattr(m, "short_trade_history", None) or []):
+        if not isinstance(t, dict):
+            continue
+        if t.get("date") != today_s:
+            continue
+        try:
+            realized += float(t.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((
+            (t.get("ticker") or "").upper(),
+            str(t.get("time") or t.get("exit_time") or ""),
+        ))
+    try:
+        log_rows = m.trade_log_read_tail(
+            limit=500, since_date=today_s, portfolio="paper",
+        )
+    except Exception:
+        log_rows = []
+    for row in (log_rows or []):
+        if not isinstance(row, dict):
+            continue
+        if row.get("date") != today_s:
+            continue
+        tk = (row.get("ticker") or "").upper()
+        exit_iso = row.get("exit_time") or ""
+        # The in-memory dedup key uses "HH:MM ET" (paper_trades) so
+        # convert the trade_log's UTC ISO through _to_et_hhmm to
+        # match. v8.3.5 fixed the dashboard-render side; v8.3.7
+        # closes the parallel gap on the P&L summation side.
+        try:
+            exit_et = m._to_et_hhmm(exit_iso) if exit_iso else ""
+        except Exception:
+            exit_et = exit_iso
+        if (tk, exit_et) in realized_keys:
+            continue
+        try:
+            realized += float(row.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((tk, exit_et))
+    return realized
 
 
 def _today_trades() -> list[dict]:
