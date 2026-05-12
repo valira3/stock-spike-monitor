@@ -4,6 +4,81 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.6 (2026-05-12) -- Executor → OrbEngine FSM + RiskBook mirror (recover "$0 / top ticker 0/5")
+
+Operator screenshot post-redeploy showed:
+
+```
+TRADES TODAY (CAP 5/TICKER)   2 total · top ticker 0/5
+CONCURRENT RISK               $0 / $2,000 (0%)
+```
+
+The "2 total" was correct (v8.3.3 reads `trade_log.jsonl`), but "top ticker 0/5" and "$0" were the v10 OrbEngine state (`_state.day_states.*.trades_today` and `_risk[main]._open_tickets`) — which had been wiped during the v8.3.x merge train before v8.3.4's persistence layer landed.
+
+### Root cause
+
+| Layer | Boot rehydrate (pre-v8.3.6) |
+|---|---|
+| `executor.positions` | ✓ via `_load_persisted_positions` from `state.db` |
+| `PortfolioBook.positions` | ✓ via v8.2.0 `_mirror_position_into_book` |
+| `OrbEngine._state.day_states` (`in_position`, `trades_today`) | ✗ **untouched** |
+| `OrbEngine._risk[pid]._open_tickets` (open_risk, open_notional) | ✗ **untouched** |
+
+v8.3.4's `/data/orb_state_<date>.json` persistence covers the engine layer for FUTURE redeploys, but the current session lost state BEFORE v8.3.4 dumped anything. The boot path needs a one-shot reconciliation from `executor.positions` → engine FSM + RiskBook.
+
+### Change
+
+**`executors/base.py`** — new helper `_mirror_position_into_engine(ticker)`:
+
+1. Resolves the v10 engine via `orb.live_runtime.get_engine()`; bails if not bootstrapped or `self.NAME.lower()` isn't a registered portfolio
+2. `_state.day_states[(pid, ticker)].in_position = True`; transitions to `PHASE_IN_POS` only when not currently blocked (defensive: doesn't clobber a `BLOCKED_BLOCKLIST` row)
+3. Inserts a synthetic `_Ticket` into `_risk[pid]._open_tickets` keyed by `"recover-{pid}-{ticker}"` (deterministic id → idempotent on re-mirror)
+4. `risk_dollars` prefers `|entry − stop| × shares` when stop is known; falls back to `equity × risk_per_trade_pct / 100` (1% default); last-ditch absolute $500
+5. `notional = entry_price × shares`
+6. Logs `[V836-RECOVER] mirrored TICKER into engine FSM + RiskBook` for forensic auditability
+
+Hooked into both boot paths (alongside the existing v8.2.0 `_mirror_position_into_book` call):
+
+- `_load_persisted_positions` — after state.db rehydrate
+- `_reconcile_broker_positions` — after each broker-orphan graft
+
+### Tests
+
+**`tests/strategy/test_executor_engine_mirror.py`** — 9 new tests:
+
+- `test_long_position_marks_in_position` — LONG → `in_position=True`, `phase=PHASE_IN_POS`, `last_entry_iso` preserved
+- `test_short_position_marks_in_position` — SHORT path
+- `test_risk_book_ticket_inserted_with_stop_distance` — `risk_dollars = |entry - stop| × shares`
+- `test_risk_book_falls_back_to_risk_per_trade_pct_when_no_stop` — stop=None → `equity × 1%` fallback
+- `test_idempotent_on_re_call` — three back-to-back calls produce one open ticket
+- `test_doesnt_clobber_blocked_phase` — `BLOCKED_BLOCKLIST` row keeps its phase; `in_position` flips True
+- `test_unknown_pid_no_op` — `NAME="UnknownPid"` falls through silently
+- `test_no_pos_no_op` — empty `self.positions` is safe
+- `test_load_persisted_mirrors_into_engine` — `_load_persisted_positions` end-to-end populates both FSM + RiskBook
+
+**715 strategy tests pass** (706 + 9 new).
+
+### What the operator will see
+
+- After v8.3.6 rolls out, the next Railway redeploy will (a) load executor.positions from state.db, (b) mirror to PortfolioBook (v8.2.0), (c) mirror to engine FSM + RiskBook (v8.3.6), AND (d) dump the recovered state to `/data/orb_state_<date>.json` for the next cycle's rehydrate (v8.3.4).
+- The "top ticker 0/5" + "$0" CONCURRENT RISK panel will populate from the broker orphans the bot grafts on boot.
+- Forensic: `[V836-RECOVER]` log lines per ticker in Railway logs.
+
+### Why three mirrors, not one
+
+`_mirror_position_into_book` and `_mirror_position_into_engine` have different idempotency invariants and different no-clobber guards:
+
+- The book mirror won't overwrite a row carrying richer state (`v531_max_favorable_price`, etc.) from a live `record_entry_with_fill`
+- The engine mirror won't transition a `BLOCKED_*` phase to `IN_POS` (operator's blocklist / day-gate decisions stay sticky)
+
+Folding them into one helper would obscure those guards. Keep them adjacent + sequenced; the executor's `_load_persisted_positions` and `_reconcile_broker_positions` call both in order.
+
+### Rollback
+
+Comment out the two `self._mirror_position_into_engine(...)` call sites in `executors/base.py`. The helper stays defined (no breakage); the engine FSM just doesn't rehydrate on boot until v8.3.4 persistence is built.
+
+---
+
 ## v8.3.5 (2026-05-12) -- Fix UTC display on trade_log-synthesized SELL/COVER rows
 
 Operator screenshot showed today's NFLX trade as:
