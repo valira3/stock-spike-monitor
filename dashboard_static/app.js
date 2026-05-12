@@ -453,10 +453,30 @@
             && Number.isFinite(_riskEntry) && _riskEntry > 0) {
           _notionalTxt = fmtUsd(_riskShareCount * _riskEntry);
         }
+        // v8.1.2 -- partial-fill indicator on the shares cell. If the
+        // position has any partial_fills (written by
+        // broker/orders.py:partial_close_breakout when the engine
+        // emits EXIT_PARTIAL on 1R touch), render a small "½@$X"
+        // badge with a tooltip showing booked partial pnl.
+        var _partialFills = Array.isArray(p.partial_fills) ? p.partial_fills : [];
+        var _partialBadge = "";
+        if (_partialFills.length > 0) {
+          var _pf = _partialFills[_partialFills.length - 1];
+          var _pfShares = Number(_pf && _pf.shares) || 0;
+          var _pfPrice = Number(_pf && _pf.price) || 0;
+          var _pfPnl = Number(_pf && _pf.pnl_dollars) || 0;
+          var _pfTitle = "Partial fill taken at 1R: "
+            + _pfShares + " sh @ $" + _pfPrice.toFixed(2)
+            + " (booked $" + _pfPnl.toFixed(2) + "). "
+            + "Runner riding to RR=2.5 target.";
+          _partialBadge = ' <span class="partial-badge" title="'
+            + escapeHtml(_pfTitle) + '">½@$'
+            + _pfPrice.toFixed(2) + '</span>';
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
-          <td class="right">${p.shares}</td>
+          <td class="right">${p.shares}${_partialBadge}</td>
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right" title="Notional at cost: shares × entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap.">${_notionalTxt}</td>
@@ -648,8 +668,13 @@
       // v5.5.7 — classify by open vs close, not strictly BUY/SELL.
       // SHORT entries pair with COVER exits; treating only BUY/SELL as
       // tradable actions hid realized pnl on COVER rows.
+      // v8.1.2 -- PARTIAL_SELL / PARTIAL_COVER are HALF-closes
+      // (booked realized P&L on half the position; position stays
+      // open). Treat as "close" for the chip/color but mark with a
+      // ½ glyph + tooltip so operator can distinguish.
+      const isPartial = (act === "PARTIAL_SELL" || act === "PARTIAL_COVER");
       const isOpen  = (act === "BUY" || act === "SHORT");
-      const isClose = (act === "SELL" || act === "COVER");
+      const isClose = (act === "SELL" || act === "COVER" || isPartial);
       const side  = t.side || "LONG";
       const sym   = t.ticker || "—";
       const shares = t.shares;
@@ -657,8 +682,14 @@
 
       // Action chip — open (green) / close (red). Symbol still
       // carries LONG/SHORT colour coding to avoid double-cueing.
-      const actCls = isClose ? "act-sell" : "act-buy";
-      const actLbl = act || (side === "SHORT" ? "SHORT" : "LONG");
+      // Partial fills get an amber tone (between win green and loss
+      // red) since they're half-closes booking profit on a still-
+      // open position.
+      const actCls = isPartial ? "act-partial" :
+                     (isClose ? "act-sell" : "act-buy");
+      const actLbl = isPartial
+        ? (act === "PARTIAL_SELL" ? "½ SELL" : "½ COVER")
+        : (act || (side === "SHORT" ? "SHORT" : "LONG"));
 
       // v4.2.1 — tail column (between action and unit price):
       //   open  → total cost, subdued
@@ -5248,6 +5279,55 @@
       }
     }
 
+    // v8.1.2 -- ATR-stop + Partial-profit chips. Read from
+    // v10.config which the engine populates via snapshot(). Hide
+    // the chip entirely when the corresponding feature is off so
+    // operators only see what's actually active.
+    var cfg = (v10 && v10.config) || {};
+    var atrMult = parseFloat(cfg.atr_stop_mult || 0);
+    var atrPill = document.getElementById("v10-atr-pill");
+    var atrDiv = document.getElementById("v10-atr-pill-divider");
+    if (atrPill && atrDiv) {
+      if (atrMult > 0) {
+        atrPill.textContent = "ATR×" + atrMult.toFixed(2);
+        atrPill.title = "ATR-based stop placement: stop = entry ∓ "
+          + atrMult.toFixed(2) + " × ATR(" + (cfg.atr_lookback_5m || 14)
+          + ", 5m). Cold-ATR falls back to OR-edge silently. v8.0.0+.";
+        atrPill.style.display = "";
+        atrDiv.style.display = "";
+      } else {
+        atrPill.style.display = "none";
+        atrDiv.style.display = "none";
+      }
+    }
+    var partialOn = !!cfg.partial_profit_at_1r;
+    var pPill = document.getElementById("v10-partial-pill");
+    var pDiv = document.getElementById("v10-partial-pill-divider");
+    if (pPill && pDiv) {
+      if (partialOn) {
+        pPill.textContent = "P@1R ON";
+        pPill.style.background = "#166534"; // green-700
+        pPill.style.color = "#dcfce7";       // green-100
+        pPill.title = "Partial-profit-at-1R is ACTIVE. Engine emits "
+          + "EXIT_PARTIAL on first 1R touch; broker submits MARKET "
+          + "half-sell; runner rides to 2.5R with BE stop. v8.1.0+.";
+        pPill.style.display = "";
+        pDiv.style.display = "";
+      } else {
+        // Render greyed when off so operator can confirm the
+        // env flag state at a glance (vs no chip at all, which
+        // is ambiguous between "off" and "not deployed yet").
+        pPill.textContent = "P@1R OFF";
+        pPill.style.background = "#374151"; // gray-700
+        pPill.style.color = "#9ca3af";       // gray-400
+        pPill.title = "Partial-profit-at-1R env flag is unset/0. "
+          + "Set ORB_PARTIAL_PROFIT_AT_1R=1 in Railway to activate. "
+          + "v8.1.0+.";
+        pPill.style.display = "";
+        pDiv.style.display = "";
+      }
+    }
+
     // Trades + risk used.
     // v7.50.0 -- prefer the backend-injected broker_trades_today so
     // the count matches what each pid's Alpaca account actually
@@ -5587,6 +5667,26 @@
       return;
     }
 
+    // v8.1.2 -- index of partial-taken positions by ticker. Source
+    // is the legacy /api/state.main_book.positions blob (where
+    // broker/orders.py:partial_close_breakout writes partial_fills).
+    // Used to render a 🔄 indicator on matrix rows whose runner is
+    // still open.
+    var _partialByTicker = {};
+    try {
+      var _mb = (s && (s.main_book || s)) || {};
+      var _posList = (_mb && _mb.positions) || (s && s.positions) || [];
+      for (var _pi = 0; _pi < _posList.length; _pi++) {
+        var _ppi = _posList[_pi];
+        if (_ppi && _ppi.ticker && Array.isArray(_ppi.partial_fills)
+            && _ppi.partial_fills.length > 0) {
+          _partialByTicker[_ppi.ticker] = _ppi.partial_fills[
+            _ppi.partial_fills.length - 1
+          ];
+        }
+      }
+    } catch (_e) { /* defensive: never block the matrix render */ }
+
     var rows = [];
     rows.push('<table id="v10-tm-table"><thead><tr>'
       + '<th>Ticker</th>'
@@ -5617,8 +5717,21 @@
         var phaseTxt = phase.replace(/_/g, " ").toUpperCase();
         var reason = d.block_reason || (d.in_position ? 'open ticket' : '');
         var tradesCell = (d.trades_today || 0) + ' / ' + maxTrades;
+        // v8.1.2 -- partial-fill indicator on the ticker cell when
+        // the runner half is still open.
+        var _tkLabel = esc(tk);
+        if (phase === "in_pos" && _partialByTicker[tk]) {
+          var _pft = _partialByTicker[tk];
+          var _pftPrice = Number(_pft && _pft.price) || 0;
+          var _pftPnl = Number(_pft && _pft.pnl_dollars) || 0;
+          var _pftTitle = "Partial taken at 1R: $"
+            + _pftPrice.toFixed(2) + " (booked $"
+            + _pftPnl.toFixed(2) + "). Runner half open.";
+          _tkLabel += ' <span class="partial-badge" title="'
+            + esc(_pftTitle) + '">½</span>';
+        }
         rows.push('<tr class="' + rowCls + '">'
-          + (p === 0 ? '<td rowspan="' + pids.length + '">' + esc(tk) + '</td>' : '')
+          + (p === 0 ? '<td rowspan="' + pids.length + '">' + _tkLabel + '</td>' : '')
           + (multiPid ? '<td><span class="v10-tm-pid">' + esc(pid2) + '</span></td>' : '')
           + '<td><span class="v10-tm-phase ' + phaseCls + '">' + esc(phaseTxt) + '</span></td>'
           + (p === 0

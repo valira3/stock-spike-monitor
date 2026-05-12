@@ -195,6 +195,27 @@
   }
   .act-buy  { background: var(--up-dim);   color: var(--up); }
   .act-sell { background: var(--down-dim); color: var(--down); }
+  /* v8.1.2 -- partial-fill action chip. Amber sits between win
+     green and loss red; signals "half-closed, still open" so the
+     operator's eye doesn't mis-read it as a full close. */
+  .act-partial { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+
+  /* v8.1.2 -- partial-fill indicator on the positions table's
+     shares cell. Same amber palette, tiny inline pill, monospace
+     for the price digits. */
+  .partial-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+  }
 
   /* Realized P&L cell — shows both $ and % on SELL rows, stacked
      on phones via the row-collapse media block below. */
@@ -2637,6 +2658,9 @@ body.v10-live .legacy-v10-hidden {
 .act-kind.act-kind-kill { background: #dc2626; color: #fff; }
 .act-kind.act-kind-or_lock { background: #1e3a5f; color: #93c5fd; }
 .act-kind.act-kind-info { background: #374151; color: #d1d5db; }
+/* v8.1.2 -- partial-fill chip in the activity feed. Amber to match
+   the trades-panel PARTIAL_SELL chip + the positions ½@$ badge. */
+.act-kind.act-kind-partial { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
 /* v7.49.0 -- directional glyphs prefix each chip so an operator can
    scan the feed by shape, not just color. Width-budget: 100px desktop
    chip easily fits "↗ ADMIT" (etc.); mobile 80px also fits "↗ EXIT". */
@@ -2649,6 +2673,7 @@ body.v10-live .legacy-v10-hidden {
 .act-kind.act-kind-entry::before { content: "\2197"; }       /* ↗ */
 .act-kind.act-kind-exit::before { content: "\2713"; }        /* ✓ */
 .act-kind.act-kind-reject::before { content: "\2298"; }      /* ⊘ */
+.act-kind.act-kind-partial::before { content: "\00bd"; }     /* ½ */
 .act-kind.act-kind-day_block::before { content: "\26D4"; }   /* ⛔ */
 .act-kind.act-kind-kill::before { content: "\26A0"; }        /* ⚠ */
 .act-kind.act-kind-or_lock::before { content: "\1F512"; }    /* 🔒 */

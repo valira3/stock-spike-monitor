@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.2 (2026-05-12) -- Dashboard UI reflects v8.0 + v8.1 features
+
+Backend has been emitting all the new state since v8.0.0 but the frontend hadn't been wired to surface it. This release closes that gap with surgical edits to `dashboard_static/{app.js, app.css, index.html}` and a small backend serializer extension plus an activity-feed event kind.
+
+### What the operator now sees
+
+- **v10 Day Status banner** (`#v10-day-status`):
+  - New `ATR×1.75` chip (blue) — appears whenever `atr_stop_mult > 0`. Tooltip shows the multiplier + lookback + fallback semantics.
+  - New `P@1R ON / OFF` chip — green when `ORB_PARTIAL_PROFIT_AT_1R=1` is live; gray when off. Tooltip explains how to flip it.
+- **v10 Ticker Matrix**: rows whose underlying position has a recorded partial fill now show a small `½` badge next to the ticker symbol, with a tooltip listing the partial price + booked P&L.
+- **Open Positions table**: the Shares cell on a position that's taken a partial gets a `½@$X.XX` amber inline badge with the same tooltip.
+- **Trades panel**: `PARTIAL_SELL` and `PARTIAL_COVER` rows now render with an amber `½ SELL` / `½ COVER` chip (distinct from full-close red and entry green) so the operator can scan the day's fills and immediately tell which were halves vs full closes.
+- **v10 Activity Feed**: when partial fires, a new `PARTIAL` kind chip appears in the feed (amber, prefixed `½`) with the booked shares + price + P&L in the detail column.
+
+### Backend wiring (new fields exposed)
+
+- `dashboard_server.py:_serialize_positions` — long + short position rows now carry `partial_fills: list[dict]` (each fill: `{shares, price, reason, pnl_dollars, ts_utc}`). Source: `tg.positions[ticker]["partial_fills"]` written by `broker/orders.py:partial_close_breakout`.
+- `orb/live_runtime.py:check_exit` (both ticket-id and ticker variants) — on a `result.partial=True` ExitResult, records a `kind="partial"` event in the activity ring buffer with shares + price + booked P&L in the detail.
+
+### Tests
+
+- `tests/strategy/test_v10_ticker_matrix_snapshot.py` — new `test_config_v8_atr_and_partial_fields_present` test pins the snapshot contract for `atr_stop_mult`, `atr_lookback_5m`, `partial_profit_at_1r` so a future engine refactor can't silently break the new banner chips.
+- 625 strategy tests pass (was 624).
+
+### Why no backend behavior change
+
+v8.1.2 is **purely UI plumbing**. Engine + risk-book + broker + executor paths are identical to v8.1.1. Same trades fire, same Alpaca orders go out. Only the dashboard's render of existing state changes.
+
+### Rollback
+
+Hard-refresh the dashboard to invalidate cached JS/CSS. If the new chips render broken on a specific browser, the old behavior is recoverable by reverting `dashboard_static/*.{js,css}` to the v8.1.1 versions — backend stays compatible.
+
 ## v8.1.1 (2026-05-12) -- Alpaca executor partial-close: paper-only caveat lifted
 
 Closes the paper-only gap shipped in v8.1.0. The partial-profit FSM and bookkeeping were complete in v8.1.0 but `partial_close_breakout` only mutated paper state -- live Alpaca books would have drifted from `tg.positions` on every partial fill. v8.1.1 wires the broker primitive end-to-end.
