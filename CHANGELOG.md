@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.16 (2026-05-12) -- Val/Gene activity-feed ET conversion + suppress `opposite_side:*` reject noise
+
+Operator screenshot of Val tab showed two issues:
+1. Times rendered as `16:04` (raw UTC) instead of `12:04 EDT` — same v8.3.1 bug applied to the Main tab was lurking in the per-pid renderer
+2. Reject feed flooded with `opposite_side:short` / `opposite_side:long` entries — these fire for every 5m candle that straddles both OR bounds and are guard-rail success signals, not actionable failures
+
+### Change
+
+**`dashboard_static/app.js`** — two surgical fixes to `renderV10PerPortfolio` (the Val/Gene tab activity-feed renderer) and parallel fix to `renderV10ActivityFeed` (Main tab):
+
+1. **ET conversion** — per-row time now routes through `window.utcIsoToLocalHHMM` (same shared helper v8.3.1 uses for the Main tab). Pre-v8.3.16 used `ts.split("T")[1].slice(0,5)` which rendered raw UTC `HH:MM` regardless of timezone.
+
+2. **Noise filter** — drop activity events where `kind === "reject"` AND `detail` contains `"opposite_side:"`. Applied to BOTH the per-pid feed AND the Main-tab feed for symmetry.
+
+Why suppress opposite_side rejects:
+
+When a 5m candle's range straddles both OR bounds, `OrbEngine.detect_breakout` returns ONE side (long or short) based on the close. The scan loop checks BOTH sides per ticker per tick. One side matches → admits. The other side asks for the opposite direction → engine returns "no signal, opposite side already firing" → reject `opposite_side:long` or `opposite_side:short`. This is the engine correctly enforcing the side guard. Logging it in the activity feed every time a wide candle prints just drowns out the actionable events (notional_cap, daily_kill, no_signal).
+
+### What the operator will see
+
+After Railway rolls v8.3.16:
+- Val/Gene tab times render in ET (`12:04 EDT` instead of `16:04`)
+- Val/Gene tab reject row count drops dramatically — only structural rejects (notional_cap, risk_reject, daily_kill, blocklist) remain
+- Main tab activity feed cleaner for the same reason
+
+### Tests
+
+CSS / JS-only change set. No new pytest assertions; existing 761 strategy tests pass unchanged.
+
+### Rollback
+
+Remove the v8.3.16 changes in `renderV10PerPortfolio` and `renderV10ActivityFeed`. Per-pid feed reverts to UTC times + full opposite_side reject spam.
+
+### Next: v8.3.17
+
+Val's RiskBook keeps rejecting AMZN SHORT on `notional_cap` because Val's equity (~$35K) is smaller than Main's ($100K). v8.3.17 will scale Val/Gene's mirror order quantity by `ex_equity / main_equity` so Val submits a proportional share count that fits within its cap.
+
+---
+
 ## v8.3.15 (2026-05-12) -- Boot-time phantom IN_POS consistency sweep (self-heals stale orb_state_<date>.json)
 
 Watchdog kept firing `v10_in_pos_has_internal_position` with `main/AMZN phase='in_pos' in_position=True last_entry=''` even after v8.3.12 wired the unmirror onto the close path. Root cause: the stale FSM row was written to `/data/orb_state_<date>.json` by a **pre-v8.3.12 process** whose close path didn't unmirror. v8.3.4's per-cycle rehydrate then reloaded the bad row on every subsequent bootstrap. v8.3.12 only auto-cleans on the close path going forward; it can't retro-clean disk state that's already wrong.

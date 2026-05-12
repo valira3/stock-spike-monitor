@@ -4152,8 +4152,22 @@
       body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>';
     }
 
+    // v8.3.16 -- suppress same-tick opposite_side rejects from the
+    // executor-tab activity feed. They fire for every 5m candle that
+    // straddles both OR bounds; the engine correctly admits one side
+    // and rejects the other. These rejects are guard-rail success
+    // signals, not actionable failures. Keeping them in the feed
+    // drowns out real notional_cap / no_signal / kill events the
+    // operator needs to see.
+    function _is_noise_reject(ev) {
+      if ((ev.kind || "").toLowerCase() !== "reject") return false;
+      var d = String(ev.detail || "");
+      return d.indexOf("opposite_side:") !== -1;
+    }
     var events = (v10.activity || []).filter(function (e) {
-      return (e.pid || "").toLowerCase() === pid;
+      if ((e.pid || "").toLowerCase() !== pid) return false;
+      if (_is_noise_reject(e)) return false;
+      return true;
     });
     var actCount = execField(panel, "v10-pid-act-count");
     if (actCount) actCount.textContent = "· " + events.length;
@@ -4175,9 +4189,16 @@
         var rowsHtml = [];
         for (var j = 0; j < events.length; j++) {
           var e = events[j];
-          var ts = e.ts_iso || "";
-          var hhmm2 = (ts && ts.indexOf("T") > 0)
-            ? ts.split("T")[1].slice(0, 5) : "—";
+          // v8.3.16 -- ET conversion (matches v8.3.1's Main-tab fix).
+          // Pre-v8.3.16 this path used a raw ts.split("T")[1].slice(0,5)
+          // which renders UTC. The Val tab showed "16:04" while it was
+          // really 12:04 ET (during EDT). Route through the shared
+          // helper so all activity-feed surfaces agree on the market
+          // clock zone.
+          var hhmm2 = (typeof window.utcIsoToLocalHHMM === "function")
+              ? window.utcIsoToLocalHHMM(e.ts_iso || "")
+              : ((e.ts_iso || "").split("T")[1] || "").slice(0, 5);
+          if (!hhmm2) hhmm2 = "—";
           var kindCls = "act-kind-" + (e.kind || "info");
           var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
           var ticker = e.ticker || "—";
@@ -6284,6 +6305,14 @@
         return (ev.pid || "").toLowerCase() === pidFilter;
       });
     }
+    // v8.3.16 -- suppress same-tick opposite_side rejects. They fire
+    // for every 5m candle that straddles both OR bounds; the engine
+    // correctly admits one side and rejects the other. Noise, not
+    // signal. Same filter applied to the per-pid Val/Gene feed.
+    events = events.filter(function (ev) {
+      if ((ev.kind || "").toLowerCase() !== "reject") return true;
+      return String(ev.detail || "").indexOf("opposite_side:") === -1;
+    });
     var body = document.getElementById("v10-act-body");
     var countEl = document.getElementById("v10-act-count");
     var summaryEl = document.getElementById("v10-act-summary");
