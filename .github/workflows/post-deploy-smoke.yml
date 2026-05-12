@@ -16,6 +16,14 @@ concurrency:
   group: post-deploy-smoke
   cancel-in-progress: true
 
+permissions:
+  # v7.111.0 -- explicit perms now that the smoke job posts a status
+  # comment back to the source PR. `contents: read` for checkout,
+  # `pull-requests: write` for the comment POST. Telegram alert and
+  # artifact upload need no additional scopes.
+  contents: read
+  pull-requests: write
+
 jobs:
   smoke:
     name: Smoke test (31 local + 9 prod)
@@ -166,3 +174,43 @@ jobs:
             prod_smoke.log
             fails.txt
           if-no-files-found: ignore
+
+      # v7.111.0 -- close the loop with the source PR so an agent (or
+      # human) opening the merged PR can see the post-deploy outcome
+      # without leaving GitHub. Squash-merge commit subjects always
+      # carry the `(#NNN)` PR suffix; manual main pushes (rare) skip
+      # gracefully. Telegram alert above still fires on failure --
+      # this is additive, not a replacement.
+      - name: Comment outcome on source PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.bot_version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Pull PR number from the merge-commit subject line (NOT the
+          # body) so embedded "fixes #500" mentions in the body can't
+          # mask the real squash-merge PR number. `tail -1` picks the
+          # last `#NNN` on the subject -- GitHub appends the source PR
+          # suffix at the END.
+          PR=$(git log -1 --pretty=%s | grep -oE '#[0-9]+' | tail -1 | tr -d '#')
+          if [ -z "$PR" ]; then
+            echo "::notice::No (#NNN) suffix in merge-commit subject (manual main push?). Skipping PR comment."
+            exit 0
+          fi
+          case "$JOB_STATUS" in
+            success)    EMOJI=":white_check_mark:"; SUMMARY="PASSED" ;;
+            failure)    EMOJI=":rotating_light:";   SUMMARY="FAILED" ;;
+            cancelled)  EMOJI=":black_square_button:"; SUMMARY="CANCELLED" ;;
+            *)          EMOJI=":grey_question:";    SUMMARY="$JOB_STATUS" ;;
+          esac
+          BODY="$EMOJI **Post-deploy smoke ${SUMMARY}** on \`v${VERSION:-unknown}\`
+
+[GHA run log]($RUN_URL)"
+          gh api "repos/${REPO}/issues/${PR}/comments" \
+            --method POST \
+            -f body="$BODY" \
+            >/dev/null && echo "Posted to PR #$PR" \
+            || echo "::warning::Failed to post comment on PR #$PR (token perms?)"
