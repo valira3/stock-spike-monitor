@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "7.101.0"
+BOT_VERSION = "7.102.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -8076,10 +8076,19 @@ else:
     ).start()
 
     # v5.12.0 \u2014 executor bootstrap moved to executors/bootstrap.py
-    from executors.bootstrap import build_val_executor, build_gene_executor, install_globals
+    # v7.102.0 \u2014 emit [SIGNAL-BUS-INIT-COMPLETE] after both executors
+    # finish start() so the boot-time listener count is auditable.
+    # Fires an ERROR if actual < expected, surfacing the "bus leak"
+    # failure mode that previously only manifested as the
+    # val_gene_trades_match_main invariant tripping mid-RTH.
+    from executors.bootstrap import (
+        build_val_executor, build_gene_executor, install_globals,
+        emit_signal_bus_init_complete,
+    )
     val_executor = build_val_executor()
     gene_executor = build_gene_executor()
     install_globals(val=val_executor, gene=gene_executor)
+    emit_signal_bus_init_complete(val=val_executor, gene=gene_executor)
 
     # v7.24.0: bootstrap the v10 ORB live runtime AFTER the executor
     # registry is wired up. Previously this was deferred to the first

@@ -70,45 +70,47 @@ def test_fmt_hold_none():
 
 
 def test_r_multiple_long_winner():
-    # entry=100, stop=99, exit=102. R = (102-100)/(100-99) = 2.0
+    # entry=100, hard_stop=99, exit=102. R = (102-100)/(100-99) = 2.0
     row = {
         "side": "LONG",
         "entry_price": 100.0,
         "exit_price": 102.0,
-        "effective_stop_at_exit": 99.0,
+        "hard_stop_at_exit": 99.0,
     }
     assert _r_multiple(row) == 2.0
 
 
 def test_r_multiple_short_winner():
-    # entry=100, stop=101, exit=98. R = (100-98)/(101-100) = 2.0
+    # entry=100, hard_stop=101, exit=98. R = (100-98)/(101-100) = 2.0
     row = {
         "side": "SHORT",
         "entry_price": 100.0,
         "exit_price": 98.0,
-        "effective_stop_at_exit": 101.0,
+        "hard_stop_at_exit": 101.0,
     }
     assert _r_multiple(row) == 2.0
 
 
 def test_r_multiple_long_loser():
-    # entry=100, stop=99, exit=99.5. R = (99.5-100)/(100-99) = -0.5
+    # entry=100, hard_stop=99, exit=99.5. R = (99.5-100)/(100-99) = -0.5
     row = {
         "side": "LONG",
         "entry_price": 100.0,
         "exit_price": 99.5,
-        "effective_stop_at_exit": 99.0,
+        "hard_stop_at_exit": 99.0,
     }
     assert _r_multiple(row) == -0.5
 
 
-def test_r_multiple_falls_back_to_hard_stop():
-    # No effective_stop_at_exit -> uses hard_stop_at_exit
+def test_r_multiple_falls_back_to_effective_stop():
+    """v7.102.0: when hard_stop_at_exit is missing (legacy row from
+    before _trade_log_snapshot_pos was added), fall back to
+    effective_stop_at_exit so the metric still computes something."""
     row = {
         "side": "LONG",
         "entry_price": 100.0,
         "exit_price": 105.0,
-        "hard_stop_at_exit": 95.0,
+        "effective_stop_at_exit": 95.0,
     }
     assert _r_multiple(row) == 1.0
 
@@ -119,14 +121,36 @@ def test_r_multiple_missing_stop_returns_none():
 
 
 def test_r_multiple_zero_risk_returns_none():
-    # entry == stop -> division by zero -> None
+    # entry == hard_stop -> division by zero -> None
     row = {
         "side": "LONG",
         "entry_price": 100.0,
         "exit_price": 105.0,
-        "effective_stop_at_exit": 100.0,
+        "hard_stop_at_exit": 100.0,
     }
     assert _r_multiple(row) is None
+
+
+def test_r_multiple_trail_past_breakeven_uses_original_risk():
+    """v7.102.0 regression: NFLX SHORT on 2026-05-11 showed -1.30R
+    despite a $244 winner because effective_stop_at_exit had
+    trailed past breakeven (below entry on a SHORT), inverting the
+    denominator sign. With the v7.102.0 fix, we use hard_stop_at_exit
+    (original stop = 86.0 above entry for a SHORT) so R stays
+    positive for the profitable trade.
+    """
+    row = {
+        "side": "SHORT",
+        "entry_price": 85.43,
+        "exit_price": 85.15,
+        "hard_stop_at_exit": 86.00,           # original protective stop
+        "effective_stop_at_exit": 85.15,      # trail has moved to exit price
+    }
+    r = _r_multiple(row)
+    assert r is not None
+    assert r > 0  # winner -> positive R, not negative
+    # (entry-exit)/(stop-entry) = (85.43-85.15)/(86.00-85.43) = 0.28/0.57 ≈ 0.491
+    assert abs(r - (0.28 / 0.57)) < 1e-6
 
 
 # ---------------------------------------------------------------------------

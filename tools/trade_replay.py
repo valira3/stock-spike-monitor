@@ -80,16 +80,30 @@ def _fmt_hold(seconds) -> str:
 def _r_multiple(row: dict) -> float | None:
     """R = (exit-entry)/(entry-stop) for long; flipped for short.
 
-    Uses effective_stop_at_exit when present (captures the trail's
-    final state), else falls back to the original hard stop. Returns
-    None when any required field is missing or stop==entry.
+    Uses the ORIGINAL hard stop (the stop at entry, before any
+    trail movement) as the risk denominator -- this is the
+    classic R-multiple definition. v7.96.0-and-earlier used
+    `effective_stop_at_exit` instead, which captures the trail's
+    final state and inverts the denominator sign once the trail
+    moves past breakeven. That produced negative R values on
+    profitable trades whenever the trail tightened beyond entry
+    (the NFLX SHORT on 2026-05-11 was -1.30R despite +$244 P&L --
+    classic mis-signed denominator). v7.102.0 switches to the
+    original-stop convention so Avg R is interpretable.
+
+    Returns None when any required field is missing or stop==entry.
     """
     try:
         entry = float(row["entry_price"])
         exit_ = float(row["exit_price"])
     except (KeyError, TypeError, ValueError):
         return None
-    stop = row.get("effective_stop_at_exit") or row.get("hard_stop_at_exit")
+    # v7.102.0 -- prefer the hard_stop_at_exit (original protective
+    # stop) as the risk denominator. The trail captures upside but
+    # is NOT the trade's initial risk; classic R is defined against
+    # initial risk. effective_stop_at_exit is kept as a last-resort
+    # fallback for legacy rows that pre-date the trail snapshot.
+    stop = row.get("hard_stop_at_exit") or row.get("effective_stop_at_exit")
     try:
         stop_v = float(stop)
     except (TypeError, ValueError):

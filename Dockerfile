@@ -86,6 +86,11 @@ COPY orb/ ./orb/
 COPY data/external/ ./data/external/
 COPY tools/orb_earnings_calendar.py ./tools/orb_earnings_calendar.py
 COPY tools/orb_vix_loader.py ./tools/orb_vix_loader.py
+# v7.102.0 — emit_signal_bus_init_complete helper. Imported by
+# executors/bootstrap.py at startup to log [SIGNAL-BUS-INIT-COMPLETE].
+# Missing this COPY would crash trade_genius at boot with
+# ModuleNotFoundError: tools.signal_bus_audit.
+COPY tools/signal_bus_audit.py ./tools/signal_bus_audit.py
 # v5.11.1 — telegram_ui/ package extraction (PR1: charts). Same rule:
 # missing this COPY would crash trade_genius at boot with
 # ModuleNotFoundError: telegram_ui. Subsequent v5.11.1 PRs append
