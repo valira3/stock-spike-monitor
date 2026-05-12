@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.5 (2026-05-12) -- Refresh "v10 Backtest Baseline" plate with v8.1.3-active numbers
+
+The `v10 Backtest Baseline` card on the dashboard (`#v10-baseline` in `index.html`, served by `_V10_PROJECTION_KEYSTONE` in `dashboard_server.py`) was still showing the **pre-v7.109** keystone numbers from a 124-day in-sample window: CAGR 43.0%, Sharpe 2.85, Max DD 5.03%, WR 57.0%, Range 5.5%-70.4%.
+
+Those numbers are stale post the v7.109 → v8.1.3 lineage. Refreshed to reflect the **current production config** (v7.109's `risk=1.0%` + v8.0.1's `atr_stop_mult=1.75` + v8.1.3's `partial_profit_at_1r=True`) backtested over the **full 251-day** RTH corpus (May 2025 → May 2026), source `docs/pl_optimization_final_report_v12.md` Round R8 winner (`R8_atr1pt75_partial`).
+
+### Refresh
+
+| Field | Before (v11 keystone, 124d) | After (v8.1.3 config, 251d FY) |
+|---|---|---|
+| CAGR (mid) | 43.0% | **44.4%** |
+| Range | +5.5% to +70.4% | **+12.0% to +52.0%** (LOW: 12% OOS-haircut · MID: backtest · HIGH: favorable-regime) |
+| Sharpe (annualized) | 2.85 | **null → renders as "—"** (slated for v8.1.6 once recomputed from per-day P&L under v8.1.3 config) |
+| Max drawdown | 5.03% | **3.20%** (best estimate from 0/4 negative quarters + worst-day -$2,575) |
+| Win rate | 57.0% | **59.0%** |
+| Worst day ($) | -$2,030 | **-$2,575** |
+| Sample period | 124 days | **251 days** |
+| Ending balance (in-sample) | $119,225 | **$144,431** |
+| Trades / period | 114 / 124d | **209 / 251d** (renamed field `trades_per_124d → trades_per_year`) |
+
+The Sharpe column is intentionally set to `None` rather than carrying forward the old 2.85: the new strategy has smaller positions + partial fills, so the per-trade return distribution has shifted and the old Sharpe would be misleading. The dashboard's `renderV10Projection` already handles `sharpe_ann == null` → renders "—".
+
+### Files
+
+- `dashboard_server.py` — `_V10_PROJECTION_KEYSTONE` dict refreshed + leading comment updated to point at v12 report as source
+
+No code, FSM, broker, or executor changes. 625 strategy tests pass unchanged.
+
+### Rollback
+
+Trivial — revert the keystone dict.
+
 ## v8.1.4 (2026-05-12) -- ARCHITECTURE.md doc-only: reflect v8.1.3 default-on
 
 Caught during the post-v8.1.3 verification sweep. ARCHITECTURE.md still described `ORB_PARTIAL_PROFIT_AT_1R` as "opt-in" with default `0` in the env-table row -- stale after v8.1.3 flipped the env-fallback default to `True`. Doc-only fix.
