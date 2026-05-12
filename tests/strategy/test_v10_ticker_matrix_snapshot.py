@@ -28,6 +28,7 @@ def isolated_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
     yield monkeypatch
 
 
@@ -88,18 +89,22 @@ class TestSnapshotShape:
     def test_config_v8_atr_and_partial_fields_present(self, isolated_env):
         """v8.1.2 -- frontend reads these from /api/state.v10.config to
         render the banner chips (ATR×N + Partial@1R ON/OFF). Pin them
-        here so a future snapshot refactor can't silently drop them."""
+        here so a future snapshot refactor can't silently drop them.
+        v8.1.3 -- env-fallback default for partial flipped to True;
+        delete the env var here so the engine sees the production
+        env-fallback default (autouse + isolated_env both set =0)."""
+        isolated_env.delenv("ORB_PARTIAL_PROFIT_AT_1R", raising=False)
         _bootstrap_session(isolated_env, tickers=["AAPL"])
         snap = live_runtime.snapshot()
         cfg = snap.get("config") or {}
         assert "atr_stop_mult" in cfg
         assert "atr_lookback_5m" in cfg
         assert "partial_profit_at_1r" in cfg
-        # Env-default in live_runtime.py: atr_stop_mult=1.75,
-        # partial_profit_at_1r=False (operator must flip to enable).
+        # Env-default in live_runtime.py: atr_stop_mult=1.75
+        # (v8.0.1+), partial_profit_at_1r=True (v8.1.3+).
         assert cfg["atr_stop_mult"] == pytest.approx(1.75)
         assert cfg["atr_lookback_5m"] == 14
-        assert cfg["partial_profit_at_1r"] is False
+        assert cfg["partial_profit_at_1r"] is True
 
     def test_risk_books_present_with_portfolio_ids(self, isolated_env):
         _bootstrap_session(isolated_env, tickers=["AAPL"])

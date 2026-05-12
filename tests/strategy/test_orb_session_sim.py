@@ -45,6 +45,7 @@ def isolated_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
     yield monkeypatch
 
 
@@ -52,12 +53,23 @@ def isolated_env(monkeypatch):
 
 
 def _basic_cfg(**overrides) -> SimulatorConfig:
+    # v8.1.3 -- partial-profit-at-1R is now ON by default in
+    # production (env-fallback flipped True). The session-sim tests
+    # pre-date that lever and codify the LEGACY non-partial path
+    # (full close at target/stop/eod, BE-arm at 1R). Pin
+    # ORB_PARTIAL_PROFIT_AT_1R=0 in the basic config so those tests
+    # continue to test what they were written to test. Tests that
+    # specifically want partial behavior (test_orb_partial_profit.py)
+    # override this knob explicitly.
+    _env = dict(overrides.pop("env_overrides", {}) or {})
+    _env.setdefault("ORB_PARTIAL_PROFIT_AT_1R", "0")
     cfg = SimulatorConfig(
         date_iso="2026-01-15", tickers=["AAPL"],
         vix_close_d1=18.0,
         ticker_open_today={"AAPL": 100.0},
         ticker_prev_close={"AAPL": 100.0},
         equity_per_portfolio={"main": 100_000.0},
+        env_overrides=_env,
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)

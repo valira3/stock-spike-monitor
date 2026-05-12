@@ -179,11 +179,14 @@ def _build_config_from_env() -> OrbConfig:
         # (back to v7.111.0 OR-edge stop).
         atr_stop_mult=_f("ORB_ATR_STOP_MULT", 1.75),
         atr_lookback_5m=_i("ORB_ATR_LOOKBACK_5M", 14),
-        # v8.1.0 -- partial-profit-at-1R. Default False (off in code AND
-        # in env-fallback) -- live activation requires explicit Railway
-        # env flag once 5 trading days of paper observation pass. The
-        # backtest knob is the same flag.
-        partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", False),
+        # v8.1.0 -- partial-profit-at-1R. v8.1.3 -- env-fallback default
+        # flipped False -> True. With everything wired end-to-end
+        # (engine FSM in v8.1.0, executor Alpaca partial-sell in v8.1.1,
+        # dashboard UI in v8.1.2), the operator-flag-required gate is
+        # the last brake. v8.1.3 lifts it: next Railway deploy
+        # auto-activates partial-profit-at-1R. Operator can revert by
+        # setting ORB_PARTIAL_PROFIT_AT_1R=0 in Railway env (no redeploy).
+        partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
     )
 
 

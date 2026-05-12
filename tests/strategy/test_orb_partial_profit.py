@@ -495,18 +495,18 @@ class TestFullLifecycle:
 class TestPartialOffIsNoOp:
 
     def test_off_disables_partial_branch(self, monkeypatch):
-        # ORB_PARTIAL_PROFIT_AT_1R is unset (default off)
-        for k in list(monkeypatch.delenv.__self__.__class__.__bases__):
-            pass
+        # v8.1.3 -- env-fallback default flipped to True. To test the
+        # "off" branch we now must explicitly set =0 in env.
         import os as _os
         for k in list(_os.environ):
             if k.startswith("ORB_"):
                 monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("ORB_LIVE_MODE", "1")
+        monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")
         live_runtime._reset_for_testing()
         live_runtime.bootstrap()
         eng = live_runtime.get_engine()
-        # Config sees partial_profit_at_1r = False
+        # Config sees partial_profit_at_1r = False because env=0
         assert eng.cfg.partial_profit_at_1r is False
         # And the snapshot exposes it
         snap = eng.snapshot()
