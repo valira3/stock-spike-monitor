@@ -315,12 +315,15 @@ class TestRiskCaps:
 
         With $100k equity and 2% risk_per_trade_pct = $2k risk per trade,
         AND $2k max_concurrent_risk_dollars, the FIRST trade fully
-        consumes the budget. The second must reject.
+        consumes the budget. The second must reject. Override the
+        default 1.0% (post-v7.109) up to 2.0% locally so a single trade
+        fully consumes the concurrent-risk budget.
         """
         cfg = _basic_cfg(
             tickers=["AAPL", "MSFT"],
             ticker_open_today={"AAPL": 100.0, "MSFT": 200.0},
             ticker_prev_close={"AAPL": 100.0, "MSFT": 200.0},
+            env_overrides={"ORB_RISK_PER_TRADE_PCT": "2.0"},
         )
         with SessionSimulator(cfg) as sim:
             sim.start()
@@ -584,8 +587,12 @@ class TestDailyKillViaSimulator:
     def test_cumulative_losses_trigger_kill(self, isolated_env):
         # Use small equity so few stop-outs trigger the kill quickly.
         # 2% of 10k = $200 threshold. Each stop loses ~$155 in this
-        # geometry so the 2nd loss triggers.
-        cfg = _basic_cfg(equity_per_portfolio={"main": 10_000.0})
+        # geometry so the 2nd loss triggers. Override v7.109+ 1% default
+        # back to 2% locally so the math still binds.
+        cfg = _basic_cfg(
+            equity_per_portfolio={"main": 10_000.0},
+            env_overrides={"ORB_RISK_PER_TRADE_PCT": "2.0"},
+        )
         with SessionSimulator(cfg) as sim:
             sim.start()
             sim.feed_or(ticker="AAPL", or_low=99.5, or_high=100.5)
@@ -635,12 +642,15 @@ class TestDailyKillViaSimulator:
 
     def test_kill_blocks_other_tickers(self, isolated_env):
         """A loss on AAPL that triggers the kill must also block fresh
-        entries on a DIFFERENT ticker on the same portfolio."""
+        entries on a DIFFERENT ticker on the same portfolio. Override
+        risk_per_trade_pct=2.0 (was the pre-v7.109 default) so 2 stops
+        on $10k equity still exceed the 2% daily-kill threshold."""
         cfg = _basic_cfg(
             tickers=["AAPL", "MSFT"],
             ticker_open_today={"AAPL": 100.0, "MSFT": 200.0},
             ticker_prev_close={"AAPL": 100.0, "MSFT": 200.0},
             equity_per_portfolio={"main": 10_000.0},
+            env_overrides={"ORB_RISK_PER_TRADE_PCT": "2.0"},
         )
         with SessionSimulator(cfg) as sim:
             sim.start()

@@ -159,7 +159,7 @@ def _build_config_from_env() -> OrbConfig:
         range_min_pct=_f("ORB_RANGE_MIN_PCT", 0.008),
         range_max_pct=_f("ORB_RANGE_MAX_PCT", 0.025),
         max_trades_per_day=_i("ORB_MAX_TRADES_PER_DAY", 5),
-        risk_per_trade_pct=_f("ORB_RISK_PER_TRADE_PCT", 2.0),
+        risk_per_trade_pct=_f("ORB_RISK_PER_TRADE_PCT", 1.0),
         max_concurrent_risk_dollars=_f("ORB_MAX_CONCURRENT_RISK_DOLLARS", 2000.0),
         max_concurrent_notional_mult=_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
         max_trade_notional_pct=_f("ORB_MAX_TRADE_NOTIONAL_PCT", 75.0),
