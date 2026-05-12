@@ -3921,18 +3921,10 @@
       </div>
     </section>
 
-    <section class="grid" data-f="v10-pid-activity-section">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">—</span></span>
-          <span class="chip" data-f="v10-pid-act-summary">—</span>
-        </div>
-        <div class="card-body flush" data-f="v10-pid-act-body">
-          <div class="empty">No v10 events on this portfolio yet today.</div>
-        </div>
-      </div>
-    </section>
-
+    <!-- v8.3.21 -- Proximity moved ABOVE Recent activity so Val/Gene
+         section order matches Main (Day Status -> Ticker Matrix ->
+         Baseline -> Proximity -> Activity -> Trades). New CLAUDE.md
+         rule: section order parity across all three tabs. -->
     <!-- v7.55.0 -- v10 Proximity card on Val/Gene tabs (mirrors the
          Main panel card from v7.52.0). Same renderer, same scope (the
          v10 universe is market-wide), but the per-pid phase chips
@@ -3946,6 +3938,18 @@
         </div>
         <div class="card-body flush" data-f="v10-prox-pid-body">
           <div class="empty">Waiting for v10 universe...</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid" data-f="v10-pid-activity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">—</span></span>
+          <span class="chip" data-f="v10-pid-act-summary">—</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-act-body">
+          <div class="empty">No v10 events on this portfolio yet today.</div>
         </div>
       </div>
     </section>
