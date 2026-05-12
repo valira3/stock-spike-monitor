@@ -305,6 +305,15 @@ def ensure_session_started(*, date_iso: str,
     )
     # v7.45.0: activity-feed event for session start + day-block if any
     clear_recent_activity()
+    # v8.3.4 -- attempt to rehydrate engine state from disk for today.
+    # Runs AFTER start_new_session's reset so any disk state for the
+    # same date_iso overlays what the reset cleared (OR windows, FSM
+    # phases, RiskBook realized P&L, etc.). Idempotent + no-op when
+    # no disk file exists for today (fresh-day path).
+    try:
+        _try_rehydrate_engine_state(date_iso)
+    except Exception as _e:
+        logger.debug("[V834-PERSIST] rehydrate failed: %s", _e)
     _record_activity(
         kind="session_start",
         detail="date " + date_iso + " · VIX_d1=" +
@@ -317,6 +326,95 @@ def ensure_session_started(*, date_iso: str,
             detail="day-level gate fired: " + (result.block_reason or "?"),
         )
     return True
+
+
+# v8.3.4 -- engine state persistence wrappers.
+#
+# Why: prior to v8.3.4, every in-memory engine artifact (OR windows,
+# DayState FSM, RiskBook realized_pnl_today, activity feed, wash-sale
+# tracker, pending v10 sizes) was wiped on every Railway redeploy. v8.3.0
+# patched the OR-window symptom via per-cycle backfill; v8.3.4 attacks
+# the root cause by persisting EVERYTHING the engine needs to a JSON
+# snapshot on /data, then rehydrating on the next bootstrap.
+#
+# The wrappers below are thin: they delegate to orb.persistence. Tests
+# exercise orb.persistence directly; live_runtime tests cover the
+# bootstrap / ensure_session_started hookup.
+
+def _bot_version_str() -> str:
+    try:
+        from bot_version import BOT_VERSION
+        return str(BOT_VERSION)
+    except Exception:
+        return ""
+
+
+def dump_engine_state_now(*, date_iso: str = "") -> bool:
+    """Snapshot engine + live-runtime side state to disk.
+
+    Returns True on success; False on any failure / runtime not
+    bootstrapped / live mode off. Never raises.
+
+    Called from engine/scan.py once per scan cycle (~60s cadence).
+    """
+    if _engine is None:
+        return False
+    if not date_iso:
+        date_iso = _session_date or ""
+    if not date_iso:
+        return False
+    try:
+        from orb.persistence import dump_state_to_disk
+    except Exception:
+        return False
+    with _activity_lock:
+        activity = list(_recent_activity)
+    with _sizes_lock:
+        sizes = dict(_pending_v10_sizes)
+    return dump_state_to_disk(
+        _engine,
+        recent_activity=activity,
+        pending_v10_sizes=sizes,
+        date_iso=date_iso,
+        bot_version=_bot_version_str(),
+    )
+
+
+def _try_rehydrate_engine_state(date_iso: str) -> dict:
+    """Attempt to load + overlay yesterday's-or-today's state from disk.
+
+    Called from bootstrap() and ensure_session_started() right after
+    the engine's reset, so the loaded data refills what the reset
+    cleared. Returns the apply-counters dict (empty on failure).
+    """
+    if _engine is None or not date_iso:
+        return {}
+    try:
+        from orb.persistence import (
+            load_state_from_disk, apply_loaded_state,
+        )
+    except Exception:
+        return {}
+    loaded = load_state_from_disk(date_iso)
+    if not loaded:
+        return {}
+    counters = apply_loaded_state(
+        _engine, loaded,
+        recent_activity=_recent_activity,
+        pending_v10_sizes=_pending_v10_sizes,
+    )
+    if counters and any(counters.values()):
+        logger.info(
+            "[V834-PERSIST] rehydrated date=%s or_windows=%d "
+            "day_states=%d risk_books=%d activity=%d sizes=%d",
+            date_iso,
+            counters.get("or_windows_loaded", 0),
+            counters.get("day_states_loaded", 0),
+            counters.get("risk_books_loaded", 0),
+            counters.get("activity_loaded", 0),
+            counters.get("pending_sizes_loaded", 0),
+        )
+    return counters
 
 
 def reset_session() -> None:

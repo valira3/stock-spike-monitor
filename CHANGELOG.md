@@ -4,6 +4,88 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.4 (2026-05-12) -- All-in-one engine state persistence (`/data/orb_state_<date>.json`)
+
+The operator's broader directive ("Not just for OR. But for any data that should be preserved"): every in-memory engine artifact that previously got wiped by a Railway redeploy now persists to a JSON snapshot on `/data` and rehydrates on the next bootstrap. v8.3.0 patched the OR-window symptom via per-cycle backfill; v8.3.1/v8.3.3 added defense-in-depth caches at the UI and dashboard layer. v8.3.4 closes the root cause: a single authoritative snapshot covering all six categories the operator and I enumerated.
+
+### Categories covered
+
+| | Category | Symbol | Why it matters |
+|---|---|---|---|
+| A | OR windows | `_state.or_windows` | UI populated immediately on boot; backfill no longer required for already-locked windows |
+| B | DayState FSM | `_state.day_states.{phase, in_position, trades_today, last_*_iso}` | `trades_today` survives → `max_trades_per_day=5` no longer bypassable; `in_position=True` survives → opposite-side guard intact |
+| C | RiskBook | `realized_pnl_today`, `_open_tickets`, `daily_kill_triggered`, `session_start_equity` | **Daily-loss kill threshold no longer bypassable** by redeploy (the highest-impact safety fix in this release) |
+| D | Activity feed | `live_runtime._recent_activity` (50-event ring) | Dashboard timeline persists across redeploy |
+| E | Wash-sale tracker | `_recent_losses`, `wash_risk_count` | §1091 30-day window doesn't reset on redeploy |
+| F | Pending v10 sizes | `live_runtime._pending_v10_sizes` | In-flight broker handoff survives |
+
+### Change
+
+**New module: `orb/persistence.py`** — pure functions plus disk I/O:
+
+- `serialize_engine_state(engine, recent_activity, pending_v10_sizes, date_iso, bot_version)` → dict (no I/O)
+- `dump_state_to_disk(engine, ..., path)` → atomic write (tempfile + `os.replace`); never raises
+- `load_state_from_disk(date_iso, path)` → returns parsed dict only if `data["date_iso"] == date_iso` (stale-file guard)
+- `apply_loaded_state(engine, loaded, recent_activity, pending_v10_sizes)` → overlay onto live state; failure-tolerant per category
+- `prune_stale_state_files(today_iso, keep_days=5)` → bounded disk usage
+
+Schema: `{schema_version, bot_version, date_iso, saved_at_iso, session_date, or_windows, day_states, risk_books, wash_risk, activity, pending_v10_sizes}`. Pending sizes use `"pid|ticker"` encoding for tuple-key roundtrip.
+
+**`orb/live_runtime.py`** — two wrappers:
+
+- `dump_engine_state_now(date_iso="")` — snapshots `_engine` + `_recent_activity` + `_pending_v10_sizes` to disk. Returns False when not bootstrapped / live mode off / no session date.
+- `_try_rehydrate_engine_state(date_iso)` — called from `ensure_session_started()` immediately after `_engine.start_new_session()`'s reset. If `load_state_from_disk(date_iso)` returns data for today, `apply_loaded_state` overlays the cleared OR windows, FSM rows, RiskBook, activity feed, wash-sale tracker, and pending sizes. Emits `[V834-PERSIST] rehydrated date=N or_windows=N day_states=N risk_books=N activity=N sizes=N` when at least one category landed.
+
+**`engine/scan.py`** — per-cycle dump:
+
+```python
+try:
+    _orb_runtime.dump_engine_state_now()
+except Exception as _e:
+    logger.debug("[V834-PERSIST] dump failed: %s", _e)
+```
+
+Runs at the end of every scan cycle (~60s cadence), atomic write, ~5 KB JSON. Errors swallowed; never blocks the trading path.
+
+### Storage path
+
+Default: `<paper_state_dir>/orb_state_<date>.json` (resolves to `/data/orb_state_2026-05-12.json` in production where `PAPER_STATE_PATH=/data/paper_state.json`).
+
+Override via env: `ORB_STATE_PERSIST_PATH=/some/path/orb_state_{date}.json`. The `{date}` placeholder is interpolated per session.
+
+### Tests
+
+**`tests/strategy/test_orb_state_persistence.py`** — 16 new tests across 7 test classes:
+
+- `TestOrWindowRoundtrip` (2): full-state serialization; rehydrate into fresh engine
+- `TestDayStateRoundtrip` (2): `in_position=True` survives redeploy (opposite-side guard intact); blocklist-blocked phase survives
+- `TestRiskBookRoundtrip` (3): realized P&L survives (daily-kill gate intact), `daily_kill_triggered` flag survives, open tickets roundtrip
+- `TestActivityRoundtrip` (1): activity feed deque roundtrip
+- `TestWashSaleRoundtrip` (1): `_recent_losses` + `wash_risk_count` survive
+- `TestPendingSizesRoundtrip` (1): tuple key `(pid, ticker)` roundtrips through `"pid|ticker"` JSON encoding
+- `TestDiskGuards` (5): atomic write leaves no `.tmp` artifacts; missing-file returns None; **date-mismatch returns None** (yesterday's file doesn't leak); corrupt JSON returns None; `prune_stale_state_files` removes >5-day-old snapshots
+- `TestFullRedeploySimulation` (1): end-to-end with rich state across all 6 categories → dump → fresh engine → load → verify everything restored
+
+**705 strategy tests pass** (689 + 16 new).
+
+### What the operator will see
+
+- After **any** Railway redeploy at any time of day, the engine boots → `ensure_session_started(today)` → reset → **rehydrate from disk**. OR windows already locked from earlier, daily P&L preserved, trades_today counter intact, opposite-side guard knows what's open. The dashboard sees consistent state immediately rather than waiting 60s for the v8.3.0 OR backfill to repopulate.
+- Forensic: `[V834-PERSIST] rehydrated date=2026-05-12 or_windows=12 day_states=24 risk_books=3 activity=8 sizes=1` confirms full recovery in the Railway logs.
+- Per-cycle dump is silent on success; failures debug-log only.
+
+### Why state.db + trade_log.jsonl aren't enough
+
+- `state.db` (executor positions, via v5.x persistence) covers broker-side reality but not the v10 engine's OR / FSM / RiskBook layer
+- `trade_log.jsonl` covers trade events but not the per-portfolio session counters that gate them
+- `paper_state.json` is saved every 5 minutes (daemon thread), so up to 5 min of state is lost. v8.3.3 worked around this for the dashboard's Today's Trades view; v8.3.4 covers everything else with per-scan-cycle dumps
+
+### Rollback
+
+Set `ORB_STATE_PERSIST_PATH=/dev/null` in Railway env to disable writes (load is no-op when file missing). Or revert this PR — pre-v8.3.4 behavior was "everything in-memory, lost on redeploy," which the v8.3.0 OR backfill softens but doesn't fix.
+
+---
+
 ## v8.3.3 (2026-05-12) -- Today's trades survive redeploy (trade_log.jsonl merge in `_today_trades`)
 
 Operator surfaced: after a Railway redeploy mid-day, the Main tab's "Today's Trades" section went blank — trades that had clearly happened weren't on the dashboard. The dashboard wasn't the source of truth; in-memory `paper_trades` was, and it had been wiped.
