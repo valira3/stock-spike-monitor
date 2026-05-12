@@ -244,15 +244,28 @@ def inv_val_gene_trades_match_main(ctx):
             # different fetch strategy. If it returned ~10000 but
             # zero grep matches, the bot truly isn't emitting the
             # patterns we expect -- a real bug downstream.
-            from tools.railway_log_tail import probe_railway_access, count_recent_logs
+            from tools.railway_log_tail import (
+                probe_railway_access, count_recent_logs, get_last_gql_errors,
+            )
             probe = probe_railway_access()
             status = probe.get("status", "unknown")
             lines_fetched = None
+            gql_errors: list[str] = []
             if status == "ok":
                 try:
                     lines_fetched = count_recent_logs(limit=10000)
                 except Exception:
                     lines_fetched = None
+                # v7.100.0 -- if the deploymentLogs query came back with
+                # GraphQL errors (schema drift, deprecated field, wrong
+                # arg name), capture the messages here so the footer
+                # surfaces Railway's actual complaint instead of just
+                # `lines_fetched=0`. count_recent_logs above triggers
+                # the fetch that populates _last_gql_errors.
+                try:
+                    gql_errors = get_last_gql_errors()
+                except Exception:
+                    gql_errors = []
             footers = {
                 "missing_token": (
                     "RAILWAY_API_TOKEN env var is empty in this "
@@ -319,6 +332,15 @@ def inv_val_gene_trades_match_main(ctx):
                 f"service_set={probe.get('service_set')}{lf_suffix}{dep_suffix}. "
                 f"{reason}_"
             )
+            # v7.100.0 -- surface Railway's GraphQL errors verbatim
+            # when present. These tell us EXACTLY what's wrong with
+            # the deploymentLogs query (deprecated, missing arg,
+            # type mismatch, ...) instead of leaving us to iterate
+            # query shapes blindly.
+            if gql_errors:
+                detail += "\n\n### Railway GraphQL errors\n\n"
+                for err in gql_errors[:5]:
+                    detail += f"- `{err}`\n"
     except Exception as exc:
         detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"
     return _fail(
