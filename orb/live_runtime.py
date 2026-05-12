@@ -173,7 +173,11 @@ def _build_config_from_env() -> OrbConfig:
         fail_closed_on_missing_vix=_b("ORB_FAIL_CLOSED_VIX", True),
         ticker_side_blocklist=blocklist,
         # v8.0.0 -- ATR-based stop placement
-        atr_stop_mult=_f("ORB_ATR_STOP_MULT", 0.0),
+        # v8.0.1 -- default flipped 0.0 -> 1.75 to activate live (backtest-
+        # validated 39% headline lift, 0/4 negative quarters). Setting
+        # ORB_ATR_STOP_MULT=0 in Railway env still disables the feature
+        # (back to v7.111.0 OR-edge stop).
+        atr_stop_mult=_f("ORB_ATR_STOP_MULT", 1.75),
         atr_lookback_5m=_i("ORB_ATR_LOOKBACK_5M", 14),
     )
 
