@@ -4,6 +4,88 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.24 (2026-05-12) -- Live-state snapshot stream (cron) -> `snapshots-live` branch
+
+Motivation: the operator's Claude Code sandbox is firewalled away from `tradegenius.up.railway.app` (Host-not-in-allowlist on every egress). The agent can read GitHub via MCP but not the live dashboard. To analyze "what is the bot doing right now?" the agent had to ask the operator to paste `/api/state`. This release publishes that data automatically.
+
+### New tool
+
+`tools/state_snapshot.py` -- pulls `/api/state` + `/api/executor/val` + `/api/executor/gene` using the existing `DashboardClient` (form-login, `spike_session` cookie). Bundles them into a single JSON document with `captured_at_utc` and writes:
+
+- `data/snapshots/latest.json` -- overwritten every tick
+- `data/snapshots/YYYY-MM-DD.jsonl` -- append-only history (one snapshot/line)
+
+Exit codes are explicit (0 success / 1 config / 2 network / 3 write). Stdlib-only (no requirements.txt install needed on the runner).
+
+### New workflow
+
+`.github/workflows/state-snapshot.yml`:
+
+- Cron `*/10 13-21 * * 1-5` covers US RTH under both EDT and EST (54 runs/day max)
+- `workflow_dispatch` enabled with a `reason` input for ad-hoc pulls
+- Checks out (or initializes) a dedicated `snapshots-live` branch
+- Pulls the snapshot tool from `main`
+- Runs `python -m tools.state_snapshot`
+- Commits + pushes the snapshot files to `snapshots-live`
+- `cancel-in-progress: true` -- a long run never piles up against the next tick
+- Retry-on-push with 2/4/8/16s exponential backoff
+- Permissions: `contents: write` (limited to the snapshot branch in practice)
+
+### Retrieval pattern
+
+Downstream agents grab the data through the GitHub MCP without needing the dashboard password:
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/snapshots/latest.json",
+    ref="snapshots-live"
+)
+```
+
+### CLAUDE.md note added
+
+Future agent sessions will see a "Retrieving live state from sandbox" subsection under "Operator preferences" pointing at the snapshot branch.
+
+### What the data looks like
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-05-12T18:30:00Z",
+  "dashboard_base_url": "https://tradegenius.up.railway.app",
+  "endpoints": {
+    "/api/state": { ...full dashboard state... },
+    "/api/executor/val": { ...val executor diagnostics... },
+    "/api/executor/gene": { ...gene executor diagnostics... }
+  }
+}
+```
+
+If an individual endpoint fails the run still succeeds as long as `/api/state` returned valid JSON; the failing endpoint shows `{"__error__": "..."}` in the bundle.
+
+### Security
+
+- The workflow uses existing GHA secrets (`DASHBOARD_URL`, `DASHBOARD_PASSWORD`) already in place for `dashboard-monitor.yml`. No new secret needed.
+- `snapshots-live` is a public branch (the repo is private, so the snapshots inherit that protection). If the operator wants to make the repo public later, scrub-on-publish should remove `data/snapshots/`.
+- Tool is read-only against production -- only `GET` calls, never `POST`.
+
+### Tests
+
+`tests/strategy/test_state_snapshot.py` (5 tests):
+
+1. `_pull_all` records `__error__` for failing endpoints, OK payloads for successful ones
+2. `_write_outputs` writes both `latest.json` and the per-day `.jsonl`
+3. The per-day file appends (multiple runs accumulate lines, not overwrite)
+4. `main()` returns 1 when env vars are missing
+5. `main()` returns 2 when `/api/state` is unreachable / errored
+
+### First run
+
+Pushing this PR creates the `snapshots-live` branch on first cron tick (or on first `workflow_dispatch`). Until that happens, retrieval will 404.
+
+---
+
 ## v8.3.23 (2026-05-12) -- Independent-mode default (`ORB_PORTFOLIO_FIRE`: 0 → 1) + legacy-bus entry guard
 
 Operator directive: "We should switch to independent mode." This release flips Val/Gene from mirror-mode (entries dispatched via Main's legacy signal bus at scaled share count) to **independent-mode entries** (each portfolio runs its own `OrbEngine.try_enter` and dispatches via `executor.fire_long`/`fire_short` with its OWN equity-driven sizing math).

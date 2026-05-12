@@ -1,0 +1,153 @@
+name: state-snapshot
+
+# v8.3.24 -- live-dashboard state snapshot stream.
+#
+# Pulls /api/state + /api/executor/{val,gene} from production every
+# 10 min during US RTH and commits the JSON to a dedicated
+# `snapshots-live` branch. The point of the branch is to give
+# downstream tooling (most importantly the operator's Claude Code
+# agents whose sandboxes can't reach tradegenius.up.railway.app) a
+# stable, GitHub-MCP-readable location for the live state.
+#
+# Retrieval:
+#   mcp__github__get_file_contents
+#     owner=valira3, repo=stock-spike-monitor,
+#     path=data/snapshots/latest.json, ref=snapshots-live
+#   -> the most recent snapshot (one full /api/state payload + the
+#      per-executor diagnostics for val/gene)
+#
+#   Per-day history at data/snapshots/YYYY-MM-DD.jsonl (one
+#   snapshot per line).
+#
+# The workflow is read-only against production -- it only GETs the
+# auth-gated dashboard endpoints, never writes back.
+#
+# Required repository secrets (already configured for
+# dashboard-monitor.yml):
+#   DASHBOARD_URL         e.g. https://tradegenius.up.railway.app
+#   DASHBOARD_PASSWORD    the operator's dashboard password
+#
+# GITHUB_TOKEN with `contents: write` (set below) is enough to push
+# back into the snapshots-live branch on the same repo.
+
+on:
+  schedule:
+    # RTH-only cron. UTC. EDT (Mar-Nov): 09:30->16:00 ET == 13:30->20:00 UTC.
+    # EST (Nov-Mar): 09:30->16:00 ET == 14:30->21:00 UTC. Union covering
+    # both DST regimes: 13:00->21:00 UTC, Mon-Fri.
+    # */10 ticks at :00, :10, :20, :30, :40, :50 -- 6/hr x 9hr = 54 runs/day.
+    # GitHub's scheduled-event delivery can DELAY or SKIP runs near the
+    # top of the hour during high load; the cron is best-effort.
+    - cron: "*/10 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why are you running this manually? (logged in commit msg)"
+        required: false
+        default: "ad-hoc dispatch"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  # Don't pile up snapshot runs if a previous push is still in flight.
+  # cancel-in-progress=true is safe: the next scheduled tick (10 min
+  # away) will catch us up.
+  group: state-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Check out the snapshots-live branch if it exists; otherwise
+      # create it as an orphan so the file tree starts clean (no
+      # inherited main-branch files cluttering the data store).
+      - name: Checkout snapshots-live branch (or create orphan)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -b snapshots-live
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code origin snapshots-live >/dev/null 2>&1; then
+            echo "branch exists -- pulling"
+            git fetch --depth 1 origin snapshots-live
+            git reset --hard origin/snapshots-live
+          else
+            echo "branch missing -- will be created on first push"
+          fi
+
+      # Need the snapshot tool from main. Check it out into a sibling
+      # dir so it doesn't pollute the snapshots-live working tree.
+      - name: Fetch snapshot tool from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tg-main
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            /tmp/tg-main
+          # Sanity check
+          test -f /tmp/tg-main/tools/state_snapshot.py
+          test -f /tmp/tg-main/tools/dashboard_monitor.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pull /api/state + write snapshot files
+        env:
+          DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_URL }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          STATE_SNAPSHOT_DIR: ${{ github.workspace }}/data/snapshots
+        run: |
+          set -euo pipefail
+          cd /tmp/tg-main
+          # state_snapshot.py imports tools.dashboard_monitor, which
+          # in turn only depends on the stdlib (urllib, json, etc.).
+          # No requirements.txt install needed.
+          python -m tools.state_snapshot
+
+      - name: Commit + push snapshot
+        env:
+          REASON: ${{ inputs.reason }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          git config user.email "valira3@gmail.com"
+          git config user.name "valira3"
+          # Stage only data/snapshots/* to keep the branch surface
+          # tiny and predictable.
+          mkdir -p data/snapshots
+          git add data/snapshots/
+          if git diff --cached --quiet; then
+            echo "no changes to commit (snapshot identical to previous?)"
+            exit 0
+          fi
+          MSG="state-snapshot: ${EVENT} tick"
+          if [ -n "${REASON:-}" ] && [ "${REASON}" != "ad-hoc dispatch" ]; then
+            MSG="${MSG} -- ${REASON}"
+          fi
+          git commit -m "$MSG"
+          # Retry-on-network-failure with exponential backoff.
+          # Force-push is NEVER used -- the workflow only adds new
+          # snapshots, so fast-forward should always succeed.
+          for attempt in 1 2 3 4; do
+            if git push -u origin snapshots-live; then
+              echo "push OK on attempt $attempt"
+              exit 0
+            fi
+            # Rebase against latest remote in case another tick raced us
+            # (concurrency: cancel-in-progress should prevent this but
+            # the safety belt is cheap).
+            git fetch origin snapshots-live || true
+            git rebase origin/snapshots-live || git rebase --abort
+            sleep $((2 ** attempt))
+          done
+          echo "::error::push failed after 4 retries"
+          exit 1
