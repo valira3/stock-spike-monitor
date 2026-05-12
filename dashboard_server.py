@@ -831,6 +831,89 @@ def _today_trades() -> list[dict]:
         out.append(synth_open)
         short_entries_emitted.add(dedup_key)
 
+    # v8.3.3 -- backfill from trade_log.jsonl for trades that exist on
+    # disk but not in the in-memory paper_trades / short_trade_history
+    # lists. Root cause: paper_state.json (which rehydrates the
+    # in-memory lists on boot) is saved every 5 minutes via a
+    # daemon thread (trade_genius.py ~L7278); trade_log.jsonl is
+    # appended SYNCHRONOUSLY per trade (broker/orders.py:2057). After
+    # a Railway redeploy, the latest 0-5 minutes of trades are on
+    # disk in trade_log.jsonl but missing from in-memory state, so
+    # the Main tab's "today's trades" went blank. v8.3.3 reads the
+    # trade log directly and synthesizes any rows the in-memory
+    # path missed; the existing `seen` set de-dups against rows
+    # already emitted.
+    try:
+        log_rows = m.trade_log_read_tail(
+            limit=500, since_date=today, portfolio="paper",
+        )
+    except Exception:
+        log_rows = []
+    for row in log_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("date") != today:
+            continue
+        tk = row.get("ticker") or ""
+        side = (row.get("side") or "LONG").upper()
+        try:
+            shares_n = int(row.get("shares") or 0)
+        except (TypeError, ValueError):
+            shares_n = 0
+        try:
+            entry_price = float(row.get("entry_price") or 0.0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        try:
+            exit_price = float(row.get("exit_price") or 0.0)
+        except (TypeError, ValueError):
+            exit_price = 0.0
+        entry_time_val = row.get("entry_time") or ""
+        exit_time_val = row.get("exit_time") or ""
+        # Synthesize the entry row (BUY for long, SHORT for short).
+        entry_action = "BUY" if side == "LONG" else "SHORT"
+        synth_entry = {
+            "action": entry_action,
+            "ticker": tk,
+            "side": side,
+            "shares": shares_n,
+            "price": entry_price,
+            "entry_price": entry_price,
+            "time": entry_time_val,
+            "entry_time": entry_time_val,
+            "entry_num": row.get("entry_num", 1),
+            "date": today,
+            "cost": round(shares_n * entry_price, 2),
+            "portfolio": "paper",
+        }
+        k_entry = _key(synth_entry, side)
+        if k_entry not in seen:
+            seen.add(k_entry)
+            out.append(synth_entry)
+        # Synthesize the exit row (SELL for long, COVER for short).
+        exit_action = "SELL" if side == "LONG" else "COVER"
+        synth_exit = {
+            "action": exit_action,
+            "ticker": tk,
+            "side": side,
+            "shares": shares_n,
+            "price": exit_price,
+            "exit_price": exit_price,
+            "entry_price": entry_price,
+            "pnl": row.get("pnl"),
+            "pnl_pct": row.get("pnl_pct"),
+            "reason": row.get("reason") or "",
+            "time": exit_time_val,
+            "exit_time": exit_time_val,
+            "entry_time": entry_time_val,
+            "date": today,
+            "portfolio": "paper",
+        }
+        k_exit = _key(synth_exit, side)
+        if k_exit not in seen:
+            seen.add(k_exit)
+            out.append(synth_exit)
+
     # sort by time if present. For close actions (SELL / COVER) the
     # canonical timestamp is the exit_time; opens (BUY / SHORT) carry it
     # as entry_time. Falling back through ``time`` first preserves any
