@@ -990,6 +990,55 @@ class OrbEngine:
                 rb._open_notional = 0.0
         return True
 
+    def purge_non_recover_tickets(self) -> dict:
+        """v8.3.22 -- nuke every ticket in RiskBook._open_tickets
+        that ISN'T a deterministic `recover-{pid}-{ticker}` id. The
+        only legitimate path that creates uuid-style tickets is
+        `try_admit` during `OrbEngine.try_enter` -- those are
+        ephemeral (released by `on_exit` on close, or by
+        `rollback_admit` when the broker fire fails). If a uuid
+        ticket survives across a Railway redeploy + v8.3.4 rehydrate,
+        it's leaked: the position it represented was never persisted
+        (would have been in executor.positions / tg.positions and
+        re-mirrored as a `recover-*` ticket on boot via v8.3.6) so
+        the ticket has no real position behind it.
+
+        Use case: bootstrap. Run ONCE on the first scan cycle after
+        ensure_session_started. The v8.3.6 mirror re-adds clean
+        `recover-*` tickets from held positions, so this purge only
+        clears the orphan uuid leftovers that consume budget but
+        track nothing.
+
+        Returns counters {pid: n_purged} so the caller can log a
+        single `[V8322-UUID-PURGE]` summary line.
+
+        Side effects: decrements `_open_risk` + `_open_notional` per
+        cleared ticket; clamps non-negative.
+        """
+        out: dict = {}
+        for pid, rb in self._risk._books.items():
+            with rb._lock:
+                ticket_ids = list(rb._open_tickets.keys())
+            cleared = 0
+            for tid in ticket_ids:
+                if tid.startswith(f"recover-{pid}-"):
+                    continue
+                # Anything else is uuid (try_admit) -- orphan leftover.
+                with rb._lock:
+                    ticket = rb._open_tickets.pop(tid, None)
+                    if ticket is None:
+                        continue
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+                cleared += 1
+            if cleared > 0:
+                out[pid] = cleared
+        return out
+
     # --- snapshots / introspection ---
 
     def snapshot(self) -> dict:
