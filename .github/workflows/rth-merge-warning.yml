@@ -1,0 +1,111 @@
+name: rth-merge-warning
+
+# v7.104.0 (Lesson 1 from Auto Agentic framework) -- post a warning
+# comment on PRs that merge during regular trading hours
+# (Mon-Fri, 09:30-16:00 ET) without the `kill-switch` label.
+#
+# This is a WARNING-ONLY gate. The PR has already merged by the
+# time this workflow runs (`pull_request: closed` fires after the
+# merge commit lands), so there's no blocking. The intent is to:
+#  - Surface RTH-time merges visibly so future deploys gravitate
+#    to off-hours by default.
+#  - Establish a paper trail when a kill-switch-grade merge does
+#    happen mid-RTH (labeled `kill-switch` -> no warning).
+#
+# Today (2026-05-11) shipped 27 deploys, 12+ during RTH. Each Railway
+# redeploy is a fresh container which loses RiskBook tickets (mid-day
+# phantom-position pattern in monitor issues #532-#596). This workflow
+# makes that cost visible per-merge so the trend self-corrects.
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    # Manual dispatch with a PR number for testing.
+    inputs:
+      pull_number:
+        description: "PR number to check (for testing)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pull-requests: write   # post the warning comment
+
+jobs:
+  rth-warn:
+    # Skip on closed-but-not-merged PRs (no need to warn on those).
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check RTH window + kill-switch label
+        id: check
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          set -e
+          # ET-minutes-of-day right now. zone-aware so DST is handled.
+          ET_HM=$(TZ='America/New_York' date '+%H:%M')
+          ET_DOW=$(TZ='America/New_York' date '+%u')
+          ET_FULL=$(TZ='America/New_York' date '+%Y-%m-%d %H:%M %Z')
+          ET_MIN=$(echo "$ET_HM" | awk -F: '{print $1*60 + $2}')
+          echo "et_now=$ET_FULL" | tee -a "$GITHUB_OUTPUT"
+          echo "et_min=$ET_MIN" | tee -a "$GITHUB_OUTPUT"
+          # RTH = 09:30 ET (570) through 16:00 ET (960), Mon-Fri
+          # (ET_DOW 1=Mon..7=Sun).
+          INSIDE_RTH=0
+          if [ "$ET_DOW" -lt 6 ] && [ "$ET_MIN" -ge 570 ] && [ "$ET_MIN" -lt 960 ]; then
+            INSIDE_RTH=1
+          fi
+          echo "inside_rth=$INSIDE_RTH" | tee -a "$GITHUB_OUTPUT"
+          # Check for kill-switch label on the PR.
+          # On workflow_dispatch the label data isn't in the payload;
+          # default to "not present" and skip the warning entirely.
+          HAS_KS=0
+          if [ -n "$PR_LABELS" ] && [ "$PR_LABELS" != "null" ]; then
+            if echo "$PR_LABELS" | grep -q '"name":"kill-switch"'; then
+              HAS_KS=1
+            fi
+          fi
+          echo "has_kill_switch=$HAS_KS" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Post warning comment
+        if: steps.check.outputs.inside_rth == '1' && steps.check.outputs.has_kill_switch == '0' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const etNow = '${{ steps.check.outputs.et_now }}';
+            const prNumber = context.payload.pull_request.number;
+            const body = [
+              '⚠️ **RTH merge warning** -- this PR merged during regular trading hours.',
+              '',
+              `Merge time: \`${etNow}\` (US/Eastern).`,
+              `RTH window: Mon-Fri 09:30-16:00 ET.`,
+              '',
+              'Why this warning fires (from `docs/auto_agentic_framework.md`):',
+              '- Each Railway redeploy is a fresh container -- the in-memory `RiskBook._open_tickets` is lost.',
+              '- Mid-RTH redeploys recreate the phantom-position pattern that drove monitor issues #532-#596 today (2026-05-11).',
+              '- UI / observability merges should land before 08:00 ET or after 16:00 ET.',
+              '',
+              '**Action:** if this was UI-only or observability-only, defer the next one to after-hours.',
+              'If it was kill-switch-grade (live trading hazard), label the PR with `kill-switch` and this comment will not fire next time.',
+              '',
+              '_This is a WARNING ONLY -- the PR already merged. No action required on this PR._',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });
+            core.notice(`Posted RTH-merge warning comment on PR #${prNumber}`);
+
+      - name: Annotate when no warning fires
+        if: steps.check.outputs.inside_rth != '1' || steps.check.outputs.has_kill_switch == '1'
+        run: |
+          if [ "${{ steps.check.outputs.inside_rth }}" != "1" ]; then
+            echo "::notice::Merged outside RTH window (${{ steps.check.outputs.et_now }}); no warning."
+          else
+            echo "::notice::PR has 'kill-switch' label; warning suppressed."
+          fi
