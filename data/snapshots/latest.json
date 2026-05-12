@@ -1,0 +1,4656 @@
+{
+  "captured_at_utc": "2026-05-12T19:51:23Z",
+  "dashboard_base_url": "https://tradegenius.up.railway.app/",
+  "endpoints": {
+    "/api/executor/gene": {
+      "enabled": false,
+      "error": "gene executor not enabled",
+      "errors": {
+        "count": 0,
+        "entries": [],
+        "executor": "gene",
+        "severity": "green"
+      }
+    },
+    "/api/executor/val": {
+      "account": {
+        "account_number": "PA3X1P36WR2V",
+        "buying_power": 399340.08,
+        "cash": 99881.82,
+        "day_pnl": 46.80000000000291,
+        "equity": 99881.82,
+        "last_equity": 99835.02,
+        "status": "AccountStatus.ACTIVE"
+      },
+      "alpaca_base_url": "BaseURL.TRADING_PAPER",
+      "enabled": true,
+      "error": null,
+      "errors": {
+        "count": 0,
+        "entries": [],
+        "executor": "val",
+        "severity": "green"
+      },
+      "healthy": true,
+      "last_signal": {
+        "kind": "EOD_CLOSE_ALL",
+        "price": 0.0,
+        "reason": "EOD",
+        "ticker": "",
+        "timestamp_utc": "2026-05-12T19:49:59.000739+00:00"
+      },
+      "mode": "paper",
+      "positions": [],
+      "todays_trades": [
+        {
+          "action": "BUY",
+          "avg_fill_price": 87.6,
+          "cost": 62108.399999999994,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T10:16:55.398094-04:00",
+          "price": 87.6,
+          "qty": 709.0,
+          "shares": 709.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "10:16"
+        },
+        {
+          "action": "BUY",
+          "avg_fill_price": 602.38,
+          "cost": 14457.119999999999,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T10:21:07.611967-04:00",
+          "price": 602.38,
+          "qty": 24.0,
+          "shares": 24.0,
+          "side": "LONG",
+          "symbol": "META",
+          "ticker": "META",
+          "time": "10:21"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 88.1,
+          "cost": 50305.1,
+          "date": "2026-05-12",
+          "entry_price": 87.6,
+          "exit_price": 88.1,
+          "filled_at": "2026-05-12T10:29:15.498418-04:00",
+          "pnl": 285.5,
+          "pnl_pct": 0.57,
+          "price": 88.1,
+          "qty": 571.0,
+          "shares": 571.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "10:29"
+        },
+        {
+          "action": "BUY",
+          "avg_fill_price": 88.12,
+          "cost": 22823.08,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T10:29:17.049397-04:00",
+          "price": 88.12,
+          "qty": 259.0,
+          "shares": 259.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "10:29"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 88.59,
+          "cost": 35170.23,
+          "date": "2026-05-12",
+          "entry_price": 87.9392,
+          "exit_price": 88.59,
+          "filled_at": "2026-05-12T10:52:49.106281-04:00",
+          "pnl": 258.35,
+          "pnl_pct": 0.74,
+          "price": 88.59,
+          "qty": 397.0,
+          "shares": 397.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "10:52"
+        },
+        {
+          "action": "BUY",
+          "avg_fill_price": 88.62,
+          "cost": 20471.22,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T10:52:51.177737-04:00",
+          "price": 88.62,
+          "qty": 231.0,
+          "shares": 231.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "10:52"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 263.98,
+          "cost": 1055.92,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T11:00:59.239790-04:00",
+          "price": 263.98,
+          "qty": 4.0,
+          "shares": 4.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "11:00"
+        },
+        {
+          "action": "COVER",
+          "avg_fill_price": 264.99,
+          "cost": 1059.96,
+          "date": "2026-05-12",
+          "entry_price": 263.98,
+          "exit_price": 264.99,
+          "filled_at": "2026-05-12T11:14:17.427935-04:00",
+          "pnl": -4.04,
+          "pnl_pct": -0.38,
+          "price": 264.99,
+          "qty": 4.0,
+          "shares": 4.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "11:14"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 264.03,
+          "cost": 10297.169999999998,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T12:16:04.818384-04:00",
+          "price": 264.03,
+          "qty": 39.0,
+          "shares": 39.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "12:16"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 263.11,
+          "cost": 15260.380000000001,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T12:40:21.971902-04:00",
+          "price": 263.11,
+          "qty": 58.0,
+          "shares": 58.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "12:40"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 89.05,
+          "cost": 17275.7,
+          "date": "2026-05-12",
+          "entry_price": 88.62,
+          "exit_price": 89.05,
+          "filled_at": "2026-05-12T12:41:25.142762-04:00",
+          "pnl": 83.42,
+          "pnl_pct": 0.49,
+          "price": 89.05,
+          "qty": 194.0,
+          "shares": 194.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "12:41"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 598.853333,
+          "cost": 14372.479992,
+          "date": "2026-05-12",
+          "entry_price": 602.38,
+          "exit_price": 598.853333,
+          "filled_at": "2026-05-12T13:07:33.825540-04:00",
+          "pnl": -84.64,
+          "pnl_pct": -0.59,
+          "price": 598.853333,
+          "qty": 24.0,
+          "shares": 24.0,
+          "side": "LONG",
+          "symbol": "META",
+          "ticker": "META",
+          "time": "13:07"
+        },
+        {
+          "action": "COVER",
+          "avg_fill_price": 264.08,
+          "cost": 25615.76,
+          "date": "2026-05-12",
+          "entry_price": 263.4799,
+          "exit_price": 264.08,
+          "filled_at": "2026-05-12T13:21:02.845369-04:00",
+          "pnl": -58.21,
+          "pnl_pct": -0.23,
+          "price": 264.08,
+          "qty": 97.0,
+          "shares": 97.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "13:21"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 380.6,
+          "cost": 33873.4,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T13:21:04.408583-04:00",
+          "price": 380.6,
+          "qty": 89.0,
+          "shares": 89.0,
+          "side": "SHORT",
+          "symbol": "GOOG",
+          "ticker": "GOOG",
+          "time": "13:21"
+        },
+        {
+          "action": "COVER",
+          "avg_fill_price": 381.670675,
+          "cost": 33968.690075,
+          "date": "2026-05-12",
+          "entry_price": 380.6,
+          "exit_price": 381.670675,
+          "filled_at": "2026-05-12T14:06:17.241568-04:00",
+          "pnl": -95.29,
+          "pnl_pct": -0.28,
+          "price": 381.670675,
+          "qty": 89.0,
+          "shares": 89.0,
+          "side": "SHORT",
+          "symbol": "GOOG",
+          "ticker": "GOOG",
+          "time": "14:06"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 264.02,
+          "cost": 10296.779999999999,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T14:21:17.836347-04:00",
+          "price": 264.02,
+          "qty": 39.0,
+          "shares": 39.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "14:21"
+        },
+        {
+          "action": "SHORT",
+          "avg_fill_price": 382.86,
+          "cost": 75040.56,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T14:28:28.977486-04:00",
+          "price": 382.86,
+          "qty": 196.0,
+          "shares": 196.0,
+          "side": "SHORT",
+          "symbol": "GOOG",
+          "ticker": "GOOG",
+          "time": "14:28"
+        },
+        {
+          "action": "COVER",
+          "avg_fill_price": 265.095641,
+          "cost": 10338.729999,
+          "date": "2026-05-12",
+          "entry_price": 264.02,
+          "exit_price": 265.095641,
+          "filled_at": "2026-05-12T15:23:32.240997-04:00",
+          "pnl": -41.95,
+          "pnl_pct": -0.41,
+          "price": 265.095641,
+          "qty": 39.0,
+          "shares": 39.0,
+          "side": "SHORT",
+          "symbol": "AMZN",
+          "ticker": "AMZN",
+          "time": "15:23"
+        },
+        {
+          "action": "BUY",
+          "avg_fill_price": 602.07,
+          "cost": 74656.68000000001,
+          "date": "2026-05-12",
+          "filled_at": "2026-05-12T15:38:36.719586-04:00",
+          "price": 602.07,
+          "qty": 124.0,
+          "shares": 124.0,
+          "side": "LONG",
+          "symbol": "META",
+          "ticker": "META",
+          "time": "15:38"
+        },
+        {
+          "action": "COVER",
+          "avg_fill_price": 384.031327,
+          "cost": 75270.140092,
+          "date": "2026-05-12",
+          "entry_price": 382.86,
+          "exit_price": 384.031327,
+          "filled_at": "2026-05-12T15:44:50.260622-04:00",
+          "pnl": -229.58,
+          "pnl_pct": -0.31,
+          "price": 384.031327,
+          "qty": 196.0,
+          "shares": 196.0,
+          "side": "SHORT",
+          "symbol": "GOOG",
+          "ticker": "GOOG",
+          "time": "15:44"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 87.62,
+          "cost": 3241.94,
+          "date": "2026-05-12",
+          "entry_price": 88.62,
+          "exit_price": 87.62,
+          "filled_at": "2026-05-12T15:49:59.553285-04:00",
+          "pnl": -37.0,
+          "pnl_pct": -1.13,
+          "price": 87.62,
+          "qty": 37.0,
+          "shares": 37.0,
+          "side": "LONG",
+          "symbol": "NFLX",
+          "ticker": "NFLX",
+          "time": "15:49"
+        },
+        {
+          "action": "SELL",
+          "avg_fill_price": 601.83,
+          "cost": 74626.92,
+          "date": "2026-05-12",
+          "entry_price": 602.07,
+          "exit_price": 601.83,
+          "filled_at": "2026-05-12T15:50:00.205299-04:00",
+          "pnl": -29.76,
+          "pnl_pct": -0.04,
+          "price": 601.83,
+          "qty": 124.0,
+          "shares": 124.0,
+          "side": "LONG",
+          "symbol": "META",
+          "ticker": "META",
+          "time": "15:50"
+        }
+      ]
+    },
+    "/api/state": {
+      "active_cooldowns": [
+        {
+          "loss_pnl": -307.32,
+          "loss_ts_utc": "2026-05-12T19:44:48Z",
+          "remaining_sec": 1405,
+          "side": "short",
+          "ticker": "GOOG",
+          "until_utc": "2026-05-12T20:14:48Z"
+        },
+        {
+          "loss_pnl": -60.29,
+          "loss_ts_utc": "2026-05-12T19:49:59Z",
+          "remaining_sec": 1716,
+          "side": "long",
+          "ticker": "META",
+          "until_utc": "2026-05-12T20:19:59Z"
+        }
+      ],
+      "active_cooldowns_by_portfolio": {
+        "gene": [],
+        "main": [
+          {
+            "loss_pnl": -307.32,
+            "loss_ts_utc": "2026-05-12T19:44:48Z",
+            "remaining_sec": 1405,
+            "side": "short",
+            "ticker": "GOOG",
+            "until_utc": "2026-05-12T20:14:48Z"
+          },
+          {
+            "loss_pnl": -60.29,
+            "loss_ts_utc": "2026-05-12T19:49:59Z",
+            "remaining_sec": 1716,
+            "side": "long",
+            "ticker": "META",
+            "until_utc": "2026-05-12T20:19:59Z"
+          }
+        ],
+        "val": []
+      },
+      "earnings_watcher": {
+        "current_window": "rth_idle",
+        "enabled": false,
+        "last_cycle": {
+          "date": "2026-05-07",
+          "evaluated": 1,
+          "exits": 1,
+          "orders_filled": 0,
+          "orders_submitted": 1,
+          "signals": 1,
+          "skip_reasons": {
+            "dmi.insufficient_bars_dmi": 43,
+            "insufficient_bars_dmi": 43,
+            "insufficient_bars_pmr": 27,
+            "pmr.build_phase_incomplete": 5,
+            "pmr.insufficient_bars_pmr": 27,
+            "pmr.no_break_yet": 21
+          },
+          "skipped_evaluated": 10,
+          "skipped_open": 2,
+          "ts_utc": "2026-05-07T12:53:08.756185+00:00",
+          "universe_size": 75,
+          "window": "premarket"
+        },
+        "open_positions": [],
+        "universe_size": 75,
+        "version": "8.3.24"
+      },
+      "errors": {
+        "count": 0,
+        "entries": [],
+        "executor": "main",
+        "severity": "green"
+      },
+      "executors_status": {
+        "gene": {
+          "enabled": false,
+          "mode": null
+        },
+        "val": {
+          "enabled": true,
+          "mode": "paper"
+        }
+      },
+      "feature_flags": {
+        "alarm_b_enabled": false,
+        "alarm_c_enabled": false,
+        "alarm_d_enabled": false,
+        "alarm_e_enabled": false,
+        "alarm_f_enabled": true,
+        "volume_gate_enabled": true
+      },
+      "gates": {
+        "halt_reason": "",
+        "next_scan_sec": 8,
+        "or_collected_date": "2026-05-12",
+        "per_ticker": [
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 0.38,
+            "index": true,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "LONG",
+            "ticker": "AAPL",
+            "ts": "2026-05-12T19:50:32.802023+00:00"
+          },
+          {
+            "break": false,
+            "di": false,
+            "extension_pct": -0.14,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": false,
+            "side": "SHORT",
+            "ticker": "AMZN",
+            "ts": "2026-05-12T19:50:32.914498+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 0.07,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "SHORT",
+            "ticker": "AVGO",
+            "ts": "2026-05-12T19:50:33.002032+00:00"
+          },
+          {
+            "break": false,
+            "di": false,
+            "extension_pct": -0.26,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": false,
+            "side": "SHORT",
+            "ticker": "GOOG",
+            "ts": "2026-05-12T19:50:33.167473+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 1.09,
+            "index": true,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "LONG",
+            "ticker": "META",
+            "ts": "2026-05-12T19:50:33.263321+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 0.28,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "SHORT",
+            "ticker": "MSFT",
+            "ts": "2026-05-12T19:50:33.346268+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 0.97,
+            "index": true,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "LONG",
+            "ticker": "NFLX",
+            "ts": "2026-05-12T19:50:33.491494+00:00"
+          },
+          {
+            "break": false,
+            "di": true,
+            "extension_pct": -0.27,
+            "index": true,
+            "or_stale_skip_count": 0,
+            "polarity": false,
+            "side": "LONG",
+            "ticker": "NVDA",
+            "ts": "2026-05-12T19:50:33.568181+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 1.25,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "SHORT",
+            "ticker": "ORCL",
+            "ts": "2026-05-12T19:50:33.777362+00:00"
+          },
+          {
+            "break": true,
+            "di": false,
+            "extension_pct": 1.03,
+            "index": false,
+            "or_stale_skip_count": 0,
+            "polarity": true,
+            "side": "SHORT",
+            "ticker": "TSLA",
+            "ts": "2026-05-12T19:50:33.868510+00:00"
+          }
+        ],
+        "scan_idle_hours": false,
+        "scan_paused": false,
+        "scan_paused_user": false,
+        "trading_halted": false
+      },
+      "ingest_status": {
+        "bars_today": 12690,
+        "gap_audit": {
+          "date": "2026-05-12",
+          "fill_rate": 0.0,
+          "gaps_backfilling": 0,
+          "gaps_closed": 0,
+          "gaps_detected": 0,
+          "gaps_missing": 0,
+          "gaps_open": 0,
+          "gaps_partial": 0
+        },
+        "gate_override_active": false,
+        "ingest_health": {
+          "gate_mode": "dry_run",
+          "global": {
+            "color": "green",
+            "entered_color_at_iso": "2026-05-12T19:39:00.010425+00:00",
+            "metrics": [
+              {
+                "color": "green",
+                "name": "last_bar_age_s",
+                "value": 0.0004048692062497139
+              }
+            ]
+          },
+          "is_rth": true,
+          "per_ticker": {}
+        },
+        "last_bar_age_s": 22.9,
+        "open_gaps_today": 0,
+        "status": "live",
+        "ws_state": "LIVE"
+      },
+      "last_signal": {
+        "kind": "EOD_CLOSE_ALL",
+        "price": 0.0,
+        "reason": "EOD",
+        "ticker": "",
+        "timestamp_utc": "2026-05-12T19:49:59.000739+00:00"
+      },
+      "near_misses": [],
+      "observer": {
+        "ticker_pnl": {},
+        "ticker_red": []
+      },
+      "ok": true,
+      "per_position_v510": {},
+      "per_ticker_v510": {
+        "AAPL": {
+          "boundary_hold": {
+            "last_two_closes": [
+              294.74,
+              294.66
+            ],
+            "long_consecutive_outside": 2,
+            "or_high": 293.69,
+            "or_low": 292.685,
+            "short_consecutive_outside": 0,
+            "side": "LONG",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 22.848220354886934,
+            "di_minus_5m": 15.791655373277427,
+            "di_plus_1m": 19.60738722532814,
+            "di_plus_5m": 18.484283316149394,
+            "seed_bars": 64,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 294.795,
+            "last": 294.795,
+            "lo": 291.4,
+            "open": 292.04,
+            "points": [
+              292.04,
+              292.15,
+              291.98,
+              292.19,
+              292.04,
+              291.82,
+              291.77,
+              292.17,
+              291.98,
+              291.4,
+              291.51,
+              291.88,
+              291.94,
+              291.9,
+              291.9929,
+              291.97,
+              292.1,
+              291.7712,
+              292.21,
+              292.1352,
+              292.6105,
+              292.5,
+              293.26,
+              293.59,
+              293.51,
+              293.35,
+              294.4493,
+              294.25,
+              294.03,
+              294.685,
+              294.33,
+              294.49,
+              293.88,
+              294.39,
+              293.57,
+              294.145,
+              294.08,
+              294.64,
+              293.855,
+              293.68,
+              294.235,
+              294.29,
+              293.72,
+              294.51,
+              294.15,
+              293.56,
+              293.875,
+              294.31,
+              294.33,
+              294.185,
+              294.07,
+              294.08,
+              294.265,
+              294.375,
+              294.16,
+              294.42,
+              294.59,
+              294.48,
+              294.742,
+              294.67,
+              294.795
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 11.738593542914115,
+            "adx_5m": 9.349362723930566,
+            "adx_5m_gap": 10.651,
+            "adx_threshold": 20.0,
+            "di_cross_gap": -3.241,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.0812,
+            "vwap_gap_pct": 0.2584
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 217892.15873015873,
+            "current_1m_vol": 138276,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.6346075086219294,
+            "ratio_to_55bar_avg": 0.6346075086219294,
+            "state": "FAIL"
+          },
+          "weather": {
+            "avwap": 294.03532943849126,
+            "direction": "flat",
+            "divergence": false,
+            "ema9_5m": 294.5558523486681,
+            "global_direction": "up",
+            "last": 294.795,
+            "last_close_5m": 294.67
+          }
+        },
+        "AMZN": {
+          "boundary_hold": {
+            "last_two_closes": [
+              265.45,
+              265.83
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 267.53,
+            "or_low": 265.36,
+            "short_consecutive_outside": 0,
+            "side": null,
+            "state": "ARMED"
+          },
+          "di": {
+            "di_minus_1m": 8.971834035734627,
+            "di_minus_5m": 10.888773100618353,
+            "di_plus_1m": 30.74572004130652,
+            "di_plus_5m": 27.906168654856554,
+            "seed_bars": 62,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 267.77,
+            "last": 265.86,
+            "lo": 262.94,
+            "open": 266.3,
+            "points": [
+              266.3,
+              266.5,
+              266.9793,
+              266.9,
+              266.71,
+              266.6233,
+              267.02,
+              267.06,
+              267.03,
+              267.25,
+              267.09,
+              266.96,
+              267.139,
+              267.77,
+              267.65,
+              267.61,
+              267.43,
+              266.5,
+              265.44,
+              265.2164,
+              265.51,
+              264.35,
+              265.075,
+              265.2175,
+              264.96,
+              265.27,
+              264.5299,
+              263.81,
+              264.595,
+              264.68,
+              264.3625,
+              264.64,
+              264.58,
+              264.545,
+              264.26,
+              264.57,
+              263.8297,
+              263.495,
+              262.94,
+              263.21,
+              263.05,
+              263.315,
+              263.285,
+              264.03,
+              264.095,
+              263.77,
+              264.13,
+              264.15,
+              264.21,
+              264.08,
+              264.2008,
+              264.185,
+              264.3,
+              264.2101,
+              264.0799,
+              264.245,
+              264.65,
+              265.17,
+              265.28,
+              265.52,
+              265.86
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 43.48727373390079,
+            "adx_5m": 22.391573073899345,
+            "adx_5m_gap": -2.392,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 21.774,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.3176,
+            "vwap_gap_pct": 0.4827
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 203408.09523809524,
+            "current_1m_vol": 199893,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.982719000273904,
+            "ratio_to_55bar_avg": 0.982719000273904,
+            "state": "PASS"
+          },
+          "weather": {
+            "avwap": 264.5827461493302,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 265.0184025992131,
+            "global_direction": "up",
+            "last": 265.86,
+            "last_close_5m": 265.48
+          }
+        },
+        "AVGO": {
+          "boundary_hold": {
+            "last_two_closes": [
+              418.47,
+              418.68
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 422.785,
+            "or_low": 418.97,
+            "short_consecutive_outside": 2,
+            "side": "SHORT",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 10.348195674790606,
+            "di_minus_5m": 18.976952993312096,
+            "di_plus_1m": 27.807680485943777,
+            "di_plus_5m": 29.07175399134374,
+            "seed_bars": 61,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 426.74,
+            "last": 418.6634,
+            "lo": 408.59,
+            "open": 424.35,
+            "points": [
+              424.35,
+              422.75,
+              422.71,
+              422.3,
+              422.76,
+              423.25,
+              423.9,
+              423.8,
+              423.09,
+              423.24,
+              423.0,
+              423.43,
+              423.5,
+              423.5,
+              422.66,
+              422.907,
+              421.53,
+              422.8,
+              422.35,
+              421.69,
+              421.23,
+              420.8,
+              419.12,
+              425.52,
+              426.74,
+              425.6,
+              424.635,
+              426.4,
+              422.01,
+              422.55,
+              420.445,
+              418.98,
+              418.625,
+              415.8301,
+              413.23,
+              416.16,
+              414.775,
+              412.79,
+              412.39,
+              412.36,
+              410.815,
+              410.02,
+              409.59,
+              408.59,
+              410.88,
+              411.94,
+              412.0139,
+              412.31,
+              411.67,
+              412.15,
+              412.905,
+              414.05,
+              415.5799,
+              414.425,
+              413.87,
+              414.6,
+              415.5,
+              415.6375,
+              417.2,
+              418.25,
+              418.6634
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 40.35309094934374,
+            "adx_5m": 14.02218455320707,
+            "adx_5m_gap": 5.978,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 17.459,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.434,
+            "vwap_gap_pct": 0.4239
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 99441.73015873016,
+            "current_1m_vol": 90359,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.9086627903171818,
+            "ratio_to_55bar_avg": 0.9086627903171818,
+            "state": "PASS"
+          },
+          "weather": {
+            "avwap": 416.8961117549293,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 416.85437557154205,
+            "global_direction": "up",
+            "last": 418.6634,
+            "last_close_5m": 418.635
+          }
+        },
+        "GOOG": {
+          "boundary_hold": {
+            "last_two_closes": [
+              383.745,
+              383.73
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 386.305,
+            "or_low": 382.94,
+            "short_consecutive_outside": 0,
+            "side": null,
+            "state": "ARMED"
+          },
+          "di": {
+            "di_minus_1m": 12.041157408538027,
+            "di_minus_5m": 11.951780006093847,
+            "di_plus_1m": 27.508866366315633,
+            "di_plus_5m": 29.922382528555758,
+            "seed_bars": 65,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 386.5711,
+            "last": 383.93,
+            "lo": 379.82,
+            "open": 384.26,
+            "points": [
+              384.26,
+              384.5,
+              384.27,
+              383.95,
+              383.91,
+              384.19,
+              384.4,
+              384.12,
+              384.02,
+              383.4,
+              383.59,
+              383.32,
+              383.32,
+              383.0,
+              382.73,
+              382.6,
+              382.6,
+              382.6896,
+              382.25,
+              382.867,
+              384.29,
+              384.93,
+              386.3,
+              386.5711,
+              386.35,
+              384.85,
+              384.75,
+              384.59,
+              382.91,
+              383.745,
+              384.45,
+              384.56,
+              384.08,
+              384.675,
+              385.09,
+              384.9243,
+              384.94,
+              385.335,
+              384.73,
+              383.76,
+              383.3099,
+              383.37,
+              381.515,
+              380.8686,
+              380.4672,
+              379.82,
+              381.73,
+              381.43,
+              381.535,
+              381.235,
+              381.6088,
+              381.7,
+              382.675,
+              381.91,
+              381.28,
+              381.44,
+              382.215,
+              382.77,
+              382.76,
+              383.805,
+              383.93
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 41.56875594431376,
+            "adx_5m": 19.238253803027558,
+            "adx_5m_gap": 0.762,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 15.468,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.2943,
+            "vwap_gap_pct": 0.2323
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 92202.28571428571,
+            "current_1m_vol": 90348,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.9798889398465487,
+            "ratio_to_55bar_avg": 0.9798889398465487,
+            "state": "PASS"
+          },
+          "weather": {
+            "avwap": 383.0401235975186,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 382.8035932233842,
+            "global_direction": "up",
+            "last": 383.93,
+            "last_close_5m": 383.98
+          }
+        },
+        "META": {
+          "boundary_hold": {
+            "last_two_closes": [
+              602.235,
+              602.21
+            ],
+            "long_consecutive_outside": 2,
+            "or_high": 595.46,
+            "or_low": 593.28,
+            "short_consecutive_outside": 0,
+            "side": "LONG",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 20.537800593602714,
+            "di_minus_5m": 14.750559693929448,
+            "di_plus_1m": 28.018868001168098,
+            "di_plus_5m": 24.83083406243761,
+            "seed_bars": 63,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 603.175,
+            "last": 601.935,
+            "lo": 593.622,
+            "open": 596.54,
+            "points": [
+              596.54,
+              596.4,
+              596.47,
+              596.06,
+              596.6635,
+              596.37,
+              596.25,
+              596.43,
+              595.1,
+              595.36,
+              595.5,
+              595.36,
+              596.25,
+              595.5,
+              595.4,
+              595.53,
+              594.51,
+              594.0,
+              595.25,
+              595.31,
+              597.5,
+              596.8144,
+              593.622,
+              598.53,
+              600.29,
+              599.76,
+              600.38,
+              603.175,
+              603.0971,
+              602.9,
+              600.435,
+              600.9,
+              600.35,
+              601.26,
+              600.19,
+              601.01,
+              600.94,
+              600.3,
+              600.0,
+              600.4919,
+              600.2801,
+              601.005,
+              600.5,
+              599.35,
+              597.2,
+              598.895,
+              599.355,
+              599.86,
+              600.365,
+              599.96,
+              600.03,
+              600.31,
+              599.59,
+              599.315,
+              599.695,
+              599.58,
+              600.39,
+              601.94,
+              602.07,
+              602.7672,
+              601.935
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 25.408446107217696,
+            "adx_5m": 14.442841005262325,
+            "adx_5m_gap": 5.557,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 7.481,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.0785,
+            "vwap_gap_pct": 0.3907
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 59607.80952380953,
+            "current_1m_vol": 29486,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.4946667263158231,
+            "ratio_to_55bar_avg": 0.4946667263158231,
+            "state": "FAIL"
+          },
+          "weather": {
+            "avwap": 599.5926171500748,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 601.462575717397,
+            "global_direction": "up",
+            "last": 601.935,
+            "last_close_5m": 602.7672
+          }
+        },
+        "MSFT": {
+          "boundary_hold": {
+            "last_two_closes": [
+              408.075,
+              408.28
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 415.44,
+            "or_low": 409.41,
+            "short_consecutive_outside": 2,
+            "side": "SHORT",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 24.471146333293145,
+            "di_minus_5m": 20.890781612502153,
+            "di_plus_1m": 21.09602813409443,
+            "di_plus_5m": 13.013317341520555,
+            "seed_bars": 65,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 414.75,
+            "last": 408.29,
+            "lo": 407.41,
+            "open": 411.91,
+            "points": [
+              411.91,
+              411.3,
+              411.05,
+              410.6,
+              410.61,
+              410.36,
+              410.55,
+              410.35,
+              410.23,
+              410.24,
+              410.38,
+              410.48,
+              410.18,
+              410.36,
+              410.19,
+              410.25,
+              410.0,
+              410.28,
+              410.37,
+              410.5,
+              410.73,
+              410.81,
+              412.0542,
+              412.99,
+              414.05,
+              414.75,
+              407.41,
+              407.9,
+              407.46,
+              408.33,
+              409.96,
+              408.385,
+              408.7949,
+              408.58,
+              408.484,
+              408.5,
+              408.33,
+              407.675,
+              408.135,
+              408.4,
+              409.045,
+              409.6498,
+              409.46,
+              409.64,
+              408.95,
+              408.64,
+              408.6001,
+              408.8,
+              409.275,
+              408.95,
+              408.5,
+              408.5679,
+              408.555,
+              408.4265,
+              408.29,
+              408.38,
+              408.245,
+              408.31,
+              408.58,
+              407.675,
+              408.29
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 23.2718474670333,
+            "adx_5m": 8.213094287592718,
+            "adx_5m_gap": 11.787,
+            "adx_threshold": 20.0,
+            "di_cross_gap": -3.375,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": -0.0136,
+            "vwap_gap_pct": -0.1102
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 128366.953125,
+            "current_1m_vol": 162846,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 1.2685975325863295,
+            "ratio_to_55bar_avg": 1.2685975325863295,
+            "state": "PASS"
+          },
+          "weather": {
+            "avwap": 408.7404318307502,
+            "direction": "down",
+            "divergence": true,
+            "ema9_5m": 408.34553520930695,
+            "global_direction": "up",
+            "last": 408.29,
+            "last_close_5m": 407.91
+          }
+        },
+        "NFLX": {
+          "boundary_hold": {
+            "last_two_closes": [
+              87.6,
+              87.6339
+            ],
+            "long_consecutive_outside": 2,
+            "or_high": 86.79,
+            "or_low": 85.88,
+            "short_consecutive_outside": 0,
+            "side": "LONG",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 20.05529718169053,
+            "di_minus_5m": 23.45885820037375,
+            "di_plus_1m": 22.15734809407056,
+            "di_plus_5m": 19.767739022491533,
+            "seed_bars": 60,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 89.1113,
+            "last": 87.66,
+            "lo": 85.18,
+            "open": 85.29,
+            "points": [
+              85.29,
+              85.18,
+              85.2385,
+              85.25,
+              85.25,
+              85.34,
+              85.39,
+              85.3804,
+              85.45,
+              85.5,
+              85.4982,
+              85.47,
+              85.6029,
+              85.62,
+              85.62,
+              85.62,
+              85.7435,
+              85.63,
+              86.5137,
+              86.145,
+              86.53,
+              86.71,
+              87.115,
+              87.8,
+              88.125,
+              88.113,
+              88.465,
+              88.31,
+              88.415,
+              88.9499,
+              88.765,
+              88.785,
+              88.505,
+              88.845,
+              88.83,
+              88.755,
+              88.815,
+              88.865,
+              88.85,
+              89.1113,
+              88.695,
+              88.72,
+              88.34,
+              88.0338,
+              88.225,
+              88.145,
+              88.04,
+              87.88,
+              87.7983,
+              87.33,
+              87.41,
+              87.37,
+              87.475,
+              87.5999,
+              87.715,
+              87.55,
+              87.675,
+              87.53,
+              87.6245,
+              87.58,
+              87.66
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 11.313806544062214,
+            "adx_5m": 17.50674243857147,
+            "adx_5m_gap": 2.493,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 2.102,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.0625,
+            "vwap_gap_pct": -0.3309
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 224495.82539682538,
+            "current_1m_vol": 157292,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.7006455452878291,
+            "ratio_to_55bar_avg": 0.7006455452878291,
+            "state": "FAIL"
+          },
+          "weather": {
+            "avwap": 87.95104809099847,
+            "direction": "flat",
+            "divergence": false,
+            "ema9_5m": 87.60525405044673,
+            "global_direction": "up",
+            "last": 87.66,
+            "last_close_5m": 87.605
+          }
+        },
+        "NVDA": {
+          "boundary_hold": {
+            "last_two_closes": [
+              220.76,
+              220.79
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 221.55,
+            "or_low": 217.04,
+            "short_consecutive_outside": 0,
+            "side": null,
+            "state": "ARMED"
+          },
+          "di": {
+            "di_minus_1m": 29.327227060624168,
+            "di_minus_5m": 10.147384827411756,
+            "di_plus_1m": 18.723927960802463,
+            "di_plus_5m": 30.05660775831024,
+            "seed_bars": 65,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 223.25,
+            "last": 220.975,
+            "lo": 215.5001,
+            "open": 217.18,
+            "points": [
+              217.18,
+              217.25,
+              217.56,
+              217.5888,
+              218.08,
+              218.14,
+              218.06,
+              218.39,
+              217.87,
+              217.79,
+              217.74,
+              217.56,
+              217.53,
+              217.52,
+              217.56,
+              217.8,
+              217.8,
+              217.7591,
+              218.03,
+              217.6599,
+              217.97,
+              218.9,
+              218.93,
+              218.6,
+              218.3434,
+              217.48,
+              222.08,
+              223.25,
+              221.37,
+              220.44,
+              219.64,
+              218.18,
+              218.195,
+              217.74,
+              217.735,
+              217.12,
+              215.5001,
+              217.125,
+              217.2801,
+              217.89,
+              217.795,
+              217.46,
+              217.53,
+              217.14,
+              215.9001,
+              216.37,
+              217.6099,
+              218.055,
+              218.61,
+              218.665,
+              218.21,
+              218.37,
+              218.9,
+              219.71,
+              219.52,
+              219.815,
+              220.365,
+              220.32,
+              221.1301,
+              221.28,
+              220.975
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 27.545993922285692,
+            "adx_5m": 32.28127064420143,
+            "adx_5m_gap": -12.281,
+            "adx_threshold": 20.0,
+            "di_cross_gap": -10.603,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.0742,
+            "vwap_gap_pct": 0.903
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 692950.3492063492,
+            "current_1m_vol": 457622,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.6603965212285761,
+            "ratio_to_55bar_avg": 0.6603965212285761,
+            "state": "FAIL"
+          },
+          "weather": {
+            "avwap": 218.99738943042988,
+            "direction": "flat",
+            "divergence": false,
+            "ema9_5m": 220.81120267586212,
+            "global_direction": "up",
+            "last": 220.975,
+            "last_close_5m": 221.28
+          }
+        },
+        "ORCL": {
+          "boundary_hold": {
+            "last_two_closes": [
+              185.975,
+              185.91
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 192.23,
+            "or_low": 188.41,
+            "short_consecutive_outside": 2,
+            "side": "SHORT",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 17.75336631637072,
+            "di_minus_5m": 14.607984672811911,
+            "di_plus_1m": 25.209404801174266,
+            "di_plus_5m": 28.279765363332178,
+            "seed_bars": 58,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 194.5,
+            "last": 186.05,
+            "lo": 181.2,
+            "open": 191.75,
+            "points": [
+              191.75,
+              191.7,
+              191.95,
+              191.71,
+              191.3,
+              191.0849,
+              191.61,
+              191.75,
+              191.326,
+              191.3,
+              191.06,
+              190.81,
+              192.0,
+              192.8,
+              193.4,
+              194.5,
+              194.01,
+              192.5,
+              187.435,
+              188.7925,
+              186.24,
+              186.15,
+              186.51,
+              185.7601,
+              184.58,
+              185.23,
+              185.135,
+              185.32,
+              184.84,
+              183.75,
+              183.15,
+              184.175,
+              184.31,
+              184.2,
+              184.04,
+              184.215,
+              183.71,
+              183.27,
+              182.8362,
+              181.53,
+              181.2,
+              181.41,
+              182.3491,
+              183.22,
+              183.76,
+              184.38,
+              184.055,
+              184.43,
+              184.47,
+              184.675,
+              184.865,
+              185.09,
+              185.02,
+              185.54,
+              185.23,
+              184.83,
+              185.01,
+              185.11,
+              185.69,
+              185.845,
+              186.05
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 22.28221724262205,
+            "adx_5m": 20.097501635254716,
+            "adx_5m_gap": -0.098,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 7.456,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.3368,
+            "vwap_gap_pct": 0.5761
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 94160.66666666667,
+            "current_1m_vol": 56156,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 0.596384902400861,
+            "ratio_to_55bar_avg": 0.596384902400861,
+            "state": "FAIL"
+          },
+          "weather": {
+            "avwap": 184.9842708007269,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 185.42552123827392,
+            "global_direction": "up",
+            "last": 186.05,
+            "last_close_5m": 185.92
+          }
+        },
+        "TSLA": {
+          "boundary_hold": {
+            "last_two_closes": [
+              433.76,
+              434.26
+            ],
+            "long_consecutive_outside": 0,
+            "or_high": 444.83,
+            "or_low": 439.51,
+            "short_consecutive_outside": 2,
+            "side": "SHORT",
+            "state": "SATISFIED"
+          },
+          "di": {
+            "di_minus_1m": 14.97399818655706,
+            "di_minus_5m": 14.158780135456714,
+            "di_plus_1m": 22.36943815495638,
+            "di_plus_5m": 28.879912771523085,
+            "seed_bars": 65,
+            "sufficient": true,
+            "threshold": null
+          },
+          "mini_chart": {
+            "count": 61,
+            "hi": 441.45,
+            "last": 434.88,
+            "lo": 422.975,
+            "open": 438.08,
+            "points": [
+              438.08,
+              438.2,
+              438.01,
+              439.65,
+              440.4,
+              440.3,
+              440.92,
+              440.35,
+              440.01,
+              439.19,
+              438.88,
+              439.7,
+              439.4,
+              438.36,
+              438.5,
+              440.06,
+              439.75,
+              439.15,
+              438.7018,
+              438.35,
+              440.93,
+              440.6,
+              440.45,
+              440.587,
+              439.7913,
+              439.9771,
+              441.45,
+              437.825,
+              437.98,
+              438.345,
+              435.19,
+              435.515,
+              432.04,
+              431.92,
+              429.9201,
+              426.85,
+              427.585,
+              428.91,
+              425.23,
+              427.3,
+              427.09,
+              425.675,
+              423.295,
+              422.975,
+              423.96,
+              426.06,
+              426.555,
+              427.35,
+              427.04,
+              427.17,
+              428.6225,
+              429.41,
+              430.2001,
+              429.8,
+              431.175,
+              432.2,
+              432.25,
+              433.46,
+              434.0,
+              434.26,
+              434.88
+            ]
+          },
+          "momentum_distances": {
+            "adx_1m": 24.356804485311184,
+            "adx_5m": 19.865767200720974,
+            "adx_5m_gap": 0.134,
+            "adx_threshold": 20.0,
+            "di_cross_gap": 7.395,
+            "di_long_gap": null,
+            "di_short_gap": null,
+            "ema9_gap_pct": 0.412,
+            "vwap_gap_pct": 0.5492
+          },
+          "vol_bucket": {
+            "baseline_at_minute": 209081.92063492062,
+            "current_1m_vol": 293263,
+            "days_available": 55,
+            "lookback_days": 55,
+            "lookup_bucket": "1550",
+            "ratio": 1.402622470223375,
+            "ratio_to_55bar_avg": 1.402622470223375,
+            "state": "PASS"
+          },
+          "weather": {
+            "avwap": 432.5048769902666,
+            "direction": "up",
+            "divergence": false,
+            "ema9_5m": 433.0955364824291,
+            "global_direction": "up",
+            "last": 434.88,
+            "last_close_5m": 434.925
+          }
+        }
+      },
+      "portfolio": {
+        "broker_closed": 0.0,
+        "broker_day_pnl": -61.46,
+        "broker_open_n": 2,
+        "broker_open_pnl": -61.46,
+        "broker_open_ts": "2026-05-12T19:49:59Z",
+        "cash": 100453.53134999992,
+        "day_pnl": 35.29999999999994,
+        "day_pnl_realized": 35.29999999999994,
+        "day_pnl_unrealized": 0.0,
+        "equity": 100453.53134999992,
+        "long_mv": 0.0,
+        "short_liab": 0.0,
+        "start": 100000.0,
+        "vs_start": 453.53134999991744
+      },
+      "portfolios": {
+        "gene": {
+          "day_pnl": 0,
+          "equity": 100000.0,
+          "portfolio_id": "gene",
+          "positions": [],
+          "strip": {
+            "cooldowns": {
+              "long": 0,
+              "short": 0,
+              "total": 0
+            },
+            "day_pnl": 0,
+            "errors": {
+              "count": 0,
+              "last": null
+            },
+            "positions": 0,
+            "state": "active"
+          },
+          "subscribed": false,
+          "trades_today": []
+        },
+        "main": {
+          "day_pnl": 35.29999999999994,
+          "equity": 100453.53134999992,
+          "portfolio_id": "main",
+          "positions": [],
+          "strip": {
+            "cooldowns": {
+              "long": 1,
+              "short": 1,
+              "total": 2
+            },
+            "day_pnl": 35.29999999999994,
+            "errors": {
+              "count": 0,
+              "last": null
+            },
+            "positions": 0,
+            "state": "active"
+          },
+          "subscribed": true,
+          "trades_today": [
+            {
+              "action": "BUY",
+              "cost": 75244.1,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 87.595,
+              "entry_time": "10:16:54",
+              "portfolio": "paper",
+              "price": 87.595,
+              "shares": 859,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "10:16:54"
+            },
+            {
+              "action": "BUY",
+              "cost": 18667.58,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 602.18,
+              "entry_time": "10:21:05",
+              "portfolio": "paper",
+              "price": 602.18,
+              "shares": 31,
+              "side": "LONG",
+              "ticker": "META",
+              "time": "10:21:05"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 87.595,
+              "entry_time": "10:16:54",
+              "exit_price": 88.1198,
+              "exit_time": "10:29 ET",
+              "pnl": 450.8,
+              "pnl_pct": 0.6,
+              "portfolio": "paper",
+              "price": 88.1198,
+              "reason": "sentinel_f_chandelier_exit",
+              "shares": 859,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "10:29 ET"
+            },
+            {
+              "action": "BUY",
+              "cost": 61595.74,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 88.1198,
+              "entry_time": "10:29:15",
+              "portfolio": "paper",
+              "price": 88.1198,
+              "shares": 699,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "10:29:15"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 88.1198,
+              "entry_time": "10:29:15",
+              "exit_price": 88.59,
+              "exit_time": "10:52 ET",
+              "pnl": 328.67,
+              "pnl_pct": 0.53,
+              "portfolio": "paper",
+              "price": 88.59,
+              "reason": "sentinel_f_chandelier_exit",
+              "shares": 699,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "10:52 ET"
+            },
+            {
+              "action": "BUY",
+              "cost": 61835.82,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 88.59,
+              "entry_time": "10:52:49",
+              "portfolio": "paper",
+              "price": 88.59,
+              "shares": 698,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "10:52:49"
+            },
+            {
+              "action": "SHORT",
+              "cost": 15314.83,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 264.0488,
+              "entry_time": "11:00:58",
+              "entry_time_iso": "2026-05-12T15:00:58.002708+00:00",
+              "portfolio": "paper",
+              "price": 264.0488,
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN",
+              "time": "11:00:58"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 264.0488,
+              "entry_time": "11:00:58",
+              "entry_time_iso": "2026-05-12T15:00:58.002708+00:00",
+              "exit_price": 265.12,
+              "exit_time": "11:14 ET",
+              "exit_time_iso": "2026-05-12T15:14:15.947415+00:00",
+              "pnl": -62.13,
+              "pnl_pct": -0.41,
+              "portfolio": "paper",
+              "reason": "sentinel_a_stop_price",
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN"
+            },
+            {
+              "action": "SHORT",
+              "cost": 15310.26,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 263.97,
+              "entry_time": "12:16:03",
+              "entry_time_iso": "2026-05-12T16:16:03.099709+00:00",
+              "portfolio": "paper",
+              "price": 263.97,
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN",
+              "time": "12:16:03"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 263.97,
+              "entry_time": "12:16:03",
+              "entry_time_iso": "2026-05-12T16:16:03.099709+00:00",
+              "exit_price": 263.125,
+              "exit_time": "12:40 ET",
+              "exit_time_iso": "2026-05-12T16:40:19.551318+00:00",
+              "pnl": 49.01,
+              "pnl_pct": 0.32,
+              "portfolio": "paper",
+              "reason": "sentinel_f_chandelier_exit",
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN"
+            },
+            {
+              "action": "SHORT",
+              "cost": 15261.25,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 263.125,
+              "entry_time": "12:40:20",
+              "entry_time_iso": "2026-05-12T16:40:20.651498+00:00",
+              "portfolio": "paper",
+              "price": 263.125,
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN",
+              "time": "12:40:20"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 88.59,
+              "entry_time": "10:52:49",
+              "exit_price": 89.0396,
+              "exit_time": "12:41 ET",
+              "pnl": 313.82,
+              "pnl_pct": 0.51,
+              "portfolio": "paper",
+              "price": 89.0396,
+              "reason": "sentinel_f_chandelier_exit",
+              "shares": 698,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "12:41 ET"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 602.18,
+              "entry_time": "10:21:05",
+              "exit_price": 598.8066,
+              "exit_time": "13:07 ET",
+              "pnl": -104.58,
+              "pnl_pct": -0.56,
+              "portfolio": "paper",
+              "price": 598.8066,
+              "reason": "sentinel_a_stop_price",
+              "shares": 31,
+              "side": "LONG",
+              "ticker": "META",
+              "time": "13:07 ET"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 263.125,
+              "entry_time": "12:40:20",
+              "entry_time_iso": "2026-05-12T16:40:20.651498+00:00",
+              "exit_price": 263.933675,
+              "exit_time": "13:21 ET",
+              "exit_time_iso": "2026-05-12T17:21:01.760553+00:00",
+              "pnl": -46.9,
+              "pnl_pct": -0.31,
+              "portfolio": "paper",
+              "reason": "V10_STOP",
+              "shares": 58,
+              "side": "SHORT",
+              "ticker": "AMZN"
+            },
+            {
+              "action": "SHORT",
+              "cost": 75731.1,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 380.5583,
+              "entry_time": "13:21:02",
+              "entry_time_iso": "2026-05-12T17:21:02.930036+00:00",
+              "portfolio": "paper",
+              "price": 380.5583,
+              "shares": 199,
+              "side": "SHORT",
+              "ticker": "GOOG",
+              "time": "13:21:02"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 380.5583,
+              "entry_time": "13:21:02",
+              "entry_time_iso": "2026-05-12T17:21:02.930036+00:00",
+              "exit_price": 381.75,
+              "exit_time": "14:06 ET",
+              "exit_time_iso": "2026-05-12T18:06:12.129361+00:00",
+              "pnl": -237.15,
+              "pnl_pct": -0.31,
+              "portfolio": "paper",
+              "reason": "sentinel_a_stop_price",
+              "shares": 199,
+              "side": "SHORT",
+              "ticker": "GOOG"
+            },
+            {
+              "action": "SHORT",
+              "cost": 75770.18,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 264.0076,
+              "entry_time": "14:21:16",
+              "entry_time_iso": "2026-05-12T18:21:16.257632+00:00",
+              "portfolio": "paper",
+              "price": 264.0076,
+              "shares": 287,
+              "side": "SHORT",
+              "ticker": "AMZN",
+              "time": "14:21:16"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 264.0076,
+              "entry_time": "14:21:16",
+              "entry_time_iso": "2026-05-12T18:21:16.257632+00:00",
+              "exit_price": 265.05,
+              "exit_time": "15:23 ET",
+              "exit_time_iso": "2026-05-12T19:23:29.946450+00:00",
+              "pnl": -299.17,
+              "pnl_pct": -0.39,
+              "portfolio": "paper",
+              "reason": "sentinel_a_stop_price",
+              "shares": 287,
+              "side": "SHORT",
+              "ticker": "AMZN"
+            },
+            {
+              "action": "SHORT",
+              "cost": 75340.68,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 382.44,
+              "entry_time": "15:23:31",
+              "entry_time_iso": "2026-05-12T19:23:31.721514+00:00",
+              "portfolio": "paper",
+              "price": 382.44,
+              "shares": 197,
+              "side": "SHORT",
+              "ticker": "GOOG",
+              "time": "15:23:31"
+            },
+            {
+              "action": "BUY",
+              "cost": 75335.2875,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "limit_price": 602.7,
+              "portfolio": "paper",
+              "price": 602.6823,
+              "shares": 125,
+              "side": "LONG",
+              "stop": 599.67,
+              "ticker": "META",
+              "time": "15:44 ET"
+            },
+            {
+              "action": "BUY",
+              "cost": 18830.774999999998,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "limit_price": 87.6,
+              "portfolio": "paper",
+              "price": 87.585,
+              "shares": 215,
+              "side": "LONG",
+              "stop": 87.15,
+              "ticker": "NFLX",
+              "time": "15:44 ET"
+            },
+            {
+              "action": "COVER",
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 382.44,
+              "entry_time": "15:23:31",
+              "entry_time_iso": "2026-05-12T19:23:31.721514+00:00",
+              "exit_price": 384.0,
+              "exit_time": "15:44 ET",
+              "exit_time_iso": "2026-05-12T19:44:48.090603+00:00",
+              "pnl": -307.32,
+              "pnl_pct": -0.41,
+              "portfolio": "paper",
+              "reason": "sentinel_a_stop_price",
+              "shares": 197,
+              "side": "SHORT",
+              "ticker": "GOOG"
+            },
+            {
+              "action": "BUY",
+              "cost": 75335.29,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 602.6823,
+              "entry_time": "15:44:49",
+              "portfolio": "paper",
+              "price": 602.6823,
+              "shares": 125,
+              "side": "LONG",
+              "ticker": "META",
+              "time": "15:44:49"
+            },
+            {
+              "action": "BUY",
+              "cost": 18830.77,
+              "date": "2026-05-12",
+              "entry_num": 1,
+              "entry_price": 87.585,
+              "entry_time": "15:44:50",
+              "portfolio": "paper",
+              "price": 87.585,
+              "shares": 215,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "15:44:50"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 602.6823,
+              "pnl": -60.29,
+              "pnl_pct": -0.08,
+              "portfolio": "paper",
+              "price": 602.2,
+              "reason": "EOD",
+              "shares": 125,
+              "side": "LONG",
+              "ticker": "META",
+              "time": "15:49 ET"
+            },
+            {
+              "action": "SELL",
+              "date": "2026-05-12",
+              "entry_price": 87.585,
+              "pnl": 10.54,
+              "pnl_pct": 0.06,
+              "portfolio": "paper",
+              "price": 87.634,
+              "reason": "EOD",
+              "shares": 215,
+              "side": "LONG",
+              "ticker": "NFLX",
+              "time": "15:49 ET"
+            }
+          ]
+        },
+        "val": {
+          "day_pnl": 46.80000000000291,
+          "equity": 99881.82,
+          "portfolio_id": "val",
+          "positions": [
+            {
+              "chandelier_stage": 0,
+              "effective_stop": 0.0,
+              "entry": 88.62,
+              "entry_2_fired": false,
+              "entry_count": 1,
+              "entry_time": "",
+              "entry_ts_utc": "2026-05-12T17:24:05.728605+00:00",
+              "mark": 88.62,
+              "partial_fills": [],
+              "phase": "A",
+              "shares": 37,
+              "side": "LONG",
+              "sovereign_brake_distance_dollars": 500.0,
+              "stop": 0.0,
+              "ticker": "NFLX",
+              "trail_active": false,
+              "trail_anchor": null,
+              "trail_pill": null,
+              "trail_stop": null,
+              "unrealized": 0.0
+            },
+            {
+              "chandelier_stage": 0,
+              "effective_stop": 0.0,
+              "entry": 602.07,
+              "entry_2_fired": false,
+              "entry_count": 1,
+              "entry_time": "",
+              "entry_ts_utc": "2026-05-12T19:49:59.530170+00:00",
+              "mark": 602.07,
+              "partial_fills": [],
+              "phase": "A",
+              "shares": 124,
+              "side": "LONG",
+              "sovereign_brake_distance_dollars": 500.0,
+              "stop": 0.0,
+              "ticker": "META",
+              "trail_active": false,
+              "trail_anchor": null,
+              "trail_pill": null,
+              "trail_stop": null,
+              "unrealized": 0.0
+            }
+          ],
+          "strip": {
+            "cooldowns": {
+              "long": 0,
+              "short": 0,
+              "total": 0
+            },
+            "day_pnl": 46.80000000000291,
+            "errors": {
+              "count": 0,
+              "last": null
+            },
+            "positions": 2,
+            "state": "active"
+          },
+          "subscribed": true,
+          "trades_today": []
+        }
+      },
+      "positions": [],
+      "proximity": [
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.002602104310442435,
+          "open_side": null,
+          "or_high": 221.55,
+          "or_low": 217.04,
+          "permit_side": "LONG",
+          "price": 220.975,
+          "ticker": "NVDA"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.0037483675096253942,
+          "open_side": null,
+          "or_high": 293.69,
+          "or_low": 292.685,
+          "permit_side": "LONG",
+          "price": 294.795,
+          "ticker": "AAPL"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.006186023493866069,
+          "open_side": null,
+          "or_high": 386.305,
+          "or_low": 382.94,
+          "permit_side": "LONG",
+          "price": 383.93,
+          "ticker": "GOOG"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.006281501542164895,
+          "open_side": null,
+          "or_high": 267.53,
+          "or_low": 265.36,
+          "permit_side": "LONG",
+          "price": 265.86,
+          "ticker": "AMZN"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.009844662800712937,
+          "open_side": null,
+          "or_high": 422.785,
+          "or_low": 418.97,
+          "permit_side": "LONG",
+          "price": 418.6634,
+          "ticker": "AVGO"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.009924709103353758,
+          "open_side": null,
+          "or_high": 86.79,
+          "or_low": 85.88,
+          "permit_side": "LONG",
+          "price": 87.66,
+          "ticker": "NFLX"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.010756975420934003,
+          "open_side": null,
+          "or_high": 595.46,
+          "or_low": 593.28,
+          "permit_side": "LONG",
+          "price": 601.935,
+          "ticker": "META"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.01751206250459227,
+          "open_side": null,
+          "or_high": 415.44,
+          "or_low": 409.41,
+          "permit_side": "LONG",
+          "price": 408.29,
+          "ticker": "MSFT"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.022879874908020577,
+          "open_side": null,
+          "or_high": 444.83,
+          "or_low": 439.51,
+          "permit_side": "LONG",
+          "price": 434.88,
+          "ticker": "TSLA"
+        },
+        {
+          "nearest_label": "OR-high",
+          "nearest_pct": 0.03321687718355269,
+          "open_side": null,
+          "or_high": 192.23,
+          "or_low": 188.41,
+          "permit_side": "LONG",
+          "price": 186.05,
+          "ticker": "ORCL"
+        }
+      ],
+      "regime": {
+        "breadth": "UNKNOWN",
+        "breadth_detail": "",
+        "mode": "POWER",
+        "mode_reason": "power hour wind-down",
+        "rsi_detail": "",
+        "rsi_regime": "UNKNOWN",
+        "sovereign": {
+          "qqq_above_pdc": false,
+          "qqq_delta_pct": -0.9617406664890877,
+          "qqq_pdc": 713.29,
+          "qqq_price": 706.43,
+          "reason": "PDC eject retired in v5.9.1 \u2014 informational only",
+          "spy_above_pdc": false,
+          "spy_delta_pct": -0.16502096577842737,
+          "spy_pdc": 739.3,
+          "spy_price": 738.08,
+          "status": "DISARMED"
+        }
+      },
+      "section_i_permit": {
+        "long_open": true,
+        "qqq_5m_close": 706.05,
+        "qqq_5m_ema9": 704.5035798631674,
+        "qqq_avwap_0930": 702.7181669249181,
+        "qqq_current_price": 706.75,
+        "short_open": false,
+        "sovereign_anchor_open": true
+      },
+      "server_time": "2026-05-12T15:51:23.003642-04:00",
+      "server_time_label": "Tue May 12 \u00b7 15:51:23 ET",
+      "shadow_data_status": "live",
+      "shadow_disabled": false,
+      "signal_bus": {
+        "n_listeners": 1,
+        "names": [
+          "TradeGeniusVal._on_signal"
+        ]
+      },
+      "spy_regime_today": {
+        "classified_at": "2026-05-12T19:38:34.564922+00:00",
+        "regime": "B",
+        "ret_pct": -0.2457,
+        "spy_close_1000": 734.82,
+        "spy_open_930": 736.63
+      },
+      "tickers": [
+        "AAPL",
+        "AMZN",
+        "AVGO",
+        "GOOG",
+        "META",
+        "MSFT",
+        "NFLX",
+        "NVDA",
+        "ORCL",
+        "TSLA"
+      ],
+      "tiger_sovereign": {
+        "phase1": {
+          "long": {
+            "permit": true,
+            "qqq_5m_close": 706.05,
+            "qqq_5m_ema9": 704.5035798631674,
+            "qqq_avwap_0930": 702.7181669249181,
+            "qqq_last": 706.75
+          },
+          "short": {
+            "permit": false,
+            "qqq_5m_close": 706.05,
+            "qqq_5m_ema9": 704.5035798631674,
+            "qqq_avwap_0930": 702.7181669249181,
+            "qqq_last": 706.75
+          }
+        },
+        "phase2": [
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": true,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 294.59,
+              "deltas_abs": {
+                "100": 30.014599999999973,
+                "12": 13.212499999999977,
+                "200": 36.77329999999989,
+                "22": 19.521818181818162,
+                "55": 30.104181818181814
+              },
+              "deltas_pct": {
+                "100": 11.344440941977219,
+                "12": 4.695649083526576,
+                "200": 14.263350667353937,
+                "22": 7.097083367760049,
+                "55": 11.382153502645265
+              },
+              "order_chips": [
+                {
+                  "value": 281.3775,
+                  "window": 12
+                },
+                {
+                  "value": 275.0681818181818,
+                  "window": 22
+                },
+                {
+                  "value": 264.48581818181816,
+                  "window": 55
+                },
+                {
+                  "value": 264.5754,
+                  "window": 100
+                },
+                {
+                  "value": 257.8167000000001,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": "<",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 264.5754,
+                "12": 281.3775,
+                "200": 257.8167000000001,
+                "22": 275.0681818181818,
+                "55": 264.48581818181816
+              },
+              "stack_classification": "bullish",
+              "stack_substate": "all_above"
+            },
+            "ticker": "AAPL",
+            "two_consec_above": true,
+            "two_consec_below": false,
+            "vol_gate_status": "FAIL"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": false,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 265.26,
+              "deltas_abs": {
+                "100": 35.32779999999991,
+                "12": -2.7291666666666856,
+                "200": 36.3828000000002,
+                "22": 4.980000000000018,
+                "55": 33.92636363636359
+              },
+              "deltas_pct": {
+                "100": 15.364442213835172,
+                "12": -1.0183869372829224,
+                "200": 15.896209845279575,
+                "22": 1.9133241124942524,
+                "55": 14.665555848106028
+              },
+              "order_chips": [
+                {
+                  "value": 267.9891666666667,
+                  "window": 12
+                },
+                {
+                  "value": 260.28,
+                  "window": 22
+                },
+                {
+                  "value": 231.3336363636364,
+                  "window": 55
+                },
+                {
+                  "value": 229.93220000000008,
+                  "window": 100
+                },
+                {
+                  "value": 228.8771999999998,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": ">",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 229.93220000000008,
+                "12": 267.9891666666667,
+                "200": 228.8771999999998,
+                "22": 260.28,
+                "55": 231.3336363636364
+              },
+              "stack_classification": "mixed",
+              "stack_substate": "scrambled"
+            },
+            "ticker": "AMZN",
+            "two_consec_above": false,
+            "two_consec_below": false,
+            "vol_gate_status": "PASS"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": false,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 417.71,
+              "deltas_abs": {
+                "100": 68.61014999999998,
+                "12": -0.6391666666667106,
+                "200": 72.82812499999989,
+                "22": 6.364545454545521,
+                "55": 58.277545454545475
+              },
+              "deltas_pct": {
+                "100": 19.653445855104202,
+                "12": -0.15278306199567604,
+                "200": 21.116831668814108,
+                "22": 1.5472507072135988,
+                "55": 16.21376832213006
+              },
+              "order_chips": [
+                {
+                  "value": 418.3491666666667,
+                  "window": 12
+                },
+                {
+                  "value": 411.34545454545446,
+                  "window": 22
+                },
+                {
+                  "value": 359.4324545454545,
+                  "window": 55
+                },
+                {
+                  "value": 349.09985,
+                  "window": 100
+                },
+                {
+                  "value": 344.8818750000001,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": ">",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 349.09985,
+                "12": 418.3491666666667,
+                "200": 344.8818750000001,
+                "22": 411.34545454545446,
+                "55": 359.4324545454545
+              },
+              "stack_classification": "mixed",
+              "stack_substate": "scrambled"
+            },
+            "ticker": "AVGO",
+            "two_consec_above": false,
+            "two_consec_below": true,
+            "vol_gate_status": "PASS"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": true,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 383.11,
+              "deltas_abs": {
+                "100": 60.28809999999993,
+                "12": 5.62916666666672,
+                "200": 94.87119999999999,
+                "22": 25.388636363636408,
+                "55": 59.36909090909097
+              },
+              "deltas_pct": {
+                "100": 18.67534389705281,
+                "12": 1.4912456923861672,
+                "200": 32.914097616282056,
+                "22": 7.097321810906676,
+                "55": 18.338458082361054
+              },
+              "order_chips": [
+                {
+                  "value": 377.4808333333333,
+                  "window": 12
+                },
+                {
+                  "value": 357.7213636363636,
+                  "window": 22
+                },
+                {
+                  "value": 323.74090909090904,
+                  "window": 55
+                },
+                {
+                  "value": 322.8219000000001,
+                  "window": 100
+                },
+                {
+                  "value": 288.2388,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": ">",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 322.8219000000001,
+                "12": 377.4808333333333,
+                "200": 288.2388,
+                "22": 357.7213636363636,
+                "55": 323.74090909090904
+              },
+              "stack_classification": "bullish",
+              "stack_substate": "all_above"
+            },
+            "ticker": "GOOG",
+            "two_consec_above": false,
+            "two_consec_below": false,
+            "vol_gate_status": "PASS"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": false,
+                "12": false,
+                "200": false,
+                "22": false,
+                "55": false
+              },
+              "daily_close": 602.06,
+              "deltas_abs": {
+                "100": -38.519350000000145,
+                "12": -22.55208333333337,
+                "200": -72.67622500000004,
+                "22": -42.39522727272731,
+                "55": -24.82045454545448
+              },
+              "deltas_pct": {
+                "100": -6.013205077559891,
+                "12": -3.610574296446667,
+                "200": -10.771057237959925,
+                "22": -6.57845967859394,
+                "55": -3.9593600925796224
+              },
+              "order_chips": [
+                {
+                  "value": 624.6120833333333,
+                  "window": 12
+                },
+                {
+                  "value": 644.4552272727273,
+                  "window": 22
+                },
+                {
+                  "value": 626.8804545454544,
+                  "window": 55
+                },
+                {
+                  "value": 640.5793500000001,
+                  "window": 100
+                },
+                {
+                  "value": 674.736225,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": "<",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": "<",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": "<",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 640.5793500000001,
+                "12": 624.6120833333333,
+                "200": 674.736225,
+                "22": 644.4552272727273,
+                "55": 626.8804545454544
+              },
+              "stack_classification": "mixed",
+              "stack_substate": "all_below"
+            },
+            "ticker": "META",
+            "two_consec_above": true,
+            "two_consec_below": false,
+            "vol_gate_status": "FAIL"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": false,
+                "12": false,
+                "200": false,
+                "22": false,
+                "55": true
+              },
+              "daily_close": 408.32,
+              "deltas_abs": {
+                "100": -12.948800000000176,
+                "12": -8.061666666666667,
+                "200": -56.324050000000284,
+                "22": -7.309545454545457,
+                "55": 9.780909090909176
+              },
+              "deltas_pct": {
+                "100": -3.073761930624863,
+                "12": -1.936124309027376,
+                "200": -12.121978103453657,
+                "22": -1.7586683946040238,
+                "55": 2.454190646292287
+              },
+              "order_chips": [
+                {
+                  "value": 416.38166666666666,
+                  "window": 12
+                },
+                {
+                  "value": 415.62954545454545,
+                  "window": 22
+                },
+                {
+                  "value": 398.5390909090908,
+                  "window": 55
+                },
+                {
+                  "value": 421.26880000000017,
+                  "window": 100
+                },
+                {
+                  "value": 464.6440500000003,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": "<",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": "<",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 421.26880000000017,
+                "12": 416.38166666666666,
+                "200": 464.6440500000003,
+                "22": 415.62954545454545,
+                "55": 398.5390909090908
+              },
+              "stack_classification": "mixed",
+              "stack_substate": "scrambled"
+            },
+            "ticker": "MSFT",
+            "two_consec_above": false,
+            "two_consec_below": true,
+            "vol_gate_status": "PASS"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": false,
+                "12": false,
+                "200": false,
+                "22": false,
+                "55": false
+              },
+              "daily_close": 87.65,
+              "deltas_abs": {
+                "100": -3.116199999999978,
+                "12": -2.137500000000003,
+                "200": -436.9421000000003,
+                "22": -6.24136363636363,
+                "55": -6.8094545454545425
+              },
+              "deltas_pct": {
+                "100": -3.4332163294265694,
+                "12": -2.380620910483089,
+                "200": -83.29178041377293,
+                "22": -6.6474310252177204,
+                "55": -7.208864986805297
+              },
+              "order_chips": [
+                {
+                  "value": 89.78750000000001,
+                  "window": 12
+                },
+                {
+                  "value": 93.89136363636364,
+                  "window": 22
+                },
+                {
+                  "value": 94.45945454545455,
+                  "window": 55
+                },
+                {
+                  "value": 90.76619999999998,
+                  "window": 100
+                },
+                {
+                  "value": 524.5921000000003,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": "<",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": "<",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": ">",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": "<",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 90.76619999999998,
+                "12": 89.78750000000001,
+                "200": 524.5921000000003,
+                "22": 93.89136363636364,
+                "55": 94.45945454545455
+              },
+              "stack_classification": "bearish",
+              "stack_substate": "all_below"
+            },
+            "ticker": "NFLX",
+            "two_consec_above": true,
+            "two_consec_below": false,
+            "vol_gate_status": "FAIL"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": true,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 221.49,
+              "deltas_abs": {
+                "100": 33.49380000000002,
+                "12": 12.532500000000027,
+                "200": 36.290700000000015,
+                "22": 16.737272727272767,
+                "55": 31.548545454545405
+              },
+              "deltas_pct": {
+                "100": 17.816211178736594,
+                "12": 5.997631097232703,
+                "200": 19.59548443217658,
+                "22": 8.174383291597875,
+                "55": 16.609615594470228
+              },
+              "order_chips": [
+                {
+                  "value": 208.95749999999998,
+                  "window": 12
+                },
+                {
+                  "value": 204.75272727272724,
+                  "window": 22
+                },
+                {
+                  "value": 189.9414545454546,
+                  "window": 55
+                },
+                {
+                  "value": 187.9962,
+                  "window": 100
+                },
+                {
+                  "value": 185.1993,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": ">",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 187.9962,
+                "12": 208.95749999999998,
+                "200": 185.1993,
+                "22": 204.75272727272724,
+                "55": 189.9414545454546
+              },
+              "stack_classification": "bullish",
+              "stack_substate": "all_above"
+            },
+            "ticker": "NVDA",
+            "two_consec_above": false,
+            "two_consec_below": false,
+            "vol_gate_status": "FAIL"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": true,
+                "200": false,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 185.69,
+              "deltas_abs": {
+                "100": 18.230199999999996,
+                "12": 5.214166666666699,
+                "200": -24.757099999999923,
+                "22": 8.265000000000015,
+                "55": 25.42927272727269
+              },
+              "deltas_pct": {
+                "100": 10.886314207947212,
+                "12": 2.8891218122463425,
+                "200": -11.764049017544043,
+                "22": 4.658306326616879,
+                "55": 15.867438741868334
+              },
+              "order_chips": [
+                {
+                  "value": 180.4758333333333,
+                  "window": 12
+                },
+                {
+                  "value": 177.42499999999998,
+                  "window": 22
+                },
+                {
+                  "value": 160.2607272727273,
+                  "window": 55
+                },
+                {
+                  "value": 167.4598,
+                  "window": 100
+                },
+                {
+                  "value": 210.44709999999992,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": "<",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": "<",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 167.4598,
+                "12": 180.4758333333333,
+                "200": 210.44709999999992,
+                "22": 177.42499999999998,
+                "55": 160.2607272727273
+              },
+              "stack_classification": "bullish",
+              "stack_substate": "all_above"
+            },
+            "ticker": "ORCL",
+            "two_consec_above": false,
+            "two_consec_below": true,
+            "vol_gate_status": "FAIL"
+          },
+          {
+            "sma_stack": {
+              "above": {
+                "100": true,
+                "12": true,
+                "200": true,
+                "22": true,
+                "55": true
+              },
+              "daily_close": 434.0,
+              "deltas_abs": {
+                "100": 24.46965000000006,
+                "12": 34.02583333333337,
+                "200": 28.32662500000015,
+                "22": 42.4440909090909,
+                "55": 47.203181818181804
+              },
+              "deltas_pct": {
+                "100": 5.9750516658899855,
+                "12": 8.50700774425015,
+                "200": 6.982618713885325,
+                "22": 10.839854519788773,
+                "55": 12.203611715335615
+              },
+              "order_chips": [
+                {
+                  "value": 399.97416666666663,
+                  "window": 12
+                },
+                {
+                  "value": 391.5559090909091,
+                  "window": 22
+                },
+                {
+                  "value": 386.7968181818182,
+                  "window": 55
+                },
+                {
+                  "value": 409.53034999999994,
+                  "window": 100
+                },
+                {
+                  "value": 405.67337499999985,
+                  "window": 200
+                }
+              ],
+              "order_relations": [
+                {
+                  "left": 12,
+                  "op": ">",
+                  "right": 22
+                },
+                {
+                  "left": 22,
+                  "op": ">",
+                  "right": 55
+                },
+                {
+                  "left": 55,
+                  "op": "<",
+                  "right": 100
+                },
+                {
+                  "left": 100,
+                  "op": ">",
+                  "right": 200
+                }
+              ],
+              "smas": {
+                "100": 409.53034999999994,
+                "12": 399.97416666666663,
+                "200": 405.67337499999985,
+                "22": 391.5559090909091,
+                "55": 386.7968181818182
+              },
+              "stack_classification": "bullish",
+              "stack_substate": "all_above"
+            },
+            "ticker": "TSLA",
+            "two_consec_above": false,
+            "two_consec_below": true,
+            "vol_gate_status": "PASS"
+          }
+        ],
+        "phase3": [],
+        "phase4": []
+      },
+      "trades_today": [
+        {
+          "action": "BUY",
+          "cost": 75244.1,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 87.595,
+          "entry_time": "10:16:54",
+          "portfolio": "paper",
+          "price": 87.595,
+          "shares": 859,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "10:16:54"
+        },
+        {
+          "action": "BUY",
+          "cost": 18667.58,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 602.18,
+          "entry_time": "10:21:05",
+          "portfolio": "paper",
+          "price": 602.18,
+          "shares": 31,
+          "side": "LONG",
+          "ticker": "META",
+          "time": "10:21:05"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 87.595,
+          "entry_time": "10:16:54",
+          "exit_price": 88.1198,
+          "exit_time": "10:29 ET",
+          "pnl": 450.8,
+          "pnl_pct": 0.6,
+          "portfolio": "paper",
+          "price": 88.1198,
+          "reason": "sentinel_f_chandelier_exit",
+          "shares": 859,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "10:29 ET"
+        },
+        {
+          "action": "BUY",
+          "cost": 61595.74,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 88.1198,
+          "entry_time": "10:29:15",
+          "portfolio": "paper",
+          "price": 88.1198,
+          "shares": 699,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "10:29:15"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 88.1198,
+          "entry_time": "10:29:15",
+          "exit_price": 88.59,
+          "exit_time": "10:52 ET",
+          "pnl": 328.67,
+          "pnl_pct": 0.53,
+          "portfolio": "paper",
+          "price": 88.59,
+          "reason": "sentinel_f_chandelier_exit",
+          "shares": 699,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "10:52 ET"
+        },
+        {
+          "action": "BUY",
+          "cost": 61835.82,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 88.59,
+          "entry_time": "10:52:49",
+          "portfolio": "paper",
+          "price": 88.59,
+          "shares": 698,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "10:52:49"
+        },
+        {
+          "action": "SHORT",
+          "cost": 15314.83,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 264.0488,
+          "entry_time": "11:00:58",
+          "entry_time_iso": "2026-05-12T15:00:58.002708+00:00",
+          "portfolio": "paper",
+          "price": 264.0488,
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN",
+          "time": "11:00:58"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 264.0488,
+          "entry_time": "11:00:58",
+          "entry_time_iso": "2026-05-12T15:00:58.002708+00:00",
+          "exit_price": 265.12,
+          "exit_time": "11:14 ET",
+          "exit_time_iso": "2026-05-12T15:14:15.947415+00:00",
+          "pnl": -62.13,
+          "pnl_pct": -0.41,
+          "portfolio": "paper",
+          "reason": "sentinel_a_stop_price",
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN"
+        },
+        {
+          "action": "SHORT",
+          "cost": 15310.26,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 263.97,
+          "entry_time": "12:16:03",
+          "entry_time_iso": "2026-05-12T16:16:03.099709+00:00",
+          "portfolio": "paper",
+          "price": 263.97,
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN",
+          "time": "12:16:03"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 263.97,
+          "entry_time": "12:16:03",
+          "entry_time_iso": "2026-05-12T16:16:03.099709+00:00",
+          "exit_price": 263.125,
+          "exit_time": "12:40 ET",
+          "exit_time_iso": "2026-05-12T16:40:19.551318+00:00",
+          "pnl": 49.01,
+          "pnl_pct": 0.32,
+          "portfolio": "paper",
+          "reason": "sentinel_f_chandelier_exit",
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN"
+        },
+        {
+          "action": "SHORT",
+          "cost": 15261.25,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 263.125,
+          "entry_time": "12:40:20",
+          "entry_time_iso": "2026-05-12T16:40:20.651498+00:00",
+          "portfolio": "paper",
+          "price": 263.125,
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN",
+          "time": "12:40:20"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 88.59,
+          "entry_time": "10:52:49",
+          "exit_price": 89.0396,
+          "exit_time": "12:41 ET",
+          "pnl": 313.82,
+          "pnl_pct": 0.51,
+          "portfolio": "paper",
+          "price": 89.0396,
+          "reason": "sentinel_f_chandelier_exit",
+          "shares": 698,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "12:41 ET"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 602.18,
+          "entry_time": "10:21:05",
+          "exit_price": 598.8066,
+          "exit_time": "13:07 ET",
+          "pnl": -104.58,
+          "pnl_pct": -0.56,
+          "portfolio": "paper",
+          "price": 598.8066,
+          "reason": "sentinel_a_stop_price",
+          "shares": 31,
+          "side": "LONG",
+          "ticker": "META",
+          "time": "13:07 ET"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 263.125,
+          "entry_time": "12:40:20",
+          "entry_time_iso": "2026-05-12T16:40:20.651498+00:00",
+          "exit_price": 263.933675,
+          "exit_time": "13:21 ET",
+          "exit_time_iso": "2026-05-12T17:21:01.760553+00:00",
+          "pnl": -46.9,
+          "pnl_pct": -0.31,
+          "portfolio": "paper",
+          "reason": "V10_STOP",
+          "shares": 58,
+          "side": "SHORT",
+          "ticker": "AMZN"
+        },
+        {
+          "action": "SHORT",
+          "cost": 75731.1,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 380.5583,
+          "entry_time": "13:21:02",
+          "entry_time_iso": "2026-05-12T17:21:02.930036+00:00",
+          "portfolio": "paper",
+          "price": 380.5583,
+          "shares": 199,
+          "side": "SHORT",
+          "ticker": "GOOG",
+          "time": "13:21:02"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 380.5583,
+          "entry_time": "13:21:02",
+          "entry_time_iso": "2026-05-12T17:21:02.930036+00:00",
+          "exit_price": 381.75,
+          "exit_time": "14:06 ET",
+          "exit_time_iso": "2026-05-12T18:06:12.129361+00:00",
+          "pnl": -237.15,
+          "pnl_pct": -0.31,
+          "portfolio": "paper",
+          "reason": "sentinel_a_stop_price",
+          "shares": 199,
+          "side": "SHORT",
+          "ticker": "GOOG"
+        },
+        {
+          "action": "SHORT",
+          "cost": 75770.18,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 264.0076,
+          "entry_time": "14:21:16",
+          "entry_time_iso": "2026-05-12T18:21:16.257632+00:00",
+          "portfolio": "paper",
+          "price": 264.0076,
+          "shares": 287,
+          "side": "SHORT",
+          "ticker": "AMZN",
+          "time": "14:21:16"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 264.0076,
+          "entry_time": "14:21:16",
+          "entry_time_iso": "2026-05-12T18:21:16.257632+00:00",
+          "exit_price": 265.05,
+          "exit_time": "15:23 ET",
+          "exit_time_iso": "2026-05-12T19:23:29.946450+00:00",
+          "pnl": -299.17,
+          "pnl_pct": -0.39,
+          "portfolio": "paper",
+          "reason": "sentinel_a_stop_price",
+          "shares": 287,
+          "side": "SHORT",
+          "ticker": "AMZN"
+        },
+        {
+          "action": "SHORT",
+          "cost": 75340.68,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 382.44,
+          "entry_time": "15:23:31",
+          "entry_time_iso": "2026-05-12T19:23:31.721514+00:00",
+          "portfolio": "paper",
+          "price": 382.44,
+          "shares": 197,
+          "side": "SHORT",
+          "ticker": "GOOG",
+          "time": "15:23:31"
+        },
+        {
+          "action": "BUY",
+          "cost": 75335.2875,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "limit_price": 602.7,
+          "portfolio": "paper",
+          "price": 602.6823,
+          "shares": 125,
+          "side": "LONG",
+          "stop": 599.67,
+          "ticker": "META",
+          "time": "15:44 ET"
+        },
+        {
+          "action": "BUY",
+          "cost": 18830.774999999998,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "limit_price": 87.6,
+          "portfolio": "paper",
+          "price": 87.585,
+          "shares": 215,
+          "side": "LONG",
+          "stop": 87.15,
+          "ticker": "NFLX",
+          "time": "15:44 ET"
+        },
+        {
+          "action": "COVER",
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 382.44,
+          "entry_time": "15:23:31",
+          "entry_time_iso": "2026-05-12T19:23:31.721514+00:00",
+          "exit_price": 384.0,
+          "exit_time": "15:44 ET",
+          "exit_time_iso": "2026-05-12T19:44:48.090603+00:00",
+          "pnl": -307.32,
+          "pnl_pct": -0.41,
+          "portfolio": "paper",
+          "reason": "sentinel_a_stop_price",
+          "shares": 197,
+          "side": "SHORT",
+          "ticker": "GOOG"
+        },
+        {
+          "action": "BUY",
+          "cost": 75335.29,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 602.6823,
+          "entry_time": "15:44:49",
+          "portfolio": "paper",
+          "price": 602.6823,
+          "shares": 125,
+          "side": "LONG",
+          "ticker": "META",
+          "time": "15:44:49"
+        },
+        {
+          "action": "BUY",
+          "cost": 18830.77,
+          "date": "2026-05-12",
+          "entry_num": 1,
+          "entry_price": 87.585,
+          "entry_time": "15:44:50",
+          "portfolio": "paper",
+          "price": 87.585,
+          "shares": 215,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "15:44:50"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 602.6823,
+          "pnl": -60.29,
+          "pnl_pct": -0.08,
+          "portfolio": "paper",
+          "price": 602.2,
+          "reason": "EOD",
+          "shares": 125,
+          "side": "LONG",
+          "ticker": "META",
+          "time": "15:49 ET"
+        },
+        {
+          "action": "SELL",
+          "date": "2026-05-12",
+          "entry_price": 87.585,
+          "pnl": 10.54,
+          "pnl_pct": 0.06,
+          "portfolio": "paper",
+          "price": 87.634,
+          "reason": "EOD",
+          "shares": 215,
+          "side": "LONG",
+          "ticker": "NFLX",
+          "time": "15:49 ET"
+        }
+      ],
+      "v10": {
+        "activity": [
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "main",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $75300 > $0)",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $169466 > $95431)",
+            "kind": "reject",
+            "pid": "main",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "main",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $75242 > $0)",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $169408 > $95431)",
+            "kind": "reject",
+            "pid": "main",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:50:33Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:49:01Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:49:01Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:49:01Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:47:57Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:47:57Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:47:57Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:46:55Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:46:55Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:46:55Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:45:53Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:45:53Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "META",
+            "ts_iso": "2026-05-12T19:45:53Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:44:51Z"
+          },
+          {
+            "detail": "SHORT \u00b7 opposite_side:long",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:44:51Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $4730 > $0)",
+            "kind": "reject",
+            "pid": "gene",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:44:51Z"
+          },
+          {
+            "detail": "LONG \u00b7 risk_reject:notional_cap (would-be $149624 > $94991)",
+            "kind": "reject",
+            "pid": "val",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:44:51Z"
+          },
+          {
+            "detail": "LONG \u00b7 215 sh @ 87.58",
+            "kind": "admit",
+            "pid": "main",
+            "ticker": "NFLX",
+            "ts_iso": "2026-05-12T19:44:50Z"
+          }
+        ],
+        "available": true,
+        "bootstrapped": true,
+        "config": {
+          "atr_lookback_5m": 14,
+          "atr_stop_mult": 1.75,
+          "blocklist": {},
+          "daily_loss_kill_pct": 2.0,
+          "eod_cutoff_minutes": 955,
+          "max_concurrent_risk_dollars": 2000.0,
+          "max_trades_per_day": 5,
+          "or_minutes": 30,
+          "partial_profit_at_1r": true,
+          "risk_per_trade_pct": 1.0,
+          "rr": 2.5,
+          "session_start_minutes": 570,
+          "skip_earnings_window": true,
+          "skip_gap_above_pct": 1.5,
+          "skip_vix_above": 22.0
+        },
+        "day_states": [
+          {
+            "block_reason": "width 0.57% outside [0.80, 2.50]%",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "main",
+            "ticker": "AAPL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": "",
+            "last_signal_bucket": null,
+            "phase": "closed",
+            "portfolio_id": "main",
+            "ticker": "AMZN",
+            "trades_today": 1
+          },
+          {
+            "block_reason": "width 2.50% outside [0.80, 2.50]%",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "main",
+            "ticker": "AVGO",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "closed",
+            "portfolio_id": "main",
+            "ticker": "GOOG",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "closed",
+            "portfolio_id": "main",
+            "ticker": "META",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "main",
+            "ticker": "MSFT",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "closed",
+            "portfolio_id": "main",
+            "ticker": "NFLX",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 3.06% outside [0.80, 2.50]%",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "main",
+            "ticker": "NVDA",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 4.16% outside [0.80, 2.50]%",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "main",
+            "ticker": "ORCL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 2.55% outside [0.80, 2.50]%",
+            "broker_trades_today": 26,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "main",
+            "ticker": "TSLA",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 0.57% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "val",
+            "ticker": "AAPL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "val",
+            "ticker": "AMZN",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 2.50% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "val",
+            "ticker": "AVGO",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": "",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "closed",
+            "portfolio_id": "val",
+            "ticker": "GOOG",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": true,
+            "last_entry_iso": "2026-05-12T19:49:59.530170+00:00",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "in_pos",
+            "portfolio_id": "val",
+            "ticker": "META",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "val",
+            "ticker": "MSFT",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": true,
+            "last_entry_iso": "2026-05-12T19:49:59.530832+00:00",
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "in_pos",
+            "portfolio_id": "val",
+            "ticker": "NFLX",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 3.06% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "val",
+            "ticker": "NVDA",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 4.16% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "val",
+            "ticker": "ORCL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 2.55% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "val",
+            "ticker": "TSLA",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 0.57% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "gene",
+            "ticker": "AAPL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "gene",
+            "ticker": "AMZN",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 2.50% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "gene",
+            "ticker": "AVGO",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "gene",
+            "ticker": "GOOG",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "gene",
+            "ticker": "META",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "gene",
+            "ticker": "MSFT",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "armed",
+            "portfolio_id": "gene",
+            "ticker": "NFLX",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 3.06% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "gene",
+            "ticker": "NVDA",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 4.16% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "gene",
+            "ticker": "ORCL",
+            "trades_today": 0
+          },
+          {
+            "block_reason": "width 2.55% outside [0.80, 2.50]%",
+            "broker_trades_today": 0,
+            "in_position": false,
+            "last_entry_iso": null,
+            "last_exit_iso": null,
+            "last_signal_bucket": null,
+            "phase": "blocked_range",
+            "portfolio_id": "gene",
+            "ticker": "TSLA",
+            "trades_today": 0
+          }
+        ],
+        "day_status": {
+          "block_day": false,
+          "block_reason": "",
+          "session_date": "2026-05-12",
+          "vix_d1_close": 17.19,
+          "vix_threshold": 22.0
+        },
+        "live_mode": true,
+        "or_windows": {
+          "AAPL": {
+            "bars_seen": 30,
+            "current_price": 294.795,
+            "locked": true,
+            "locked_at_iso": "or_close.AAPL",
+            "or_close": 294.055,
+            "or_high": 294.172,
+            "or_low": 292.51,
+            "or_open": 292.51,
+            "or_volume": 4253272.0,
+            "or_width_pct": 0.005665761008519213
+          },
+          "AMZN": {
+            "bars_seen": 30,
+            "current_price": 265.86,
+            "locked": true,
+            "locked_at_iso": "or_close.AMZN",
+            "or_close": 265.49,
+            "or_high": 267.65,
+            "or_low": 264.52,
+            "or_open": 266.71,
+            "or_volume": 5054598.0,
+            "or_width_pct": 0.011763158389236505
+          },
+          "AVGO": {
+            "bars_seen": 30,
+            "current_price": 418.6634,
+            "locked": true,
+            "locked_at_iso": "or_close.AVGO",
+            "or_close": 424.92,
+            "or_high": 429.34,
+            "or_low": 418.73,
+            "or_open": 423.14,
+            "or_volume": 2039217.0,
+            "or_width_pct": 0.0250215194500453
+          },
+          "GOOG": {
+            "bars_seen": 30,
+            "current_price": 383.93,
+            "locked": true,
+            "locked_at_iso": "or_close.GOOG",
+            "or_close": 384.07,
+            "or_high": 386.44,
+            "or_low": 382.82,
+            "or_open": 385.0,
+            "or_volume": 1826523.0,
+            "or_width_pct": 0.009411642357590424
+          },
+          "META": {
+            "bars_seen": 30,
+            "current_price": 601.935,
+            "locked": true,
+            "locked_at_iso": "or_close.META",
+            "or_close": 600.18,
+            "or_high": 601.0,
+            "or_low": 592.6,
+            "or_open": 594.815,
+            "or_volume": 1869201.0,
+            "or_width_pct": 0.014075067024128649
+          },
+          "MSFT": {
+            "bars_seen": 30,
+            "current_price": 408.29,
+            "locked": true,
+            "locked_at_iso": "or_close.MSFT",
+            "or_close": 408.34,
+            "or_high": 415.5,
+            "or_low": 406.64,
+            "or_open": 414.59,
+            "or_volume": 4562546.0,
+            "or_width_pct": 0.021553506702021587
+          },
+          "NFLX": {
+            "bars_seen": 30,
+            "current_price": 87.66,
+            "locked": true,
+            "locked_at_iso": "or_close.NFLX",
+            "or_close": 86.83,
+            "or_high": 86.93,
+            "or_low": 85.81,
+            "or_open": 85.89,
+            "or_volume": 3914298.0,
+            "or_width_pct": 0.012967465555169672
+          },
+          "NVDA": {
+            "bars_seen": 30,
+            "current_price": 220.975,
+            "locked": true,
+            "locked_at_iso": "or_close.NVDA",
+            "or_close": 220.33,
+            "or_high": 223.75,
+            "or_low": 217.01,
+            "or_open": 218.545,
+            "or_volume": 28463828.0,
+            "or_width_pct": 0.030583537526091338
+          },
+          "ORCL": {
+            "bars_seen": 30,
+            "current_price": 186.05,
+            "locked": true,
+            "locked_at_iso": "or_close.ORCL",
+            "or_close": 185.49,
+            "or_high": 192.92,
+            "or_low": 185.05,
+            "or_open": 192.92,
+            "or_volume": 3452331.0,
+            "or_width_pct": 0.041643516681217956
+          },
+          "TSLA": {
+            "bars_seen": 30,
+            "current_price": 434.88,
+            "locked": true,
+            "locked_at_iso": "or_close.TSLA",
+            "or_close": 437.29,
+            "or_high": 447.8,
+            "or_low": 436.53,
+            "or_open": 441.4,
+            "or_volume": 10534634.0,
+            "or_width_pct": 0.02548822272228702
+          }
+        },
+        "prices": {
+          "AAPL": 294.795,
+          "AMZN": 265.86,
+          "AVGO": 418.6634,
+          "GOOG": 383.93,
+          "META": 601.935,
+          "MSFT": 408.29,
+          "NFLX": 87.66,
+          "NVDA": 220.975,
+          "ORCL": 186.05,
+          "TSLA": 434.88
+        },
+        "risk_books": {
+          "gene": {
+            "admit_count": 0,
+            "available_risk": 2000.0,
+            "daily_kill_threshold": 0.0,
+            "daily_kill_triggered": false,
+            "daily_loss_kill_pct": 2.0,
+            "equity": 0.0,
+            "last_reject_reason": "notional_cap (would-be $75300 > $0)",
+            "max_notional": 0.0,
+            "max_risk_dollars": 2000.0,
+            "open_count": 0,
+            "open_notional": 0.0,
+            "open_risk": 0.0,
+            "portfolio_id": "gene",
+            "realized_pnl_today": 0.0,
+            "reject_count": 387,
+            "session_start_equity": 0.0,
+            "utilization_pct": 0.0
+          },
+          "main": {
+            "admit_count": 95,
+            "available_risk": 1740.4628750000024,
+            "daily_kill_threshold": 412.1141659999988,
+            "daily_kill_triggered": false,
+            "daily_loss_kill_pct": 2.0,
+            "equity": 100453.53134999992,
+            "last_reject_reason": "notional_cap (would-be $169466 > $95431)",
+            "max_notional": 95430.85478249991,
+            "max_risk_dollars": 2000.0,
+            "open_count": 2,
+            "open_notional": 94166.0625,
+            "open_risk": 259.5371249999977,
+            "portfolio_id": "main",
+            "realized_pnl_today": -46.90314999999964,
+            "reject_count": 280,
+            "session_start_equity": 20605.70829999994,
+            "utilization_pct": 12.976856249999884
+          },
+          "val": {
+            "admit_count": 113,
+            "available_risk": 1736.3280999999977,
+            "daily_kill_threshold": 2004.605,
+            "daily_kill_triggered": false,
+            "daily_loss_kill_pct": 2.0,
+            "equity": 77935.62000000001,
+            "last_reject_reason": "notional_cap (would-be $149624 > $94991)",
+            "max_notional": 74038.839,
+            "max_risk_dollars": 2000.0,
+            "open_count": 3,
+            "open_notional": 152587.34000000003,
+            "open_risk": 263.6719000000023,
+            "portfolio_id": "val",
+            "realized_pnl_today": 0.0,
+            "reject_count": 213,
+            "session_start_equity": 100230.25,
+            "utilization_pct": 13.183595000000116
+          }
+        },
+        "session_date": "2026-05-12",
+        "wash_risk_count": 44
+      },
+      "v610_flags": {
+        "atr_trail_enabled": true,
+        "ema_confirm_enabled": true,
+        "late_or_enabled": true,
+        "lunch_suppression_enabled": true,
+        "or_break_enabled": false,
+        "or_break_k": 0.25
+      },
+      "v611_regime_b_active": false,
+      "v611_window": {
+        "arm": "10:00",
+        "disarm": "11:00"
+      },
+      "v620_flags": {
+        "entry1_di_threshold": 22.0,
+        "fast_boundary_cutoff_et": "12:00",
+        "fast_boundary_enabled": true,
+        "local_or_break_enabled": true,
+        "local_or_break_k": 0.25
+      },
+      "v630_flags": {
+        "noise_cross_atr_k": 0.1,
+        "noise_cross_filter_enabled": true
+      },
+      "v640_flags": {
+        "alarm_b_enabled": false,
+        "chandelier_tight_mult": 0.7,
+        "chandelier_wide_mult": 1.5
+      },
+      "v642_flags": {
+        "active_count": 2,
+        "long_enabled": true,
+        "post_loss_cooldown_enabled": true,
+        "post_loss_cooldown_min": 30,
+        "post_loss_cooldown_min_long": 30,
+        "post_loss_cooldown_min_short": 30,
+        "short_enabled": true
+      },
+      "version": "8.3.24",
+      "volume_feed_status": "live"
+    }
+  },
+  "schema_version": 1
+}
