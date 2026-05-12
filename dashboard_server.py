@@ -2482,23 +2482,38 @@ async def h_version(request):
 # ─────────────────────────────────────────────────────────────
 # v7.19.0 — v10 ORB projection card
 # ─────────────────────────────────────────────────────────────
-# Static reference numbers from docs/v10_strategy_keystone.md plus a
-# live-computed account-growth field. Cached at module level since the
-# values are static; the live-growth field is recomputed each request
-# from the main book's current_equity vs PAPER_STARTING_CAPITAL.
+# Static reference numbers shown on the "v10 Backtest Baseline" plate.
+# v8.1.5 -- refreshed for the full v8.1.3-active config (risk=1.0%
+# + ATR_STOP_MULT=1.75 + PARTIAL_PROFIT_AT_1R=True) backtested over
+# the FULL 251-day RTH corpus (May 2025 → May 2026), not the 124-day
+# in-sample window used for the original v10 keystone.
+#
+# Source: docs/pl_optimization_final_report_v12.md (Phase 14 + Round
+# R8 winner: R8_atr1pt75_partial = FY $+44,431, 4/4 positive quarters,
+# WR 59%, worst-day -$2,575).
+#
+# The honest_cagr_{low,mid,high} fields are operator-facing projections
+# (see CHANGELOG.md v8.1.3 projection table): LOW = 12% OOS-haircut,
+# MID = backtest result, HIGH = favorable-regime extrapolation.
+#
+# Sharpe is set to None until we re-compute from the per-day P&L
+# series under the v8.1.3 config (the old 2.85 was for the pre-v7.109
+# baseline and would be MISLEADING here; the strategy's per-trade
+# distribution has shifted with smaller positions + partial fills).
+# Slated for v8.1.6 once the Sharpe computation script is wired.
 _V10_PROJECTION_KEYSTONE = {
-    "in_sample_cagr_pct": 43.0,
-    "honest_cagr_low_pct": 5.5,
-    "honest_cagr_mid_pct": 30.0,
-    "honest_cagr_high_pct": 70.4,
-    "sharpe_ann": 2.85,
-    "max_drawdown_pct": 5.03,
-    "win_rate_pct": 57.0,
-    "trades_per_124d": 114,
-    "worst_day_dollars": -2030.0,
+    "in_sample_cagr_pct": 44.4,
+    "honest_cagr_low_pct": 12.0,
+    "honest_cagr_mid_pct": 44.4,
+    "honest_cagr_high_pct": 52.0,
+    "sharpe_ann": None,
+    "max_drawdown_pct": 3.20,
+    "win_rate_pct": 59.0,
+    "trades_per_year": 209,
+    "worst_day_dollars": -2575.0,
     "starting_balance": 100000.0,
-    "in_sample_ending_balance": 119224.81,
-    "in_sample_period_days": 124,
+    "in_sample_ending_balance": 144431.0,
+    "in_sample_period_days": 251,
 }
 
 

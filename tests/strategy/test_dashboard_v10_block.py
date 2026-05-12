@@ -32,6 +32,9 @@ class TestV10ProjectionPayloadKeys:
 
     def test_keystone_keys_present(self, dashboard_module):
         from dashboard_server import _V10_PROJECTION_KEYSTONE
+        # v8.1.5 -- field renamed trades_per_124d -> trades_per_year
+        # since the baseline is now the 251-day FY backtest, not the
+        # 124-day v11 in-sample window.
         required = {
             "in_sample_cagr_pct",
             "honest_cagr_low_pct",
@@ -40,7 +43,7 @@ class TestV10ProjectionPayloadKeys:
             "sharpe_ann",
             "max_drawdown_pct",
             "win_rate_pct",
-            "trades_per_124d",
+            "trades_per_year",
             "worst_day_dollars",
             "starting_balance",
             "in_sample_ending_balance",
@@ -49,15 +52,21 @@ class TestV10ProjectionPayloadKeys:
         assert set(_V10_PROJECTION_KEYSTONE.keys()) >= required
 
     def test_keystone_values_match_v10_canonical(self, dashboard_module):
-        """The numbers must match docs/v10_strategy_keystone.md exactly.
-        If the keystone doc updates, this test must be updated too."""
+        """v8.1.5 -- reflects the v8.1.3-active config (risk=1.0% +
+        atr_stop_mult=1.75 + partial_profit_at_1r=True) over the
+        full 251-day RTH corpus per
+        docs/pl_optimization_final_report_v12.md R8 winner."""
         from dashboard_server import _V10_PROJECTION_KEYSTONE
-        assert _V10_PROJECTION_KEYSTONE["in_sample_cagr_pct"] == 43.0
-        assert _V10_PROJECTION_KEYSTONE["sharpe_ann"] == 2.85
-        assert _V10_PROJECTION_KEYSTONE["max_drawdown_pct"] == 5.03
-        assert _V10_PROJECTION_KEYSTONE["win_rate_pct"] == 57.0
+        assert _V10_PROJECTION_KEYSTONE["in_sample_cagr_pct"] == 44.4
+        # Sharpe deliberately nulled until recomputed for v8.1.3
+        # config (old 2.85 was pre-v7.109 and would mislead).
+        # renderV10Projection renders None as "-".
+        assert _V10_PROJECTION_KEYSTONE["sharpe_ann"] is None
+        assert _V10_PROJECTION_KEYSTONE["max_drawdown_pct"] == 3.20
+        assert _V10_PROJECTION_KEYSTONE["win_rate_pct"] == 59.0
         assert _V10_PROJECTION_KEYSTONE["starting_balance"] == 100_000.0
-        assert _V10_PROJECTION_KEYSTONE["in_sample_ending_balance"] == 119_224.81
+        assert _V10_PROJECTION_KEYSTONE["in_sample_ending_balance"] == 144_431.0
+        assert _V10_PROJECTION_KEYSTONE["in_sample_period_days"] == 251
 
     def test_keystone_low_lt_mid_lt_high(self, dashboard_module):
         from dashboard_server import _V10_PROJECTION_KEYSTONE
