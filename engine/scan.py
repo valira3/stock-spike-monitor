@@ -474,6 +474,20 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.debug("[V83-OR-BACKFILL] sweep failed: %s", _e)
 
+    # v8.3.15 -- phantom-IN_POS consistency sweep. After v8.3.4
+    # rehydrate + executor.positions load, reconcile any engine FSM
+    # rows that say in_position=True but the ticker isn't actually
+    # held by the corresponding executor / main book. Self-heals
+    # stale orb_state_<date>.json snapshots written by an older
+    # process where the close path missed the unmirror.
+    #
+    # Idempotent: runs every cycle but a clean state returns 0
+    # phantoms (cheap O(N day_states) scan).
+    try:
+        _orb_phantom_sweep(tg)
+    except Exception as _e:
+        logger.debug("[V8315-PHANTOM-SWEEP] failed: %s", _e)
+
     # v8.3.4 -- engine state persistence. Snapshot OR windows +
     # DayState FSM + RiskBook + Activity feed + Wash-sale tracker +
     # Pending v10 sizes to /data/orb_state_<date>.json after each
@@ -729,6 +743,79 @@ def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
             cur_min,
             result.get("backfilled", 0), result.get("locked", 0),
             result.get("skipped", 0), result.get("failed", 0),
+        )
+
+
+def _orb_phantom_sweep(tg) -> None:
+    """v8.3.15 -- find + clear engine FSM rows that say in_position=True
+    but the ticker isn't actually held in the corresponding portfolio's
+    positions map.
+
+    Symptom: watchdog `v10_in_pos_has_internal_position` invariant fires
+    with main/AMZN phase='in_pos' in_position=True last_entry='', but
+    the dashboard shows AMZN closed. Root cause: stale
+    `/data/orb_state_<date>.json` written by a pre-v8.3.12 process where
+    a close path missed the unmirror; v8.3.4 rehydrate then reloads
+    that row on every subsequent bootstrap.
+
+    Self-heals on every scan cycle. When state is clean (no phantoms),
+    the engine snapshot returns an empty list and we return without
+    touching anything. When phantoms exist, we clear them via
+    `OrbEngine.clear_phantom_in_pos` for main, or the executor's
+    `_unmirror_position_from_engine` for val/gene (different paths
+    because main has no executor instance -- it IS the tg module).
+    """
+    engine = _orb_runtime.get_engine()
+    if engine is None:
+        return
+    # Build held-tickers per pid.
+    held: dict = {}
+    try:
+        # Main: tg.positions (longs) + tg.short_positions (shorts).
+        main_longs = set(getattr(tg, "positions", {}).keys() or [])
+        main_shorts = set(getattr(tg, "short_positions", {}).keys() or [])
+        held["main"] = main_longs | main_shorts
+    except Exception:
+        held["main"] = set()
+    # Val/Gene: executor.positions (executor only stores one side; v10
+    # path mirrors long+short into the same dict per v7.0.0 design).
+    try:
+        from executors.bootstrap import get_executor
+        for pid in ("val", "gene"):
+            ex = get_executor(pid)
+            if ex is not None:
+                held[pid] = set(getattr(ex, "positions", {}).keys() or [])
+            else:
+                # No executor instance -- we have no data to determine
+                # phantoms. Skip rather than wipe (leaves the FSM as-is).
+                pass
+    except Exception:
+        pass
+    phantoms = engine.find_phantom_in_pos(held_tickers_by_pid=held)
+    if not phantoms:
+        return
+    # Clear each phantom via the right path.
+    cleared: list = []
+    for pid, ticker in phantoms:
+        if pid == "main":
+            if engine.clear_phantom_in_pos(pid, ticker):
+                cleared.append((pid, ticker))
+        else:
+            try:
+                from executors.bootstrap import get_executor
+                ex = get_executor(pid)
+                if ex is not None:
+                    ex._unmirror_position_from_engine(ticker)
+                    cleared.append((pid, ticker))
+            except Exception:
+                logger.debug(
+                    "[V8315-PHANTOM-SWEEP] could not unmirror %s/%s",
+                    pid, ticker,
+                )
+    if cleared:
+        logger.warning(
+            "[V8315-PHANTOM-SWEEP] cleared %d phantom IN_POS row(s): %s",
+            len(cleared), cleared,
         )
 
 

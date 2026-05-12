@@ -4,6 +4,82 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.15 (2026-05-12) -- Boot-time phantom IN_POS consistency sweep (self-heals stale orb_state_<date>.json)
+
+Watchdog kept firing `v10_in_pos_has_internal_position` with `main/AMZN phase='in_pos' in_position=True last_entry=''` even after v8.3.12 wired the unmirror onto the close path. Root cause: the stale FSM row was written to `/data/orb_state_<date>.json` by a **pre-v8.3.12 process** whose close path didn't unmirror. v8.3.4's per-cycle rehydrate then reloaded the bad row on every subsequent bootstrap. v8.3.12 only auto-cleans on the close path going forward; it can't retro-clean disk state that's already wrong.
+
+### Change
+
+**`orb/engine.py`** — two new public helpers on `OrbEngine`:
+
+- `find_phantom_in_pos(*, held_tickers_by_pid: dict) -> list[(pid, ticker)]` — pure scan: returns FSM rows where `in_position=True` but the ticker isn't in `held_tickers_by_pid[pid]`. Caller supplies the held-tickers map from `tg.positions` (main) / `executor.positions` (val/gene).
+- `clear_phantom_in_pos(portfolio_id, ticker) -> bool` — direct phantom clearing for main (which has no executor instance). Flips `in_position=False`, transitions `PHASE_IN_POS` → `PHASE_CLOSED` (defensive: doesn't clobber `BLOCKED_*`), pops the synthetic `"recover-{pid}-{ticker}"` ticket from RiskBook, decrements `_open_risk` + `_open_notional`. Returns True iff anything was cleared.
+
+**`engine/scan.py`** — new `_orb_phantom_sweep(tg)` runs on every scan cycle:
+
+1. Build `held` per pid: `held["main"] = tg.positions ∪ tg.short_positions`; `held["val"|"gene"] = executor.positions` via `get_executor()`
+2. Call `engine.find_phantom_in_pos(held_tickers_by_pid=held)` — returns empty list when state is clean (no work)
+3. For each phantom: main → `engine.clear_phantom_in_pos`; val/gene → `executor._unmirror_position_from_engine` (v8.3.12)
+4. Log `[V8315-PHANTOM-SWEEP] cleared N phantom IN_POS row(s)` when anything was cleared
+
+Wired in `engine/scan.py:scan_once` right before the v8.3.4 dump call so the cleaned state is what gets persisted to disk this cycle.
+
+### Why this is the right shape
+
+Two distinct phantom-clear paths reflect the two distinct portfolio identity models:
+- **Main**: no executor instance; main IS the trade_genius module. Phantom clear is engine-internal (`OrbEngine.clear_phantom_in_pos`).
+- **Val/Gene**: have a real executor with `_unmirror_position_from_engine` (v8.3.12). Calling the executor's unmirror keeps a single forensic log path (`[V8312-UNRECOVER]` instead of two divergent ones).
+
+### Tests
+
+`tests/strategy/test_orb_phantom_sweep.py` — 12 new tests:
+
+`TestFindPhantomInPos` (6):
+1. Empty engine returns []
+2. Clean state (FSM IN_POS matches held) returns []
+3. One phantom detected
+4. Multiple phantoms across pids
+5. Missing pid in held map → row skipped (can't determine; safer than auto-wipe)
+6. `in_position=False` rows ignored
+
+`TestClearPhantomInPos` (5):
+1. Flips `in_position` + transitions phase to CLOSED
+2. Releases synthetic ticket (open_count → 0, risk → 0, notional → 0)
+3. Idempotent (second call returns False)
+4. Doesn't clobber `BLOCKED_*` phase
+5. Works when no synthetic ticket exists (FSM-only mirror)
+
+`TestOperatorScenario` (1): replicates the exact AMZN/main phantom; verifies detect → clear → re-detect-empty round-trip.
+
+**761 strategy tests pass** (749 + 12 new).
+
+### What the operator will see
+
+On the next Railway redeploy:
+1. Engine rehydrates from `/data/orb_state_2026-05-12.json` (includes the stale `main/AMZN in_position=True` row)
+2. First scan cycle's `_orb_phantom_sweep` detects: main has no AMZN, but FSM says IN_POS for AMZN → phantom
+3. `engine.clear_phantom_in_pos("main", "AMZN")` flips the row to CLOSED + releases the recover-main-AMZN synthetic ticket
+4. Forensic: `[V8315-PHANTOM-SWEEP] cleared 1 phantom IN_POS row(s): [('main', 'AMZN')]`
+5. Dashboard CONCURRENT RISK drops by the released ticket's risk-dollar amount
+6. Watchdog `v10_in_pos_has_internal_position` invariant stops firing on AMZN
+
+Self-healing: no manual /reconcile, no Railway SSH, no env tweaks needed.
+
+### Related v8.3.x state-consistency line
+
+| Version | What |
+|---|---|
+| v8.3.4 | Persist engine state to /data + rehydrate on boot |
+| v8.3.6 | Mirror executor positions INTO engine (open path) |
+| v8.3.12 | Mirror executor positions OUT of engine (close path, going forward) |
+| **v8.3.15** | Self-heal stale disk state from BEFORE v8.3.12 |
+
+### Rollback
+
+Remove the `_orb_phantom_sweep(tg)` call in `engine/scan.py:scan_once`. Engine helpers stay defined (testable, no harm); scan loop just stops doing the sweep.
+
+---
+
 ## v8.3.14 (2026-05-12) -- Watchdog: name "executor not subscribed" as root cause in val_gene_trades_match_main body
 
 Companion to v8.3.13. Now that `/api/state.portfolios.{pid}.subscribed` exists, the watchdog's `inv_val_gene_trades_match_main` invariant can read it directly and explicitly name the root cause when an executor failed to register on the signal bus — instead of leaving the operator to grep Railway logs.

@@ -847,6 +847,77 @@ class OrbEngine:
                 reason=f"daily_loss_kill portfolio={portfolio_id}",
             )
 
+    # --- consistency sweeps (v8.3.15) ---
+
+    def find_phantom_in_pos(self, *, held_tickers_by_pid: dict) -> list:
+        """v8.3.15 -- find FSM rows that say in_position=True but the
+        ticker isn't in the caller's held-positions map.
+
+        Self-heal target: stale `/data/orb_state_<date>.json` files
+        where the bot closed a position in a prior process but the
+        snapshot was written BEFORE the v8.3.12 unmirror landed (or
+        the close path crashed mid-write). v8.3.4 rehydrate then
+        reloads the stale row on every subsequent bootstrap; the
+        FSM stays IN_POS forever, surfacing as the watchdog's
+        `v10_in_pos_has_internal_position` invariant.
+
+        Pure: no side effects. Returns [(pid, ticker)] list of
+        phantoms; caller decides how to clear each (different
+        clearing paths for main vs val/gene executors).
+
+        Args:
+            held_tickers_by_pid: {pid: set(tickers)} -- the tickers
+                each portfolio actually holds right now, as reported
+                by tg.positions (main) or executor.positions (val/
+                gene). Should include both long and short side.
+
+        Returns:
+            list[tuple[str, str]] -- (portfolio_id, ticker) pairs
+            that need unmirroring. Empty list when state is clean.
+        """
+        out: list = []
+        for (pid, ticker), ds in self._state.day_states.items():
+            if not ds.in_position:
+                continue
+            held = held_tickers_by_pid.get(pid)
+            if held is None:
+                # No data for this pid -- can't determine; skip.
+                continue
+            if ticker in held:
+                continue
+            out.append((pid, ticker))
+        return out
+
+    def clear_phantom_in_pos(self, portfolio_id: str, ticker: str) -> bool:
+        """v8.3.15 -- direct phantom clearing helper, used by the
+        sweep when the executor's _unmirror_position_from_engine
+        path isn't available (e.g. for main, which has no executor
+        instance -- it's the trade_genius module itself).
+
+        Returns True if any state was actually cleared.
+        """
+        cleared = False
+        ds = self._state.get_day_state(portfolio_id, ticker)
+        if ds.in_position:
+            ds.in_position = False
+            if ds.phase == _state.PHASE_IN_POS:
+                ds.transition(_state.PHASE_CLOSED)
+            cleared = True
+        rb = self._risk.get(portfolio_id)
+        if rb is not None:
+            ticket_id = f"recover-{portfolio_id}-{ticker}"
+            with rb._lock:
+                ticket = rb._open_tickets.pop(ticket_id, None)
+                if ticket is not None:
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+                    cleared = True
+        return cleared
+
     # --- snapshots / introspection ---
 
     def snapshot(self) -> dict:
