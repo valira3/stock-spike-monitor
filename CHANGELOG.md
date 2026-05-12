@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.100.0 (2026-05-12) -- Surface Railway GraphQL errors in monitor footer
+
+v7.99.0's startDate/endDate fix didn't unblock the log slice — issue #591 still showed `lines_fetched=0` against the running deployment (`4050a929-f1f`, created 01:16:22Z, hit by the monitor at 01:18:43Z). That means Railway's `deploymentLogs` schema doesn't accept those args — but our `_gql` was silently swallowing the schema error so we couldn't see Railway's complaint.
+
+### The silent-failure path
+
+Railway returns HTTP 200 with `{"errors": [{...}], "data": null}` when the query is wrong (deprecated field, unknown arg, type mismatch). Our `_gql` returned that dict verbatim. `fetch_recent_logs` then read `resp["data"]["deploymentLogs"]`, hit `TypeError` on `None["deploymentLogs"]`, and returned `[]`. The actual error message was thrown away.
+
+After 5+ iterations (v7.91 → v7.99) we still didn't know what Railway was complaining about. We were guessing schema shapes blindly.
+
+### Fix
+
+- New module-global `_last_gql_errors` populated by `_record_errors`. Wraps both happy-path and project-token-fallback returns from `_gql`.
+- `_record_errors` extracts up to 5 GraphQL error messages from the response, logs them at WARNING (`[GRAPHQL-ERROR]` tag — visible in workflow logs), and stores them for the diagnostic surface.
+- New public `get_last_gql_errors()` accessor.
+- `inv_val_gene_trades_match_main` footer now appends an `### Railway GraphQL errors` section when present, listing Railway's verbatim complaint(s).
+
+The User-Agent bumped to `tg-railway-log-tail/7.100.0` (was stuck at 7.92.0).
+
+### Tests
+
+`tests/strategy/test_railway_probe_v791.py` — 2 new tests:
+- `_gql` captures error messages from a 200 response with `errors`+`data: null`
+- `_record_errors` clears the module-global on a clean response (no stale leak)
+
+90 Railway + invariant tests passed.
+
+### Next
+
+Trigger any monitor cycle → next issue body's footer will carry the exact GraphQL error message → v7.101.0 fixes the actual schema mismatch on the first try.
+
+### Files
+
+- `tools/railway_log_tail.py` — `_record_errors` + `_last_gql_errors` + `get_last_gql_errors`
+- `tools/dashboard_monitor_invariants.py` — footer appends the errors section
+- `tests/strategy/test_railway_probe_v791.py` — 2 new tests
+- `bot_version.py` / `trade_genius.py` — `7.99.0` → `7.100.0`
+
+---
+
 ## v7.99.0 (2026-05-12) -- Railway deploymentLogs schema drift fix (date-range args)
 
 v7.98.0 confirmed the issue isn't a stale deployment: issue #589's footer reported `deployment_id=f4500b72-73c deployment_created=2026-05-12T01:08:46Z` — that's the v7.98.0 deploy itself, 3 min before the monitor ran. We were hitting the RUNNING container's deployment and Railway still returned 0 logs. That means the GraphQL query shape is wrong, not the deployment selection.

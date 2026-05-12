@@ -77,6 +77,18 @@ FAILURE_SIGNATURES: dict[str, str] = {
 }
 
 
+# v7.100.0 -- last GraphQL errors captured by _gql, exposed for
+# diagnostic surfaces. A response with HTTP 200 + non-empty "errors"
+# array is the silent-failure mode that's been hiding Railway's
+# schema-validation complaints from us across v7.99.0's date-range
+# attempt -- the dict came back valid-looking, we mapped "data is
+# None" to [] in the caller, and the error message was thrown away.
+# This module-global captures the most recent error so the probe
+# can include it in the issue footer without changing the _gql
+# return type (which 50+ callers depend on).
+_last_gql_errors: list[str] = []
+
+
 def _gql(token: str, query: str, variables: dict, *,
          api_url: str = _DEFAULT_API,
          timeout: float = 10.0) -> dict | None:
@@ -120,7 +132,7 @@ def _gql(token: str, query: str, variables: dict, *,
 
     common = {
         "Content-Type": "application/json",
-        "User-Agent": "tg-railway-log-tail/7.92.0",
+        "User-Agent": "tg-railway-log-tail/7.100.0",
     }
     # Attempt 1 -- personal/team API token shape.
     resp = _try({**common, "Authorization": f"Bearer {token}"})
@@ -130,14 +142,46 @@ def _gql(token: str, query: str, variables: dict, *,
         # rejecting the credential, it's failing for another reason.
         return None
     if not resp.get("_auth_failed"):
-        return resp
+        return _record_errors(resp)
     # Bearer was rejected with 401/403 -- retry with project-token
     # header. If THIS one also returns _auth_failed, both auth
     # shapes are wrong (bad token, missing scope) and we return None.
     resp2 = _try({**common, "Project-Access-Token": token})
     if resp2 is None or resp2.get("_auth_failed"):
         return None
-    return resp2
+    return _record_errors(resp2)
+
+
+def _record_errors(resp: dict | None) -> dict | None:
+    """v7.100.0 -- capture GraphQL errors in _last_gql_errors.
+
+    Railway returns HTTP 200 with `{"errors": [...], "data": null}`
+    when the query/schema is wrong (deprecated field, missing
+    required arg, wrong arg name, etc.). Without this hook, callers
+    that check for `data` or for a specific field fall through to
+    [] and the actual error message is thrown away. The capture
+    lets `probe_railway_access` include the last error in the
+    issue footer so an operator can read Railway's complaint
+    directly without inspecting the workflow log.
+    """
+    global _last_gql_errors
+    _last_gql_errors = []
+    if not isinstance(resp, dict):
+        return resp
+    errs = resp.get("errors")
+    if isinstance(errs, list) and errs:
+        out: list[str] = []
+        for e in errs[:5]:
+            if isinstance(e, dict):
+                msg = str(e.get("message") or "")
+            else:
+                msg = str(e)
+            if msg:
+                out.append(msg[:200])
+        if out:
+            _last_gql_errors = out
+            logger.warning("[GRAPHQL-ERROR] %s", "; ".join(out))
+    return resp
 
 
 _LATEST_DEPLOYMENT_QUERY = """
@@ -261,6 +305,15 @@ def count_recent_logs(limit: int = 10000) -> int:
     """
     rows = fetch_recent_logs(limit=limit)
     return len(rows)
+
+
+def get_last_gql_errors() -> list[str]:
+    """v7.100.0 -- read-only accessor for the last GraphQL `errors`
+    captured by `_record_errors`. Empty list if the last call was
+    successful or didn't include errors. Used by `probe_railway_access`
+    to include the most recent schema complaint in the monitor footer.
+    """
+    return list(_last_gql_errors)
 
 
 # v7.91.0 -- single-leg diagnostic probe. fetch_recent_logs swallows
