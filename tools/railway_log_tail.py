@@ -149,8 +149,18 @@ query latestDeployment($serviceId: String!) {
 """
 
 _DEPLOYMENT_LOGS_QUERY = """
-query deploymentLogs($deploymentId: String!, $limit: Int!) {
-  deploymentLogs(deploymentId: $deploymentId, limit: $limit) {
+query deploymentLogs(
+  $deploymentId: String!,
+  $limit: Int!,
+  $startDate: DateTime!,
+  $endDate: DateTime!
+) {
+  deploymentLogs(
+    deploymentId: $deploymentId,
+    limit: $limit,
+    startDate: $startDate,
+    endDate: $endDate
+  ) {
     timestamp
     message
     severity
@@ -200,8 +210,20 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     deployment_id = _resolve_latest_deployment_id(token, service_id, api_url)
     if not deployment_id:
         return []
+    # v7.99.0 -- Railway's deploymentLogs query now requires startDate
+    # and endDate (DateTime!). Pre-v7.99.0 we omitted both arguments
+    # and Railway silently returned 0 rows even with valid auth and
+    # a fresh deployment_id (confirmed by issue #589 footer:
+    # deployment_created=2026-05-12T01:08:46Z, lines_fetched=0). Use
+    # a 24h window ending now as the default -- spans all of today's
+    # RTH activity plus the prior session for late-evening replays.
+    from datetime import datetime, timedelta, timezone as _tz
+    _now = datetime.now(_tz.utc)
+    _start = (_now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    _end = _now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
     resp = _gql(token, _DEPLOYMENT_LOGS_QUERY,
-                {"deploymentId": deployment_id, "limit": int(limit)},
+                {"deploymentId": deployment_id, "limit": int(limit),
+                 "startDate": _start, "endDate": _end},
                 api_url=api_url)
     if not resp or "data" not in resp:
         return []

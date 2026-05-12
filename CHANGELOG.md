@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v7.99.0 (2026-05-12) -- Railway deploymentLogs schema drift fix (date-range args)
+
+v7.98.0 confirmed the issue isn't a stale deployment: issue #589's footer reported `deployment_id=f4500b72-73c deployment_created=2026-05-12T01:08:46Z` — that's the v7.98.0 deploy itself, 3 min before the monitor ran. We were hitting the RUNNING container's deployment and Railway still returned 0 logs. That means the GraphQL query shape is wrong, not the deployment selection.
+
+Railway's `deploymentLogs` field requires `startDate: DateTime!` and `endDate: DateTime!` — both have become required since the v7.79.0 helper was written. Without them, Railway silently returns an empty list instead of erroring.
+
+### Fix
+
+`_DEPLOYMENT_LOGS_QUERY` declares both as required `DateTime!` variables. `fetch_recent_logs` computes a 24-hour window (`now - 24h` → `now`) and passes both. 24 hours spans a full RTH day plus the prior session — long enough for any practical replay or monitor cycle.
+
+The date format is Railway's documented `YYYY-MM-DDTHH:MM:SS.000Z` (ISO-8601 with millisecond precision, Zulu suffix).
+
+### Files
+
+- `tools/railway_log_tail.py` — `_DEPLOYMENT_LOGS_QUERY` adds 2 required DateTime variables; `fetch_recent_logs` computes and passes them
+- `bot_version.py` / `trade_genius.py` — `7.98.0` → `7.99.0`
+
+All 88 Railway + invariant tests still green (the test suite mocks `_gql` so the variable-shape change is transparent).
+
+### Next
+
+Post-merge: trigger any monitor cycle. If footer shows `lines_fetched_on_10k_request=N>0`, the schema drift is the root cause and we're done. If still 0, Railway requires additional args (`filter`, `cursor`, etc.) and v7.100.0 iterates.
+
+---
+
 ## v7.98.0 (2026-05-12) -- Add deployment `createdAt` to probe diagnostic
 
 v7.97.0's probe surfaced `deployment_status=SUCCESS` alongside `lines_fetched_on_10k_request=0` on issues #585 and #586. The operator subsequently regenerated the Railway personal API token unscoped (vs the prior workspace-scoped one), but the next monitor cycle returned the **identical** diagnostic — same `deployment_id=28a6d4d2-7ba`, same `lines_fetched=0`.
