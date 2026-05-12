@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.1.6 (2026-05-12) -- Recompute Sharpe + max-DD under v8.1.3 config; populate baseline plate
+
+Closes the v8.1.5 follow-up. The baseline plate's Sharpe was set to `None` in v8.1.5 because the old 2.85 was for the pre-v7.109 strategy and carrying it forward would have misled the operator. v8.1.6 actually computes Sharpe from a fresh 251-day backtest under the v8.1.3 production config and populates the field.
+
+### Method
+
+Script `docs/research/compute_sharpe_v813.py` runs `tools/orb_backtest.py` on `/tmp/rth-data/data` (251 trading days, May 2025 → May 2026) with the exact env-fallback config from `orb/live_runtime.py` as of v8.1.3:
+
+```
+ORB_RISK_PER_TRADE_PCT=1.00
+ORB_ATR_STOP_MULT=1.75
+ORB_PARTIAL_PROFIT_AT_1R=1
+... + v10 anchor knobs
+```
+
+Reads per-day P&L from `out/per_day/<YYYY-MM-DD>.json`, sums `pnl_dollars` per day, builds a daily-return series (relative to compounding equity), computes:
+
+- `mean_daily = +0.1510%`
+- `stdev_daily = 0.9441%`
+- `Sharpe_ann = (mean / stdev) × √252 = 2.539` (rf=0 proxy)
+- `max_drawdown = 6.31%` (peak-to-trough on compound equity curve)
+
+### Two stale numbers also fixed
+
+| Field | Before (v8.1.5) | After (v8.1.6) | Why it changed |
+|---|---|---|---|
+| `sharpe_ann` | `None` | **`2.54`** | Computed from actual per-day P&L (was deliberately nulled in v8.1.5) |
+| `max_drawdown_pct` | `3.20` | **`6.31`** | v8.1.5 carried a *worst-day* estimate, not peak-to-trough multi-day DD; corrected |
+| `trades_per_year` | `209` | **`382`** | v8.1.5 used a Round 2 R2_T5 winner count; this run uses the actual v8.1.3 production config which trips more breakouts |
+
+### Files
+
+- `dashboard_server.py` — `_V10_PROJECTION_KEYSTONE` Sharpe + max-DD + trades populated
+- `docs/research/compute_sharpe_v813.py` — reproducibility script (run from repo root)
+- `tests/strategy/test_dashboard_v10_block.py::test_keystone_values_match_v10_canonical` — assertions updated for the three changed fields + new `trades_per_year` assertion
+
+No code, FSM, broker, executor changes. **625 strategy tests pass.**
+
+### Live dashboard impact
+
+Hard-refresh — baseline plate now shows:
+
+| Field | Was (v8.1.5) | Now (v8.1.6) |
+|---|---|---|
+| Sharpe | `—` | **`2.54`** |
+| Max DD | `+3.20%` | **`+6.31%`** |
+
+CAGR / Range / Win rate / Worst-day unchanged from v8.1.5.
+
 ## v8.1.5 (2026-05-12) -- Refresh "v10 Backtest Baseline" plate with v8.1.3-active numbers
 
 The `v10 Backtest Baseline` card on the dashboard (`#v10-baseline` in `index.html`, served by `_V10_PROJECTION_KEYSTONE` in `dashboard_server.py`) was still showing the **pre-v7.109** keystone numbers from a 124-day in-sample window: CAGR 43.0%, Sharpe 2.85, Max DD 5.03%, WR 57.0%, Range 5.5%-70.4%.

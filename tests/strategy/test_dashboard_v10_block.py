@@ -58,12 +58,12 @@ class TestV10ProjectionPayloadKeys:
         docs/pl_optimization_final_report_v12.md R8 winner."""
         from dashboard_server import _V10_PROJECTION_KEYSTONE
         assert _V10_PROJECTION_KEYSTONE["in_sample_cagr_pct"] == 44.4
-        # Sharpe deliberately nulled until recomputed for v8.1.3
-        # config (old 2.85 was pre-v7.109 and would mislead).
-        # renderV10Projection renders None as "-".
-        assert _V10_PROJECTION_KEYSTONE["sharpe_ann"] is None
-        assert _V10_PROJECTION_KEYSTONE["max_drawdown_pct"] == 3.20
+        # v8.1.6 -- Sharpe + max-DD + trades populated from the actual
+        # v8.1.3 backtest run (see CHANGELOG.md v8.1.6 for method).
+        assert _V10_PROJECTION_KEYSTONE["sharpe_ann"] == 2.54
+        assert _V10_PROJECTION_KEYSTONE["max_drawdown_pct"] == 6.31
         assert _V10_PROJECTION_KEYSTONE["win_rate_pct"] == 59.0
+        assert _V10_PROJECTION_KEYSTONE["trades_per_year"] == 382
         assert _V10_PROJECTION_KEYSTONE["starting_balance"] == 100_000.0
         assert _V10_PROJECTION_KEYSTONE["in_sample_ending_balance"] == 144_431.0
         assert _V10_PROJECTION_KEYSTONE["in_sample_period_days"] == 251
