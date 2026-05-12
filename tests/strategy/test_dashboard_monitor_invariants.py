@@ -684,6 +684,134 @@ class TestValGeneTradesMatchMainEnrichmentV784:
 
 
 # ---------------------------------------------------------------------
+# v8.3.14 -- inv_val_gene_trades_match_main calls out unsubscribed
+# executor directly via the v8.3.13 portfolios.<pid>.subscribed field.
+# ---------------------------------------------------------------------
+
+
+class TestValGeneTradesMatchMainSubscribedNoteV8314:
+    """v8.3.14 -- when the mismatch is caused by an executor not
+    being subscribed to the signal bus, the invariant body now calls
+    out the root cause explicitly instead of leaving the operator to
+    grep Railway logs."""
+
+    def test_val_unsubscribed_named_as_root_cause(self, monkeypatch):
+        # Setup: val has trades_today=0 vs main=2, AND
+        # /api/state.portfolios.val.subscribed = false
+        s = {
+            "trades_today": [{"ticker": "A"}, {"ticker": "B"}],
+            "portfolios": {
+                "val": {"portfolio_id": "val", "subscribed": False},
+                "gene": {"portfolio_id": "gene", "subscribed": True},
+            },
+        }
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True,
+                "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        # Stub log helpers so the detail also includes the rest of the
+        # existing v7.84.0 enrichment path (but our v8.3.14 root-cause
+        # note should land FIRST).
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
+        from tools.dashboard_monitor_invariants import (
+            inv_val_gene_trades_match_main,
+        )
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        assert "val=0 vs main=2" in r["summary"]
+        # The new v8.3.14 root-cause note explicitly fingers val
+        assert "val.subscribed = false" in r["detail"]
+        assert "VAL_ALPACA_PAPER_KEY" in r["detail"]
+        # Gene is subscribed -- no false-alarm note for it
+        assert "gene.subscribed = false" not in r["detail"]
+
+    def test_both_unsubscribed_named(self, monkeypatch):
+        s = {
+            "trades_today": [{"ticker": "A"}],
+            "portfolios": {
+                "val": {"portfolio_id": "val", "subscribed": False},
+                "gene": {"portfolio_id": "gene", "subscribed": False},
+            },
+        }
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True, "trades_today": []}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
+        from tools.dashboard_monitor_invariants import (
+            inv_val_gene_trades_match_main,
+        )
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        assert "val.subscribed = false" in r["detail"]
+        assert "gene.subscribed = false" in r["detail"]
+        assert "GENE_ALPACA_PAPER_KEY" in r["detail"]
+
+    def test_both_subscribed_no_note(self, monkeypatch):
+        """Mismatch but both subscribed -- the v7.84.0 log-slice path
+        owns the diagnosis; no v8.3.14 root-cause note."""
+        s = {
+            "trades_today": [{"ticker": "A"}, {"ticker": "B"}],
+            "portfolios": {
+                "val": {"portfolio_id": "val", "subscribed": True},
+                "gene": {"portfolio_id": "gene", "subscribed": True},
+            },
+        }
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
+        from tools.dashboard_monitor_invariants import (
+            inv_val_gene_trades_match_main,
+        )
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        assert "subscribed = false" not in r["detail"]
+        assert "Root cause likely" not in r["detail"]
+
+    def test_pre_v8313_state_shape_compat(self, monkeypatch):
+        """Pre-v8.3.13 deploys won't have portfolios.{pid}.subscribed.
+        The invariant must not crash and must fall through to the
+        v7.84.0 log-slice path."""
+        s = {
+            "trades_today": [{"ticker": "A"}],
+            # NO portfolios block, OR portfolios block without
+            # `subscribed` field (the pre-v8.3.13 shape).
+            "portfolios": {
+                "val": {"portfolio_id": "val"},
+                "gene": {"portfolio_id": "gene"},
+            },
+        }
+        val = {"enabled": True, "trades_today": []}
+        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
+        ctx = InvariantContext(
+            payloads={"state": s, "exec_val": val, "exec_gene": gene},
+            base_url="https://example.com",
+        )
+        import tools.railway_log_tail as rlt
+        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
+        from tools.dashboard_monitor_invariants import (
+            inv_val_gene_trades_match_main,
+        )
+        # Must not raise
+        r = inv_val_gene_trades_match_main(ctx)
+        assert not r["ok"]
+        # No false-positive root-cause note when shape is pre-v8.3.13
+        assert "Root cause likely" not in r["detail"]
+
+
+# ---------------------------------------------------------------------
 # v7.90.0 -- signal_bus_has_listeners invariant
 # ---------------------------------------------------------------------
 

@@ -184,6 +184,37 @@ def inv_val_gene_trades_match_main(ctx):
         "counts should match. A mismatch may indicate Alpaca-side "
         "rejection or a mirror-bus drift."
     )
+    # v8.3.14 -- check the v8.3.13 `subscribed` flag first. If an
+    # executor never registered its _on_signal callback (start()
+    # failed silently, missing ALPACA_PAPER_KEY env, or the
+    # construction raised), Main's emits go into the void and the
+    # trade-count mismatch is guaranteed. Naming this root cause
+    # explicitly in the issue body lets the operator skip the
+    # log-archaeology step entirely.
+    portfolios = (s.get("portfolios") or {})
+    subscription_notes: list[str] = []
+    for _pid in ("val", "gene"):
+        _block = portfolios.get(_pid) or {}
+        if "subscribed" not in _block:
+            continue  # pre-v8.3.13 state shape; skip
+        if not _block.get("subscribed"):
+            subscription_notes.append(
+                f"**{_pid}.subscribed = false** -- {_pid.upper()} executor "
+                f"never registered its _on_signal callback on the signal "
+                f"bus. Most likely causes: (a) {_pid.upper()}_ALPACA_PAPER_KEY "
+                f"env var unset or empty in Railway; (b) executor "
+                f"construction or start() raised silently (grep older "
+                f"Railway logs for `[{_pid.title()}] startup failed` or "
+                f"`[{_pid.title()}] skipped`); (c) Alpaca client probe "
+                f"raised inside _ensure_client(). Until {_pid.upper()} "
+                f"is subscribed, every Main emit goes into the void for "
+                f"this executor and the trade-count mismatch is "
+                f"guaranteed."
+            )
+    if subscription_notes:
+        base_detail += "\n\n### Root cause likely:\n\n" + (
+            "\n\n".join(subscription_notes)
+        )
     try:
         from tools.railway_log_tail import grep_logs, format_log_slice
         # v7.85.0 -- limit raised 1000 -> 3000 so we span a wider time
