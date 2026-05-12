@@ -321,6 +321,23 @@ def ensure_session_started(*, date_iso: str,
         _try_rehydrate_engine_state(date_iso)
     except Exception as _e:
         logger.debug("[V834-PERSIST] rehydrate failed: %s", _e)
+    # v8.3.22 -- one-shot purge of orphan uuid tickets that survived
+    # the rehydrate. Any non-`recover-*` ticket in _open_tickets is a
+    # leftover from a try_admit that wasn't released (broker fire
+    # failed without rollback_admit, OR mid-cycle dump captured the
+    # ticket without the position write that should follow). v8.3.6
+    # mirror re-adds clean recover-* tickets from held positions on
+    # boot, so this purge frees the cap from ghosts without nuking
+    # real tracking.
+    try:
+        purged = _engine.purge_non_recover_tickets()
+        if purged:
+            logger.warning(
+                "[V8322-UUID-PURGE] cleared orphan uuid tickets at "
+                "session_start: %s", purged,
+            )
+    except Exception as _e:
+        logger.debug("[V8322-UUID-PURGE] failed: %s", _e)
     _record_activity(
         kind="session_start",
         detail="date " + date_iso + " · VIX_d1=" +

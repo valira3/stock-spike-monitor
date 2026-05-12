@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.22 (2026-05-12) -- Boot-time purge of orphan uuid tickets (unblocks persistent notional_cap rejects)
+
+Operator screenshot post-v8.3.20 deploy showed `risk_reject:notional_cap (would-be $300976 > $96280)` STILL firing on Main. v8.3.20 reduced the cap from 2.0× to 0.95× and added a `recover-*` sweep, but the rejects continued because the orphans were **uuid-style tickets** from prior `try_admit` calls — NOT `recover-{pid}-{ticker}` ids. v8.3.20's sweep scope-limited to recover-* (uuid→ticker mapping isn't safe in the general per-cycle case).
+
+Operator's directive (paraphrased): *"don't even consider firing anything that would put us outside our nominal limit."* The bot **was** refusing those (notional_cap reject is the engine doing its job). The bug was the **sum** being inflated by phantom uuid tickets eating ~$200K of the $96K cap.
+
+### Change
+
+`orb/engine.py` — new public method `OrbEngine.purge_non_recover_tickets() -> dict`:
+
+- Iterates every RiskBook (main/val/gene)
+- Pops any ticket whose id does NOT start with `recover-{pid}-`
+- Decrements `_open_risk` and `_open_notional` by released amounts (clamp non-negative)
+- Returns `{pid: n_purged}` for forensic logging
+
+`orb/live_runtime.py:ensure_session_started` — one-shot invocation right after the v8.3.4 rehydrate. Boot-only, never per-cycle: legitimate uuid tickets exist transiently during normal `try_admit` flow within a single scan cycle; per-cycle purge would clobber live admits. Boot is safe because v8.3.6 mirror re-adds clean `recover-*` tickets from `executor.positions` / `tg.positions` immediately after.
+
+Logs `[V8322-UUID-PURGE] cleared orphan uuid tickets at session_start: {pid: N}` when anything was purged.
+
+### Why uuid orphans accumulate
+
+`OrbEngine.try_enter` creates a uuid ticket via `RiskBook.try_admit`. The position object is constructed, FSM transitions to `PHASE_IN_POS`, and the Admission returns. Caller (`engine/scan.py:_orb_long_entry`) then calls `callbacks.execute_entry` which routes to `broker/orders.execute_breakout`. `execute_breakout` has ~10 early-return gates (cash, daily-loss-kill, cutoff, cooldown, ...). When it early-returns without populating `tg.positions[ticker]`, v7.81.0's `rollback_admit` is supposed to release the ticket. If rollback fails silently (e.g. exception in the rollback path, or v8.3.4 dump fires between admit and rollback so disk state has the ticket without the position write), the uuid ticket leaks. Across multiple Railway redeploys the leaks accumulate.
+
+v8.3.22 closes this gap by treating boot as the cleanup checkpoint: any uuid ticket that survives across a process boundary is by definition an orphan (real in-flight admits don't survive a redeploy).
+
+### Tests
+
+`tests/strategy/test_orb_uuid_ticket_purge.py` — **7 new tests**:
+
+1. Empty engine → no purge
+2. `recover-*` tickets preserved
+3. uuid tickets purged + risk/notional decremented
+4. Mixed: 1 recover-main-GOOG + 3 uuid orphans → purge clears the 3 uuid, GOOG ticket survives (operator's exact scenario)
+5. Purge across multiple pids (main + val + gene)
+6. Purge does NOT touch FSM state (only RiskBook tickets)
+7. Negative risk/notional drift clamps to 0
+
+**791 strategy tests pass** (784 + 7 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.22:
+1. **First scan cycle clears uuid orphans.** `[V8322-UUID-PURGE]` log line surfaces the count per pid.
+2. **Main's `risk_reject:notional_cap` stops firing** on signals smaller than `cap - real_open_notional`. Real exposure (~$73K GOOG) leaves ~$23K headroom under the $96K cap.
+3. **Watchdog `no_phantom_positions`** resolves — RiskBook open_count now matches real position count.
+
+### Tradeoff: per-cycle uuid sweep not added
+
+We deliberately did NOT add a per-cycle uuid sweep because:
+- Within a single scan cycle, `try_admit` legitimately creates a uuid ticket that gets attached to the position seconds later. A per-cycle purge would clobber it.
+- The boot-time path is sufficient: uuid orphans can only persist across process boundaries (via v8.3.4 disk dump), so boot is the right cleanup point.
+- The v8.3.20 per-cycle `recover-*` sweep continues to catch the other leak vector.
+
+### Rollback
+
+Remove the `_engine.purge_non_recover_tickets()` call in `live_runtime.ensure_session_started`. The helper stays defined (tested, no harm); the boot path stops purging.
+
+### Followup: v8.3.23 — Val/Gene v10 mirror-mode gauges
+
+Operator surfaced: Val's tab shows "V10 ORB · VAL · 0 TODAY · IDLE" while Val is actively trading (positions visible, activity feed shows ADMITs). Root: in mirror mode the engine's val RiskBook stays empty because Val's entries flow through the legacy bus path, not `OrbEngine.try_enter`. v8.3.23 will derive the gauges (trades_today / open_risk / realized_pnl / kill threshold) from Val's broker-side data when in mirror mode.
+
+---
+
 ## v8.3.21 (2026-05-12) -- Section-order parity across Main / Val / Gene + new CLAUDE.md rule
 
 Operator: "Order of sections across Val and Gene should match to main. Fix and add it to rules."
