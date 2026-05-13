@@ -1,0 +1,171 @@
+name: Tick-vs-Bar ATR validation
+
+# v8.3.30 -- validates the ATR-from-ticks vs ATR-from-1m-bars
+# hypothesis. Triggered automatically when the pull-tick-data
+# workflow succeeds, so the user only ever has to drop a
+# .github/tick-trigger/*.json file once -- the data pull AND the
+# validation both run with zero manual intervention.
+#
+# Output: a summary.json per validation run committed to the
+# `tick-validation-results` branch under
+# `tick-atr/<YYYY-MM-DD>/summary.json`. Each row in `summary.json`
+# carries:
+#   - n_ticks, n_bars_1m, n_bars_5m_*  (sanity counts)
+#   - atr_5m_14_from_ticks, atr_5m_14_from_1m
+#   - ratio_tick_over_1m  (the key metric)
+# and the top-level `verdict` field is one of:
+#   - tick_atr_meaningfully_tighter (ratio < 0.8) -- pursue
+#   - tick_atr_modestly_tighter     (0.8-0.95)
+#   - no_meaningful_difference      (0.95-1.05) -- shelve
+#   - tick_atr_wider                (>1.05)     -- bug
+#
+# Retrieval (sandbox-side):
+#   mcp__github__get_file_contents(
+#     owner=valira3, repo=stock-spike-monitor,
+#     path=tick-atr/<DATE>/summary.json,
+#     ref=tick-validation-results
+#   )
+
+on:
+  workflow_run:
+    workflows: ["Pull Alpaca tick data"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYY-MM-DD to validate (must already exist in R2)"
+        required: true
+        default: "2026-05-12"
+      tickers:
+        description: "Comma-separated tickers"
+        required: false
+        default: "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tick-atr-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    # Only run if upstream succeeded (workflow_run conclusion).
+    # workflow_dispatch path runs unconditionally.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code (main)
+        uses: actions/checkout@v4
+        with:
+          path: code
+          ref: main
+
+      - name: Checkout 1-min bar archive
+        uses: actions/checkout@v4
+        with:
+          path: bars
+          ref: data-extensions/rth-expand
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install boto3
+
+      - name: Resolve date
+        id: params
+        env:
+          UPSTREAM_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DISPATCH_DATE: ${{ inputs.date }}
+          DISPATCH_TICKERS: ${{ inputs.tickers }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "date=$DISPATCH_DATE" >> "$GITHUB_OUTPUT"
+            echo "tickers=$DISPATCH_TICKERS" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_run path -- read the date from the latest tick-trigger JSON
+            # so we validate the same range that was just pulled.
+            cd code
+            CHANGED=$(ls -t .github/tick-trigger/*.json 2>/dev/null | head -1)
+            if [ -z "$CHANGED" ]; then
+              echo "No tick-trigger JSON found; cannot infer date."
+              echo "skip=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            START=$(jq -r '.start_date' "$CHANGED")
+            TICKERS=$(jq -r '.tickers' "$CHANGED")
+            # For multi-day pulls, validate only the END date as a
+            # representative sample (validating every day blows up the
+            # branch). Operator can re-dispatch with explicit --date
+            # to validate other days from the pulled range.
+            END=$(jq -r '.end_date' "$CHANGED")
+            echo "date=$END" >> "$GITHUB_OUTPUT"
+            echo "tickers=$TICKERS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run ATR comparison
+        if: steps.params.outputs.skip != '1'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_TICK_PREFIX: tick-data
+        run: |
+          set -euo pipefail
+          mkdir -p out/tick-atr/${{ steps.params.outputs.date }}
+          cd code
+          python -m tools.compare_atr \
+            --date "${{ steps.params.outputs.date }}" \
+            --tickers "${{ steps.params.outputs.tickers }}" \
+            --bar-archive "${{ github.workspace }}/bars/data" \
+            --out "${{ github.workspace }}/out/tick-atr/${{ steps.params.outputs.date }}/summary.json"
+
+      - name: Commit results to tick-validation-results branch
+        if: steps.params.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}"
+          mkdir results-branch
+          cd results-branch
+          git init -b tick-validation-results
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code origin tick-validation-results >/dev/null 2>&1; then
+            git fetch --depth 1 origin tick-validation-results
+            git reset --hard origin/tick-validation-results
+          fi
+          mkdir -p tick-atr/${{ steps.params.outputs.date }}
+          cp "${{ github.workspace }}/out/tick-atr/${{ steps.params.outputs.date }}/summary.json" \
+             tick-atr/${{ steps.params.outputs.date }}/summary.json
+          git config user.email "valira3@gmail.com"
+          git config user.name "valira3"
+          git add tick-atr/
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+          git commit -m "tick-atr validation for ${{ steps.params.outputs.date }}"
+          for i in 1 2 3 4; do
+            if git push -u origin tick-validation-results; then
+              exit 0
+            fi
+            git fetch origin tick-validation-results || true
+            git rebase origin/tick-validation-results || git rebase --abort
+            sleep $((2 ** i))
+          done
+          echo "::error::push failed after 4 retries"
+          exit 1
+
+      - name: Upload results artifact too
+        if: always() && steps.params.outputs.skip != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tick-atr-validation-${{ steps.params.outputs.date }}
+          path: out/tick-atr/
+          retention-days: 30

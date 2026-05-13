@@ -2375,3 +2375,175 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
             tg.logger.debug("[lifecycle] close hook %s: %s", ticker, _e)
         except Exception:
             pass
+
+
+# ======================================================================
+# v8.1.0 -- partial-profit-at-1R: half-close primitive
+# ======================================================================
+
+
+def partial_close_breakout(ticker, shares_to_close, price, side,
+                           reason="PARTIAL_1R"):
+    """Half-close an open breakout position WITHOUT teardown.
+
+    v8.1.0 -- companion to close_breakout(). Whereas close_breakout()
+    pops the position dict, fires cooldowns, clears phase state, emits
+    a full EXIT signal, and writes a CLOSE row to trade_log, this
+    function:
+      * Updates the paper-book position dict: REDUCES
+        `positions[ticker]["shares"]` by `shares_to_close`;
+      * Paper-cash accounted via cfg.close_cash_delta;
+      * Appends a PARTIAL_1R row to trade_history + paper_trades for
+        forensic visibility (NOT trade_log -- trade_log is closed
+        trades only);
+      * Emits a [V81-ORB-PARTIAL] log line;
+      * v8.1.1+: emits a PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT signal
+        on the bus so subscribed executors (Val / Gene via
+        executors/base.py:_partial_close_position_idempotent) submit
+        matching MARKET partial sells to their Alpaca accounts. Both
+        paper and live broker books stay in sync.
+      * Does NOT trigger cooldowns, ratchet, or phase teardown -- the
+        runner half is still open and re-arm semantics still apply on
+        the FULL close.
+
+    Returns:
+      True  if the partial was applied (cash + shares mutated);
+      False if no-op (ticker not open, shares_to_close <= 0, or
+            shares_to_close >= current shares -- caller should use
+            close_breakout() for a full close).
+
+    Idempotent? NO -- a duplicate call WILL apply a second half-close
+    against the now-reduced position. Caller (orb.live_adapter) gates
+    against this via pos.partial_taken=True.
+    """
+    if shares_to_close is None or int(shares_to_close) <= 0:
+        return False
+    tg = _tg()
+    side_obj = side if hasattr(side, "is_long") else None
+    if side_obj is None:
+        # Accept Side enum, string, or SideConfig
+        try:
+            cfg = tg.CONFIGS[side]
+        except Exception:
+            return False
+    else:
+        cfg = tg.CONFIGS[side]
+    positions_dict = getattr(tg, cfg.positions_attr)
+
+    pos = positions_dict.get(ticker)
+    if not pos:
+        return False
+    current_shares = int(pos.get("shares") or 0)
+    closing = int(shares_to_close)
+    if closing <= 0 or closing >= current_shares:
+        # Refuse a "partial" that would empty (or over-empty) the
+        # position -- caller must use close_breakout() instead.
+        return False
+
+    entry_price = float(pos.get("entry_price") or 0.0)
+    partial_price = float(price)
+    pnl_val = cfg.realized_pnl(entry_price, partial_price, closing)
+    pnl_pct = 0.0
+    if entry_price > 0:
+        if cfg.side.is_long:
+            pnl_pct = (partial_price - entry_price) / entry_price * 100
+        else:
+            pnl_pct = (entry_price - partial_price) / entry_price * 100
+
+    # Paper cash accounting -- closing `closing` shares
+    try:
+        tg.paper_cash += cfg.close_cash_delta(closing, partial_price)
+        tg._sync_main_book_cash()
+    except Exception as _e:
+        tg.logger.warning(
+            "[V81-ORB-PARTIAL] cash sync %s: %s", ticker, _e,
+        )
+
+    # Mutate the open position in place -- reduce shares.
+    pos["shares"] = current_shares - closing
+    # Track cumulative partial-fill state on the legacy position dict
+    # so observers (dashboard, replay, audit) can see the half-fill
+    # without inspecting the v10 OrbPosition.
+    pos["partial_fills"] = (pos.get("partial_fills") or []) + [
+        {
+            "shares": closing,
+            "price": partial_price,
+            "reason": str(reason),
+            "pnl_dollars": round(pnl_val, 2),
+            "ts_utc": tg._utc_now_iso(),
+        }
+    ]
+
+    # Forensic row -- mark explicitly as PARTIAL_FILL so dashboard +
+    # /trades distinguish it from full closes.
+    try:
+        now_et = tg._now_et()
+        now_hhmm = now_et.strftime("%H:%M ET")
+        now_date = now_et.strftime("%Y-%m-%d")
+        trade = {
+            "action": "PARTIAL_SELL" if cfg.side.is_long else "PARTIAL_COVER",
+            "ticker": ticker,
+            "price": partial_price,
+            "shares": closing,
+            "pnl": round(pnl_val, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "reason": str(reason),
+            "entry_price": entry_price,
+            "time": now_hhmm,
+            "date": now_date,
+            "remaining_shares": pos["shares"],
+        }
+        # paper_trades / paper_all_trades for long; short_trade_history
+        # is the symmetric path for shorts (NOT paper_trades, matching
+        # the close_breakout convention).
+        if cfg.side.is_long:
+            tg.paper_trades.append(trade)
+            tg.paper_all_trades.append(trade)
+        else:
+            tg.short_trade_history.append(trade)
+    except Exception as _e:
+        tg.logger.warning(
+            "[V81-ORB-PARTIAL] history append %s: %s", ticker, _e,
+        )
+
+    try:
+        _verb = "PARTIAL_SELL" if cfg.side.is_long else "PARTIAL_COVER"
+        tg.paper_log(
+            "%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%) remaining=%d"
+            % (_verb, ticker, closing, partial_price, reason,
+               pnl_val, pnl_pct, pos["shares"])
+        )
+    except Exception:
+        pass
+
+    try:
+        tg.logger.info(
+            "[V81-ORB-PARTIAL] %s %s closed=%d @ $%.4f remaining=%d "
+            "partial_pnl=$%.2f reason=%s",
+            ("long" if cfg.side.is_long else "short"),
+            ticker, closing, partial_price, pos["shares"], pnl_val,
+            str(reason),
+        )
+    except Exception:
+        pass
+
+    # v8.1.1 -- fan PARTIAL_EXIT_* out to executors (Val / Gene) via
+    # the signal bus so their Alpaca clients submit matching half-sells.
+    # main_shares carries the partial-close share count, NOT the
+    # remaining position size, so the listener can directly submit
+    # for exactly the right qty.
+    try:
+        _kind = "PARTIAL_EXIT_LONG" if cfg.side.is_long else "PARTIAL_EXIT_SHORT"
+        tg._emit_signal({
+            "kind": _kind,
+            "ticker": ticker,
+            "price": float(partial_price),
+            "reason": str(reason),
+            "main_shares": int(closing),
+            "timestamp_utc": tg._utc_now_iso(),
+        })
+    except Exception as _e:
+        tg.logger.warning(
+            "[V81-ORB-PARTIAL] signal-bus emit %s: %s", ticker, _e,
+        )
+    return True

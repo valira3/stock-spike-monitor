@@ -381,6 +381,51 @@ class TradeGeniusBase:
         return (False, f"unknown mode: {new_mode!r} (expected 'paper' or 'live')")
 
     # ---------- signal listener ----------
+    def _scaled_signal_qty(self, signal_qty: int) -> tuple[int, float]:
+        """v8.3.17 -- scale a Main-emitted signal_qty by this executor's
+        equity-ratio so smaller Val/Gene accounts don't hit Main's
+        notional cap.
+
+        Returns (scaled_qty, ratio). When ex_equity >= main_equity OR
+        either equity read fails, returns (signal_qty, 1.0) -- a no-op
+        falls back to the legacy v5.24.0 1:1 mirror.
+
+        Math:
+          ratio = min(1.0, ex_equity / main_equity)
+          scaled_qty = max(1, int(signal_qty * ratio))
+
+        We clamp at >= 1 share when scaling down so a tiny-account
+        executor still mirrors direction + ticker (even if just 1
+        share); going to 0 would drop the trade entirely, which
+        loses the side-tracking signal and the opposite-side guard.
+        """
+        if signal_qty <= 0:
+            return (signal_qty, 1.0)
+        # Read Main's equity. tg.paper_cash is the source of truth;
+        # PortfolioBook's current_equity adds MTM but that introduces
+        # noise into the scale factor and is mostly cancelled by the
+        # symmetric MTM on Val's account.
+        try:
+            tg = _tg()
+            main_equity = float(getattr(tg, "paper_cash", 0.0) or 0.0)
+        except Exception:
+            return (signal_qty, 1.0)
+        if main_equity <= 0:
+            return (signal_qty, 1.0)
+        # Read this executor's equity (Alpaca account-equity).
+        try:
+            from engine.portfolio_equity import resolve_equity
+            ex_equity = float(resolve_equity(self.NAME.lower()) or 0.0)
+        except Exception:
+            return (signal_qty, 1.0)
+        if ex_equity <= 0:
+            return (signal_qty, 1.0)
+        if ex_equity >= main_equity:
+            return (signal_qty, 1.0)
+        ratio = ex_equity / main_equity
+        scaled = max(1, int(signal_qty * ratio))
+        return (scaled, ratio)
+
     def _shares_for(self, price: float, ticker: "str | None" = None) -> int:
         """v5.1.4 \u2014 equity-aware live sizing.
 
@@ -728,6 +773,17 @@ class TradeGeniusBase:
         if not rows:
             return
         self.positions.update(rows)
+        # v8.2.0 -- mirror each rehydrated row into the PortfolioBook
+        # so the dashboard's per-pid positions feed isn't empty after
+        # a Railway redeploy. Steady-state ENTRY rows are written to
+        # the book by record_entry_with_fill; this is the BOOT path.
+        # v8.3.6 -- ALSO mirror into the OrbEngine FSM + RiskBook so
+        # day_states.in_position / trades_today and risk_book.open_risk
+        # reflect the recovered positions (closes the "$0 / top ticker
+        # 0/5" gap on the dashboard's RISK panel).
+        for _tkr in rows.keys():
+            self._mirror_position_into_book(_tkr)
+            self._mirror_position_into_engine(_tkr)
         logger.info(
             "[%s] rehydrated %d persisted position(s) from state.db",
             self.NAME,
@@ -753,6 +809,153 @@ class TradeGeniusBase:
                 ticker,
             )
 
+    def _mirror_position_into_book(self, ticker: str) -> None:
+        """v8.2.0 -- mirror a position from self.positions into the
+        per-portfolio PortfolioBook so the dashboard's
+        /api/state.portfolios.<pid>.positions feed (which reads from
+        book.positions, NOT self.positions) sees grafted/persisted
+        rows. Closes the position_count_three_way phantom-at-broker
+        watchdog alert.
+
+        Idempotent: if the ticker is already in the book, no-op.
+        Steady-state live entries flow through record_entry_with_fill
+        which writes the book directly; this mirror only fires on the
+        boot paths (state.db load + Alpaca reconcile) where the book
+        would otherwise stay empty.
+        """
+        pos = self.positions.get(ticker)
+        if not pos:
+            return
+        try:
+            from engine.portfolio_book import PORTFOLIOS
+            book = PORTFOLIOS.get(self.NAME.lower())
+            if book is None:
+                return
+            side = str(pos.get("side", "LONG")).upper()
+            target = book.short_positions if side == "SHORT" else book.positions
+            if ticker in target:
+                # Already mirrored (or live-entered through
+                # record_entry_with_fill). Don't clobber a row that
+                # may have richer state (trail, stop, etc.) than ours.
+                return
+            target[ticker] = {
+                "ticker": ticker,
+                "shares": int(pos.get("qty", 0) or 0),
+                "entry_price": float(pos.get("entry_price", 0.0) or 0.0),
+                "entry_ts_utc": pos.get("entry_ts_utc"),
+                "source": pos.get("source", "BOOT_GRAFT"),
+                "stop": pos.get("stop"),
+            }
+        except Exception:
+            # Mirror is best-effort; never let it break a boot path.
+            logger.exception(
+                "[%s] _mirror_position_into_book failed for %s",
+                self.NAME, ticker,
+            )
+
+    def _mirror_position_into_engine(self, ticker: str) -> None:
+        """v8.3.6 -- mirror a self.positions row into the v10 OrbEngine
+        FSM + RiskBook so the dashboard's CONCURRENT RISK panel,
+        per-ticker trades_today counter ("top ticker N/5"), and the
+        opposite-side guard all reflect reality after a boot/redeploy.
+
+        Background: v8.2.0 covered the book.positions side. The engine
+        layer is a separate state machine (`_state.day_states[*]` +
+        `_risk[*]._open_tickets`) that doesn't watch executor.positions.
+        Without this mirror, after a redeploy:
+          - `day_states[pid, ticker].in_position` stays False
+            -> opposite-side guard fails to block (operator's directive)
+          - `day_states[pid, ticker].trades_today` stays 0
+            -> "top ticker 0/5" even when this ticker just traded
+          - `risk_book._open_tickets` is empty
+            -> CONCURRENT RISK $0 even with live positions
+            -> the daily-loss kill threshold's notional cap math is
+               also wrong
+
+        v8.3.4 prevents this for FUTURE redeploys via /data state
+        persistence. v8.3.6 covers the case where state was lost
+        BEFORE v8.3.4 was deployed -- a one-shot boot-time
+        reconciliation from executor.positions to engine state.
+
+        Idempotent: if the FSM is already IN_POS for this (pid, ticker)
+        AND the RiskBook already has a matching ticket, no-op. Doesn't
+        clobber a richer in-memory state.
+        """
+        pos = self.positions.get(ticker)
+        if not pos:
+            return
+        try:
+            import orb.live_runtime as _orb_runtime
+            from orb import state as _orb_state
+            from orb import risk_book as _orb_risk_book
+            engine = _orb_runtime.get_engine()
+            if engine is None:
+                return
+            pid = self.NAME.lower()
+            # Bail early if the engine doesn't recognize this portfolio
+            # (e.g. Val/Gene not registered, or pid mismatch).
+            if pid not in engine.portfolio_ids:
+                return
+            # --- 1. FSM: mark in_position + transition to PHASE_IN_POS ---
+            ds = engine._state.get_day_state(pid, ticker)
+            if not ds.in_position:
+                ds.in_position = True
+                # Phase transition only if currently in a non-blocked,
+                # non-in-pos phase. Don't clobber a BLOCKED_* row.
+                if not ds.is_blocked() and ds.phase != _orb_state.PHASE_IN_POS:
+                    ds.transition(_orb_state.PHASE_IN_POS)
+                ds.last_entry_iso = pos.get("entry_ts_utc") or ds.last_entry_iso
+            # --- 2. RiskBook: insert a synthetic ticket for the open risk ---
+            rb = engine._risk.get(pid)
+            if rb is None:
+                return
+            # Synthetic ticket id is deterministic so a re-mirror is idempotent.
+            ticket_id = f"recover-{pid}-{ticker}"
+            with rb._lock:
+                if ticket_id in rb._open_tickets:
+                    return  # already mirrored
+                shares_n = int(pos.get("qty", 0) or 0)
+                entry_p = float(pos.get("entry_price", 0.0) or 0.0)
+                stop_p = pos.get("stop")
+                # risk_dollars: prefer the actual stop distance when
+                # available; otherwise fall back to risk_per_trade_pct
+                # of the current equity (1% by default) as a safe
+                # approximation of what the position would have been
+                # admitted with.
+                risk_d = 0.0
+                if stop_p is not None and entry_p > 0 and shares_n > 0:
+                    try:
+                        risk_d = abs(entry_p - float(stop_p)) * shares_n
+                    except (TypeError, ValueError):
+                        risk_d = 0.0
+                if risk_d <= 0.0:
+                    try:
+                        risk_d = (rb._equity
+                                  * engine.cfg.risk_per_trade_pct / 100.0)
+                    except Exception:
+                        risk_d = 500.0  # conservative absolute fallback
+                notional = entry_p * shares_n if (entry_p > 0 and shares_n > 0) else 0.0
+                rb._open_tickets[ticket_id] = _orb_risk_book._Ticket(
+                    ticket_id=ticket_id,
+                    risk_dollars=float(risk_d),
+                    notional=float(notional),
+                )
+                rb._open_risk += float(risk_d)
+                rb._open_notional += float(notional)
+            logger.info(
+                "[%s] [V836-RECOVER] mirrored %s into engine FSM + RiskBook "
+                "(shares=%d entry=%.2f stop=%s risk_d=%.2f notional=%.2f)",
+                self.NAME, ticker, shares_n, entry_p,
+                ("%.2f" % float(stop_p)) if stop_p is not None else "None",
+                risk_d, notional,
+            )
+        except Exception:
+            # Mirror is best-effort; never let it break a boot path.
+            logger.exception(
+                "[%s] _mirror_position_into_engine failed for %s",
+                self.NAME, ticker,
+            )
+
     def _delete_persisted_position(self, ticker: str) -> None:
         """DELETE the row for ticker. Best-effort."""
         try:
@@ -774,9 +977,82 @@ class TradeGeniusBase:
         Single hook for every position-close path. The dict pop is
         defensive (a stale-then-gone case is fine); the DB delete
         always runs so a stray row never lingers.
+
+        v8.3.12 -- also unmirror the engine FSM + RiskBook ticket that
+        v8.3.6 may have created on boot graft. Without this, the
+        engine stays IN_POS for a (pid, ticker) whose position has
+        actually closed, surfacing as the watchdog's
+        `v10_in_pos_has_internal_position` phantom alert.
         """
         self.positions.pop(ticker, None)
         self._delete_persisted_position(ticker)
+        self._unmirror_position_from_engine(ticker)
+
+    def _unmirror_position_from_engine(self, ticker: str) -> None:
+        """v8.3.12 -- symmetric inverse of v8.3.6's
+        _mirror_position_into_engine. Called when a position closes so
+        the engine FSM transitions out of IN_POS and the synthetic
+        RiskBook ticket releases its risk + notional reservations.
+
+        Without this, the engine remembers the position as open
+        forever, surfacing as:
+          - dashboard CONCURRENT RISK that never drops back to $0
+            after the last close
+          - watchdog `v10_in_pos_has_internal_position` (FSM IN_POS
+            but no matching position in book)
+          - opposite-side guard incorrectly continuing to block
+            opposite-side entries after the original closed
+
+        Idempotent: if the FSM is not IN_POS and the synthetic
+        ticket isn't present, no-op.
+        """
+        try:
+            import orb.live_runtime as _orb_runtime
+            from orb import state as _orb_state
+            engine = _orb_runtime.get_engine()
+            if engine is None:
+                return
+            pid = self.NAME.lower()
+            if pid not in engine.portfolio_ids:
+                return
+            # --- 1. FSM: flip in_position off, transition to CLOSED ---
+            # Only if the row was actually marked in_position by an
+            # earlier mirror; don't touch blocked rows or rows that
+            # never opened.
+            ds = engine._state.get_day_state(pid, ticker)
+            if ds.in_position:
+                ds.in_position = False
+                if ds.phase == _orb_state.PHASE_IN_POS:
+                    ds.transition(_orb_state.PHASE_CLOSED)
+            # --- 2. RiskBook: release the synthetic ticket if present ---
+            rb = engine._risk.get(pid)
+            if rb is None:
+                return
+            ticket_id = f"recover-{pid}-{ticker}"
+            with rb._lock:
+                ticket = rb._open_tickets.pop(ticket_id, None)
+                if ticket is not None:
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    # Defensive clamp: rounding could push these
+                    # slightly negative on edge cases.
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+            if ticket is not None:
+                logger.info(
+                    "[%s] [V8312-UNRECOVER] released synthetic ticket %s "
+                    "(risk=%.2f notional=%.2f)",
+                    self.NAME, ticker,
+                    ticket.risk_dollars, ticket.notional,
+                )
+        except Exception:
+            # Best-effort cleanup; never raise into the close path.
+            logger.exception(
+                "[%s] _unmirror_position_from_engine failed for %s",
+                self.NAME, ticker,
+            )
 
     def _stamp_action(self, ticker: str) -> None:
         """v6.0.7 \u2014 record wall-clock of the last ENTRY/EXIT submit
@@ -1147,6 +1423,141 @@ class TradeGeniusBase:
         ok = f"\u2705 {label}: {ticker} CLOSE {qty}sh @ {descr} ({reason}) order_id={oid}"
         logger.info(ok)
         self._send_own_telegram(ok)
+
+    def _partial_close_position_idempotent(self, client, ticker: str,
+                                            shares_to_close: int, label: str,
+                                            reason: str) -> None:
+        """v8.1.1 -- half-close `shares_to_close` shares of an open
+        position on Alpaca WITHOUT teardown.
+
+        Companion to _close_position_idempotent. Differences:
+          * Always submits a MARKET order (partial fires when 1R is
+            touched, momentum is favorable -- no need for STOP_LIMIT
+            geometry).
+          * Does NOT call _remove_position -- mutates
+            self.positions[ticker]["qty"] to the remainder so the
+            executor's view stays in sync with Alpaca's.
+          * Records a PARTIAL_FILL log line instead of CLOSE.
+
+        Returns None. On any submit failure, the local position state
+        is NOT mutated (caller may retry on the next tick) -- this
+        prevents the executor's view from drifting from Alpaca on a
+        partial that didn't actually submit.
+
+        40410000 (position already flat on Alpaca): treated as success
+        path but with a warning -- the local position dict is still
+        decremented so subsequent ticks see the remainder. Operator
+        should inspect Alpaca for drift if 40410000 fires repeatedly.
+        """
+        if shares_to_close is None or int(shares_to_close) <= 0:
+            return
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+        except Exception:
+            logger.exception(
+                "[%s] alpaca imports failed on partial-close, skipping",
+                self.NAME,
+            )
+            return
+
+        pos = self.positions.get(ticker) or {}
+        side = pos.get("side")
+        cur_qty = int(pos.get("qty") or 0)
+        closing = int(shares_to_close)
+        if side not in ("LONG", "SHORT"):
+            logger.warning(
+                "[%s] [V81-ALPACA-PARTIAL] %s skipped -- unknown side=%s",
+                self.NAME, ticker, side,
+            )
+            return
+        if cur_qty <= 0:
+            logger.info(
+                "[%s] [V81-ALPACA-PARTIAL] %s skipped -- no position tracked",
+                self.NAME, ticker,
+            )
+            return
+        if closing >= cur_qty:
+            # A "partial" that would close the full position is a
+            # caller bug. Refuse so we never lose half the position
+            # silently; caller should use EXIT_* for full close.
+            logger.warning(
+                "[%s] [V81-ALPACA-PARTIAL] %s REFUSED partial=%d "
+                ">= current qty=%d (use EXIT_* for full close)",
+                self.NAME, ticker, closing, cur_qty,
+            )
+            return
+
+        exit_side = OrderSide.SELL if side == "LONG" else OrderSide.BUY
+        coid = self._build_client_order_id(ticker, f"PARTIAL_{side}")
+        req = MarketOrderRequest(
+            symbol=ticker,
+            qty=closing,
+            side=exit_side,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=coid,
+        )
+        try:
+            order = self._submit_order_idempotent(client, req, coid)
+        except Exception as exc:
+            msg = str(exc)
+            if "40410000" in msg or "position not found" in msg.lower():
+                logger.warning(
+                    "[%s] [V81-ALPACA-PARTIAL] %s already flat on broker "
+                    "(%s) -- decrementing local qty %d -> %d",
+                    self.NAME, ticker, reason, cur_qty, cur_qty - closing,
+                )
+                pos["qty"] = cur_qty - closing
+                self._stamp_action(ticker)
+                return
+            # Non-position-flat error: leave local qty untouched so
+            # the next tick can retry, and surface the error.
+            logger.exception(
+                "[%s] [V81-ALPACA-PARTIAL] %s FAILED submit -- local "
+                "qty unchanged at %d so caller can retry",
+                self.NAME, ticker, cur_qty,
+            )
+            return
+
+        # Success: decrement local qty to the runner remainder.
+        pos["qty"] = cur_qty - closing
+        self._stamp_action(ticker)
+        # Persist the mutated position row so a Railway redeploy mid-
+        # session doesn't lose the partial state.
+        try:
+            self._persist_position(ticker)
+        except Exception:
+            logger.debug(
+                "[%s] [V81-ALPACA-PARTIAL] %s persist skipped",
+                self.NAME, ticker, exc_info=True,
+            )
+        oid = getattr(order, "id", "?")
+        ok = (
+            f"\U0001f504 {label}: {ticker} PARTIAL {closing}sh "
+            f"@ market ({reason}) remaining={pos['qty']} order_id={oid}"
+        )
+        logger.info(ok)
+        self._send_own_telegram(ok)
+
+        # v8.1.7 -- record this partial in the v10 activity ring
+        # buffer so the dashboard's v10 Activity Feed shows
+        # cross-portfolio partials (Main was already covered via
+        # orb.live_runtime.check_exit in v8.1.2; this adds Val/Gene
+        # which dispatch through executors, NOT through check_exit).
+        # The detail string mirrors the Main side's format so the
+        # dashboard renders the two consistently.
+        try:
+            from orb.live_runtime import _record_activity
+            _record_activity(
+                kind="partial",
+                ticker=ticker,
+                pid=self.NAME.lower(),
+                detail=f"{closing} sh @ market ({reason})",
+            )
+        except Exception:
+            # Activity recording is best-effort -- never block the
+            # broker path on a downstream import / lock issue.
+            pass
 
     def _legacy_close_position_idempotent(
         self, client, ticker: str, label: str, reason: str
@@ -1596,6 +2007,18 @@ class TradeGeniusBase:
                 "trail": None,
             }
             self._persist_position(ticker)
+            # v8.2.0 -- mirror grafted row into PortfolioBook so the
+            # dashboard's /api/state.portfolios.<pid>.positions feed
+            # sees the recovered position. Closes the recurring
+            # inv_position_count_three_way "phantom at broker" alert
+            # that fires whenever broker has rows the book doesn't.
+            self._mirror_position_into_book(ticker)
+            # v8.3.6 -- ALSO mirror into the OrbEngine FSM + RiskBook so
+            # the engine knows it's in_position on this ticker
+            # (opposite-side guard) AND the RiskBook tracks the open
+            # risk + notional (CONCURRENT RISK panel + notional-cap
+            # math).
+            self._mirror_position_into_engine(ticker)
             grafted += 1
             logger.warning(
                 "[%s] [RECONCILE] grafted broker orphan: ticker=%s side=%s qty=%d entry=%.2f",
@@ -1634,6 +2057,16 @@ class TradeGeniusBase:
         mirror produces val_gene_trades_match_main violations. Pre-
         v7.83.0 silent early-returns (qty<=0, exception in builder)
         gave no log trail post-receipt.
+
+        v8.3.23 -- INDEPENDENT MODE entry guard. When
+        ORB_PORTFOLIO_FIRE=1 (default since v8.3.23), entries are
+        dispatched per-portfolio by engine/scan.py:_v10_dispatch_executor_fire
+        -> executor.fire_long / fire_short. This listener still
+        handles EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_* (the
+        production code does not yet wire live_runtime.check_exit
+        to a per-portfolio exit loop, so bus exits are still the
+        canonical exit path). Skipping ONLY entries here prevents
+        a double-fire on independent mode.
         """
         kind = event.get("kind", "")
         ticker = event.get("ticker", "")
@@ -1646,6 +2079,18 @@ class TradeGeniusBase:
             "[V79-MIRROR-RECV] %s kind=%s ticker=%s price=%s main_shares=%s",
             self.NAME, kind, ticker, price, main_shares,
         )
+
+        # v8.3.23 -- skip ENTRY signals in independent mode. Exits
+        # still flow through here.
+        if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
+            if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
+                logger.info(
+                    "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
+                    "mode active; entry will fire via "
+                    "_v10_dispatch_executor_fire (not legacy bus)",
+                    self.NAME, kind, ticker,
+                )
+                return
 
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any
@@ -1794,6 +2239,27 @@ class TradeGeniusBase:
         # ``main_shares`` keeps every executor's per-ticker quantity
         # aligned with the paper book and with each other.
         signal_qty = int(event.get("main_shares") or 0)
+
+        # v8.3.17 -- proportional scaling. Val/Gene Alpaca accounts may
+        # be smaller than Main's $100K paper book. Mirroring
+        # main_shares 1:1 then puts AMZN ($75K notional) through Val's
+        # ~$70K notional cap and gets risk_reject:notional_cap. Scale
+        # the qty by ex_equity / main_equity so the executor stays
+        # within its risk budget while still mirroring direction +
+        # ticker. No-op when ex_equity >= main_equity.
+        if signal_qty > 0:
+            try:
+                scaled_qty, scale_ratio = self._scaled_signal_qty(signal_qty)
+            except Exception:
+                # Best-effort -- never break the mirror path on a
+                # scaling math error. Fall through to legacy 1:1.
+                scaled_qty, scale_ratio = signal_qty, 1.0
+            if scale_ratio < 1.0:
+                logger.info(
+                    "[V8317-SCALE] %s %s qty=%d -> %d (eq_ratio=%.3f)",
+                    self.NAME, ticker, signal_qty, scaled_qty, scale_ratio,
+                )
+            signal_qty = scaled_qty
 
         try:
             if kind == "ENTRY_LONG":
@@ -2006,6 +2472,33 @@ class TradeGeniusBase:
                         "[%s] per-book record_entry_with_fill SHORT skipped: %s",
                         self.NAME, ticker, exc_info=True,
                     )
+            elif kind in ("PARTIAL_EXIT_LONG", "PARTIAL_EXIT_SHORT"):
+                # v8.1.1 -- partial-profit-at-1R mirror. main_shares
+                # carries the partial-close share count (NOT the
+                # remaining position size). Position stays open on
+                # this executor with qty -= partial_shares.
+                if ticker not in self.positions:
+                    logger.info(
+                        "[%s] %s %s skipped \u2014 no position tracked",
+                        self.NAME, kind, ticker,
+                    )
+                    return
+                partial_qty = 0
+                try:
+                    partial_qty = int(main_shares or 0)
+                except Exception:
+                    partial_qty = 0
+                if partial_qty <= 0:
+                    logger.warning(
+                        "[%s] [V81-MIRROR-SKIP] %s partial_qty=0 "
+                        "(main_shares=%s)",
+                        self.NAME, kind, main_shares,
+                    )
+                    return
+                self._partial_close_position_idempotent(
+                    client, ticker, partial_qty, label, reason,
+                )
+                return
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
                 # v5.24.0 \u2014 ``state.db.executor_positions`` (loaded
                 # into ``self.positions`` on boot, kept in sync via

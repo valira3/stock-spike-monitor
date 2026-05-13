@@ -1,0 +1,7 @@
+{
+  "start_date": "2026-05-12",
+  "end_date": "2026-05-12",
+  "tickers": "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ",
+  "premarket": "false",
+  "_note": "v8.3.28 initial sample pull -- one day of tick data for all 12 v10-universe tickers. Goal: validate the ATR-from-ticks vs ATR-from-1m-bars hypothesis (production's tick-level ATR is tighter than our 1-min OHLC ATR, which is why my replay's stops are 1.5x wider than production's). If this 1-day pull demonstrates the gap, we expand to the full year via a subsequent trigger. Expected size: ~120 MB compressed (~30 MB per ticker for the most liquid)."
+}

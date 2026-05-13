@@ -42,6 +42,7 @@ import threading
 from typing import Mapping, Optional
 
 from orb.engine import OrbConfig, OrbEngine
+from orb.eod_reversal import EodReversalConfig, EodReversalEngine
 from orb.live_adapter import LiveAdapter, LiveAdapterRegistry, EntryResult, ExitResult
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,10 @@ _engine: Optional[OrbEngine] = None
 _adapters: Optional[LiveAdapterRegistry] = None
 _session_date: str = ""  # iso date when the current session was started; "" if not yet
 _bootstrapped: bool = False
+# v9.1.0 -- EOD reversal addon engine. Runs alongside the morning ORB
+# engine; fires a single cross-sectional reversal trade at 15:30 ET
+# and flattens at 15:59 ET. Independent state.
+_eod_engine: Optional[EodReversalEngine] = None
 _bootstrap_lock = threading.RLock()
 _sizes_lock = threading.RLock()
 
@@ -161,7 +166,14 @@ def _build_config_from_env() -> OrbConfig:
         max_trades_per_day=_i("ORB_MAX_TRADES_PER_DAY", 5),
         risk_per_trade_pct=_f("ORB_RISK_PER_TRADE_PCT", 1.0),
         max_concurrent_risk_dollars=_f("ORB_MAX_CONCURRENT_RISK_DOLLARS", 2000.0),
-        max_concurrent_notional_mult=_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+        # v8.3.20 -- env default 2.0 -> 0.95. Operator directive: total
+        # notional (longs + shorts) must stay BELOW account equity with
+        # safety margins; no over-leverage. The 0.95 multiplier matches
+        # the broker-side legacy v7.86.0 cap so both v10 RiskBook AND
+        # paper-book ask the same question. Operator can override
+        # via ORB_MAX_CONCURRENT_NOTIONAL_MULT in Railway env for
+        # research backtests where higher exposure is intended.
+        max_concurrent_notional_mult=_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 0.95),
         max_trade_notional_pct=_f("ORB_MAX_TRADE_NOTIONAL_PCT", 75.0),
         daily_loss_kill_pct=_f("ORB_DAILY_LOSS_KILL_PCT", 2.0),
         move_to_be_after_1r=_b("ORB_MOVE_TO_BE_AFTER_1R", True),
@@ -172,6 +184,43 @@ def _build_config_from_env() -> OrbConfig:
         skip_gap_above_pct=_f("ORB_SKIP_GAP_ABOVE_PCT", 1.5),
         fail_closed_on_missing_vix=_b("ORB_FAIL_CLOSED_VIX", True),
         ticker_side_blocklist=blocklist,
+        # v8.0.0 -- ATR-based stop placement
+        # v8.0.1 -- default flipped 0.0 -> 1.75 to activate live (backtest-
+        # validated 39% headline lift, 0/4 negative quarters). Setting
+        # ORB_ATR_STOP_MULT=0 in Railway env still disables the feature
+        # (back to v7.111.0 OR-edge stop).
+        atr_stop_mult=_f("ORB_ATR_STOP_MULT", 1.75),
+        atr_lookback_5m=_i("ORB_ATR_LOOKBACK_5M", 14),
+        # v8.1.0 -- partial-profit-at-1R. v8.1.3 -- env-fallback default
+        # flipped False -> True. With everything wired end-to-end
+        # (engine FSM in v8.1.0, executor Alpaca partial-sell in v8.1.1,
+        # dashboard UI in v8.1.2), the operator-flag-required gate is
+        # the last brake. v8.1.3 lifts it: next Railway deploy
+        # auto-activates partial-profit-at-1R. Operator can revert by
+        # setting ORB_PARTIAL_PROFIT_AT_1R=0 in Railway env (no redeploy).
+        partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
+        # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
+        # Both default 0.0 = off (R10 research showed they hurt when
+        # stacked with v9 chase-prevention; do not enable in v9).
+        loss_lock_threshold_usd=_f("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
+        peak_dd_halt_usd=_f("ORB_PEAK_DD_HALT_USD", 0.0),
+        # v9.0.0 -- chase-prevention filters (R10 winning config).
+        # Defaults ON. Operator can disable via env: set to 0 to
+        # bypass either filter.
+        min_break_bps=_f("ORB_MIN_BREAK_BPS", 5.0),
+        max_vwap_dev_bps=_f("ORB_MAX_VWAP_DEV_BPS", 25.0),
+        max_vwap_dev_tickers=tuple(
+            t.strip().upper()
+            for t in os.environ.get(
+                "ORB_MAX_VWAP_DEV_TICKERS",
+                "META,MSFT,AAPL,AMZN,GOOG,AVGO",
+            ).split(",")
+            if t.strip()
+        ),
+        # v9.0.0 -- prior-day SPY regime gate (R12). Default -40 bps
+        # threshold; skip whole day on moderate SPY drop carryover.
+        skip_prior_spy_ret_lt_bps=_f("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", -40.0),
+        fail_closed_on_missing_spy=_b("ORB_FAIL_CLOSED_SPY", False),
     )
 
 
@@ -220,24 +269,33 @@ def bootstrap(*, force: bool = False) -> None:
         state -- _engine and _adapters are only assigned once BOTH
         constructors return successfully.
     """
-    global _engine, _adapters, _bootstrapped
+    global _engine, _adapters, _eod_engine, _bootstrapped
     with _bootstrap_lock:
         if _bootstrapped and not force:
             return
         cfg = _build_config_from_env()
         portfolio_ids = _resolve_portfolio_ids()
         earnings_fn = _resolve_earnings_fn()
-        # Local-then-swap: build both, then publish atomically.
+        # Local-then-swap: build all, then publish atomically.
         try:
             _new_engine = OrbEngine(cfg, portfolio_ids=portfolio_ids,
                                     is_earnings_window_fn=earnings_fn)
             _new_adapters = LiveAdapterRegistry(_new_engine)
+            # v9.1.0 -- EOD reversal addon engine. Lives alongside the
+            # morning ORB. Its config is read from env (defaults all ON
+            # per the r17 backtest winning spec); operator can disable
+            # via ORB_EOD_REVERSAL_ENABLED=0.
+            _new_eod_cfg = EodReversalConfig.from_env()
+            _new_eod_engine = EodReversalEngine(
+                _new_eod_cfg, portfolio_ids=portfolio_ids,
+            )
         except Exception:
             logger.exception("[V79-ORB-BOOT] construction failed; "
                              "module state unchanged")
             raise
         _engine = _new_engine
         _adapters = _new_adapters
+        _eod_engine = _new_eod_engine
         _bootstrapped = True
         logger.info("[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
                     portfolio_ids, cfg.rr, cfg.or_minutes, cfg.skip_vix_above)
@@ -263,15 +321,28 @@ def ensure_session_started(*, date_iso: str,
                            ticker_open_today: dict[str, Optional[float]],
                            ticker_prev_close: dict[str, Optional[float]],
                            equity_per_portfolio: dict[str, float],
+                           spy_prior_ret_bps: Optional[float] = None,
                            ) -> bool:
     """Idempotent session start. Returns True if a fresh session was
     started, False if the session was already started for `date_iso`.
+
+    v9.0.0: `spy_prior_ret_bps` is the prior-session SPY return in bps.
+    When omitted, the function auto-loads via orb_spy_loader (bar
+    archive or CSV fallback). Pass an explicit value to override the
+    loader in tests.
     """
     global _session_date
     if not _bootstrapped or _engine is None:
         return False
     if _session_date == date_iso:
         return False
+    if spy_prior_ret_bps is None and _engine.cfg.skip_prior_spy_ret_lt_bps != 0.0:
+        try:
+            from tools.orb_spy_loader import prior_spy_return_bps
+            spy_prior_ret_bps = prior_spy_return_bps(date_iso)
+        except Exception as _e:
+            logger.warning("[V900-SPY-LOADER] auto-load failed: %s", _e)
+            spy_prior_ret_bps = None
     result = _engine.start_new_session(
         date_iso=date_iso,
         tickers=tickers,
@@ -279,6 +350,7 @@ def ensure_session_started(*, date_iso: str,
         ticker_open_today=ticker_open_today,
         ticker_prev_close=ticker_prev_close,
         equity_per_portfolio=equity_per_portfolio,
+        spy_prior_ret_bps=spy_prior_ret_bps,
     )
     if _adapters is not None:
         _adapters.reset_all_sessions()
@@ -290,6 +362,32 @@ def ensure_session_started(*, date_iso: str,
     )
     # v7.45.0: activity-feed event for session start + day-block if any
     clear_recent_activity()
+    # v8.3.4 -- attempt to rehydrate engine state from disk for today.
+    # Runs AFTER start_new_session's reset so any disk state for the
+    # same date_iso overlays what the reset cleared (OR windows, FSM
+    # phases, RiskBook realized P&L, etc.). Idempotent + no-op when
+    # no disk file exists for today (fresh-day path).
+    try:
+        _try_rehydrate_engine_state(date_iso)
+    except Exception as _e:
+        logger.debug("[V834-PERSIST] rehydrate failed: %s", _e)
+    # v8.3.22 -- one-shot purge of orphan uuid tickets that survived
+    # the rehydrate. Any non-`recover-*` ticket in _open_tickets is a
+    # leftover from a try_admit that wasn't released (broker fire
+    # failed without rollback_admit, OR mid-cycle dump captured the
+    # ticket without the position write that should follow). v8.3.6
+    # mirror re-adds clean recover-* tickets from held positions on
+    # boot, so this purge frees the cap from ghosts without nuking
+    # real tracking.
+    try:
+        purged = _engine.purge_non_recover_tickets()
+        if purged:
+            logger.warning(
+                "[V8322-UUID-PURGE] cleared orphan uuid tickets at "
+                "session_start: %s", purged,
+            )
+    except Exception as _e:
+        logger.debug("[V8322-UUID-PURGE] failed: %s", _e)
     _record_activity(
         kind="session_start",
         detail="date " + date_iso + " · VIX_d1=" +
@@ -302,6 +400,95 @@ def ensure_session_started(*, date_iso: str,
             detail="day-level gate fired: " + (result.block_reason or "?"),
         )
     return True
+
+
+# v8.3.4 -- engine state persistence wrappers.
+#
+# Why: prior to v8.3.4, every in-memory engine artifact (OR windows,
+# DayState FSM, RiskBook realized_pnl_today, activity feed, wash-sale
+# tracker, pending v10 sizes) was wiped on every Railway redeploy. v8.3.0
+# patched the OR-window symptom via per-cycle backfill; v8.3.4 attacks
+# the root cause by persisting EVERYTHING the engine needs to a JSON
+# snapshot on /data, then rehydrating on the next bootstrap.
+#
+# The wrappers below are thin: they delegate to orb.persistence. Tests
+# exercise orb.persistence directly; live_runtime tests cover the
+# bootstrap / ensure_session_started hookup.
+
+def _bot_version_str() -> str:
+    try:
+        from bot_version import BOT_VERSION
+        return str(BOT_VERSION)
+    except Exception:
+        return ""
+
+
+def dump_engine_state_now(*, date_iso: str = "") -> bool:
+    """Snapshot engine + live-runtime side state to disk.
+
+    Returns True on success; False on any failure / runtime not
+    bootstrapped / live mode off. Never raises.
+
+    Called from engine/scan.py once per scan cycle (~60s cadence).
+    """
+    if _engine is None:
+        return False
+    if not date_iso:
+        date_iso = _session_date or ""
+    if not date_iso:
+        return False
+    try:
+        from orb.persistence import dump_state_to_disk
+    except Exception:
+        return False
+    with _activity_lock:
+        activity = list(_recent_activity)
+    with _sizes_lock:
+        sizes = dict(_pending_v10_sizes)
+    return dump_state_to_disk(
+        _engine,
+        recent_activity=activity,
+        pending_v10_sizes=sizes,
+        date_iso=date_iso,
+        bot_version=_bot_version_str(),
+    )
+
+
+def _try_rehydrate_engine_state(date_iso: str) -> dict:
+    """Attempt to load + overlay yesterday's-or-today's state from disk.
+
+    Called from bootstrap() and ensure_session_started() right after
+    the engine's reset, so the loaded data refills what the reset
+    cleared. Returns the apply-counters dict (empty on failure).
+    """
+    if _engine is None or not date_iso:
+        return {}
+    try:
+        from orb.persistence import (
+            load_state_from_disk, apply_loaded_state,
+        )
+    except Exception:
+        return {}
+    loaded = load_state_from_disk(date_iso)
+    if not loaded:
+        return {}
+    counters = apply_loaded_state(
+        _engine, loaded,
+        recent_activity=_recent_activity,
+        pending_v10_sizes=_pending_v10_sizes,
+    )
+    if counters and any(counters.values()):
+        logger.info(
+            "[V834-PERSIST] rehydrated date=%s or_windows=%d "
+            "day_states=%d risk_books=%d activity=%d sizes=%d",
+            date_iso,
+            counters.get("or_windows_loaded", 0),
+            counters.get("day_states_loaded", 0),
+            counters.get("risk_books_loaded", 0),
+            counters.get("activity_loaded", 0),
+            counters.get("pending_sizes_loaded", 0),
+        )
+    return counters
 
 
 def reset_session() -> None:
@@ -440,15 +627,44 @@ def feed_bar(*, ticker: str,
     )
 
 
+def backfill_or_windows(*, bars_by_ticker: dict,
+                        current_et_minutes: int) -> dict:
+    """v8.3.0 -- runtime wrapper for OrbEngine.backfill_or_windows.
+
+    Forwards pre-bucketed 1m bars (caller converts timestamps to ET
+    buckets) to the engine so any OR window not locked in real-time
+    gets rebuilt. Safe to call on every scan cycle; the engine
+    no-ops already-locked tickers + bars going to a locked window.
+
+    Returns the engine's counter dict, or an empty {} if runtime
+    isn't bootstrapped / live mode is off.
+    """
+    if not is_live_mode_on():
+        return {}
+    with _bootstrap_lock:
+        engine = _engine
+    if engine is None:
+        return {}
+    return engine.backfill_or_windows(
+        bars_by_ticker=bars_by_ticker,
+        current_et_minutes=current_et_minutes,
+    )
+
+
 def check_entry(*, portfolio_id: str, ticker: str, side: str,
                 five_min_close: float, next_open: float,
                 equity: float, signal_iso: str = "",
+                recent_5m_highs: Optional[list[float]] = None,
+                recent_5m_lows: Optional[list[float]] = None,
+                recent_5m_closes: Optional[list[float]] = None,
+                session_vwap: Optional[float] = None,
                 ) -> EntryResult:
     """Per-portfolio entry decision. Returns no-op EntryResult if the
     runtime isn't ready or live mode is off.
 
-    v7.32.0: snapshot _adapters under the bootstrap lock; see
-    feed_bar() docstring.
+    v9.0.0: `session_vwap` is the cumulative session VWAP for `ticker`
+    from session open through the signal bar (caller supplies). When
+    omitted or zero, the v9 chase filter fails open (entry allowed).
     """
     if not is_live_mode_on():
         return EntryResult(ok=False, reason_no="live_mode_off")
@@ -463,6 +679,10 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
         ticker, side=side,
         five_min_close=five_min_close, next_open=next_open,
         equity=equity, signal_iso=signal_iso,
+        recent_5m_highs=recent_5m_highs,
+        recent_5m_lows=recent_5m_lows,
+        recent_5m_closes=recent_5m_closes,
+        session_vwap=session_vwap,
     )
     # v7.45.0: record admit / informative-reject in activity feed.
     # Skip "no_signal" rejects since they fire every tick when no
@@ -515,6 +735,21 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
                 ticker=ticker, pid=portfolio_id,
                 detail=str(result.reason or "") + " @ "
                         + ("%.2f" % (result.price or 0)),
+            )
+        except Exception:
+            pass
+    # v8.1.2 -- partial-fills surface in the activity feed too.
+    elif result and getattr(result, "partial", False):
+        try:
+            _record_activity(
+                kind="partial",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(int(getattr(result, "partial_shares", 0) or 0))
+                        + " sh @ "
+                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                        + " (booked $"
+                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                        + ")",
             )
         except Exception:
             pass
@@ -664,6 +899,21 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
             )
         except Exception:
             pass
+    # v8.1.2 -- partial-fills surface in the activity feed too.
+    elif result and getattr(result, "partial", False):
+        try:
+            _record_activity(
+                kind="partial",
+                ticker=ticker, pid=portfolio_id,
+                detail=str(int(getattr(result, "partial_shares", 0) or 0))
+                        + " sh @ "
+                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                        + " (booked $"
+                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                        + ")",
+            )
+        except Exception:
+            pass
     return result
 
 
@@ -672,9 +922,12 @@ def snapshot() -> dict:
     bootstrapped.
 
     v7.32.0: snapshot _engine under the bootstrap lock to avoid a
-    partial-init read race."""
+    partial-init read race.
+    v9.1.0: includes EOD reversal addon engine snapshot under "eod"
+    when bootstrapped."""
     with _bootstrap_lock:
         engine = _engine
+        eod = _eod_engine
         session_date = _session_date
     if engine is None:
         return {
@@ -688,7 +941,31 @@ def snapshot() -> dict:
     snap["session_date"] = session_date
     # v7.45.0: recent activity feed for the dashboard
     snap["activity"] = get_recent_activity(limit=25)
+    # v9.1.0: EOD reversal addon state
+    if eod is not None:
+        snap["eod"] = eod.snapshot()
     return snap
+
+
+# v9.1.0 -- EOD reversal hooks. Called by engine/scan.py at 15:30 ET
+# (entry attempt) and 15:59 ET (flatten). Each hook is idempotent
+# and safe to call repeatedly within its time window.
+
+
+def get_eod_engine() -> Optional[EodReversalEngine]:
+    """Return the EOD engine (None if not bootstrapped or disabled)."""
+    with _bootstrap_lock:
+        eod = _eod_engine
+    if eod is None or not eod.cfg.enabled:
+        return None
+    return eod
+
+
+def eod_reset_session_if_needed(date_iso: str) -> None:
+    """Reset the EOD engine state for a new trading day. Idempotent."""
+    eod = get_eod_engine()
+    if eod is not None:
+        eod.reset_for_session(date_iso)
 
 
 # --- diagnostic helpers (for tests + manual ops) ---

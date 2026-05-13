@@ -195,6 +195,27 @@
   }
   .act-buy  { background: var(--up-dim);   color: var(--up); }
   .act-sell { background: var(--down-dim); color: var(--down); }
+  /* v8.1.2 -- partial-fill action chip. Amber sits between win
+     green and loss red; signals "half-closed, still open" so the
+     operator's eye doesn't mis-read it as a full close. */
+  .act-partial { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+
+  /* v8.1.2 -- partial-fill indicator on the positions table's
+     shares cell. Same amber palette, tiny inline pill, monospace
+     for the price digits. */
+  .partial-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+  }
 
   /* Realized P&L cell — shows both $ and % on SELL rows, stacked
      on phones via the row-collapse media block below. */
@@ -361,23 +382,142 @@
     .trade-pnl .pnl-pct { font-size: 10px; margin-left: 3px; }
     .trades-summary { font-size: 11px; gap: 2px 10px; padding: 7px 12px; }
 
-    /* v7.0.3 \u2014 Open positions table on phones: drop the redundant %
-       column (Unreal. $ already conveys direction + magnitude) and tighten
-       cell padding so the 7 remaining columns fit without horizontal
-       overflow. The selector targets BOTH Main (#pos-body table) and
-       Val/Gene (data-f="pos-body" table) so all three portfolio tabs are
-       fixed by the same rule. */
-    #pos-body table th:nth-child(8),
-    #pos-body table td:nth-child(8),
-    [data-f="pos-body"] table th:nth-child(8),
-    [data-f="pos-body"] table td:nth-child(8) {
+    /* v8.3.10 — Open positions: stacked-card layout on phones.
+       The desktop table (10 columns: Ticker / Side / Sh / Entry /
+       Mark / Notional / Stop / Risk / Unreal / %) is wider than any
+       phone viewport even with v7.0.3 + v8.3.8 column-drops and
+       nowrap. v8.3.10 transforms each row into a vertical card:
+       header line with ticker, a 2-column grid of labeled value
+       cells, the unrealized P&L emphasized below, and the existing
+       progress row unchanged below that.
+
+       Pure CSS — no JS / HTML change. Cell labels are injected
+       via ::before on nth-child so the same render path serves both
+       desktop (table) and mobile (cards). */
+    #pos-body table,
+    [data-f="pos-body"] table {
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    #pos-body table thead,
+    [data-f="pos-body"] table thead {
       display: none;
     }
-    #pos-body table thead th,
-    #pos-body table tbody td,
-    [data-f="pos-body"] table thead th,
-    [data-f="pos-body"] table tbody td {
-      padding: 6px 6px;
+    #pos-body table tbody,
+    #pos-body table tbody tr,
+    [data-f="pos-body"] table tbody,
+    [data-f="pos-body"] table tbody tr {
+      display: block;
+      width: 100%;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-column-gap: 12px;
+      grid-row-gap: 4px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
+      margin: 10px 0 0 0;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td {
+      display: flex;
+      align-items: baseline;
+      justify-content: flex-start;
+      gap: 6px;
+      padding: 2px 0;
+      border: 0;
+      font-size: 12.5px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td.right,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td.right {
+      text-align: left;
+      justify-content: flex-start;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td::before {
+      display: inline-block;
+      min-width: 52px;
+      font-size: 9.5px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    /* Ticker: spans both columns at top. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(1),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(1) {
+      grid-column: 1 / -1;
+      font-size: 15px;
+      font-weight: 600;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(1)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(1)::before {
+      content: "";
+      display: none;
+    }
+    /* Side cell hidden: chip already renders inline in the ticker. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(2),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(2) {
+      display: none;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(3)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(3)::before { content: "SH"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(4)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(4)::before { content: "ENTRY"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(5)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(5)::before { content: "MARK"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(6)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(6)::before { content: "NOTIONAL"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(7)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(7)::before { content: "STOP"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(8)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(8)::before { content: "RISK"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9)::before { content: "UNREAL"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10)::before { content: "%"; }
+    /* v8.3.18 -- Held cell label on mobile card layout. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before,
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before { content: "HELD"; }
+    /* Unreal $ + % visually paired -- emphasize. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9),
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10) {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    /* Risk hidden on mobile: visible in the Concurrent Risk gauge. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(8),
+    [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(8) {
+      display: none;
+    }
+    /* Progress row: stays inside the card; flush bottom corners. */
+    #pos-body table tbody tr.pos-progress-row,
+    [data-f="pos-body"] table tbody tr.pos-progress-row {
+      display: block;
+      padding: 8px 12px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: 0;
+      border-radius: 0 0 8px 8px;
+      margin: 0;
+    }
+    #pos-body table tbody tr.pos-progress-row td,
+    [data-f="pos-body"] table tbody tr.pos-progress-row td {
+      display: block;
+      padding: 0;
+      border: 0;
     }
     #pos-body table .ticker .mark,
     [data-f="pos-body"] table .ticker .mark { margin-left: 1px; }
@@ -2637,6 +2777,9 @@ body.v10-live .legacy-v10-hidden {
 .act-kind.act-kind-kill { background: #dc2626; color: #fff; }
 .act-kind.act-kind-or_lock { background: #1e3a5f; color: #93c5fd; }
 .act-kind.act-kind-info { background: #374151; color: #d1d5db; }
+/* v8.1.2 -- partial-fill chip in the activity feed. Amber to match
+   the trades-panel PARTIAL_SELL chip + the positions ½@$ badge. */
+.act-kind.act-kind-partial { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
 /* v7.49.0 -- directional glyphs prefix each chip so an operator can
    scan the feed by shape, not just color. Width-budget: 100px desktop
    chip easily fits "↗ ADMIT" (etc.); mobile 80px also fits "↗ EXIT". */
@@ -2649,6 +2792,7 @@ body.v10-live .legacy-v10-hidden {
 .act-kind.act-kind-entry::before { content: "\2197"; }       /* ↗ */
 .act-kind.act-kind-exit::before { content: "\2713"; }        /* ✓ */
 .act-kind.act-kind-reject::before { content: "\2298"; }      /* ⊘ */
+.act-kind.act-kind-partial::before { content: "\00bd"; }     /* ½ */
 .act-kind.act-kind-day_block::before { content: "\26D4"; }   /* ⛔ */
 .act-kind.act-kind-kill::before { content: "\26A0"; }        /* ⚠ */
 .act-kind.act-kind-or_lock::before { content: "\1F512"; }    /* 🔒 */

@@ -49,8 +49,10 @@ Cross-portfolio coordination is none by design: Val rejecting on its risk cap do
 - Capped by single-trade notional (≤ 75% of equity).
 - Capped by concurrent risk ($2,000 default `max_concurrent_risk_dollars`).
 - Capped by concurrent notional (equity × 2.0 default `max_concurrent_notional_mult`).
-- RR=2.5 target, stop = OR opposite ± 5 bps buffer.
+- RR=2.5 target.
+- **Stop placement** (v8.0.0+): if `ORB_ATR_STOP_MULT > 0` (default off; production set to `1.75`) AND the ATR(14) window is warm (≥2 5m bars), stop = entry ∓ `atr_stop_mult * ATR`. Cold-ATR / unset env falls back to the original OR opposite ± 5 bps buffer. ATR is computed from 5m bar HLC supplied by `engine/scan.py:_orb_{long,short}_entry()` and reaches the engine via `live_runtime.check_entry → live_adapter.check_entry → engine.detect_breakout`. The fallback is automatic and silent — the strategy is never stop-less. The `BreakoutSignal.stop_source` field ("or_edge" | "atr") records which branch fired, surfaced in `[V79-ORB-ENTRY]` log lines for forensic.
 - Move stop to BE after 1R hit (`move_to_be_after_1r=True`).
+- **Partial profit at 1R** (v8.1.0 FSM + v8.1.1 live wiring, **default-on since v8.1.3** via `ORB_PARTIAL_PROFIT_AT_1R=1` env-fallback): on first 1R touch, half-close at the 1R price, mark `pos.partial_taken=True`, record `partial_pnl_dollars` on the position, release half the risk-book ticket. Runner half rides to RR=2.5 target with stop at entry (BE arms on the same bar). Realized P&L at final exit = `(exit-entry) * remaining + partial_pnl_dollars`. v8.1.1 closes the Alpaca loop: `broker/orders.py:partial_close_breakout` emits `PARTIAL_EXIT_LONG`/`SHORT` on the signal bus, and `executors/base.py:_partial_close_position_idempotent` submits a MARKET partial sell to each subscribed executor's Alpaca account. Set `ORB_PARTIAL_PROFIT_AT_1R=0` in Railway env to disable.
 - EOD flatten at 15:55 ET.
 
 ### Verification mechanisms
@@ -89,6 +91,9 @@ Local: `pytest tests/strategy/` runs all 231 tests in ~2s.
 | `ORB_SKIP_VIX_ABOVE` | `22.0` | VIX D-1 close above this kills the day. |
 | `ORB_SKIP_GAP_ABOVE_PCT` | `1.5` | Per-ticker gap (% of D-1 close) above this skips the day. |
 | `ORB_TICKER_SIDE_BLOCKLIST` | `{"META":["long"], "MSFT":["long"]}` | JSON map of ticker → blocked sides. |
+| `ORB_ATR_STOP_MULT` | `0.0` | If > 0, stop = entry ∓ this × ATR(5m,14) instead of OR opposite ± buffer. Cold-ATR falls back automatically. Live production target: `1.75` (v8.0.0+, env-default `1.75` since v8.0.1). |
+| `ORB_ATR_LOOKBACK_5M` | `14` | Bars in the ATR window. Wilder standard. |
+| `ORB_PARTIAL_PROFIT_AT_1R` | `1` | Half-close at 1R touch; runner rides to RR=2.5 target with BE stop (v8.1.0+ FSM, v8.1.1+ live Alpaca via executor MARKET partial sells, default-on v8.1.3+). Set `0` to disable. |
 
 ### Rollback paths
 

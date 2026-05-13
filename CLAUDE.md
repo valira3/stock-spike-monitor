@@ -1,14 +1,24 @@
 # stock-spike-monitor — agent guide
 
-## Current strategy: v10 ORB anchor (as of v7.27.0)
+## Current strategy: v10 ORB anchor + v9.1.0 EOD reversal addon
 
-Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE / V560-GATE are retired. The live decision path is:
+Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 ET) and the **v9.1.0 EOD reversal addon** for a single afternoon trade (15:30-15:59 ET). Tiger Sovereign / V570-STRIKE / V560-GATE are retired.
 
-- **Entry**: `orb/live_runtime.py` → `orb/engine.py` → `orb/state.py` (per-portfolio FSM) → `orb/risk_book.py` (concurrent risk + notional caps) → `orb/day_gates.py` (VIX / earnings / gap / blocklist) → `orb/exits.py` (RR=2.5 + move-to-BE-after-1R).
+**Morning ORB path** (decision flow):
+- **Entry**: `orb/live_runtime.py` → `orb/engine.py` → `orb/state.py` (per-portfolio FSM) → `orb/risk_book.py` (concurrent risk + notional caps) → `orb/day_gates.py` (VIX / earnings / gap / blocklist / SPY-regime) → `orb/exits.py` (RR=2.5 + move-to-BE-after-1R).
 - **Per-portfolio fanout**: Main / Val / Gene each run their own RiskBook + FSM. `engine/scan.py:_orb_long_entry`/`_orb_short_entry` iterates portfolios and calls `live_runtime.check_entry(...)` per portfolio.
-- **Broker fire**: Main goes through `callbacks.execute_entry` (legacy path). Val/Gene route through `executors/base.py:fire_long`/`fire_short` when `ORB_PORTFOLIO_FIRE=1` (default `0` until 5-day paper-fire observation completes).
+- **Broker fire**: Main goes through `callbacks.execute_entry` (legacy path). Val/Gene route through `executors/base.py:fire_long`/`fire_short` when `ORB_PORTFOLIO_FIRE=1` (default `1` since v8.3.23).
 - **Kill switch**: `ORB_LIVE_MODE=0` falls back to legacy strategy (rollback path).
-- **Forensic**: `[V79-ORB-BOOT/RESET/OR-LOCK/GATE/RISK-OK/RISK-NO/ENTRY/REJECT/EXIT/ADMIT/FIRE]` + `[V10-FIRE]` + `[V79-ORB-EQUITY]`.
+- **Forensic**: `[V79-ORB-BOOT/RESET/OR-LOCK/GATE/RISK-OK/RISK-NO/ENTRY/REJECT/EXIT/ADMIT/FIRE]` + `[V10-FIRE]` + `[V79-ORB-EQUITY]` + `[V900-MBR-REJECT]` + `[V900-VWAP-CHASE]` + `[V900-SPY-GATE]`.
+
+**EOD reversal addon path** (v9.1.0+):
+- **Module**: `orb/eod_reversal.py` (`EodReversalEngine`, independent from `OrbEngine`)
+- **Entry**: `engine/scan.py:_eod_reversal_pass` invoked once per scan cycle. At 15:30 ET fires top-1/top-1 long/short selection on `ORB_EOD_UNIVERSE` (default `ORCL,AAPL,MSFT,AVGO,NFLX`). At 15:59 ET flattens.
+- **Selection**: per-side fence via `ORB_EOD_LONG_TICKERS` + `ORB_EOD_SHORT_TICKERS`. Drops "retail-momentum" mega-caps (META, GOOG, TSLA, AMZN, NVDA) which fail the reversal pattern per R17 forensic.
+- **Sizing**: 35% notional per leg (fixed, not stop-based).
+- **Broker fire gate**: `ORB_EOD_FIRE_BROKER=0` (default) keeps it in paper-fire-observation mode — engine tracks positions + P&L for the dashboard but doesn't place real orders. Flip to `1` after 5+ clean paper days.
+- **Forensic**: `[V910-EOD-RESET/ENTRY/EXIT/FIRE/CLOSE-FIRE/NO-SIGNAL]`.
+- **Backtest backing**: docs/r17_afternoon_backtest_report.md (combined v9 morning + v9.1 EOD = $+29,386/yr / +18.6% over v9 alone / 0/5 neg quarters).
 
 ## Where things live
 - v10 strategy core: `orb/` package (`live_runtime.py`, `engine.py`, `state.py`, `risk_book.py`, `exits.py`, `day_gates.py`, `live_adapter.py`)
@@ -37,6 +47,72 @@ Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE /
 - Never use words "scrape/crawl/scraping/crawling" anywhere
 - Never hide `#h-tick`, never drop the health-pill count
 - Telegram mobile code-block: ≤34 chars per line
+- **UI changes propagate across all tabs (added v8.3.18).** When a feature lands on one tab (Main / Val / Gene), it must also land on the other two unless there's a documented reason it doesn't apply. The dashboard has three parallel renderer paths: `renderPositions` / `renderTrades` / `renderV10ActivityFeed` for Main (in IIFE-1, app.js ~lines 320–520, 600–740, 6190–6260) and `renderV10PerPortfolio` / `renderExecTrades` / per-pid panels for Val/Gene (in IIFE-2, app.js ~lines 3990–4200, 4565–4750). Changes to one without the other have already shipped twice as separate PR pairs (v8.3.1 + v8.3.16 for ET conversion; v8.3.8/v8.3.10 + v8.3.18 for position-row columns). Audit every UI PR against both renderer paths before merge. CSS via shared `#pos-body, [data-f="pos-body"]` selectors handles this automatically once the JS structure matches.
+- **Section order parity across tabs (added v8.3.21).** The vertical order of cards/sections on Val and Gene tabs must mirror Main's order so the operator's eye-trace is identical across portfolios. Canonical order: (1) killswitch banner, (2) KPI row, (3) Open positions, (4) v10 ORB header/gauges, (5) v10 Proximity, (6) Recent activity, (7) Today's trades, (8) Account diagnostics (Val/Gene only). When adding or moving a card, audit BOTH `index.html` (Main, ~lines 107–301) AND `execSkeleton` in `app.js` (~lines 3870–3987). The Val/Gene `v10 ORB` gauges card is the analog of Main's `v10-day-status` + `v10-baseline` + `v10-ticker-matrix-section` rolled into one — it occupies the equivalent slot.
+
+- **Independent-mode default (added v8.3.23).** `ORB_PORTFOLIO_FIRE` env default is now `"1"`, so each portfolio runs its own `OrbEngine.try_enter` and dispatches entries via `engine/scan.py:_v10_dispatch_executor_fire` → `executor.fire_long`/`fire_short`. The legacy bus listener `executors/base.py:_on_signal` skips `ENTRY_LONG`/`ENTRY_SHORT` when the flag is `"1"` to prevent double-fire. **EXIT signals still flow through `_on_signal`** because `orb.live_runtime.check_exit` is implemented but has no production caller yet — Main's bus-emitted `EXIT_*` is the canonical exit path for all three portfolios. **Limitation**: a position Val/Gene admits that Main rejected (different RiskBook decision) won't get an exit signal from the bus — those Val-only positions close only at EOD flush. Set `ORB_PORTFOLIO_FIRE=0` in Railway env to revert to pre-v8.3.23 mirror mode. A future v8.3.24+ will wire `check_exit` into a per-portfolio sentinel loop to close this gap.
+
+- **Major-version releases (added v9.0.0).** When the operator requests a major release (vN.0.0 from vN-1.x.x) or "build and deploy in a loop", follow the 7-step checklist in `.claude/skills/major-build/SKILL.md`: (1) UI parity across Main+Val+Gene, (2) all levers ON by default, (3) code-quality + algorithm correctness audit, (4) smoke tests work locally + post-deploy, (5) data fully filled with fail-open + auto-rebuild on missing, (6) state persists across restart/redeploy (or naturally re-derivable), (7) iterate on PR until CI + post-deploy-smoke both green. The skill codifies the v9.0.0 template; subsequent major releases extend it as new patterns emerge.
+
+## GHA-driven backtest via lever-sweep (added v8.3.26)
+
+When the operator asks for a multi-day or full-year backtest of a new
+theory, **do not build parallel infrastructure**. The existing path:
+
+1. **Corpus lives on `data-extensions/rth-expand` branch.** Bar files
+   at `data/<YYYY-MM-DD>/<TICKER>.jsonl`. Backfill missing dates by
+   dropping a JSON trigger under `.github/rth-trigger/` (e.g.
+   `fill-2026-05-12.json`) — the `pull-rth-bars.yml` workflow
+   auto-fires on push.
+2. **Add new theory env vars to `tools/orb_backtest.py`.** Pattern:
+   field on `ORBConfig`, default 0/False (off), `_envf`/`_envs` parse
+   in `from_env`, behavior in the simulate loop, surface in per-day
+   diagnostics. Keep changes minimal and tested in
+   `tests/strategy/test_orb_backtest_v18_rules.py` (or new file).
+3. **Write a sweep script** under `docs/research/r<N>_<theme>.py`
+   mirroring `r2`-`r5`. Theories are a list of
+   `(vid, env_overrides)` tuples layered on `BASE` (which encodes the
+   v12-winning config). Evaluate each theory on full-year + quarterly
+   slices to catch in-sample fits.
+4. **Dispatch the sweep via `Lever Sweep`** workflow (Actions tab ->
+   "Lever Sweep" -> "Run workflow"). The `variants` input takes the
+   JSON tuple from `python3 docs/research/r<N>_<theme>.py --print-variants`.
+   Results commit to the `sweep-results` branch under
+   `sweeps/run-<id>/<vid>/`.
+5. **Retrieve results via MCP**:
+   ```
+   mcp__github__get_file_contents(
+     owner="valira3", repo="stock-spike-monitor",
+     path="sweeps/run-<id>/<vid>/summary.json",
+     ref="sweep-results"
+   )
+   ```
+
+**Anti-pattern**: building a new `tools/corpus_backtest.py` or new
+`corpus-backtest.yml` workflow. The `lever-sweep.yml` +
+`tools/lever_sweep_runner.py` + `tools/orb_backtest.py` chain is the
+production research path. Falsified theories live in `r2`-`r5`'s
+top-of-file docstrings AND in `docs/pl_optimization_final_report_v12.md`
+("Falsified" section). Check there before re-running a dead theory.
+
+**Source-of-truth report**: `docs/pl_optimization_final_report_v<N>.md`
+(currently v12). v8.3.26's R6 results will land in v13 after the
+sweep runs.
+
+## Retrieving live state from sandbox (added v8.3.24)
+
+The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `snapshots-live` branch via the GitHub MCP:
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/snapshots/latest.json", ref="snapshots-live"
+)
+```
+
+The cron workflow `.github/workflows/state-snapshot.yml` updates `latest.json` every 10 min during US RTH (Mon-Fri, 13:00-21:00 UTC) by running `python -m tools.state_snapshot` against `/api/state` + `/api/executor/val` + `/api/executor/gene`. Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl`.
+
+For an immediate refresh outside the cron window: Actions tab -> state-snapshot -> Run workflow (`workflow_dispatch`).
 
 ## Operator preferences
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
@@ -51,7 +127,12 @@ Run `bash scripts/preflight.sh` — mirrors CI checks locally:
 In sandbox where `telegram` is missing, `pytest tests/strategy/` is the focused alternative (231+ tests; the v10 path is fully covered there).
 
 ## Post-deploy smoke
-Run `bash scripts/post_deploy_smoke.sh <version>` after every release (the script sources `scripts/lib/checks.sh` for the checks: deploy status, universe loaded, log-tag schema, no errors, bar archive today, dashboard /api/state). v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow strategy. Failures are informational — they do NOT block automated merges; post the output as a PR comment so the author sees it. CI will eventually invoke this automatically; the existing `post-deploy-smoke.yml` workflow remains the blocking gate.
+
+**Default path — already automated.** The `.github/workflows/post-deploy-smoke.yml` workflow auto-fires on every push to `main`. It uses GHA secrets (`DASHBOARD_PASSWORD`, `TELEGRAM_TP_TOKEN`, `TELEGRAM_TP_CHAT_ID`) — no Railway API token. It waits up to 5 min for Railway to roll out the new `BOT_VERSION` (polls `https://tradegenius.up.railway.app/api/version`), then runs **31 local + 9 prod smoke tests** via `python smoke_test.py` and `python smoke_test.py --prod`. On failure it Telegram-alerts the TP chat with the failing test names + the Action URL.
+
+→ **Do NOT propose running `scripts/post_deploy_smoke.sh <version>` from a local sandbox after a merge.** It's a different code path (sources `scripts/lib/checks.sh` for deploy-status / universe / log-tag / bar-archive / `/api/state` checks) that needs `RAILWAY_API_TOKEN` directly. Reserve it for the rare "GHA is broken, need a manual smoke" case. CI's `post-deploy-smoke.yml` is the canonical post-release gate; silence = pass, Telegram ping = fail.
+
+v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow strategy.
 
 ## Tests
 - `pytest tests/strategy/` — v10 ORB suite (231+ tests, fast)

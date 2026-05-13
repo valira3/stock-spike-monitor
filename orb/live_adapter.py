@@ -60,10 +60,26 @@ class EntryResult:
 
 @dataclass
 class ExitResult:
-    """Result of a check_exit call."""
+    """Result of a check_exit call.
+
+    v8.1.0 -- adds partial-fill fields. When `partial=True`, the
+    position is HALF-CLOSED at `partial_price` and remains open with
+    `remaining_shares`. Caller MUST:
+      1. Submit a broker sell/buy for `partial_shares`.
+      2. Do NOT remove the position from any open-position map.
+      3. Continue calling check_exit on subsequent bars for the runner.
+    `partial=True` and `exit=True` are mutually exclusive.
+    """
     exit: bool
-    reason: str = ""             # "target", "stop", "be_stop", "eod", or ""
+    reason: str = ""             # "target", "stop", "be_stop", "eod", "partial_1r", or ""
     price: float = 0.0
+    # v8.1.0 partial-fill metadata. Populated when the engine emits
+    # EXIT_PARTIAL and the adapter applies the half-close bookkeeping.
+    partial: bool = False
+    partial_shares: int = 0
+    partial_price: float = 0.0
+    remaining_shares: int = 0
+    partial_pnl_dollars: float = 0.0
 
 
 class LiveAdapter:
@@ -125,6 +141,10 @@ class LiveAdapter:
     def check_entry(self, ticker: str, *, side: str,
                     five_min_close: float, next_open: float,
                     equity: float, signal_iso: str = "",
+                    recent_5m_highs: Optional[list[float]] = None,
+                    recent_5m_lows: Optional[list[float]] = None,
+                    recent_5m_closes: Optional[list[float]] = None,
+                    session_vwap: Optional[float] = None,
                     ) -> EntryResult:
         """Single-side entry decision.
 
@@ -132,12 +152,16 @@ class LiveAdapter:
           1. Portfolio FSM is in armed/closed (can_enter)
           2. OR window is locked
           3. Detected a fresh breakout in the requested side
-          4. Risk-book admits the proposed sizing
+          4. v9 min_break_bps threshold met (if configured)
+          5. v9 max_vwap_dev_bps not exceeded (if configured + fenced)
+          6. Risk-book admits the proposed sizing
 
         Otherwise EntryResult.ok=False with reason_no diagnostic.
 
-        Note: side="long" returns False if the signal is short, and vice
-        versa. Caller should call once per side per tick.
+        v9.0.0: `session_vwap` is the cumulative session VWAP from
+        session open through the signal bar's close. Caller (scan.py)
+        passes it from the per-ticker accumulator; when None or zero,
+        the vwap chase filter fails open (allows entry).
         """
         s = side.lower()
         if s not in ("long", "short"):
@@ -149,14 +173,30 @@ class LiveAdapter:
             five_min_close=five_min_close,
             five_min_close_iso=signal_iso,
             next_open=next_open,
+            recent_5m_highs=recent_5m_highs,
+            recent_5m_lows=recent_5m_lows,
+            recent_5m_closes=recent_5m_closes,
         )
         if sig is None:
             return EntryResult(ok=False, reason_no="no_signal")
         if sig.side != s:
             return EntryResult(ok=False, reason_no=f"opposite_side:{sig.side}")
 
-        admission = self.engine.try_enter(sig, equity=equity)
+        # v9.0.0: snapshot pre-try_enter counters to detect chase
+        # rejection (a None return from try_enter could be RiskBook OR
+        # chase-filter; counters tell us which).
+        mbr_before = self.engine._mbr_reject_count
+        chase_before = self.engine._vwap_chase_reject_count
+
+        admission = self.engine.try_enter(
+            sig, equity=equity, session_vwap=session_vwap,
+        )
         if admission is None:
+            # Disambiguate the rejection reason.
+            if self.engine._mbr_reject_count > mbr_before:
+                return EntryResult(ok=False, reason_no="break_too_small")
+            if self.engine._vwap_chase_reject_count > chase_before:
+                return EntryResult(ok=False, reason_no="chase_too_far")
             rb = self.engine._risk.get(self.portfolio_id)
             reason = rb.last_reject_reason if rb else "no_risk_book"
             return EntryResult(ok=False, reason_no=f"risk_reject:{reason}")
@@ -200,7 +240,31 @@ class LiveAdapter:
         if decision is None:
             return ExitResult(exit=False)
 
-        # Exit triggered: release ticket + drop from open map
+        # v8.1.0 -- partial-profit fire: half-close, position stays open
+        # in the open map. Caller (scan.py / executor) submits the
+        # broker partial-sell using the partial_shares + partial_price
+        # surfaced on this ExitResult.
+        from orb.exits import EXIT_PARTIAL
+        if decision.reason == EXIT_PARTIAL:
+            shares_closed, pnl = self.engine.on_partial_exit(
+                pos, decision.price,
+            )
+            if shares_closed == 0:
+                # Engine-side guard rejected the partial (already taken
+                # or shares<2). Return no-op so caller doesn't fire a
+                # broker order.
+                return ExitResult(exit=False, reason="partial_noop")
+            return ExitResult(
+                exit=False, partial=True,
+                reason=EXIT_PARTIAL,
+                price=decision.price,
+                partial_shares=shares_closed,
+                partial_price=decision.price,
+                remaining_shares=int(pos.shares),
+                partial_pnl_dollars=float(pnl),
+            )
+
+        # Full exit: release ticket + drop from open map (existing path)
         self.engine.on_exit(pos, decision)
         self._open_positions.pop(ticket_id, None)
         # Drop from ticker map only if it points to this ticket (defensive

@@ -40,6 +40,8 @@ def isolated_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
+    monkeypatch.setenv("ORB_MAX_CONCURRENT_NOTIONAL_MULT", "2.0")  # v8.3.20 legacy
     yield monkeypatch
 
 

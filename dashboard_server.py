@@ -408,13 +408,8 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 today_s = m._now_et().strftime("%Y-%m-%d")
             except Exception:
                 today_s = ""
-            realized = 0.0
-            for t in getattr(m, "paper_trades", []) or []:
-                if t.get("date") == today_s and t.get("action") == "SELL":
-                    realized += float(t.get("pnl", 0.0) or 0.0)
-            for t in getattr(m, "short_trade_history", []) or []:
-                if t.get("date") == today_s:
-                    realized += float(t.get("pnl", 0.0) or 0.0)
+            # v8.3.7 -- realized P&L now merges in-memory + on-disk.
+            realized = _compute_realized_pnl_today(m, today_s)
             unreal = sum(
                 r.get("unrealized", 0.0)
                 for r in _serialize_positions(longs, shorts, _px)
@@ -471,17 +466,64 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
         strip = _build_portfolio_strip(book, executor)
         strip["day_pnl"] = day_pnl
 
-        return {
+        # v8.3.13 -- per-executor signal-bus subscription status.
+        # Surfaces whether this executor's _on_signal has registered
+        # with trade_genius._signal_listeners so the dashboard +
+        # watchdog can answer "is Val listening to main's emits?"
+        # without grep-the-Railway-logs archaeology. Closes the
+        # diagnostic gap on val_gene_trades_match_main: a listener
+        # that fails to register at boot becomes invisible until
+        # trade-count divergence is flagged hours later.
+        #
+        # Main is implicitly "subscribed" (it IS the bus emitter, not
+        # a listener); we still expose subscribed=True for shape
+        # symmetry across the three portfolios.
+        result_payload = {
             "portfolio_id": pid,
             "equity": equity,
             "day_pnl": day_pnl,
             "positions": positions_list,
             "trades_today": trades_today,
             "strip": strip,
+            "subscribed": _is_executor_subscribed(pid),
         }
+        return result_payload
     except Exception:
         stub["portfolio_id"] = pid
         return stub
+
+
+def _is_executor_subscribed(pid: str) -> bool:
+    """v8.3.13 -- True iff the executor for `pid` has its _on_signal
+    callback registered on trade_genius._signal_listeners.
+
+    Main is the bus emitter (not a listener); always returns True
+    for shape symmetry. Val/Gene return True iff their executor
+    class name appears in signal_bus_status().names.
+
+    Failure-tolerant: any import or read error returns False rather
+    than blowing up the snapshot.
+    """
+    try:
+        if pid == "main":
+            return True
+        m = _ssm()
+        if m is None:
+            return False
+        bus = m.signal_bus_status() if hasattr(m, "signal_bus_status") else {}
+        names = bus.get("names") or []
+        expected = "TradeGeniusVal" if pid == "val" else (
+            "TradeGeniusGene" if pid == "gene" else ""
+        )
+        if not expected:
+            return False
+        for qn in names:
+            # Listener qualnames look like "TradeGeniusVal._on_signal"
+            if qn.startswith(expected + ".") and "_on_signal" in qn:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _build_portfolios_map(prices: dict | None = None) -> dict:
@@ -609,11 +651,22 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
+                # v8.3.18 -- entry_ts_utc surfaces the ISO timestamp the
+                # bot stamped when this position opened (see
+                # broker/orders.py:1470). The UI derives "Held N h N m"
+                # client-side so the timer updates per render without
+                # the server needing to recompute.
+                "entry_ts_utc": p.get("entry_ts_utc", ""),
                 "entry_count": int(p.get("entry_count", 1) or 1),
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
                 "trail_pill": _long_trail_pill,
+                # v8.1.2 -- surface partial_fills (written by
+                # broker/orders.py:partial_close_breakout) so the UI
+                # can render a "½ taken @ $X" indicator on the qty
+                # cell. Empty list when no partial has fired yet.
+                "partial_fills": list(p.get("partial_fills") or []),
             }
         )
     for tkr, p in shorts.items():
@@ -658,14 +711,100 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "chandelier_stage": chandelier_stage,
                 "unrealized": unreal,
                 "entry_time": p.get("entry_time", ""),
+                # v8.3.18 -- entry_ts_utc for client-side "Held" column.
+                "entry_ts_utc": p.get("entry_ts_utc", ""),
                 "entry_count": 1,
                 "phase": phase_v510,
                 "sovereign_brake_distance_dollars": sb_distance,
                 "entry_2_fired": bool(p.get("v5104_entry2_fired")),
                 "trail_pill": _short_trail_pill,
+                # v8.1.2 -- partial_fills (see long-side comment above)
+                "partial_fills": list(p.get("partial_fills") or []),
             }
         )
     return rows
+
+
+def _compute_realized_pnl_today(m, today_s: str) -> float:
+    """v8.3.7 -- realized P&L for today summed across BOTH in-memory
+    lists (paper_trades SELL rows + short_trade_history COVER rows)
+    AND the synchronous on-disk trade_log.jsonl. De-dups by
+    (ticker, exit_time_in_ET) so the same close doesn't count twice
+    when both sources have it.
+
+    Why it's needed: paper_state.json (which rehydrates paper_trades
+    on boot) is saved on a 5-minute daemon-thread cadence; the
+    trade_log.jsonl is appended synchronously per trade. After a
+    Railway redeploy, the latest 0-5 min of SELL rows live on disk
+    but are missing from in-memory state. Pre-v8.3.7 the dashboard's
+    Day P&L computed realized only from paper_trades, so a session
+    that closed profitable trades just before redeploy looked like a
+    loss (operator screenshot: NFLX +$450.80 closed earlier, Day P&L
+    showed only the open-position unrealized = -$241.56).
+
+    Returns the sum in dollars (positive = profit, negative = loss).
+    Failure-tolerant: a trade_log read error returns the in-memory
+    sum alone rather than zero.
+    """
+    realized = 0.0
+    realized_keys: set = set()
+    for t in (getattr(m, "paper_trades", None) or []):
+        if not isinstance(t, dict):
+            continue
+        if t.get("date") != today_s:
+            continue
+        if t.get("action") != "SELL":
+            continue
+        try:
+            realized += float(t.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((
+            (t.get("ticker") or "").upper(),
+            str(t.get("time") or t.get("exit_time") or ""),
+        ))
+    for t in (getattr(m, "short_trade_history", None) or []):
+        if not isinstance(t, dict):
+            continue
+        if t.get("date") != today_s:
+            continue
+        try:
+            realized += float(t.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((
+            (t.get("ticker") or "").upper(),
+            str(t.get("time") or t.get("exit_time") or ""),
+        ))
+    try:
+        log_rows = m.trade_log_read_tail(
+            limit=500, since_date=today_s, portfolio="paper",
+        )
+    except Exception:
+        log_rows = []
+    for row in (log_rows or []):
+        if not isinstance(row, dict):
+            continue
+        if row.get("date") != today_s:
+            continue
+        tk = (row.get("ticker") or "").upper()
+        exit_iso = row.get("exit_time") or ""
+        # The in-memory dedup key uses "HH:MM ET" (paper_trades) so
+        # convert the trade_log's UTC ISO through _to_et_hhmm to
+        # match. v8.3.5 fixed the dashboard-render side; v8.3.7
+        # closes the parallel gap on the P&L summation side.
+        try:
+            exit_et = m._to_et_hhmm(exit_iso) if exit_iso else ""
+        except Exception:
+            exit_et = exit_iso
+        if (tk, exit_et) in realized_keys:
+            continue
+        try:
+            realized += float(row.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        realized_keys.add((tk, exit_et))
+    return realized
 
 
 def _today_trades() -> list[dict]:
@@ -697,15 +836,38 @@ def _today_trades() -> list[dict]:
     seen: set = set()
 
     def _key(t: dict, side: str) -> tuple:
-        # Prefer the field each list actually carries; fall back
-        # through both so the key is stable no matter which list the
-        # row originated from.
-        time_key = t.get("time") or t.get("entry_time") or t.get("exit_time") or ""
+        # v8.3.11 -- action-aware time-key resolution.
+        #
+        # Pre-v8.3.11 the fallback chain was time > entry_time > exit_time
+        # uniformly. This produced different keys for the same close
+        # depending on which list it came from:
+        #   - in-memory short_trade_history COVER: "time" not set ->
+        #     key uses entry_time
+        #   - v8.3.3 synth_exit COVER from trade_log: "time" set to
+        #     exit_time -> key uses time
+        # Different keys -> dedup failed -> the same cover rendered
+        # twice (operator surfaced AMZN COVER appearing at 11:00 with
+        # entry_price displayed AND at 11:14 with the real cover
+        # price).
+        #
+        # Fix: for close actions (SELL / COVER / PARTIAL_*), prefer
+        # exit_time so both the trade_log synth row (which carries
+        # exit_time) and the in-memory history_record (also carries
+        # exit_time per broker/orders.py:2008) agree. For open
+        # actions, prefer entry_time symmetrically.
+        action = (t.get("action") or "").upper()
+        is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
+        if is_close:
+            time_key = (t.get("exit_time") or t.get("time")
+                        or t.get("entry_time") or "")
+        else:
+            time_key = (t.get("entry_time") or t.get("time")
+                        or t.get("exit_time") or "")
         return (
             (t.get("ticker") or "").upper(),
             str(time_key),
             side,
-            t.get("action") or "",
+            action,
         )
 
     for t in list(getattr(m, "paper_trades", []) or []):
@@ -823,6 +985,106 @@ def _today_trades() -> list[dict]:
         seen.add(k_open)
         out.append(synth_open)
         short_entries_emitted.add(dedup_key)
+
+    # v8.3.3 -- backfill from trade_log.jsonl for trades that exist on
+    # disk but not in the in-memory paper_trades / short_trade_history
+    # lists. Root cause: paper_state.json (which rehydrates the
+    # in-memory lists on boot) is saved every 5 minutes via a
+    # daemon thread (trade_genius.py ~L7278); trade_log.jsonl is
+    # appended SYNCHRONOUSLY per trade (broker/orders.py:2057). After
+    # a Railway redeploy, the latest 0-5 minutes of trades are on
+    # disk in trade_log.jsonl but missing from in-memory state, so
+    # the Main tab's "today's trades" went blank. v8.3.3 reads the
+    # trade log directly and synthesizes any rows the in-memory
+    # path missed; the existing `seen` set de-dups against rows
+    # already emitted.
+    try:
+        log_rows = m.trade_log_read_tail(
+            limit=500, since_date=today, portfolio="paper",
+        )
+    except Exception:
+        log_rows = []
+    for row in log_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("date") != today:
+            continue
+        tk = row.get("ticker") or ""
+        side = (row.get("side") or "LONG").upper()
+        try:
+            shares_n = int(row.get("shares") or 0)
+        except (TypeError, ValueError):
+            shares_n = 0
+        try:
+            entry_price = float(row.get("entry_price") or 0.0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        try:
+            exit_price = float(row.get("exit_price") or 0.0)
+        except (TypeError, ValueError):
+            exit_price = 0.0
+        # v8.3.5 -- normalize entry/exit times to ET HH:MM for display.
+        # trade_log.jsonl writes exit_time as full UTC ISO (tg._utc_now_iso(),
+        # e.g. "2026-05-12T14:29:00Z"); entry_time is "HH:MM:SS" tz-naive ET
+        # (pos["entry_time"] = now_et.strftime("%H:%M:%S")). The dashboard's
+        # JS just slices HH:MM out of whatever string we hand it, so a raw
+        # UTC ISO renders as "14:29" instead of the correct "10:29 ET".
+        # Route both through tg._to_et_hhmm which converts ISO -> ET HH:MM
+        # and passes through "HH:MM:SS"-shaped strings unchanged (it treats
+        # tz-naive as already-ET).
+        entry_time_raw = row.get("entry_time") or ""
+        exit_time_raw = row.get("exit_time") or ""
+        try:
+            entry_time_val = m._to_et_hhmm(entry_time_raw) if entry_time_raw else ""
+        except Exception:
+            entry_time_val = entry_time_raw
+        try:
+            exit_time_val = m._to_et_hhmm(exit_time_raw) if exit_time_raw else ""
+        except Exception:
+            exit_time_val = exit_time_raw
+        # Synthesize the entry row (BUY for long, SHORT for short).
+        entry_action = "BUY" if side == "LONG" else "SHORT"
+        synth_entry = {
+            "action": entry_action,
+            "ticker": tk,
+            "side": side,
+            "shares": shares_n,
+            "price": entry_price,
+            "entry_price": entry_price,
+            "time": entry_time_val,
+            "entry_time": entry_time_val,
+            "entry_num": row.get("entry_num", 1),
+            "date": today,
+            "cost": round(shares_n * entry_price, 2),
+            "portfolio": "paper",
+        }
+        k_entry = _key(synth_entry, side)
+        if k_entry not in seen:
+            seen.add(k_entry)
+            out.append(synth_entry)
+        # Synthesize the exit row (SELL for long, COVER for short).
+        exit_action = "SELL" if side == "LONG" else "COVER"
+        synth_exit = {
+            "action": exit_action,
+            "ticker": tk,
+            "side": side,
+            "shares": shares_n,
+            "price": exit_price,
+            "exit_price": exit_price,
+            "entry_price": entry_price,
+            "pnl": row.get("pnl"),
+            "pnl_pct": row.get("pnl_pct"),
+            "reason": row.get("reason") or "",
+            "time": exit_time_val,
+            "exit_time": exit_time_val,
+            "entry_time": entry_time_val,
+            "date": today,
+            "portfolio": "paper",
+        }
+        k_exit = _key(synth_exit, side)
+        if k_exit not in seen:
+            seen.add(k_exit)
+            out.append(synth_exit)
 
     # sort by time if present. For close actions (SELL / COVER) the
     # canonical timestamp is the exit_time; opens (BUY / SHORT) carry it
@@ -1404,21 +1666,24 @@ def snapshot() -> dict[str, Any]:
         long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, prices)
         start_cap = float(getattr(m, "PAPER_STARTING_CAPITAL", 100_000.0))
 
-        # Today realized P&L from paper_trades (long SELLs, today only) +
-        # short_trade_history (short COVERs, today only). Date-filter both
-        # lists — paper_trades may carry yesterday's rows after a
-        # post-midnight restart before reset_daily_state() runs at 09:30 ET.
+        # Today realized P&L. v8.3.9 -- this legacy `portfolio.day_pnl`
+        # block was missed by v8.3.7 (which only patched
+        # `_build_portfolio_block` for the per-pid `portfolios.main`
+        # path). The dashboard's Day P&L TILE reads from the legacy
+        # block (s.portfolio.day_pnl), not s.portfolios.main.day_pnl,
+        # so the v8.3.7 fix didn't take effect for the operator's
+        # main view. Symptom: 4 closes totaling $655.21 realized
+        # showed as Day P&L=$127.50 (just the latest -$62.13 AMZN
+        # cover + unrealized) because paper_trades had been wiped
+        # on a redeploy and only the most-recent close was visible
+        # in the in-memory list. v8.3.9 routes through
+        # _compute_realized_pnl_today so the merge with
+        # trade_log.jsonl (v8.3.7's actual fix) applies here too.
         try:
             today = m._now_et().strftime("%Y-%m-%d")
         except Exception:
             today = ""
-        realized = 0.0
-        for t in getattr(m, "paper_trades", []) or []:
-            if t.get("date") == today and t.get("action") == "SELL":
-                realized += float(t.get("pnl", 0.0) or 0.0)
-        for t in getattr(m, "short_trade_history", []) or []:
-            if t.get("date") == today:
-                realized += float(t.get("pnl", 0.0) or 0.0)
+        realized = _compute_realized_pnl_today(m, today)
 
         unreal_sum = 0.0
         for row in _serialize_positions(longs, shorts, prices):
@@ -2475,23 +2740,45 @@ async def h_version(request):
 # ─────────────────────────────────────────────────────────────
 # v7.19.0 — v10 ORB projection card
 # ─────────────────────────────────────────────────────────────
-# Static reference numbers from docs/v10_strategy_keystone.md plus a
-# live-computed account-growth field. Cached at module level since the
-# values are static; the live-growth field is recomputed each request
-# from the main book's current_equity vs PAPER_STARTING_CAPITAL.
+# Static reference numbers shown on the "v10 Backtest Baseline" plate.
+# v8.1.5 -- refreshed for the full v8.1.3-active config (risk=1.0%
+# + ATR_STOP_MULT=1.75 + PARTIAL_PROFIT_AT_1R=True) backtested over
+# the FULL 251-day RTH corpus (May 2025 → May 2026), not the 124-day
+# in-sample window used for the original v10 keystone.
+#
+# Source: docs/pl_optimization_final_report_v12.md (Phase 14 + Round
+# R8 winner: R8_atr1pt75_partial = FY $+44,431, 4/4 positive quarters,
+# WR 59%, worst-day -$2,575).
+#
+# The honest_cagr_{low,mid,high} fields are operator-facing projections
+# (see CHANGELOG.md v8.1.3 projection table): LOW = 12% OOS-haircut,
+# MID = backtest result, HIGH = favorable-regime extrapolation.
+#
+# v8.1.6 -- Sharpe + max-DD + trades populated from the actual v8.1.3
+# backtest run (script: /tmp/compute_sharpe_v813.py, source method
+# documented in CHANGELOG.md v8.1.6). Run was 251 trading days on the
+# /tmp/rth-data/data corpus with the production env-fallback config
+# (risk=1.0%, atr_stop_mult=1.75, partial_profit_at_1r=True). Outputs:
+#   net_pnl      = $+44,431.10
+#   win_rate     = 58.64% -> displays as 59.0% on the plate
+#   entries      = 382 over 251d
+#   mean daily   = +0.1510%
+#   stdev daily  = 0.9441%
+#   Sharpe (ann) = 2.539  (rf=0; 252 trading days/yr annualization)
+#   max DD       = 6.31%  (peak-to-trough on compounded equity curve)
 _V10_PROJECTION_KEYSTONE = {
-    "in_sample_cagr_pct": 43.0,
-    "honest_cagr_low_pct": 5.5,
-    "honest_cagr_mid_pct": 30.0,
-    "honest_cagr_high_pct": 70.4,
-    "sharpe_ann": 2.85,
-    "max_drawdown_pct": 5.03,
-    "win_rate_pct": 57.0,
-    "trades_per_124d": 114,
-    "worst_day_dollars": -2030.0,
+    "in_sample_cagr_pct": 44.4,
+    "honest_cagr_low_pct": 12.0,
+    "honest_cagr_mid_pct": 44.4,
+    "honest_cagr_high_pct": 52.0,
+    "sharpe_ann": 2.54,
+    "max_drawdown_pct": 6.31,
+    "win_rate_pct": 59.0,
+    "trades_per_year": 382,
+    "worst_day_dollars": -2575.0,
     "starting_balance": 100000.0,
-    "in_sample_ending_balance": 119224.81,
-    "in_sample_period_days": 124,
+    "in_sample_ending_balance": 144431.0,
+    "in_sample_period_days": 251,
 }
 
 
@@ -2805,6 +3092,15 @@ def _executor_snapshot(name: str) -> dict:
             "status": str(getattr(acct, "status", "") or ""),
         }
         positions = client.get_all_positions()
+        # v8.3.18 -- pull entry_ts_utc from the executor's own
+        # positions dict so the UI can render a Held column. Alpaca's
+        # Position object has no opened_at/entered_at; the bot stamps
+        # entry_ts_utc when it opens (see executors/base.py:_record_position).
+        exec_positions = {}
+        try:
+            exec_positions = dict(getattr(executor, "positions", {}) or {})
+        except Exception:
+            exec_positions = {}
         rows = []
         for p in positions:
             qty = float(getattr(p, "qty", 0) or 0)
@@ -2818,15 +3114,23 @@ def _executor_snapshot(name: str) -> dict:
                 unreal_pct = float(unreal_pct_raw) * 100.0 if unreal_pct_raw is not None else 0.0
             except (TypeError, ValueError):
                 unreal_pct = 0.0
+            sym = str(getattr(p, "symbol", "") or "")
+            entry_ts = ""
+            exec_pos = exec_positions.get(sym) or exec_positions.get(sym.upper())
+            if isinstance(exec_pos, dict):
+                entry_ts = str(exec_pos.get("entry_ts_utc") or "")
             rows.append(
                 {
-                    "symbol": str(getattr(p, "symbol", "") or ""),
+                    "symbol": sym,
                     "side": side,
                     "qty": abs(qty),
                     "avg_entry": avg_entry,
                     "current_price": cur,
                     "unrealized_pnl": unreal,
                     "unrealized_pnl_pct": unreal_pct,
+                    # v8.3.18 -- ISO timestamp from the executor's own
+                    # bookkeeping; client renders Held = now - this.
+                    "entry_ts_utc": entry_ts,
                 }
             )
         payload["positions"] = rows

@@ -459,6 +459,48 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception as _e:
         logger.warning("[V79-ORB-RESET] failed: %s", _e)
 
+    # v8.3.0 -- automatic OR backfill on EVERY scan cycle (not just
+    # the first one after ensure_session_started). The v7.74.0 hook
+    # above only fired when `_fresh==True`, which is one-shot per
+    # date. If that single attempt failed silently (Alpaca returned
+    # empty bars, fetch raised, etc.) the OR stayed empty for the
+    # rest of the day. v8.3.0 retries on every cycle so a transient
+    # bar-source glitch can't cook today's trading.
+    #
+    # Cheap when all ORs are locked: the engine snapshot is consulted
+    # first and the per-ticker loop short-circuits on locked rows.
+    try:
+        _orb_post_or_backfill_sweep(callbacks, now_et, _scan_universe)
+    except Exception as _e:
+        logger.debug("[V83-OR-BACKFILL] sweep failed: %s", _e)
+
+    # v8.3.15 -- phantom-IN_POS consistency sweep. After v8.3.4
+    # rehydrate + executor.positions load, reconcile any engine FSM
+    # rows that say in_position=True but the ticker isn't actually
+    # held by the corresponding executor / main book. Self-heals
+    # stale orb_state_<date>.json snapshots written by an older
+    # process where the close path missed the unmirror.
+    #
+    # Idempotent: runs every cycle but a clean state returns 0
+    # phantoms (cheap O(N day_states) scan).
+    try:
+        _orb_phantom_sweep(tg)
+    except Exception as _e:
+        logger.debug("[V8315-PHANTOM-SWEEP] failed: %s", _e)
+
+    # v8.3.4 -- engine state persistence. Snapshot OR windows +
+    # DayState FSM + RiskBook + Activity feed + Wash-sale tracker +
+    # Pending v10 sizes to /data/orb_state_<date>.json after each
+    # scan cycle. Rehydrated on next bootstrap so a Railway redeploy
+    # mid-day no longer loses in-memory state.
+    #
+    # Cheap: ~5 KB JSON, atomic write (tempfile + os.replace). Errors
+    # are swallowed and debug-logged; never blocks the trading path.
+    try:
+        _orb_runtime.dump_engine_state_now()
+    except Exception as _e:
+        logger.debug("[V834-PERSIST] dump failed: %s", _e)
+
     # v7.24.0: intraday equity refresh. Pulls each PortfolioBook's
     # current_equity (paper_cash + MTM long_mv - short_liability) and
     # pushes into each per-portfolio RiskBook so notional caps track
@@ -475,6 +517,19 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
 
     for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
+
+    # v9.1.0 -- EOD reversal pass. Single hook per cycle that:
+    #   - at 15:30 ET ranks the EOD universe + admits top-1/top-1
+    #     long/short legs per portfolio (idempotent: only fires once
+    #     per session via entry_attempted flag)
+    #   - at 15:59 ET flattens all open EOD positions
+    # The engine TRACKS the positions for the dashboard regardless;
+    # actual broker fire is gated by ORB_EOD_FIRE_BROKER (default OFF
+    # for v9.1.0 paper-fire-observation per the v8.3.23 pattern).
+    try:
+        _eod_reversal_pass(callbacks, cur_min)
+    except Exception:
+        logger.exception("[V910-EOD] pass failed; engine state unchanged")
 
     logger.info(
         "SCAN CYCLE done in %.2fs, %d tickers (session=%s)",
@@ -605,6 +660,202 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
         "[V79-ORB-BACKFILL] done backfilled_tickers=%d locked_tickers=%d",
         backfilled, locked,
     )
+
+
+def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
+                                now_et: datetime,
+                                scan_universe: list) -> None:
+    """v8.3.0 -- per-cycle automatic OR backfill.
+
+    Runs on every scan cycle (not just the first after a fresh
+    session_start). For each ticker whose OR window isn't locked
+    AND we're past OR end, fetch today's 1m bars and feed them
+    through orb.live_runtime.backfill_or_windows. The engine handles
+    idempotency: locked windows reject bars silently, already-locked
+    tickers are skipped fast.
+
+    Why this exists in addition to _maybe_backfill_or_window:
+    the v7.74.0 hook fires once per date (when _fresh==True from
+    ensure_session_started). If that single attempt silently
+    failed -- Alpaca bar feed glitched, fetch raised, the bot
+    crashed between ensure_session_started and the backfill call --
+    the OR window stayed empty for the rest of the day. v8.3.0
+    retries on every cycle so we can't miss a trading day to a
+    transient glitch.
+
+    Fast-path: when current_et_minutes < or_end_minutes, the live
+    scan covers the active OR normally; the engine method returns
+    immediately. When all tickers are locked, the engine method
+    counts them as skipped without doing any fetch work.
+    """
+    from orb.engine import OrbConfig
+    cfg = OrbConfig()
+    cur_min = now_et.hour * 60 + now_et.minute
+    if cur_min < cfg.or_end_minutes:
+        return  # active OR; live scan handles it
+    engine = _orb_runtime.get_engine()
+    if engine is None:
+        return
+    # Identify tickers whose OR isn't yet locked. If everyone is
+    # locked, we're done -- skip the fetch entirely.
+    snap = engine.snapshot().get("or_windows", {})
+    unlocked = []
+    for tk in scan_universe:
+        row = snap.get(tk) or {}
+        if not row.get("locked"):
+            unlocked.append(tk)
+        else:
+            # Pre-locked: nothing to do for this ticker.
+            pass
+    if not unlocked:
+        return
+    bars_by_ticker: dict = {}
+    for ticker in unlocked:
+        try:
+            bars = callbacks.fetch_1min_bars(ticker)
+        except Exception as _e:
+            logger.debug("[V83-OR-BACKFILL] fetch failed %s: %s", ticker, _e)
+            continue
+        if not bars:
+            continue
+        timestamps = bars.get("timestamps") or []
+        opens = bars.get("opens") or []
+        highs = bars.get("highs") or []
+        lows = bars.get("lows") or []
+        closes = bars.get("closes") or []
+        volumes = bars.get("volumes") or []
+        rows: list = []
+        for i, ts in enumerate(timestamps):
+            if ts is None:
+                continue
+            try:
+                bucket = minutes_since_et_midnight(int(ts))
+            except Exception:
+                continue
+            if not (i < len(opens) and i < len(highs) and i < len(lows)
+                    and i < len(closes)):
+                continue
+            o, h, lo, c = opens[i], highs[i], lows[i], closes[i]
+            if None in (o, h, lo, c):
+                continue
+            v = volumes[i] if i < len(volumes) else 0.0
+            rows.append((bucket, float(h), float(lo), float(o),
+                         float(c), float(v or 0.0)))
+        if rows:
+            bars_by_ticker[ticker] = rows
+    if not bars_by_ticker:
+        return
+    result = _orb_runtime.backfill_or_windows(
+        bars_by_ticker=bars_by_ticker,
+        current_et_minutes=cur_min,
+    )
+    if result and (result.get("backfilled") or result.get("locked")):
+        logger.info(
+            "[V83-OR-BACKFILL] sweep cur_min=%d backfilled=%d locked=%d "
+            "skipped=%d failed=%d",
+            cur_min,
+            result.get("backfilled", 0), result.get("locked", 0),
+            result.get("skipped", 0), result.get("failed", 0),
+        )
+
+
+def _orb_phantom_sweep(tg) -> None:
+    """v8.3.15 -- find + clear engine FSM rows that say in_position=True
+    but the ticker isn't actually held in the corresponding portfolio's
+    positions map.
+
+    Symptom: watchdog `v10_in_pos_has_internal_position` invariant fires
+    with main/AMZN phase='in_pos' in_position=True last_entry='', but
+    the dashboard shows AMZN closed. Root cause: stale
+    `/data/orb_state_<date>.json` written by a pre-v8.3.12 process where
+    a close path missed the unmirror; v8.3.4 rehydrate then reloads
+    that row on every subsequent bootstrap.
+
+    Self-heals on every scan cycle. When state is clean (no phantoms),
+    the engine snapshot returns an empty list and we return without
+    touching anything. When phantoms exist, we clear them via
+    `OrbEngine.clear_phantom_in_pos` for main, or the executor's
+    `_unmirror_position_from_engine` for val/gene (different paths
+    because main has no executor instance -- it IS the tg module).
+    """
+    engine = _orb_runtime.get_engine()
+    if engine is None:
+        return
+    # Build held-tickers per pid.
+    held: dict = {}
+    try:
+        # Main: tg.positions (longs) + tg.short_positions (shorts).
+        main_longs = set(getattr(tg, "positions", {}).keys() or [])
+        main_shorts = set(getattr(tg, "short_positions", {}).keys() or [])
+        held["main"] = main_longs | main_shorts
+    except Exception:
+        held["main"] = set()
+    # Val/Gene: executor.positions (executor only stores one side; v10
+    # path mirrors long+short into the same dict per v7.0.0 design).
+    try:
+        from executors.bootstrap import get_executor
+        for pid in ("val", "gene"):
+            ex = get_executor(pid)
+            if ex is not None:
+                held[pid] = set(getattr(ex, "positions", {}).keys() or [])
+            else:
+                # No executor instance -- we have no data to determine
+                # phantoms. Skip rather than wipe (leaves the FSM as-is).
+                pass
+    except Exception:
+        pass
+    phantoms = engine.find_phantom_in_pos(held_tickers_by_pid=held)
+    # Clear each phantom via the right path (v8.3.15 FSM-side path).
+    cleared: list = []
+    for pid, ticker in phantoms:
+        if pid == "main":
+            if engine.clear_phantom_in_pos(pid, ticker):
+                cleared.append((pid, ticker))
+        else:
+            try:
+                from executors.bootstrap import get_executor
+                ex = get_executor(pid)
+                if ex is not None:
+                    ex._unmirror_position_from_engine(ticker)
+                    cleared.append((pid, ticker))
+            except Exception:
+                logger.debug(
+                    "[V8315-PHANTOM-SWEEP] could not unmirror %s/%s",
+                    pid, ticker,
+                )
+    if cleared:
+        logger.warning(
+            "[V8315-PHANTOM-SWEEP] cleared %d phantom IN_POS row(s): %s",
+            len(cleared), cleared,
+        )
+    # v8.3.20 -- second-level sweep: orphan recover-* tickets in
+    # RiskBook._open_tickets where the FSM in_position is False but
+    # the ticket still consumes open_risk/open_notional budget. v8.3.15
+    # only catches in_position=True rows; this catches the in_position=
+    # False ones from partial v8.3.12 unmirrors / mid-write v8.3.4
+    # rehydrate snapshots. Without this sweep, leaked tickets blocked
+    # new entries with risk_reject:notional_cap because the cap was
+    # already consumed by ghost tickets.
+    try:
+        ticket_phantoms = engine.find_phantom_recover_tickets(
+            held_tickers_by_pid=held,
+        )
+    except Exception:
+        ticket_phantoms = []
+    ticket_cleared: list = []
+    for pid, tid, ticker in ticket_phantoms:
+        try:
+            if engine.release_recover_ticket(pid, tid):
+                ticket_cleared.append((pid, ticker))
+        except Exception:
+            logger.debug(
+                "[V8320-TICKET-SWEEP] release failed %s/%s", pid, tid,
+            )
+    if ticket_cleared:
+        logger.warning(
+            "[V8320-TICKET-SWEEP] released %d phantom recover-* "
+            "ticket(s): %s", len(ticket_cleared), ticket_cleared,
+        )
 
 
 def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
@@ -838,16 +1089,45 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
 # v7.15.0: per-side ORB entry helpers. Factored out of _per_ticker_tick
 # so each side is independently testable and the logic is symmetric.
 def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
-    """Get current equity for `portfolio_id`. Falls back to paper_cash
-    on PortfolioBook lookup failure."""
+    """Get current equity for `portfolio_id`.
+
+    v8.1.9 -- routes Val/Gene through engine.portfolio_equity.resolve_equity
+    FIRST so Alpaca's authoritative account equity wins over
+    book.current_equity() (which returns 0 when paper_cash is the
+    default 0.0 -- the root cause of the recurring [Gene equity=0]
+    watchdog alert). Falls back through book MTM and then paper_cash.
+
+    Why a layered fallback rather than just resolve_equity:
+      - resolve_equity returns 0 when Alpaca keys aren't configured
+        for that portfolio (silent fail by design); we want to recover
+        to book.current_equity() rather than return 0 and reject every
+        entry on the notional_cap.
+      - book.current_equity() is correct for Main (where paper_cash
+        is the source of truth) but returns 0 for Val/Gene with
+        un-seeded books.
+      - Final fallback to tg.paper_cash maintains v7.x semantics
+        for callers that pass an unknown portfolio_id.
+    """
+    # Tier 1: portfolio_equity (Alpaca-first for Val/Gene)
+    try:
+        from engine.portfolio_equity import resolve_equity
+        eq = float(resolve_equity(portfolio_id))
+        if eq > 0:
+            return eq
+    except Exception:
+        pass
+    # Tier 2: PortfolioBook current_equity (correct for Main)
     try:
         from engine.portfolio_book import PORTFOLIOS
         book = PORTFOLIOS.get(portfolio_id)
-        if book is None:
-            return float(getattr(tg, "paper_cash", 100_000.0))
-        return book.current_equity()
+        if book is not None:
+            eq = float(book.current_equity())
+            if eq > 0:
+                return eq
     except Exception:
-        return float(getattr(tg, "paper_cash", 100_000.0))
+        pass
+    # Tier 3: legacy tg.paper_cash fallback
+    return float(getattr(tg, "paper_cash", 100_000.0))
 
 
 def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
@@ -881,7 +1161,12 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             pid, side, ticker,
         )
         return False
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
+    # v8.3.23 -- env default flipped "0" -> "1". Independent mode
+    # is now the default. Operators wanting the old mirror-mode
+    # behavior set ORB_PORTFOLIO_FIRE=0 explicitly in Railway env.
+    # Companion change: executors/base.py:_on_signal guards ENTRY
+    # signals when this flag is "1" to prevent double-fire.
+    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
             "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
@@ -974,6 +1259,303 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         return False
 
 
+def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
+    """v9.1.0 -- per-cycle hook for the EOD reversal addon strategy.
+
+    No-op outside the [entry_et, exit_et] window. Inside the entry
+    minute (default 15:30 ET) ranks the EOD universe and admits the
+    top-1 long + top-1 short per portfolio. At/after the exit minute
+    (default 15:59) flattens any open EOD positions.
+
+    Idempotent within a session via per-portfolio `entry_attempted`
+    flag (admission) and per-portfolio open_positions dict (exits).
+
+    Tracks positions for dashboard regardless of broker mode. When
+    cfg.fire_broker is True, also dispatches real broker orders via
+    callbacks.execute_entry (Main) and _v10_dispatch_executor_fire
+    (Val/Gene). Paper-fire-observation default: fire_broker=False.
+    """
+    eod = _orb_runtime.get_eod_engine()
+    if eod is None:
+        return
+    # Outside the trading window (RTH).
+    if cur_min < eod.cfg.entry_et_minutes - 1:
+        return
+    # Ensure session reset has fired for today's date.
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        date_iso = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
+        eod.reset_for_session(date_iso)
+    except Exception:
+        date_iso = ""
+
+    # --- entry window ---
+    if eod.is_entry_window(cur_min):
+        # Gather current prices via callbacks for the EOD universe.
+        current_prices: dict[str, float] = {}
+        for tk in eod.cfg.universe:
+            try:
+                bars = callbacks.fetch_1min_bars(tk)
+            except Exception:
+                bars = None
+            if not bars:
+                continue
+            px = (bars.get("current_price")
+                  or (bars.get("closes") or [None])[-1])
+            if isinstance(px, (int, float)) and px > 0:
+                current_prices[tk] = float(px)
+        # Prior-session closes from the production bar archive. We walk
+        # the per-ticker JSONL backward up to 10 calendar days to handle
+        # weekends/holidays. Fail-open: missing data -> ticker excluded
+        # from rod_signals -> select_signals will skip it cleanly.
+        prior_closes: dict[str, float] = {}
+        if date_iso:
+            try:
+                from pathlib import Path as _Path
+                import json as _json
+                from datetime import timedelta as _td
+                from datetime import datetime as _dt
+                root = _Path("/data/bars")
+                for tk in eod.cfg.universe:
+                    if tk in prior_closes:
+                        continue
+                    # Walk back up to 10 days for the most recent RTH close.
+                    found = None
+                    dt = _dt.strptime(date_iso, "%Y-%m-%d")
+                    for off in range(1, 11):
+                        cand = (dt - _td(days=off)).strftime("%Y-%m-%d")
+                        fp = root / cand / f"{tk}.jsonl"
+                        if not fp.is_file():
+                            continue
+                        last_close = None
+                        for line in fp.read_text().splitlines():
+                            if not line.strip():
+                                continue
+                            try:
+                                b = _json.loads(line)
+                            except Exception:
+                                continue
+                            bucket = b.get("et_bucket", "")
+                            try:
+                                bi = int(str(bucket))
+                            except (ValueError, TypeError):
+                                continue
+                            if 930 <= bi <= 1559:
+                                c = b.get("close")
+                                if isinstance(c, (int, float)) and c > 0:
+                                    last_close = float(c)
+                        if last_close is not None:
+                            found = last_close
+                            break
+                    if found is not None:
+                        prior_closes[tk] = found
+            except Exception:
+                logger.exception("[V910-EOD] prior-close lookup failed")
+
+        long_picks, short_picks = eod.select_signals(
+            current_prices=current_prices, prior_closes=prior_closes,
+        )
+        if not long_picks and not short_picks:
+            logger.info(
+                "[V910-EOD-NO-SIGNAL] date=%s cur_prices=%d prior_closes=%d "
+                "long_picks=0 short_picks=0",
+                date_iso, len(current_prices), len(prior_closes),
+            )
+            return
+
+        from datetime import datetime as _dt2, timezone as _tz
+        entry_iso = _dt2.now(_tz.utc).isoformat()
+
+        # Fire per-portfolio. Each portfolio admits independently with
+        # its own equity for sizing.
+        try:
+            from engine.portfolio_book import ALL_PORTFOLIO_IDS, PORTFOLIOS
+        except Exception:
+            ALL_PORTFOLIO_IDS = ["main"]
+            PORTFOLIOS = {"main": None}
+        for pid in ALL_PORTFOLIO_IDS:
+            if eod.has_attempted(pid):
+                continue
+            book = PORTFOLIOS.get(pid)
+            equity = float(getattr(book, "current_equity", 100_000.0) or 100_000.0)
+            for ticker, rod3 in long_picks:
+                price = current_prices.get(ticker)
+                if price is None or price <= 0:
+                    continue
+                pos = eod.admit(
+                    portfolio_id=pid, ticker=ticker, side="long",
+                    entry_price=price, equity=equity,
+                    rod3_bps=rod3, entry_iso=entry_iso,
+                )
+                if pos is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker(callbacks, pid, ticker, "long",
+                                     price, pos.shares)
+            for ticker, rod3 in short_picks:
+                price = current_prices.get(ticker)
+                if price is None or price <= 0:
+                    continue
+                pos = eod.admit(
+                    portfolio_id=pid, ticker=ticker, side="short",
+                    entry_price=price, equity=equity,
+                    rod3_bps=rod3, entry_iso=entry_iso,
+                )
+                if pos is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker(callbacks, pid, ticker, "short",
+                                     price, pos.shares)
+            eod.mark_attempted(pid)
+
+    # --- exit window ---
+    if eod.is_exit_window(cur_min):
+        from datetime import datetime as _dt3, timezone as _tz3
+        exit_iso = _dt3.now(_tz3.utc).isoformat()
+        for pid, st in list(eod._states.items()):
+            if not st.open_positions:
+                continue
+            for ticker, pos in list(st.open_positions.items()):
+                try:
+                    bars = callbacks.fetch_1min_bars(ticker)
+                except Exception:
+                    bars = None
+                if not bars:
+                    continue
+                px = (bars.get("current_price")
+                      or (bars.get("closes") or [None])[-1])
+                if not isinstance(px, (int, float)) or px <= 0:
+                    continue
+                leg = eod.close(
+                    portfolio_id=pid, ticker=ticker, exit_price=float(px),
+                    exit_iso=exit_iso, exit_reason="eod_window",
+                )
+                if leg is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker_close(callbacks, pid, ticker, pos.side,
+                                           float(px), pos.shares)
+
+
+def _eod_fire_broker(callbacks: EngineCallbacks, pid: str, ticker: str,
+                     side: str, price: float, shares: int) -> None:
+    """v9.1.0 -- dispatch a real broker fire for an EOD entry.
+
+    Reuses the existing v10 fanout: Main goes through
+    callbacks.execute_entry (legacy path), Val/Gene via
+    _v10_dispatch_executor_fire. Failures are logged but do not
+    propagate -- tracking continues even if broker rejects.
+    """
+    try:
+        if pid == "main":
+            # The legacy callback fires LONG by default. For short side
+            # we rely on _v10_dispatch_executor_fire which is side-aware.
+            if side == "long":
+                callbacks.execute_entry(ticker, float(price))
+            else:
+                _v10_dispatch_executor_fire(
+                    pid=pid, side=side, ticker=ticker,
+                    price=float(price), shares=int(shares),
+                )
+        else:
+            _v10_dispatch_executor_fire(
+                pid=pid, side=side, ticker=ticker,
+                price=float(price), shares=int(shares),
+            )
+        logger.info(
+            "[V910-EOD-FIRE] %s/%s %s %d shares @ %.4f",
+            pid, ticker, side, shares, price,
+        )
+    except Exception:
+        logger.exception(
+            "[V910-EOD-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
+            pid, ticker, side, shares, price,
+        )
+
+
+def _eod_fire_broker_close(callbacks: EngineCallbacks, pid: str,
+                           ticker: str, side: str, price: float,
+                           shares: int) -> None:
+    """v9.1.0 -- broker close for an EOD position. Uses the inverse
+    side on the same executor surface (long -> sell, short -> cover).
+    """
+    try:
+        close_side = "short" if side == "long" else "long"
+        _v10_dispatch_executor_fire(
+            pid=pid, side=close_side, ticker=ticker,
+            price=float(price), shares=int(shares),
+        )
+        logger.info(
+            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f",
+            pid, ticker, side, shares, price,
+        )
+    except Exception:
+        logger.exception(
+            "[V910-EOD-CLOSE-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
+            pid, ticker, side, shares, price,
+        )
+
+
+def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
+    """v9.0.0 -- session-cumulative VWAP from the 1m bar series.
+
+    `bars_for_mtm` is the per-ticker 1m bar dict supplied by
+    `callbacks.fetch_1min_bars`. It carries parallel arrays
+    `opens / highs / lows / closes / volumes / timestamps`.
+
+    Returns 0.0 when bars are missing or the session has not opened
+    yet (no RTH bars in the series). Caller treats 0.0 as "no VWAP
+    available" and the v9 chase filter fails OPEN in that case so
+    a fresh-bootstrap session is never stranded.
+
+    Look-ahead audit: only consumes bars whose timestamp resolves to
+    a RTH minute-of-day in [09:30, 15:59] ET; no future data.
+    """
+    if not bars_for_mtm:
+        return 0.0
+    highs = bars_for_mtm.get("highs") or []
+    lows = bars_for_mtm.get("lows") or []
+    closes = bars_for_mtm.get("closes") or []
+    vols = bars_for_mtm.get("volumes") or []
+    ts_arr = bars_for_mtm.get("timestamps") or []
+    n = min(len(highs), len(lows), len(closes), len(vols), len(ts_arr))
+    if n == 0:
+        return 0.0
+    try:
+        from engine.timing import minutes_since_et_midnight
+    except Exception:
+        return 0.0
+    cum_pv = 0.0
+    cum_v = 0.0
+    for i in range(n):
+        ts = ts_arr[i]
+        try:
+            if isinstance(ts, (int, float)):
+                import datetime as _dt
+                bucket_min = minutes_since_et_midnight(
+                    _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc)
+                )
+            elif isinstance(ts, str):
+                import datetime as _dt
+                dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                bucket_min = minutes_since_et_midnight(dt)
+            else:
+                continue
+        except Exception:
+            continue
+        if bucket_min is None or bucket_min < 9 * 60 + 30 or bucket_min > 15 * 60 + 59:
+            continue
+        h = highs[i]
+        lo = lows[i]
+        c = closes[i]
+        v = vols[i]
+        if not (isinstance(h, (int, float))
+                and isinstance(lo, (int, float))
+                and isinstance(c, (int, float))
+                and isinstance(v, (int, float))
+                and v > 0):
+            continue
+        typical = (float(h) + float(lo) + float(c)) / 3.0
+        cum_pv += typical * float(v)
+        cum_v += float(v)
+    return cum_pv / cum_v if cum_v > 0 else 0.0
+
+
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     bars_for_mtm: dict | None) -> None:
     """v10 ORB long-entry path -- per-portfolio fanout.
@@ -998,6 +1580,15 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return  # no closed 5m bar yet
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        # v8.0.0 -- pass recent 5m HLC so the engine can compute ATR
+        # when ORB_ATR_STOP_MULT > 0. Cap to last (lookback+1) bars to
+        # keep payload small; engine averages internally.
+        _h5 = list(_5m.get("highs") or [])[-20:]
+        _l5 = list(_5m.get("lows") or [])[-20:]
+        _c5 = list(_5m.get("closes") or [])[-20:]
+        # v9.0.0: session-cumulative VWAP for the chase-prevention
+        # filter. Computed once per side per tick; 0.0 = fail-open.
+        _session_vwap = _compute_session_vwap_from_bars(bars_for_mtm)
 
         # Resolve all enabled portfolio_ids from the live runtime
         engine = _orb_runtime.get_engine()
@@ -1012,6 +1603,10 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                recent_5m_highs=_h5,
+                recent_5m_lows=_l5,
+                recent_5m_closes=_c5,
+                session_vwap=_session_vwap,
             )
             if result.ok:
                 logger.info(
@@ -1094,6 +1689,13 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return
         five_min_close = _5m["closes"][-1]
         next_open = (bars_for_mtm or {}).get("current_price") or five_min_close
+        # v8.0.0 -- 5m HLC for ATR (engine averages internally)
+        _h5 = list(_5m.get("highs") or [])[-20:]
+        _l5 = list(_5m.get("lows") or [])[-20:]
+        _c5 = list(_5m.get("closes") or [])[-20:]
+        # v9.0.0: session-cumulative VWAP for the chase-prevention
+        # filter. Computed once per side per tick; 0.0 = fail-open.
+        _session_vwap = _compute_session_vwap_from_bars(bars_for_mtm)
         engine = _orb_runtime.get_engine()
         if engine is None:
             return
@@ -1105,6 +1707,10 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                recent_5m_highs=_h5,
+                recent_5m_lows=_l5,
+                recent_5m_closes=_c5,
+                session_vwap=_session_vwap,
             )
             if result.ok:
                 logger.info(

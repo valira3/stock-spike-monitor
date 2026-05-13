@@ -21,6 +21,13 @@ def isolated_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
+    # v8.3.20 -- the env default for ORB_MAX_CONCURRENT_NOTIONAL_MULT
+    # dropped from 2.0 -> 0.95 (over-leverage protection per operator
+    # directive). Tests that assert against the legacy 2.0 multiplier
+    # opt back in here so they continue exercising the same math; new
+    # production deploys get the safer 0.95 by default.
+    monkeypatch.setenv("ORB_MAX_CONCURRENT_NOTIONAL_MULT", "2.0")
     yield monkeypatch
 
 
@@ -290,6 +297,57 @@ class TestPerTickAPI:
         )
         assert ex.exit
         assert ex.reason == "target"
+
+
+# ------------------ v8.3.0 OR auto-backfill wrapper ------------------
+
+
+class TestBackfillOrWindowsWrapper:
+    """v8.3.0 -- live_runtime.backfill_or_windows is a thin wrapper
+    around OrbEngine.backfill_or_windows. Verify the live-mode + not-
+    bootstrapped guard rails."""
+
+    def _bars_30(self):
+        return [(570 + i,
+                 101.0 if (570 + i) == 580 else 100.5,
+                 99.0 if (570 + i) == 585 else 100.0,
+                 100.0, 100.0, 10000.0) for i in range(30)]
+
+    def test_returns_empty_when_not_bootstrapped(self, isolated_env):
+        out = live_runtime.backfill_or_windows(
+            bars_by_ticker={"AAPL": self._bars_30()},
+            current_et_minutes=11 * 60,
+        )
+        assert out == {}
+
+    def test_returns_empty_when_live_mode_off(self, isolated_env):
+        isolated_env.setenv("ORB_LIVE_MODE", "0")
+        live_runtime.bootstrap()
+        out = live_runtime.backfill_or_windows(
+            bars_by_ticker={"AAPL": self._bars_30()},
+            current_et_minutes=11 * 60,
+        )
+        assert out == {}
+
+    def test_rebuilds_or_when_bootstrapped(self, isolated_env):
+        live_runtime.bootstrap()
+        live_runtime.ensure_session_started(
+            date_iso="2026-05-12",
+            tickers=["AAPL"], vix_close_d1=18.0,
+            ticker_open_today={"AAPL": 100.0},
+            ticker_prev_close={"AAPL": 100.0},
+            equity_per_portfolio={"main": 100000.0},
+        )
+        out = live_runtime.backfill_or_windows(
+            bars_by_ticker={"AAPL": self._bars_30()},
+            current_et_minutes=11 * 60,
+        )
+        assert out["backfilled"] == 1
+        eng = live_runtime.get_engine()
+        w = eng._state.or_windows["AAPL"]
+        assert w.locked
+        assert w.or_high == 101.0
+        assert w.or_low == 99.0
 
 
 # ------------------ snapshot ------------------

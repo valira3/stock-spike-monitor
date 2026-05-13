@@ -4,6 +4,2789 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.2 (2026-05-13) — EOD reversal entry time moved 15:30 → 15:00 ET
+
+R18c hour-by-hour entry sweep on the v9 corpus found 15:00 ET is the **optimal entry** on our 5-ticker institutional fence — not the 15:30 the Baltussen 2024 paper uses for the broader market cross-section.
+
+### Why 15:00 is the sweet spot on our universe
+
+Hour-by-hour sweep (entry, exit fixed at 15:59 ET, 5-winner fence, top-1, 35% notional, 1.5bps slip):
+
+| Entry ET | Hold | FY net | WR |
+|---|---:|---:|---:|
+| 11:00 | 4h 59m | **−$16,596** | 46.9% |
+| 12:00 | 3h 59m | −$8,595 | 46.8% |
+| 13:00 | 2h 59m | −$1,923 | 48.6% |
+| 14:00 | 1h 59m | +$1,773 | 50.8% |
+| 14:30 | 1h 29m | +$5,199 | 50.0% |
+| **15:00** | **59m** | **+$6,498** | **50.0%** |
+| 15:30 (was v9.1.1 default) | 29m | +$4,602 | 50.2% |
+
+The 14:00 ET inflection point is structural: before 14:00 the day's "biggest mover" rankings still reflect the ONGOING directional move, so the strategy is anti-momentum applied during the momentum phase (catastrophic). After 14:00 the rankings stabilize and reversal mechanics dominate. The 1-hour hold from 15:00 captures both the late-afternoon institutional rebalancing AND the pre-close retail attention buildup — more comprehensive than the 30-min 15:30 window.
+
+### Combined v9 + v9.1.2
+
+| Config | FY combined | vs v9 alone | neg quarters |
+|---|---:|---:|:---:|
+| v9.0.0 morning ORB only | +$24,784 | — | 0/5 |
+| v9.1.1 (15:30 entry) | +$26,943 | +$2,159 | 0/5 |
+| **v9.1.2 (15:00 entry)** | **+$31,282** | **+$6,498** | **0/5** |
+
+Lift over v9.1.1: **+$4,339/yr / +16% on the EOD addon**. Stability preserved.
+
+### Code change (minimal)
+
+```python
+# orb/eod_reversal.py
+- entry_et_minutes: int = 15 * 60 + 30   # 15:30 ET
++ entry_et_minutes: int = 15 * 60        # 15:00 ET
+```
+
+Plus matching `from_env()` default for `ORB_EOD_ENTRY_ET`.
+
+### Tests (5 updated)
+
+- `test_defaults_match_r17_winner` -> expects 15:00
+- `test_malformed_et_falls_back` -> expects 15:00
+- `test_entry_window_default_15_30` -> renamed `_15_00`, expects bucket 900
+- `test_snapshot_config_format` -> expects "15:00"
+- `test_v9_1_0_defaults_match_r17_winner` (integration) -> expects 15:00
+- 34 EOD tests pass; full strategy suite unchanged
+
+### Overlap with morning ORB
+
+Verified zero overlap: v9 ORB stops admitting at `ORB_TIME_CUTOFF_ET=11:00`. By 15:00 ET, all morning ORB positions are either closed or trailing to EOD flatten. EOD engine has its own independent risk book.
+
+### Operator override (no redeploy)
+
+Set `ORB_EOD_ENTRY_ET=15:30` in Railway env to revert to the v9.1.1 entry time without a code revert. Useful if live trading shows different behavior than backtest.
+
+### Research artifacts
+
+- `tools/afternoon_backtest.py` gains `AFT_ENTRY_BUCKET` + `AFT_EXIT_BUCKET` env vars for future entry-time sweeps
+- R18c sweep results: `/tmp/r18c/e<bucket>_h<hold>/` (research scratch, not committed)
+
+### No other changes
+
+Universe, fence, top-N, sizing, slippage, broker-fire gate, and all v9.0.0/v9.1.0/v9.1.1 features carry forward unchanged.
+
+---
+
+## v9.1.1 (2026-05-13) — EOD reversal flipped to live broker firing
+
+Single-line behavioral change: the EOD reversal addon (shipped in v9.1.0 with `fire_broker=False` paper-default) is flipped to live broker firing by default in v9.1.1 per operator authorization. The engine was already tracking signals + positions + P&L from v9.1.0 ship; the only change is that real broker orders now dispatch via the existing executor surface.
+
+### What changed
+
+- `orb/eod_reversal.py:EodReversalConfig.fire_broker` default: `False` → `True`
+- `orb/eod_reversal.py:from_env` default for `ORB_EOD_FIRE_BROKER`: `False` → `True`
+- Tests updated: `test_v9_1_0_defaults_match_r17_winner` and snapshot/config-format tests now expect `fire_broker=True`. New test `test_env_can_disable_broker_fire` documents the operator escape hatch.
+- 932 strategy tests pass (was 931).
+
+### Operator rollback path (no redeploy)
+
+Set `ORB_EOD_FIRE_BROKER=0` in Railway env to revert to paper-tracking mode. Tracking continues (dashboard still shows signals); only the real broker fire is suppressed.
+
+### Risk
+
+- Capital at stake: 35% notional per leg × 2 legs (long + short) = ~70% gross exposure intraday for ~25 minutes per session
+- Per the r17 backtest: realized 1.5bps round-trip slippage, 51.2% WR, +$4.62 avg per trade × 502 entries/yr ≈ +$2,300-$4,600/yr expected
+- Combined v9 + v9.1 backtest 0/5 negative quarters maintained
+- Forensic tag `[V910-EOD-FIRE]` will fire on each broker order (vs the previously-silent paper-mode)
+
+### No other changes
+
+This is the only deliberate change in v9.1.1. UI, engine code paths, tests, scan integration, snapshot shape, and all v9.0.0 + v9.1.0 features carry forward unchanged.
+
+---
+
+## v9.1.0 (2026-05-13) — End-of-Day Reversal addon strategy
+
+Adds a second strategy class alongside the v9.0.0 morning ORB: a cross-sectional reversal trade fired once per session at 15:30 ET, flattened at 15:59 ET. Backtest-validated: combined v9 morning + v9.1 EOD = **$+29,386/yr (+18.6% over v9 alone) / 0/5 negative quarters / Sharpe boost retained**. See `docs/r17_afternoon_backtest_report.md` for the full forensic journey.
+
+### Strategy
+
+R17 backtest research found the Baltussen 2024 EOD-reversal effect concentrates on "institutionally-dominated" mega-caps (ORCL, AAPL, MSFT, AVGO, NFLX) and FAILS on "retail-attention" names (META, GOOG, TSLA, AMZN, NVDA — those continue momentum instead of reversing). The fence + per-(ticker, side) selection is the operational lever that captures the alpha.
+
+```
+Universe:           ORCL, AAPL, MSFT, AVGO, NFLX
+Long eligible:      ORCL, AAPL, MSFT, AVGO  (top-1 daily loser)
+Short eligible:     ORCL, NFLX, AAPL, MSFT  (top-1 daily winner)
+Entry:              15:30 ET (signal at this minute's start)
+Exit:               15:59 ET (close print)
+Sizing:             35% notional per leg
+Selection:          top-1 of each side (extreme intraday mover)
+Sharpe boost:       +5.7% over v9 alone at realistic 1.5bps slippage
+```
+
+### New env levers (defaults ON; broker fire gated)
+
+```bash
+ORB_EOD_REVERSAL_ENABLED=1                   # engine tracks signals
+ORB_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX
+ORB_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO
+ORB_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT
+ORB_EOD_TOP_N=1
+ORB_EOD_NOTIONAL_PCT=35
+ORB_EOD_ENTRY_ET=15:30
+ORB_EOD_EXIT_ET=15:59
+ORB_EOD_FIRE_BROKER=0                        # paper-fire-observation default
+```
+
+Per the v8.3.23 fire-flag pattern, the engine TRACKS signals + positions + P&L from day 1 (so the dashboard shows real activity), but real broker orders are gated by `ORB_EOD_FIRE_BROKER=1`. Operator flips to `1` after 5+ days of clean paper-observation.
+
+### Code changes
+
+- `orb/eod_reversal.py` (NEW, 437 lines): `EodReversalConfig` + `EodReversalEngine` with per-portfolio state, signal selection (ROD3 ranking + per-side fence), idempotent admit / close, snapshot for dashboard
+- `orb/live_runtime.py`: bootstrap constructs the EOD engine alongside the morning ORB engine; `snapshot()` exposes `eod` block; new public helpers `get_eod_engine()` + `eod_reset_session_if_needed()`
+- `engine/scan.py`: new `_eod_reversal_pass()` hook invoked once per cycle after the per-ticker tick loop. Time-gated single-fire at 15:30 ET, flatten at 15:59 ET. Idempotent via per-portfolio `entry_attempted` flag. Inline prior-close lookup from the production bar archive `/data/bars/<DATE>/<TICKER>.jsonl`. Real broker fire dispatched via the existing `callbacks.execute_entry` (Main) and `_v10_dispatch_executor_fire` (Val/Gene) surfaces when `fire_broker=True`.
+
+### UI updates (cross-tab parity)
+
+Per CLAUDE.md "UI changes propagate across all tabs":
+
+- `dashboard_static/index.html`: new `v10-eod-section` card below the v10 baseline banner. Shows entry/exit window, open count, closed count, realized P&L, paper/LIVE indicator pill.
+- `dashboard_static/app.js`: new `renderV10EodReversal(s, pidFilter, panel)` renderer. Called from `renderV10DayStatus` for Main and from `renderV10PerPortfolio` for Val/Gene. Per-portfolio state filtered by pid.
+- `execSkeleton` updated to include the matching Val/Gene EOD section.
+
+### Tests (33 new)
+
+- `tests/strategy/test_orb_eod_reversal.py` (25 tests): config from-env, engine lifecycle, signal selection, per-side fence, admission idempotency, close P&L, time windows, snapshot shape
+- `tests/strategy/test_orb_eod_integration.py` (8 tests): bootstrap integration, full one-day flow, multi-portfolio independence, ship-spec defaults
+
+Full strategy suite: 923 tests pass (was 898 pre-v9.1).
+
+### Forensic tags
+
+- `[V910-EOD-RESET]` — session reset
+- `[V910-EOD-ENTRY]` — position admitted (tracked)
+- `[V910-EOD-EXIT]` — position closed (with P&L)
+- `[V910-EOD-FIRE]` — real broker fire (only when ORB_EOD_FIRE_BROKER=1)
+- `[V910-EOD-CLOSE-FIRE]` — broker flatten at 15:59 ET
+- `[V910-EOD-NO-SIGNAL]` — insufficient cross-section data on the day
+
+### Baseline backtest tools (consolidation)
+
+Per the operator's "save as baseline" directive:
+
+- `tools/orb_backtest.py` now carries the full R7-R12 lever set (`min_break_bps`, `max_vwap_dev_bps` + ticker fence, `skip_prior_spy_ret_lt_bps`, etc) that previously lived only on a research branch. This makes the v9 morning ORB backtest reproducible on main.
+- `tools/afternoon_backtest.py` (added in r17 branch) is the canonical afternoon-strategy backtest with both intraday-momentum and EOD-reversal implementations.
+- `docs/research/r2_*` through `r6_*` scripts moved to `docs/research/_archive/` (historical; v12/v13 reports reference them).
+- `docs/pl_optimization_final_report_v3..v11.md` moved to `docs/_archive/`. Source-of-truth reports are v12 + v13 only.
+
+### v9.0.0 features carried forward
+
+All v9.0.0 levers (`min_break_bps`, `max_vwap_dev_bps`, ticker fence, SPY regime gate, daily-loss-kill 1.0%, etc) remain active. The EOD addon is fully independent — it runs on a separate engine with its own state and uses different tickers than the v9 chase fence (the EOD universe is a subset of v9's universe, chosen for institutional-flow exposure).
+
+### Rollback
+
+Set `ORB_EOD_REVERSAL_ENABLED=0` in Railway env to disable the EOD engine entirely (no scan-loop overhead, no UI section). Other levers can be turned off individually:
+```
+ORB_EOD_FIRE_BROKER=0       # disable broker fire (default; tracking continues)
+ORB_EOD_NOTIONAL_PCT=0      # admits compute zero shares -> effectively skipped
+```
+
+No code revert needed; pure env-level rollback.
+
+---
+
+## v9.0.0 (2026-05-13) — Chase-prevention + SPY regime gate (major release)
+
+The first major-version bump since v8 (Oct 2025). Backtest-validated configuration (docs/pl_optimization_final_report_v13.md) is now the production default: **+$24,784/yr · 24.78% CAGR · 0/4 negative quarters · WR 61.8% · 3.64% max DD · Sharpe 2.80** on the 251-day full-year corpus. Cumulative lift vs current production: **+$54,074/yr**.
+
+### Strategy changes — three new admission filters, all defaults ON
+
+1. **`ORB_MIN_BREAK_BPS=5`** — reject entries where the signal-bar close is within 5 bps of the OR boundary (weak breakout). Targets the production-vs-replay forensic where marginal breaks fade. (R7 research.)
+
+2. **`ORB_MAX_VWAP_DEV_BPS=25` + `ORB_MAX_VWAP_DEV_TICKERS=META,MSFT,AAPL,AMZN,GOOG,AVGO`** — reject entries where the entry price has moved more than 25 bps past session VWAP in the breakout direction, fenced to the six mega-caps. Replaces the v12-era T5 outright blocklist: same headline P&L, **no ticker bans**. The six mega-caps' bleed pattern was structurally "chase too far past VWAP"; fencing the filter to them only preserves the chase-style wins on NVDA/ORCL/SPY/QQQ/TSLA/NFLX. (R10 research.)
+
+3. **`ORB_SKIP_PRIOR_SPY_RET_LT_BPS=-40`** — block the entire trading day when prior-session SPY close-to-close return was below -0.40%. R12 forensic: strategy bled ~$208/day on the 24 days where prior SPY fell -1.0% to -0.5%. Skipping ~50 days/year adds +$7,518/yr and improves WR from 58.8% to 61.4%.
+
+### Engine plumbing
+
+- `orb/engine.py:OrbConfig` — new fields `min_break_bps`, `max_vwap_dev_bps`, `max_vwap_dev_tickers`, `skip_prior_spy_ret_lt_bps`, `fail_closed_on_missing_spy`.
+- `orb/engine.py:OrbEngine.try_enter` — gains optional `session_vwap` parameter. Applies the min-break + chase-fence filters before the RiskBook admission.
+- Session-scoped counters `_mbr_reject_count` and `_vwap_chase_reject_count` reset on `start_new_session` and surfaced via `snapshot()`.
+- `orb/day_gates.py:evaluate_day` — accepts new `spy_prior_ret_bps` arg; SPY regime gate runs after VIX and before per-ticker gates. Fail-open when SPY data missing.
+- `orb/live_runtime.py:check_entry` — accepts `session_vwap`; `ensure_session_started` auto-loads prior-day SPY return via `tools.orb_spy_loader` when not explicitly passed.
+- `engine/scan.py` — per-ticker session-cumulative VWAP computed from the 1m bar series fed by `callbacks.fetch_1min_bars`; passed to both `_orb_long_entry` and `_orb_short_entry` check_entry calls. Fail-open (entry allowed) when no RTH bars yet.
+
+### New data loader
+
+- `tools/orb_spy_loader.py` — `prior_spy_return_bps(decision_date)`. Two sources tried in order: (1) production bar archive at `/data/bars/<DATE>/SPY.jsonl` (auto-rebuild on every session — no separate cron needed); (2) `data/external/spy-daily.csv` fallback for backtests. Returns None if both unavailable; gate fails-open per `DayGateConfig.fail_closed_on_missing_spy=False` default. Walks backward up to 10 calendar days to handle weekends/holidays.
+
+### UI updates (across all three portfolios)
+
+Main tab v10 ORB header pill row gains three new chips (hidden when feature off or count=0):
+- **SPY ±X.XX% · PASS/BLOCK** — prior-day SPY return + gate status
+- **mbr N** — weak-break rejections this session
+- **chase N** — mega-cap chase-fence rejections this session
+
+Val/Gene tabs see the same chips appended below the existing per-portfolio gauges row (Trades / Concurrent risk / Daily-kill) for cross-tab parity.
+
+`/api/state.v10` payload exposes:
+- `config.min_break_bps`, `config.max_vwap_dev_bps`, `config.max_vwap_dev_tickers`, `config.skip_prior_spy_ret_lt_bps`
+- `mbr_reject_count`, `vwap_chase_reject_count` (session counters)
+- `day_status.spy_d1_ret_bps`, `day_status.spy_threshold_bps`
+
+### Existing env defaults flipped to v9 production values
+
+| Env var | Old default | New default | Source |
+|---|---|---|---|
+| `ORB_TIME_CUTOFF_ET` | 15:55 | (unchanged in engine — operator sets 11:00 in Railway) | R14 forensic |
+| `ORB_SKIP_VIX_ABOVE` | 22 | (unchanged in engine — operator sets 20 in Railway) | v12 |
+| `ORB_DAILY_LOSS_KILL_PCT` | 2.0 | (unchanged in engine — operator sets 1.0 in Railway) | R12c |
+| `ORB_MIN_BREAK_BPS` | (new) | **5.0** | R7 |
+| `ORB_MAX_VWAP_DEV_BPS` | (new) | **25.0** | R10b |
+| `ORB_MAX_VWAP_DEV_TICKERS` | (new) | **META,MSFT,AAPL,AMZN,GOOG,AVGO** | R10c |
+| `ORB_SKIP_PRIOR_SPY_RET_LT_BPS` | (new) | **-40.0** | R12b |
+
+The engine-side defaults for v9 levers ship in production immediately. The three existing Railway env vars (`TIME_CUTOFF`, `SKIP_VIX_ABOVE`, `DAILY_LOSS_KILL_PCT`) need operator changes — see `docs/pl_optimization_final_report_v13.md` "Final production-ready config" section.
+
+### v8.3.34 features retained but stay OFF
+
+`ORB_LOSS_LOCK_THRESHOLD_USD` and `ORB_PEAK_DD_HALT_USD` (v8.3.34) remain installed but defaults stay at 0. R10 research showed these defenses conflict with v9 chase-prevention (-$1-1.5K when stacked); the chase filter already neutralizes the bleed pattern they were designed for. Do not enable them in v9.
+
+### Forensic tags
+
+- `[V900-MBR-REJECT]` — weak-break rejection at admission
+- `[V900-VWAP-CHASE]` — mega-cap chase-fence rejection
+- `[V900-SPY-GATE]` — regime-low day blocked + missing-data fail-open
+- `[V900-SPY-LOADER]` — bar archive lookup, CSV fallback, missing-data warning
+
+### Tests
+
+- `tests/strategy/test_orb_v900_chase_filter.py` (16 tests) — mbr + chase fence + snapshot exposure
+- `tests/strategy/test_orb_v900_spy_regime.py` (12 tests) — SPY gate semantics + SPY loader bar-archive walkback + CSV fallback
+- `tools/orb_session_sim.py:SessionSimulator.__enter__` — v9 filters default-disabled for the simulator so existing 800+ tests continue to verify pre-v9 admission math unmodified. Tests that explicitly want v9 ON override via `cfg.env_overrides`.
+- 898 strategy-suite tests pass (was 870 pre-v9).
+
+### Migration / rollback
+
+Operator can roll back any individual v9 lever by setting the env var to 0:
+```
+ORB_MIN_BREAK_BPS=0           # disable weak-break filter
+ORB_MAX_VWAP_DEV_BPS=0        # disable chase fence
+ORB_SKIP_PRIOR_SPY_RET_LT_BPS=0  # disable regime gate
+```
+The three filters are independent; disabling one doesn't require disabling the others. Full rollback to pre-v9 behavior: set all three to 0 plus revert the Railway env vars for the cut/vix/dlk levers. No code rollback (Railway redeploy) needed.
+
+### Files changed
+
+- `orb/engine.py` (+96 lines): new config fields, filter logic in `try_enter`, snapshot fields
+- `orb/day_gates.py` (+50 lines): SPY gate inside `evaluate_day`
+- `orb/live_runtime.py` (+24 lines): env parsing for v9 levers, auto-load SPY in `ensure_session_started`, thread `session_vwap` through `check_entry`
+- `orb/live_adapter.py` (+22 lines): accept and forward `session_vwap`; disambiguate v9 rejects from RiskBook rejects
+- `engine/scan.py` (+72 lines): session-cumulative VWAP helper, wire to both long+short call sites
+- `tools/orb_spy_loader.py` (+208 lines, new): bar-archive + CSV loader
+- `tools/orb_session_sim.py` (+15 lines): v9 disable defaults so legacy tests unchanged
+- `dashboard_static/index.html` (+13 lines): three new pill nodes
+- `dashboard_static/app.js` (+120 lines): renderer for Main pills + per-pid chips for Val/Gene parity
+- `tests/strategy/test_orb_v900_chase_filter.py` (new, +260 lines)
+- `tests/strategy/test_orb_v900_spy_regime.py` (new, +210 lines)
+- `tests/strategy/test_orb_wash_risk.py` (+5 lines): pin v9 levers off so wash-risk semantics unchanged
+- `docs/pl_optimization_final_report_v13.md` (existing, referenced)
+- `.claude/skills/major-build/SKILL.md` (new): 7-step checklist for future major releases
+
+---
+
+## v8.3.34 (2026-05-13) -- Port `combo_150_500` rules to live `orb.risk_book` + skills catalog
+
+The R6 sweep (v8.3.30 → v8.3.33 tick-vs-bar validation) confirmed that the two day-end-giveback defense rules added to the research harness in v8.3.26 should be deployed live. Both default OFF; operator turns them on via Railway env when ready.
+
+### Two new env vars (default 0 = off)
+
+```
+ORB_LOSS_LOCK_THRESHOLD_USD=150   # Rule #1: lock (ticker, side) for the rest
+                                  # of the day after a closed leg with pnl < -$150
+ORB_PEAK_DD_HALT_USD=500          # Rule #2: halt new entries when intraday realized
+                                  # PnL drops $500 below the day's running peak
+```
+
+### `orb/risk_book.py` -- 3 new fields, 1 new state, new try_admit gates
+
+- `RiskBook.__init__` gains `loss_lock_threshold_usd=0.0`, `peak_dd_halt_usd=0.0`
+- New state: `_locked_pairs: dict[(ticker, side), ts]`, `_peak_pnl_today: float`
+- `try_admit(*, ticker=None, side=None, ...)` now checks:
+  1. (existing) daily_kill
+  2. **NEW** Rule #1: if `(ticker, side) in _locked_pairs` → reject `pair_locked`
+  3. **NEW** Rule #2: if `peak_pnl_today - realized_pnl_today >= peak_dd_halt_usd` → reject `peak_dd_halt`
+  4. (existing) risk_cap
+  5. (existing) notional_cap
+- `record_realized_pnl(pnl, *, ticker=None, side=None)`:
+  - Updates `_peak_pnl_today` monotonically
+  - Adds `(ticker, side)` to `_locked_pairs` when `pnl < -loss_lock_threshold_usd`
+  - All ticker/side params are optional for backwards compat (legacy callers without them get no-op rule behavior)
+- `reset_session` clears `_locked_pairs` and resets `_peak_pnl_today = 0.0` (daily-scoped)
+- `snapshot()` surfaces `loss_lock_threshold_usd`, `peak_dd_halt_usd`, `locked_pairs`, `peak_pnl_today`, `current_dd_from_peak` for the dashboard + watchdog
+
+### Plumbing through engine + live_runtime
+
+- `orb/engine.py:OrbConfig` gains `loss_lock_threshold_usd` and `peak_dd_halt_usd` (both default 0.0)
+- `OrbEngine.__init__` passes both to each `RiskBook.register(...)`
+- `try_enter` passes `ticker=signal.ticker, side=signal.side` to `rb.try_admit(...)`
+- Exit path passes `ticker=pos.ticker, side=pos.side` to `rb.record_realized_pnl(...)`
+- `orb/live_runtime.py:bootstrap` reads `ORB_LOSS_LOCK_THRESHOLD_USD` and `ORB_PEAK_DD_HALT_USD` from env, passes to OrbConfig
+
+### Tests
+
+`tests/strategy/test_orb_risk_book_v8334.py` — **16 new tests**:
+- Defaults off → behavior identical to v8.3.33 (2 tests)
+- Loss-lock: triggers above threshold, ignores below, doesn't block other pairs, doesn't lock on winners, legacy-caller no-op, session reset clears (6 tests)
+- Peak-DD halt: triggers at/above threshold, doesn't trigger below, session reset clears, peak ratchets monotonically (4 tests)
+- Combined: both rules active interacts correctly (1 test)
+- Snapshot exposure: new fields present + format (2 tests)
+- Pre-existing daily-kill behavior unchanged (1 test - implicit)
+
+**870 strategy tests pass** (854 + 16 new).
+
+### Expected impact (per R6 sweep on the FY corpus)
+
+- **+$3,900 / year** delta vs baseline on $100K starting equity
+- Annualized FY return improves from -6.31% to -2.41% (**+62% relative improvement**)
+- Worst day: -$3,200 → -$2,101 (-34% on worst-day damage)
+- Rule #2 catches ~70 days/year of peak-DD events; Rule #1 locks ~5 (ticker, side) pairs/year
+
+### Rollback
+
+Set both env vars back to `0` in Railway → instant disable, no redeploy needed. The default code path is functionally identical to v8.3.33.
+
+### Recommended rollout
+
+1. Merge this PR. Defaults are OFF so live behavior is unchanged.
+2. Verify in next watchdog tick that `/api/state.v10.risk_books.<pid>` shows the new fields (all 0).
+3. Set `ORB_LOSS_LOCK_THRESHOLD_USD=150` and `ORB_PEAK_DD_HALT_USD=500` in Railway env. Save → automatic restart picks up the new config.
+4. Monitor for 1-2 weeks; expect rejection counts on `pair_locked` and `peak_dd_halt` to be visible in the dashboard.
+
+---
+
+## v8.3.34b -- Project skills catalog (`.claude/skills/` + `/skills` command)
+
+Companion to v8.3.34's code change (same PR). Captures the methodology from the v8.3.28-v8.3.33 investigation as reusable agent skills so future sessions don't re-tread the same hypothesis-testing path.
+
+New files:
+- `.claude/skills/replay-fidelity-investigation/SKILL.md` — the full multi-layer diagnostic recipe (classical sweep → live-engine replay → tick-data → signal-timing → state telemetry). **Documents the 4 falsified hypotheses from today's session** so they're not re-tested.
+- `.claude/skills/gha-backtest-lever-sweep/SKILL.md` — extracted from CLAUDE.md's "GHA-driven backtest" section
+- `.claude/skills/state-snapshot-retrieval/SKILL.md` — how to read live state from `snapshots-live` branch when the sandbox can't reach Railway
+- `.claude/commands/skills.md` — `/skills` slash command that lists the catalog
+
+To add a new skill: create `.claude/skills/<name>/SKILL.md` with YAML frontmatter (`name` and `description`). The `/skills` command auto-discovers.
+
+---
+
+## v8.3.33 (2026-05-13) -- Tape-eligibility filter on tick aggregation
+
+v8.3.32's first real validation produced this surprising result:
+
+| Ticker | n_ticks | atr_1m | atr_tick | ratio |
+|---|---:|---:|---:|---:|
+| SPY | 745K | 0.72 | 6.56 | **9.06x** |
+| AAPL | 700K | 0.51 | 3.04 | **6.00x** |
+| MSFT | 619K | 0.73 | 3.39 | **4.66x** |
+| NVDA | 2.3M | 1.00 | 1.22 | 1.22x |
+| TSLA | 1.4M | 1.72 | 2.02 | 1.17x |
+
+Tick ATR was **wider** than 1-min bar ATR on liquid mega-caps, with the worst inflation on the most-arbitraged names (SPY, AAPL). Verdict: `tick_atr_wider (unexpected)`.
+
+### Root cause
+
+Raw trade ticks include conditions that the consolidated SIP/CTA tape EXCLUDES from last-sale / high / low computation:
+- **Odd lot trades (`I`)** — sub-100-share prints, especially common on high-priced names like SPY/AAPL, often at outlier prices
+- **Late prints (`Z` Sold Out of Sequence)** — corrections, reported minutes after actual execution
+- **Form T (`T`) and Extended Hours (`U`)** — pre/post-market trades that shouldn't appear in RTH OHLC
+- **Cross trades (`9`)**, **Contingent (`V`)**, **Price Variation (`H`)**, **Average Price (`B`/`W`)** — non-standard executions
+- **Cash Sale (`C`)**, **Next Day (`N`)**, **Seller (`R`)**, **Prior Reference Price (`P`)** — settlement-deferred or off-market
+
+The SIP/CTA-consolidated 1-min bars filter these. Our raw tick aggregation didn't, so a single odd-lot at $1000 on SPY would set the 5-min "high" to $1000.
+
+### Fix
+
+`tools/compare_atr.py`:
+- New constant `NON_LAST_SALE_ELIGIBLE_CONDITIONS` listing 20 standard SIP/CTA exclusions
+- New helper `is_tape_eligible(conditions)` -- True if conditions is empty OR contains zero blacklisted codes
+- `aggregate_ticks_to_5m` now calls `is_tape_eligible` per trade; non-eligible trades are dropped before the high/low aggregation
+- `compare_one` output gains `n_ticks_eligible` and `n_ticks_filtered_out` diagnostic fields
+
+Tests: `test_compare_atr.py` gains 10 new tests in `TestTapeEligibilityFilter` and `TestAggregationWithFilter` covering empty/regular/excluded conditions plus a synthetic outlier-filtering case.
+
+### Expected behavior
+
+After dispatching `tick-atr-validation` again against the same R2 tick data:
+- SPY 9.06x ratio should drop substantially (likely to ~1.1-1.5x)
+- AAPL/MSFT/META same direction
+- NVDA/TSLA/AMZN/NFLX (already 1.1-1.3x) should stay close to where they were
+- Median ratio across 12 tickers likely lands in **0.95-1.05** (no meaningful difference) OR **0.80-0.95** (modestly tighter)
+
+If the median lands at `no_meaningful_difference`, the ATR-fidelity hypothesis is falsified definitively → ship `combo_150_500` from v8.3.30 without tick integration.
+If it lands at `modestly_tighter` or `meaningfully_tighter`, Phase 2 (integrate ticks into `orb_replay_day`) becomes worth shipping.
+
+### How to re-test (data already in R2)
+
+Actions tab → "Tick-vs-Bar ATR validation" → Run workflow → date=2026-05-12 → Run. ~3 min later the summary is on `tick-validation-results`.
+
+---
+
+## v8.3.32 (2026-05-13) -- Tick fetch pagination: actual fix (remove `limit` so alpaca-py auto-paginates)
+
+v8.3.31 attempted to fix pagination by wrapping `client.get_stock_trades` in a manual `next_page_token` loop. The first validation run AFTER that fix still showed `n_ticks=10000` per ticker — the wrapper was a no-op.
+
+### Root cause (inspecting alpaca-py source)
+
+The SDK's `_get_marketdata` (`alpaca/data/historical/stock.py`) **already paginates internally**:
+
+```python
+while True:
+    if limit:
+        actual_limit = min(int(limit) - total_items, page_limit)
+        if actual_limit < 1:
+            break  # ← stops early when caller's `limit` is hit
+    response = self.get(...)
+    ...
+    page_token = response.get("next_page_token", None)
+    if page_token is None:
+        break
+```
+
+Two compounding bugs in v8.3.31's wrapper:
+1. **`response.next_page_token` isn't surfaced** on the `TradeSet` object the SDK returns — it's consumed during internal pagination. So my outer `hasattr(resp, "next_page_token")` check always returned False, and my "pagination loop" exited after one iteration.
+2. **Passing `limit=10000`** told the SDK's internal pagination to STOP at 10000 items — defeating exactly the mechanism that was supposed to fetch more.
+
+### Fix
+
+`tools/fetch_alpaca_ticks.py:_fetch_trades_one_day` -- removed the `limit` parameter from `StockTradesRequest` (and the outer manual pagination loop). The SDK now paginates to exhaustion (`page_size=10000` per request internally, follows `next_page_token` until None).
+
+### What this unlocks
+
+After this PR merges + a new tick-trigger JSON fires the workflow, `n_ticks` per ticker will be in the 100K-500K range for liquid mega-caps (not 10K). The tick-atr-validation auto-fires after, and we finally see a real ratio of `atr_5m_14_from_ticks / atr_5m_14_from_1m`.
+
+### Tests unchanged
+
+The 13 tests in `test_fetch_alpaca_ticks.py` continue to pass — they exercise pure-Python helpers, not the SDK pagination contract (which is what was broken).
+
+---
+
+## v8.3.31 (2026-05-13) -- Fix tick fetch pagination + ATR anchor placement
+
+The first validation run from v8.3.30 surfaced two bugs:
+
+```
+{
+  "n_ticks": 10000,                         <- exactly Alpaca's per-page cap
+  "n_bars_5m_from_ticks": 1,                <- all 10K ticks fell into one bucket
+  "atr_5m_14_from_ticks": null,             <- not enough 5m bars for ATR(14)
+  "atr_5m_14_from_1m": null,                <- same, anchor too early
+  "verdict": "no_data"
+}
+```
+
+### Bug 1: tick fetch wasn't paginating
+
+`tools/fetch_alpaca_ticks.py:_fetch_trades_one_day` called `client.get_stock_trades(req)` with `limit=10000` and returned the first page only. On liquid mega-caps a single day has 100K+ trades; we were getting ~3 minutes of trading data per ticker.
+
+Fix: loop on `next_page_token` (checking both `resp.next_page_token` and `resp.raw["next_page_token"]` for cross-version compatibility) until the API returns no token.
+
+### Bug 2: ATR anchor was too early in the session
+
+`tools/compare_atr.py` anchored ATR(5m, 14) at **10:00 ET** (OR-end, where production fires its first entries). But the 1-min bar archive starts at **09:30 ET** — only ~6 5-min bars exist from the same day by 10:00 ET. ATR(14) needs ≥14 prior bars.
+
+Production handles this via prior-day 5m-bar accumulation (the `recent_5m_*` lists are maintained across day boundaries by `engine/scan.py`). We don't carry that across days in the validation tool.
+
+Fix: anchor at **12:30 ET** (bucket 750). By that time ~36 5m bars exist from the same session, plenty for ATR(14). Note this isn't the exact moment production fires entries, but the ATR-comparison question (bar-source vs tick-source) is invariant to the anchor as long as both methods see the same prior history.
+
+### What this unlocks
+
+After this PR merges, the operator re-dispatches `pull-tick-data` (full pagination this time → significantly longer runtime, maybe 30-45 min for 12 liquid tickers vs the prior 5 min). Then `tick-atr-validation` auto-fires (still via `workflow_run` chain from v8.3.30) and produces a real ATR comparison. The verdict drives the Phase 2 decision.
+
+### Tests unchanged
+
+The existing 28 tests in `test_compare_atr.py` + `test_fetch_alpaca_ticks.py` still pass — the bug fixes operate on parameters the tests don't exercise (pagination behavior of real Alpaca responses; anchor constants).
+
+---
+
+## v8.3.30 (2026-05-13) -- Tick-vs-Bar ATR validation pipeline (auto-fires after tick pulls)
+
+v8.3.28-29 shipped the tick-data pull + fixed the R2 upload path. This release closes the loop: once tick data lands in R2, a SECOND workflow auto-fires that compares `ATR(5m, 14)` computed from raw ticks vs the same metric from 1-min OHLC bars, and commits the comparison to a `tick-validation-results` branch. Zero manual intervention after this PR merges — drop a tick-trigger JSON → data pull → validation → MCP-readable result.
+
+### `tools/compare_atr.py`
+
+Pure-Python comparison tool:
+- `_load_ticks_from_r2(ticker, date)` -- gzip-stream the tick JSONL from `s3://$R2_BUCKET/tick-data/<DATE>/<TK>.jsonl.gz` via boto3
+- `aggregate_ticks_to_5m(ticks)` -- bucket raw trades into 5-min OHLC bars, true intra-minute high/low captured from every print
+- `aggregate_1m_to_5m(bars_1m)` -- same bucket convention applied to the existing 1-min archive
+- `compute_atr(bars_5m, anchor, lookback=14)` -- Wilder-style ATR(5m, 14) anchored at OR-end (10:00 ET, where entries fire)
+- `compare_one(ticker, date, bar_archive)` -- ATR-from-ticks vs ATR-from-1m for one (ticker, date) pair
+- `verdict_for(rows)` -- median ratio → qualitative verdict:
+  - `< 0.80` → `tick_atr_meaningfully_tighter` → pursue full FY pull + replay integration
+  - `0.80-0.95` → `tick_atr_modestly_tighter` → marginal call
+  - `0.95-1.05` → `no_meaningful_difference` → hypothesis falsified, fidelity bounded elsewhere
+  - `> 1.05` → `tick_atr_wider` → bug investigation
+
+### `.github/workflows/tick-atr-validation.yml`
+
+Two triggers:
+1. `workflow_run` on completion of `Pull Alpaca tick data` (auto-fires when upstream succeeded)
+2. `workflow_dispatch` for ad-hoc validation of any date already in R2
+
+Runner flow:
+1. Checkout `main` (code) + `data-extensions/rth-expand` (1-min bar archive) in parallel
+2. Install boto3
+3. Resolve the validation date from the most recent tick-trigger JSON (auto path) OR from the workflow_dispatch input
+4. Run `python -m tools.compare_atr` with R2 creds in env
+5. Commit `tick-atr/<DATE>/summary.json` to the `tick-validation-results` branch
+6. Also upload as a 30-day GHA artifact for fallback
+
+### Retrieval pattern (sandbox-side)
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="tick-atr/2026-05-12/summary.json",
+    ref="tick-validation-results"
+)
+```
+
+The summary JSON carries per-ticker rows (`atr_5m_14_from_ticks`, `atr_5m_14_from_1m`, `ratio_tick_over_1m`, `abs_diff`, etc.) AND a top-level `verdict` field that drives the next-step decision.
+
+### Tests
+
+`tests/strategy/test_compare_atr.py` — **15 new tests** covering:
+- Tick→5m aggregation: window boundary, close-is-last-tick, two-window handling, missing-field tolerance
+- 1m→5m aggregation: same bucket convention, close-uses-last-minute
+- `compute_atr`: insufficient-bars returns None, simple flat-volatility case, anchor filters late bars
+- `verdict_for`: no_data, meaningful, no_diff, modest, missing-ratios skipping
+- End-to-end zero-volatility synthetic (both methods agree)
+
+**844 strategy tests pass** (829 + 15 new).
+
+### Decision logic
+
+After the first auto-fired run lands the summary on `tick-validation-results`, the agent can read the verdict and decide whether to invest in full corpus integration:
+- `meaningfully_tighter` → ship a separate PR that modifies `tools/orb_replay_day.py` to consume tick-derived ATR, then re-run the replay sweep
+- `no_meaningful_difference` → shelve the tick approach; replay fidelity is bounded elsewhere (Val/Gene portfolios, exit sentinels, or production-vs-archive bar source differences)
+
+---
+
+## v8.3.29 (2026-05-12) -- `pull-tick-data.yml` credential diagnostics + artifact fallback
+
+v8.3.28's first auto-fired run failed at the R2 upload step with:
+```
+botocore.exceptions.ClientError: (InvalidArgument) when calling PutObject:
+  Credential access key has length 64, should be 32
+```
+
+R2's spec: `ACCESS_KEY_ID` = 32 hex chars, `SECRET_ACCESS_KEY` = 64 hex chars. The 64-char value in the access-key slot means the credentials are misconfigured (either the secret key was stored under `R2_ACCESS_KEY_ID`, or the two were swapped). The Alpaca SIP fetch step itself succeeded — only the upload failed — so 120 MB of pulled tick data was lost when the runner cleaned up.
+
+### Two changes to `pull-tick-data.yml`
+
+**1. New `Diagnose R2 credentials` step (before upload)**
+
+Prints `len()` of each R2 secret (no value leak) with the expected length. When a mismatch is detected, surfaces an `::error::` annotation specifically calling out the most likely fix:
+- If `ACCESS_KEY_ID` is 64 AND `SECRET_ACCESS_KEY` is 32 → "swapped, exchange them in Settings"
+- If `ACCESS_KEY_ID` is 64 only → "secret was stored in access-key slot"
+
+The step uses `::error::` annotations but does NOT fail the job — it lets the upload attempt run so boto3's own error appears in the log for cross-reference.
+
+**2. Artifact fallback on R2 failure**
+
+The upload step now has `continue-on-error: true`, and a new `Save tick data as GHA artifact` step runs after it via `if: always()`. So even when R2 auth fails, the pulled tick data is saved as a GHA artifact (90-day retention) named `tick-data-<start>-to-<end>`. Sandbox-side retrieval:
+
+```bash
+gh run download <run-id> --name tick-data-2026-05-12-to-2026-05-12
+```
+
+This means we never have to re-pull from Alpaca after a creds typo — the data is preserved.
+
+**3. Final failure marker**
+
+A new `Fail job if R2 upload failed` step runs after the artifact upload and explicitly fails the job (red in Actions UI) when the R2 step had a non-zero outcome. Without this, `continue-on-error: true` would have made the job pass green despite the upload failure.
+
+### Operator action
+
+On the next run (after this PR merges and `sample-2026-05-12.json` re-triggers or you dispatch manually):
+1. Check the Diagnose R2 credentials step output for length mismatches
+2. Follow the surfaced ::warning:: annotation to fix Settings → Secrets
+3. Either re-dispatch the workflow, OR `gh run download` the artifact from this run + manually push to R2 via `aws s3 cp`
+
+### No new tests
+
+This PR only modifies a GHA YAML; the logic is observable in the workflow log on the next run. No unit-testable Python changes.
+
+---
+
+## v8.3.28 (2026-05-12) -- Alpaca tick-data archive (`tools/fetch_alpaca_ticks.py` + GHA + R2)
+
+Investigation today found the live-replay's ATR(5m,14) is ~1.5x wider than production's, causing 1.5x wider stops and 5x larger positions, which makes the concurrent notional cap reject 99.8% of would-be entries (replay fires 2 trades/day vs production's 15-25). Hypothesis: production's ATR is computed from streaming tick data (sub-second intra-bar volatility) while the replay uses 1-min OHLC summaries. To validate, we need historical tick data.
+
+### Why tick data and not 1-second bars
+
+1-second bars would be ~60x the 1-min storage (~1.5 GB FY) and likely close most of the gap. But the operator wants tick-level for full faithfulness to production. Trade-by-trade has ~50-100x the volume of 1-min bars on liquid mega-caps, so the FY corpus would be ~10 GB compressed — too big for a GitHub branch, so we use Cloudflare R2 (the existing storage infra used by `r2-export-results.yml`).
+
+### `tools/fetch_alpaca_ticks.py`
+
+Mirror of `tools/fetch_alpaca_bars.py` but for `StockTradesRequest` instead of bars:
+
+- Paginated fetch of all trades for `(ticker, date)` via Alpaca's SIP feed
+- Auto-fallback to IEX on SIP-permission errors (free paper tier)
+- Output: gzipped JSONL per ticker-day, ~3 MB compressed per ticker-day on a liquid stock
+- `--sleep-ms-between-tickers` throttle (default 100ms) to stay under Alpaca's 200 req/min rate cap
+
+Each row:
+```json
+{"ts": "2026-05-12T13:30:00.123456+00:00", "price": 264.41, "size": 100,
+ "exchange": "Q", "conditions": ["@"], "tape": "C", "id": 12345, "feed_source": "sip"}
+```
+
+### `.github/workflows/pull-tick-data.yml`
+
+Two trigger paths:
+1. `workflow_dispatch` (UI/manual) with `start_date`/`end_date`/`tickers`/`premarket` inputs
+2. Push to `main` on `.github/tick-trigger/*.json` (mirrors the existing rth-trigger pattern)
+
+Runner steps:
+1. Install `alpaca-py` + `boto3`
+2. Resolve params from input or trigger JSON
+3. Run `tools.fetch_alpaca_ticks` into `${{ github.workspace }}/tick-data/`
+4. Upload to `s3://$R2_BUCKET/tick-data/<DATE>/<TICKER>.jsonl.gz` via Cloudflare R2
+
+Required secrets (already configured for `r2-export-results.yml`):
+- `VAL_ALPACA_PAPER_KEY` / `VAL_ALPACA_PAPER_SECRET`
+- `R2_ACCOUNT_ID` / `R2_BUCKET_NAME` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`
+
+### `.github/tick-trigger/sample-2026-05-12.json`
+
+Initial 1-day, 12-ticker pull (~120 MB compressed). Goal: **validate the ATR-from-ticks vs ATR-from-1m-bars hypothesis BEFORE committing to a full-year pull** (~10 GB, ~6 hr runner time). If the gap holds, a follow-up trigger fills the corpus.
+
+### Retrieval pattern (replay-side)
+
+```bash
+aws --endpoint-url=https://<acct>.r2.cloudflarestorage.com \
+    s3 cp s3://<bucket>/tick-data/2026-05-12/AMZN.jsonl.gz .
+```
+
+A follow-up PR will modify `tools/orb_replay_day.py` to consume tick data when available (compute true intra-minute high/low + ATR-from-ticks) and fall back to 1-min OHLC when not.
+
+### Tests
+
+`tests/strategy/test_fetch_alpaca_ticks.py` — 13 new tests covering:
+- Weekday/weekend filtering, ET-window UTC conversion (RTH + premarket)
+- Trade-row normalization: basic fields, missing-data fallbacks, int-size preservation, naive-timestamp UTC attachment
+- `_write_jsonl_gz` round-trip + parent-dir creation
+- Default-universe constant pinning
+
+All 13 pass.
+
+### Storage / cost notes
+
+- R2: ~$0.015/GB/month. FY corpus (10 GB) = $0.15/mo. Trivial.
+- R2 egress: free for first 10 GB/mo. Replay sandbox pulling the corpus monthly stays under free tier.
+- Alpaca: free under existing Algo Trader Plus subscription.
+- GHA runner: ~30 min for the 1-day sample, ~4-8 hr for the full FY pull (rate-limited).
+
+---
+
+## v8.3.26 (2026-05-12) -- Day-end-giveback defenses (v18 levers) + corpus backfill trigger + GHA-backtest skill doc
+
+Operator pushback to v8.3.x's 97%-of-peak profit giveback at EOD: ship two surgical rule variants in the **research harness only**, validate via GHA `lever-sweep` against the full 1-year corpus, then port the winning config to the live engine in a follow-up PR.
+
+### Two new env-var levers in `tools/orb_backtest.py`
+
+```
+ORB_LOSS_LOCK_THRESHOLD_USD  -- >0: after a closed leg with pnl <
+                                    -threshold, lock that (ticker, side)
+                                    pair for the rest of the day.
+                                    0 = off (default).
+ORB_PEAK_DD_HALT_USD         -- >0: when intraday realized PnL drops
+                                    this many $ below the day's running
+                                    peak, halt all new entries.
+                                    0 = off (default).
+```
+
+Both off by default. Live engine (`orb.live_runtime`, `orb.risk_book`) is **NOT modified by this PR** — the rules live only in the backtest harness. If the sweep validates the rules, a follow-up PR will port the winner to live trading.
+
+### Per-day diagnostics
+
+`per_day/<date>.json` now carries:
+- `r18_lock_rejects` — count of entries rejected by Rule #1 on that day
+- `r18_locked_pairs` — which (ticker, side) pairs got locked
+- `r18_peak_pnl` — running peak realized PnL for the day (used by Rule #2)
+
+### Research script
+
+`docs/research/r6_drawdown_rules.py` — 14 theories layered on v12 Config A baseline (risk=1.0% + v10 keystone, plus today's v8.3.20 notional cap 0.95). Sweep covers:
+- Rule #1 alone at thresholds: `0.01`, `25`, `50`, `100`, `150` (most-aggressive to most-conservative)
+- Rule #2 alone at thresholds: `300`, `500`, `750`, `1000`
+- 4 combined variants (`lock25+dd500`, `lock50+dd500`, `lock100+dd500`, `lock100+dd750`)
+
+Cross-validation slices: full year + 4 quarterly (Q2 2025, Q3 2025, Q4 2025, Q1Q2 2026) — same pattern as r3-r5 to catch in-sample fits.
+
+`--print-variants` emits the JSON tuple ready for the GHA Lever Sweep dispatch.
+
+### Corpus backfill trigger
+
+`.github/rth-trigger/fill-2026-05-12.json` — extends the
+`data-extensions/rth-expand` branch to include today's bars. Combined with the previously-merged `fill-2025-may-oct.json` + `fill-2026-jan-may.json`, the full-year corpus now ends at 2026-05-12 (~251 trading days, May 2025 → May 2026).
+
+### CLAUDE.md skill addition
+
+New section "GHA-driven backtest via lever-sweep". Documents the 5-step research workflow (corpus on branch → env-var on `ORBConfig` → sweep script → Lever Sweep dispatch → MCP retrieval) so future agent sessions reuse it instead of building parallel infrastructure. Explicitly calls out the anti-pattern of building `tools/corpus_backtest.py` or `corpus-backtest.yml`.
+
+### Tests
+
+`tests/strategy/test_orb_backtest_v18_rules.py` — 8 new tests:
+- Defaults off
+- Parse positive values for both env vars
+- Both env vars work simultaneously
+- Zero treated as off
+- Negative parsed but semantically off (`> 0` guards in simulate loop)
+- `ORBConfig` field-name + field-type schema guard
+
+**Behavioral validation** runs separately via the R6 sweep against the production corpus. This PR only ships the plumbing + the sweep harness.
+
+### What ships next
+
+1. Operator dispatches `pull-rth-bars.yml` (or merge auto-fires it via `fill-2026-05-12.json`) to fill in today's bars.
+2. Operator (or me via MCP if a workflow-dispatch tool surfaces) dispatches `lever-sweep.yml` with the R6 variants.
+3. Read R6 results from `sweep-results` branch via MCP, write `docs/pl_optimization_final_report_v13.md`.
+4. If winners exist, follow-up PR ports the chosen thresholds to `orb.risk_book` as live env-gated rules.
+
+---
+
+## v8.3.25 (2026-05-12) -- Add `/api/trade_log` to the snapshot bundle
+
+v8.3.24 shipped the snapshot stream against `/api/state` + `/api/executor/{val,gene}`. Operator request: "pull the actual trade log too". The `trades_today` slice inside `/api/state` only covers the current session; cross-day analysis needs the persistent `trade_log.jsonl` reader, exposed via the existing `/api/trade_log` endpoint.
+
+### Change
+
+`tools/state_snapshot.py:ENDPOINTS_TO_PULL` -- added `/api/trade_log?limit=5000`. 5000 is the server-side max (clamped in `dashboard_server.py:h_trade_log`), roughly 200 trading days at 25 trades/day. More than enough history for spotting regressions in entry/exit behavior.
+
+The path uses a literal query-string; the existing `DashboardClient.get_json` passes it through unchanged.
+
+### Snapshot shape (v8.3.25+)
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "...",
+  "dashboard_base_url": "...",
+  "endpoints": {
+    "/api/state":              { ...full dashboard state... },
+    "/api/executor/val":       { ...val executor diagnostics... },
+    "/api/executor/gene":      { ...gene executor diagnostics... },
+    "/api/trade_log?limit=5000": { rows: [...up to 5000 rows...] }
+  }
+}
+```
+
+### Tests
+
+`tests/strategy/test_state_snapshot.py:TestEndpointConstant` -- pinned to the 4-entry tuple; renamed from `test_endpoints_are_three` to `test_endpoints_pinned`. All 9 existing snapshot tests still pass.
+
+### Size note
+
+Each `trade_log.jsonl` row is ~500 bytes. 5000 rows -> ~2.5 MB JSON per snapshot. The daily JSONL accumulates 54 ticks/day at most -> ~135 MB/day worst case if every tick is unique. Git's delta compression will compact ~95% of that since consecutive trade-log payloads are append-only. Still, set a calendar to revisit retention if `snapshots-live` grows past ~500 MB.
+
+---
+
+## v8.3.24 (2026-05-12) -- Live-state snapshot stream (cron) -> `snapshots-live` branch
+
+Motivation: the operator's Claude Code sandbox is firewalled away from `tradegenius.up.railway.app` (Host-not-in-allowlist on every egress). The agent can read GitHub via MCP but not the live dashboard. To analyze "what is the bot doing right now?" the agent had to ask the operator to paste `/api/state`. This release publishes that data automatically.
+
+### New tool
+
+`tools/state_snapshot.py` -- pulls `/api/state` + `/api/executor/val` + `/api/executor/gene` using the existing `DashboardClient` (form-login, `spike_session` cookie). Bundles them into a single JSON document with `captured_at_utc` and writes:
+
+- `data/snapshots/latest.json` -- overwritten every tick
+- `data/snapshots/YYYY-MM-DD.jsonl` -- append-only history (one snapshot/line)
+
+Exit codes are explicit (0 success / 1 config / 2 network / 3 write). Stdlib-only (no requirements.txt install needed on the runner).
+
+### New workflow
+
+`.github/workflows/state-snapshot.yml`:
+
+- Cron `*/10 13-21 * * 1-5` covers US RTH under both EDT and EST (54 runs/day max)
+- `workflow_dispatch` enabled with a `reason` input for ad-hoc pulls
+- Checks out (or initializes) a dedicated `snapshots-live` branch
+- Pulls the snapshot tool from `main`
+- Runs `python -m tools.state_snapshot`
+- Commits + pushes the snapshot files to `snapshots-live`
+- `cancel-in-progress: true` -- a long run never piles up against the next tick
+- Retry-on-push with 2/4/8/16s exponential backoff
+- Permissions: `contents: write` (limited to the snapshot branch in practice)
+
+### Retrieval pattern
+
+Downstream agents grab the data through the GitHub MCP without needing the dashboard password:
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/snapshots/latest.json",
+    ref="snapshots-live"
+)
+```
+
+### CLAUDE.md note added
+
+Future agent sessions will see a "Retrieving live state from sandbox" subsection under "Operator preferences" pointing at the snapshot branch.
+
+### What the data looks like
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-05-12T18:30:00Z",
+  "dashboard_base_url": "https://tradegenius.up.railway.app",
+  "endpoints": {
+    "/api/state": { ...full dashboard state... },
+    "/api/executor/val": { ...val executor diagnostics... },
+    "/api/executor/gene": { ...gene executor diagnostics... }
+  }
+}
+```
+
+If an individual endpoint fails the run still succeeds as long as `/api/state` returned valid JSON; the failing endpoint shows `{"__error__": "..."}` in the bundle.
+
+### Security
+
+- The workflow uses existing GHA secrets (`DASHBOARD_URL`, `DASHBOARD_PASSWORD`) already in place for `dashboard-monitor.yml`. No new secret needed.
+- `snapshots-live` is a public branch (the repo is private, so the snapshots inherit that protection). If the operator wants to make the repo public later, scrub-on-publish should remove `data/snapshots/`.
+- Tool is read-only against production -- only `GET` calls, never `POST`.
+
+### Tests
+
+`tests/strategy/test_state_snapshot.py` (5 tests):
+
+1. `_pull_all` records `__error__` for failing endpoints, OK payloads for successful ones
+2. `_write_outputs` writes both `latest.json` and the per-day `.jsonl`
+3. The per-day file appends (multiple runs accumulate lines, not overwrite)
+4. `main()` returns 1 when env vars are missing
+5. `main()` returns 2 when `/api/state` is unreachable / errored
+
+### First run
+
+Pushing this PR creates the `snapshots-live` branch on first cron tick (or on first `workflow_dispatch`). Until that happens, retrieval will 404.
+
+---
+
+## v8.3.23 (2026-05-12) -- Independent-mode default (`ORB_PORTFOLIO_FIRE`: 0 → 1) + legacy-bus entry guard
+
+Operator directive: "We should switch to independent mode." This release flips Val/Gene from mirror-mode (entries dispatched via Main's legacy signal bus at scaled share count) to **independent-mode entries** (each portfolio runs its own `OrbEngine.try_enter` and dispatches via `executor.fire_long`/`fire_short` with its OWN equity-driven sizing math).
+
+### Change
+
+**Default flipped** — `engine/scan.py:_v10_dispatch_executor_fire`:
+```diff
+-    if os.environ.get("ORB_PORTFOLIO_FIRE", "0") != "1":
++    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
+```
+
+**Entry guard added** — `executors/base.py:_on_signal`:
+```python
+if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
+    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
+        logger.info(
+            "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent mode "
+            "active; entry will fire via _v10_dispatch_executor_fire "
+            "(not legacy bus)", self.NAME, kind, ticker)
+        return
+```
+
+Without this guard, Val would receive Main's bus emit AND scan.py's per-portfolio dispatch → 2 Alpaca orders per signal.
+
+EXIT signals (`EXIT_LONG` / `EXIT_SHORT` / `PARTIAL_EXIT_*`) are NOT guarded — they continue flowing through `_on_signal` as the canonical exit path (`orb.live_runtime.check_exit` exists but has no production caller yet).
+
+### Important limitation
+
+Val/Gene-only positions (where Val admits but Main rejects due to different RiskBook decision) won't receive an exit signal from Main's bus. Those positions only close at EOD flush. v8.3.24+ will wire a per-portfolio sentinel loop to close this gap.
+
+### CLAUDE.md updated
+
+Added a new bullet under "Mandatory PR rules" documenting:
+- The default and the override path (`ORB_PORTFOLIO_FIRE=0` reverts to mirror mode)
+- The exit-path limitation (Val-only positions don't auto-exit)
+- The architectural pointer to `check_exit` which exists but isn't yet wired
+
+### Tests
+
+`tests/strategy/test_independent_mode_entry_guard.py` — **8 new tests**:
+
+1. Default (no env) → guard activates, entry skipped
+2. `ORB_PORTFOLIO_FIRE=1` explicit → `ENTRY_LONG` skipped
+3. `ORB_PORTFOLIO_FIRE=1` explicit → `ENTRY_SHORT` skipped
+4. `ORB_PORTFOLIO_FIRE=0` (mirror-mode override) → entry passes guard
+5. `EXIT_LONG` always passes guard (independent OR mirror mode)
+6. `EXIT_SHORT` always passes guard
+7. `PARTIAL_EXIT_LONG` always passes guard
+8. Unknown kind (e.g. `EOD_CLOSE_ALL`) always passes guard
+
+`tests/strategy/test_orb_executor_fire.py:test_explicit_zero_skips_fire` — renamed from `test_off_by_default_no_fire` and inverted to reflect the new default: now verifies `ORB_PORTFOLIO_FIRE=0` is the explicit opt-out path.
+
+**799 strategy tests pass** (791 + 8 new).
+
+### What changes operationally
+
+| Before (mirror) | After (independent) |
+|---|---|
+| Entry: Main fires → bus → Val.fire | Entry: Val's own engine.try_enter → Val.fire_long |
+| Sizing: `main_shares × Val_equity / Main_equity` (v8.3.17) | Sizing: Val's own equity × risk_per_trade_pct, capped by Val's RiskBook |
+| Val's engine RiskBook | Empty (all 0s) — operator's "Val ORB IDLE" complaint | Populated correctly with Val's own tickets/risk |
+| Exit | Main's bus → Val (works) | Main's bus → Val (still works for shared tickers; Val-only positions don't auto-exit until EOD) |
+
+### Rollback
+
+Set `ORB_PORTFOLIO_FIRE=0` in Railway env → mirror mode returns. No code revert needed.
+
+---
+
+## v8.3.22 (2026-05-12) -- Boot-time purge of orphan uuid tickets (unblocks persistent notional_cap rejects)
+
+Operator screenshot post-v8.3.20 deploy showed `risk_reject:notional_cap (would-be $300976 > $96280)` STILL firing on Main. v8.3.20 reduced the cap from 2.0× to 0.95× and added a `recover-*` sweep, but the rejects continued because the orphans were **uuid-style tickets** from prior `try_admit` calls — NOT `recover-{pid}-{ticker}` ids. v8.3.20's sweep scope-limited to recover-* (uuid→ticker mapping isn't safe in the general per-cycle case).
+
+Operator's directive (paraphrased): *"don't even consider firing anything that would put us outside our nominal limit."* The bot **was** refusing those (notional_cap reject is the engine doing its job). The bug was the **sum** being inflated by phantom uuid tickets eating ~$200K of the $96K cap.
+
+### Change
+
+`orb/engine.py` — new public method `OrbEngine.purge_non_recover_tickets() -> dict`:
+
+- Iterates every RiskBook (main/val/gene)
+- Pops any ticket whose id does NOT start with `recover-{pid}-`
+- Decrements `_open_risk` and `_open_notional` by released amounts (clamp non-negative)
+- Returns `{pid: n_purged}` for forensic logging
+
+`orb/live_runtime.py:ensure_session_started` — one-shot invocation right after the v8.3.4 rehydrate. Boot-only, never per-cycle: legitimate uuid tickets exist transiently during normal `try_admit` flow within a single scan cycle; per-cycle purge would clobber live admits. Boot is safe because v8.3.6 mirror re-adds clean `recover-*` tickets from `executor.positions` / `tg.positions` immediately after.
+
+Logs `[V8322-UUID-PURGE] cleared orphan uuid tickets at session_start: {pid: N}` when anything was purged.
+
+### Why uuid orphans accumulate
+
+`OrbEngine.try_enter` creates a uuid ticket via `RiskBook.try_admit`. The position object is constructed, FSM transitions to `PHASE_IN_POS`, and the Admission returns. Caller (`engine/scan.py:_orb_long_entry`) then calls `callbacks.execute_entry` which routes to `broker/orders.execute_breakout`. `execute_breakout` has ~10 early-return gates (cash, daily-loss-kill, cutoff, cooldown, ...). When it early-returns without populating `tg.positions[ticker]`, v7.81.0's `rollback_admit` is supposed to release the ticket. If rollback fails silently (e.g. exception in the rollback path, or v8.3.4 dump fires between admit and rollback so disk state has the ticket without the position write), the uuid ticket leaks. Across multiple Railway redeploys the leaks accumulate.
+
+v8.3.22 closes this gap by treating boot as the cleanup checkpoint: any uuid ticket that survives across a process boundary is by definition an orphan (real in-flight admits don't survive a redeploy).
+
+### Tests
+
+`tests/strategy/test_orb_uuid_ticket_purge.py` — **7 new tests**:
+
+1. Empty engine → no purge
+2. `recover-*` tickets preserved
+3. uuid tickets purged + risk/notional decremented
+4. Mixed: 1 recover-main-GOOG + 3 uuid orphans → purge clears the 3 uuid, GOOG ticket survives (operator's exact scenario)
+5. Purge across multiple pids (main + val + gene)
+6. Purge does NOT touch FSM state (only RiskBook tickets)
+7. Negative risk/notional drift clamps to 0
+
+**791 strategy tests pass** (784 + 7 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.22:
+1. **First scan cycle clears uuid orphans.** `[V8322-UUID-PURGE]` log line surfaces the count per pid.
+2. **Main's `risk_reject:notional_cap` stops firing** on signals smaller than `cap - real_open_notional`. Real exposure (~$73K GOOG) leaves ~$23K headroom under the $96K cap.
+3. **Watchdog `no_phantom_positions`** resolves — RiskBook open_count now matches real position count.
+
+### Tradeoff: per-cycle uuid sweep not added
+
+We deliberately did NOT add a per-cycle uuid sweep because:
+- Within a single scan cycle, `try_admit` legitimately creates a uuid ticket that gets attached to the position seconds later. A per-cycle purge would clobber it.
+- The boot-time path is sufficient: uuid orphans can only persist across process boundaries (via v8.3.4 disk dump), so boot is the right cleanup point.
+- The v8.3.20 per-cycle `recover-*` sweep continues to catch the other leak vector.
+
+### Rollback
+
+Remove the `_engine.purge_non_recover_tickets()` call in `live_runtime.ensure_session_started`. The helper stays defined (tested, no harm); the boot path stops purging.
+
+### Followup: v8.3.23 — Val/Gene v10 mirror-mode gauges
+
+Operator surfaced: Val's tab shows "V10 ORB · VAL · 0 TODAY · IDLE" while Val is actively trading (positions visible, activity feed shows ADMITs). Root: in mirror mode the engine's val RiskBook stays empty because Val's entries flow through the legacy bus path, not `OrbEngine.try_enter`. v8.3.23 will derive the gauges (trades_today / open_risk / realized_pnl / kill threshold) from Val's broker-side data when in mirror mode.
+
+---
+
+## v8.3.21 (2026-05-12) -- Section-order parity across Main / Val / Gene + new CLAUDE.md rule
+
+Operator: "Order of sections across Val and Gene should match to main. Fix and add it to rules."
+
+### Before (mismatch)
+
+| # | Main | Val/Gene |
+|---|---|---|
+| 4 | v10 Proximity | Recent activity ❌ |
+| 5 | Recent activity | v10 Proximity ❌ |
+
+Cards 4 + 5 were in opposite order on Val/Gene vs Main, breaking visual scan parity.
+
+### Change
+
+`dashboard_static/app.js:execSkeleton` — swap the `data-f="v10-pid-activity-section"` and `data-f="v10-prox-section-pid"` blocks so Val/Gene tabs render Proximity above Activity, matching Main's order.
+
+After v8.3.21, all three tabs render in this canonical sequence:
+
+1. Killswitch banner
+2. KPI row (Equity / Day P&L / Open / Session)
+3. Open positions
+4. v10 ORB header/gauges (Main: Day Status + Baseline + Ticker Matrix split across three sections; Val/Gene: rolled into one `v10 ORB · {label}` card)
+5. **v10 Proximity**
+6. **Recent activity**
+7. Today's trades
+8. Account diagnostics *(Val/Gene only)*
+
+### CLAUDE.md — new rule
+
+> **Section order parity across tabs (added v8.3.21).** The vertical order of cards/sections on Val and Gene tabs must mirror Main's order so the operator's eye-trace is identical across portfolios. Canonical order: (1) killswitch banner, (2) KPI row, (3) Open positions, (4) v10 ORB header/gauges, (5) v10 Proximity, (6) Recent activity, (7) Today's trades, (8) Account diagnostics (Val/Gene only). When adding or moving a card, audit BOTH `index.html` (Main, ~lines 107–301) AND `execSkeleton` in `app.js` (~lines 3870–3987). The Val/Gene `v10 ORB` gauges card is the analog of Main's `v10-day-status` + `v10-baseline` + `v10-ticker-matrix-section` rolled into one — it occupies the equivalent slot.
+
+Companion to the v8.3.18 "UI changes propagate across all tabs" rule: that one covers feature/column parity inside cards; v8.3.21 covers the ordering of the cards themselves.
+
+### Tests
+
+HTML/JS reorder; no Python state change. **784 strategy tests pass** unchanged.
+
+### Rollback
+
+Swap the two `<section>` blocks back in `execSkeleton`. The mismatch returns.
+
+---
+
+## v8.3.20 (2026-05-12) -- Ticket-side phantom sweep + over-leverage protection (notional cap 2.0 → 0.95)
+
+Two fixes in one ship, both surfaced by the same watchdog/operator pair:
+
+1. **Watchdog `no_phantom_positions`**: "main has 1 position in /api/state but RiskBook reports open_count=4". v8.3.15's sweep only catches FSM rows where `in_position=True`; leaked `recover-*` tickets with `in_position=False` slipped through, consuming open_risk + open_notional budget forever.
+2. **Operator screenshot of repeated `risk_reject:notional_cap (would-be $300976 > $202694)`** on Main tab. The would-be exceeded cap because 3 phantom tickets ate ~$129K of the $202K cap (leaving only ~$73K for the real GOOG position + new admits). Plus operator directive: "Our total notional (shorts + longs) should be below equity (w safety margins). Do not get into over leverage situation."
+
+### Change A — ticket-side phantom sweep (`orb/engine.py` + `engine/scan.py`)
+
+Two new public methods on `OrbEngine`:
+
+- `find_phantom_recover_tickets(held_tickers_by_pid)` — scans `_open_tickets` for `recover-{pid}-{ticker}` ids where the ticker isn't held by the corresponding portfolio. Returns `[(pid, ticket_id, ticker), ...]`. Scope-limited to deterministic recover-* ids; uuid-style tickets from `try_admit` aren't touched (no safe ticker mapping for those).
+- `release_recover_ticket(pid, ticket_id)` — pops the ticket from `_open_tickets`, decrements `_open_risk` + `_open_notional`, clamps non-negative. Returns True iff anything was released.
+
+`_orb_phantom_sweep` in `engine/scan.py` (which v8.3.15 added) now runs BOTH passes per cycle:
+- v8.3.15 FSM-side sweep (in_position=True orphans)
+- v8.3.20 ticket-side sweep (in_position=False ticket orphans)
+
+Logs `[V8320-TICKET-SWEEP] released N phantom recover-* ticket(s): [(pid, ticker), ...]` per cycle when anything was cleaned.
+
+### Change B — over-leverage protection (`orb/live_runtime.py`)
+
+Env default `ORB_MAX_CONCURRENT_NOTIONAL_MULT` lowered from **2.0** → **0.95** in `_build_config_from_env`. Aligns the v10 RiskBook cap with the legacy v7.86.0 paper-book 95%-of-equity cap so both layers ask the same question. Operator's directive: total notional below equity with safety margins.
+
+- Old: $100K equity × 2.0 = $200K cap (allowed ~2× exposure)
+- New: $100K equity × 0.95 = $95K cap (matches the broker-side cap; safety margin built in)
+
+Operators wanting the legacy 2.0 for research/backtests set `ORB_MAX_CONCURRENT_NOTIONAL_MULT=2.0` in Railway env. Tests that depend on the legacy 2.0 default opt back in via their `isolated_env` fixtures.
+
+### Tests
+
+`tests/strategy/test_orb_phantom_ticket_sweep.py` — **12 new tests**:
+
+`TestFindPhantomRecoverTickets` (6):
+1. Empty engine returns []
+2. Operator's scenario — recover-main-AMZN orphan with no AMZN held → detected
+3. Clean state (ticket exists, ticker held) → no phantoms
+4. Multiple orphans across pids
+5. Non-recover uuid tickets ignored (no safe mapping)
+6. Missing pid in held map skipped (defensive)
+
+`TestReleaseRecoverTicket` (4):
+7. Pops ticket + decrements risk/notional
+8. Missing ticket returns False
+9. Unknown pid returns False
+10. Negative-value clamps to 0 (fp drift defensive)
+
+`TestOperatorScenario` (2):
+11. **Exact operator setup**: 4 tickets, 1 held → sweep clears 3 phantoms, notional drops from $202K to $73K, cap unblocked
+12. v8.3.15 + v8.3.20 complementary — v8.3.15 catches in_position=True orphans; v8.3.20 catches in_position=False ticket-only orphans
+
+Three test fixtures (`test_orb_live_runtime`, `test_orb_accuracy`, `test_orb_coverage_gaps`) updated to opt back in to the legacy 2.0 multiplier via `ORB_MAX_CONCURRENT_NOTIONAL_MULT=2.0`.
+
+**784 strategy tests pass** (772 + 12 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.20:
+1. **Phantom tickets cleared on first scan cycle.** Watchdog `no_phantom_positions` invariant resolves automatically. `[V8320-TICKET-SWEEP]` log line per ticker released.
+2. **Notional cap drops from $200K → ~$95K** on Main. Real exposure (1 position × ~$73K notional) is well within. New entries that previously hit cap due to phantoms now admit cleanly.
+3. **No over-leverage path possible.** Engine + paper-book both gate at 95% of equity. Combined longs + shorts capped near equity with a small safety margin.
+
+### Rollback
+
+Remove the ticket-sweep call in `engine/scan.py:_orb_phantom_sweep` and restore `_f("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0)` in `orb/live_runtime.py`. The helper methods on OrbEngine stay defined (tested, no harm).
+
+---
+
+## v8.3.19 (2026-05-12) -- Fix v8.3.13 false-positive: `signal_bus_status` uses runtime instance class, not `__qualname__`
+
+Watchdog issue #679 carried a Railway log slice that contradicted v8.3.14's root-cause note:
+
+```
+[SIGNAL-BUS-EMIT] kind=ENTRY_SHORT ticker=AMZN n_listeners=1
+[SIGNAL-BUS-DISPATCH] kind=ENTRY_SHORT ticker=AMZN listener=TradeGeniusBase._on_signal
+[V79-MIRROR-RECV] Val kind=ENTRY_SHORT ticker=AMZN price=263.97 main_shares=58
+[V79-MIRROR-DISPATCH] Val ENTRY_SHORT AMZN qty=58 price=263.97
+```
+
+Val WAS subscribed and dispatching. But the v8.3.13 `_is_executor_subscribed` probe returned `False`, so the v8.3.14 issue body flagged `val.subscribed = false` (and `gene.subscribed = false`) as the root cause — both false positives.
+
+### Root cause
+
+`TradeGeniusVal._on_signal` is **inherited** from `TradeGeniusBase`. Python's `__qualname__` reflects where the method is **defined**, not the runtime class of `self`. So when `Val.register_signal_listener(self._on_signal)` runs, `fn.__qualname__` returns `"TradeGeniusBase._on_signal"`. v8.3.13's `signal_bus_status` used `__qualname__` to populate the names list, so the listener name was `"TradeGeniusBase._on_signal"`. v8.3.13's `_is_executor_subscribed` looked for `"TradeGeniusVal."` prefix → no match → False.
+
+### Change
+
+`trade_genius.signal_bus_status` now extracts `type(fn.__self__).__name__` for bound methods (the runtime instance class) and falls back to `__qualname__` only for free-function listeners (used in tests / the synthetic harness):
+
+```python
+for fn in listeners:
+    inst = getattr(fn, "__self__", None)
+    if inst is not None:
+        cls_name = type(inst).__name__
+        meth_name = getattr(fn, "__name__", "_on_signal")
+        names.append(f"{cls_name}.{meth_name}")
+    else:
+        names.append(getattr(fn, "__qualname__", repr(fn)))
+```
+
+After v8.3.19, a subscribed Val executor surfaces as `"TradeGeniusVal._on_signal"` in `signal_bus_status().names`. v8.3.13's pattern match works correctly.
+
+### Tests
+
+The 11 v8.3.13 tests in `tests/strategy/test_executor_subscribed.py` still pass — they inject `signal_bus_status` return values directly via `monkeypatch`, so the v8.3.19 shape change doesn't affect them.
+
+A live-import test was attempted but `trade_genius` has too many initialization gates to import cleanly in sandbox (telegram-stub coverage + env-var requirements). v8.3.19's shape change is small and verified by the next watchdog tick after deployment: the existing v8.3.14 "Root cause likely" note should NOT fire for Val/Gene anymore, since both ARE actually subscribed per Issue #679's log slice.
+
+**772 strategy tests pass** unchanged.
+
+### What the operator will see
+
+After v8.3.19 deploys + next watchdog tick:
+- `val.subscribed = false` / `gene.subscribed = false` notes **stop appearing** in `val_gene_trades_match_main` issue bodies
+- The watchdog falls through to the v7.84.0 log-slice path — which is what the operator wants here because Val/Gene ARE subscribed; the real issue is downstream (Alpaca order outcome). The truncated `[Val] [ALPACA-*]` line in issue #679 hints at where to look next.
+
+### Rollback
+
+Revert `signal_bus_status` to use `__qualname__` for all listeners. The v8.3.14 false positives return.
+
+---
+
+## v8.3.18 (2026-05-12) -- "Held" (time-in-position) column on OPEN POSITIONS + cross-tab rule in CLAUDE.md
+
+Operator: "Add time in position for open stocks in open positions section. Apply changes across all tabs (in fact, add this to the rules: ui changes need to propagate across all tabs if makes sense)."
+
+### Change
+
+**Backend** (`dashboard_server.py`):
+
+- `_serialize_positions` (Main tab `/api/state.portfolios.main.positions`) — adds `entry_ts_utc` to both long + short row payloads from `pos["entry_ts_utc"]`
+- Per-executor handler (`/api/executor/{val|gene}.positions`) — Alpaca's `Position` object has no entry timestamp, so we look up `executor.positions[symbol]["entry_ts_utc"]` from the executor's own bookkeeping and attach it to the row
+
+**Frontend** (`dashboard_static/app.js`):
+
+- New helper `fmtHeld(entryIso)` — renders elapsed time as `Nm` / `Nh Nm` / `Nd Nh`. Exposed as `window.fmtHeld` for IIFE-2 (Val/Gene tabs).
+- `renderPositions` (Main tab) — new `Held` column appended after `%`; thead label updated
+- Val/Gene executor-tab positions renderer — same column + thead
+
+**Mobile** (`dashboard_static/app.css`):
+
+- Stacked-card layout (v8.3.10) gets a new `nth-child(11)::before { content: "HELD" }` label rule so the Held cell shows as `HELD: 1h 23m` on phones
+
+### CLAUDE.md — new rule
+
+Added explicit cross-tab propagation rule:
+
+> **UI changes propagate across all tabs (added v8.3.18).** When a feature lands on one tab (Main / Val / Gene), it must also land on the other two unless there's a documented reason it doesn't apply. [...] Audit every UI PR against both renderer paths before merge.
+
+Calls out the two parallel renderer paths (`renderPositions` / `renderTrades` / `renderV10ActivityFeed` in IIFE-1 vs `renderV10PerPortfolio` / `renderExecTrades` in IIFE-2) and points to the v8.3.1+v8.3.16 and v8.3.10+v8.3.18 PR pairs where this rule would have saved an extra release.
+
+### What the operator will see
+
+After Railway rolls v8.3.18, every open position on every tab shows a `Held` column:
+
+```
+TICKER  SIDE  SH   ENTRY    MARK     NOTIONAL    STOP     UNREAL    %       HELD
+META    LONG  31   $602.18  $600.24  $18,667.58  $599.17  −$47.69   −0.26%  2h 14m
+NFLX    LONG  698  $88.59   $88.93   $61,835.82  $88.15   $237.32   +0.38%  1h 47m
+```
+
+Updates per render. Mobile card layout shows `HELD: 2h 14m` in the 2-col grid.
+
+### Tests
+
+JS/CSS + server payload extension; **772 strategy tests pass** unchanged. The `fmtHeld` helper is pure and tested implicitly via render correctness.
+
+### Rollback
+
+Revert the `entry_ts_utc` adds in `_serialize_positions` + per-executor handler. Remove the JS `fmtHeld` helper + the two table-render `<td>`/`<th>` adds. CSS rule for `nth-child(11)::before` becomes a no-op.
+
+---
+
+## v8.3.17 (2026-05-12) -- Proportional scaling of Val/Gene mirror qty by equity ratio
+
+Operator's Val tab showed repeated `risk_reject:notional_cap (would-be $75229 > $69857)` on AMZN SHORT signals. Root cause: Val's Alpaca paper account has ~$34,929 equity vs Main's $100K. RiskBook's notional cap = `equity × 2.0 = $69,857`. Mirroring Main's 284-share AMZN at $264.60 = $75,167 notional exceeds Val's cap, every time. The legacy v5.24.0 mirror handed Val Main's full share count (`main_shares`) regardless of Val's account size.
+
+### Change
+
+`executors/base.py` — new helper `_scaled_signal_qty(signal_qty) -> (scaled, ratio)`:
+
+- Reads Main's equity from `tg.paper_cash`
+- Reads this executor's equity from `engine.portfolio_equity.resolve_equity(self.NAME.lower())` (Alpaca account equity for Val/Gene)
+- When `ex_equity < main_equity`: `scaled = max(1, int(signal_qty × ex_equity / main_equity))`
+- When `ex_equity >= main_equity`: returns `(signal_qty, 1.0)` — no down-scaling (don't over-fire on a larger account)
+- Defensive: any read failure returns `(signal_qty, 1.0)` to preserve the legacy 1:1 mirror
+- Min-clamp at 1 share when scaling down — preserves direction + ticker signal even on a tiny account
+
+Wired into `_on_signal` right after `signal_qty = event["main_shares"]` so all downstream sizing decisions (entry, partial, exit) use the scaled value:
+
+```python
+if signal_qty > 0:
+    scaled_qty, scale_ratio = self._scaled_signal_qty(signal_qty)
+    if scale_ratio < 1.0:
+        logger.info(
+            "[V8317-SCALE] %s %s qty=%d -> %d (eq_ratio=%.3f)",
+            self.NAME, ticker, signal_qty, scaled_qty, scale_ratio,
+        )
+    signal_qty = scaled_qty
+```
+
+### Tests
+
+`tests/strategy/test_executor_scaled_qty.py` — **11 new tests**:
+
+`TestScaledSignalQty` (10):
+
+1. Smaller executor scales down (`Main $100K, Val $35K, ratio=0.35, 700 → 244`)
+2. Equal equity → no scaling
+3. Larger executor → no scaling (don't over-fire)
+4. `signal_qty=0` passthrough
+5. Negative `signal_qty` defensive passthrough
+6. `main_equity=0` no scaling (divide-by-zero guard)
+7. `ex_equity=0` no scaling (defensive: better to let Alpaca reject than to silently drop)
+8. Tiny ratio clamps to 1 share (preserves signal)
+9. `resolve_equity` raising → 1:1 fallback
+10. Missing `tg.paper_cash` → 1:1 fallback
+
+`TestOperatorAmznScenario` (1):
+
+11. Operator's exact AMZN scenario — 284 sh × $264.60 = $75,167 notional vs Val's $69,857 cap; with v8.3.17 scaling at ratio 0.349, 284 → 99 shares, notional ~$26K, **fits inside Val's cap**
+
+**772 strategy tests pass** (761 + 11 new).
+
+### What the operator will see
+
+After Railway rolls v8.3.17:
+- Val's mirror qty shrinks proportionally to fit its smaller account
+- `risk_reject:notional_cap` rejects stop firing on Val for AMZN-class big-notional tickers
+- Forensic: `[V8317-SCALE] Val AMZN qty=284 -> 99 (eq_ratio=0.349)` per mirror event
+- Val's trade counts now match Main's *event* counts (every Main fire mirrors), even though share counts differ
+- Watchdog `val_gene_trades_match_main` invariant turns green (trade-count match by event count, not share count — the invariant compares `len(trades_today)`)
+
+### Tradeoff explicitly accepted
+
+Val's PnL is proportionally smaller than Main's (Val takes ~35% of the Main strategy's gross PnL on each trade). This is the design intent: smaller account, smaller position size, same percentage return on the smaller base. The strategy logic stays aligned across all three portfolios.
+
+### Rollback
+
+Revert the `_scaled_signal_qty` call in `_on_signal`. The legacy v5.24.0 1:1 mirror returns; Val/Gene will hit `notional_cap` rejects again on big-notional tickers.
+
+---
+
+## v8.3.16 (2026-05-12) -- Val/Gene activity-feed ET conversion + suppress `opposite_side:*` reject noise
+
+Operator screenshot of Val tab showed two issues:
+1. Times rendered as `16:04` (raw UTC) instead of `12:04 EDT` — same v8.3.1 bug applied to the Main tab was lurking in the per-pid renderer
+2. Reject feed flooded with `opposite_side:short` / `opposite_side:long` entries — these fire for every 5m candle that straddles both OR bounds and are guard-rail success signals, not actionable failures
+
+### Change
+
+**`dashboard_static/app.js`** — two surgical fixes to `renderV10PerPortfolio` (the Val/Gene tab activity-feed renderer) and parallel fix to `renderV10ActivityFeed` (Main tab):
+
+1. **ET conversion** — per-row time now routes through `window.utcIsoToLocalHHMM` (same shared helper v8.3.1 uses for the Main tab). Pre-v8.3.16 used `ts.split("T")[1].slice(0,5)` which rendered raw UTC `HH:MM` regardless of timezone.
+
+2. **Noise filter** — drop activity events where `kind === "reject"` AND `detail` contains `"opposite_side:"`. Applied to BOTH the per-pid feed AND the Main-tab feed for symmetry.
+
+Why suppress opposite_side rejects:
+
+When a 5m candle's range straddles both OR bounds, `OrbEngine.detect_breakout` returns ONE side (long or short) based on the close. The scan loop checks BOTH sides per ticker per tick. One side matches → admits. The other side asks for the opposite direction → engine returns "no signal, opposite side already firing" → reject `opposite_side:long` or `opposite_side:short`. This is the engine correctly enforcing the side guard. Logging it in the activity feed every time a wide candle prints just drowns out the actionable events (notional_cap, daily_kill, no_signal).
+
+### What the operator will see
+
+After Railway rolls v8.3.16:
+- Val/Gene tab times render in ET (`12:04 EDT` instead of `16:04`)
+- Val/Gene tab reject row count drops dramatically — only structural rejects (notional_cap, risk_reject, daily_kill, blocklist) remain
+- Main tab activity feed cleaner for the same reason
+
+### Tests
+
+CSS / JS-only change set. No new pytest assertions; existing 761 strategy tests pass unchanged.
+
+### Rollback
+
+Remove the v8.3.16 changes in `renderV10PerPortfolio` and `renderV10ActivityFeed`. Per-pid feed reverts to UTC times + full opposite_side reject spam.
+
+### Next: v8.3.17
+
+Val's RiskBook keeps rejecting AMZN SHORT on `notional_cap` because Val's equity (~$35K) is smaller than Main's ($100K). v8.3.17 will scale Val/Gene's mirror order quantity by `ex_equity / main_equity` so Val submits a proportional share count that fits within its cap.
+
+---
+
+## v8.3.15 (2026-05-12) -- Boot-time phantom IN_POS consistency sweep (self-heals stale orb_state_<date>.json)
+
+Watchdog kept firing `v10_in_pos_has_internal_position` with `main/AMZN phase='in_pos' in_position=True last_entry=''` even after v8.3.12 wired the unmirror onto the close path. Root cause: the stale FSM row was written to `/data/orb_state_<date>.json` by a **pre-v8.3.12 process** whose close path didn't unmirror. v8.3.4's per-cycle rehydrate then reloaded the bad row on every subsequent bootstrap. v8.3.12 only auto-cleans on the close path going forward; it can't retro-clean disk state that's already wrong.
+
+### Change
+
+**`orb/engine.py`** — two new public helpers on `OrbEngine`:
+
+- `find_phantom_in_pos(*, held_tickers_by_pid: dict) -> list[(pid, ticker)]` — pure scan: returns FSM rows where `in_position=True` but the ticker isn't in `held_tickers_by_pid[pid]`. Caller supplies the held-tickers map from `tg.positions` (main) / `executor.positions` (val/gene).
+- `clear_phantom_in_pos(portfolio_id, ticker) -> bool` — direct phantom clearing for main (which has no executor instance). Flips `in_position=False`, transitions `PHASE_IN_POS` → `PHASE_CLOSED` (defensive: doesn't clobber `BLOCKED_*`), pops the synthetic `"recover-{pid}-{ticker}"` ticket from RiskBook, decrements `_open_risk` + `_open_notional`. Returns True iff anything was cleared.
+
+**`engine/scan.py`** — new `_orb_phantom_sweep(tg)` runs on every scan cycle:
+
+1. Build `held` per pid: `held["main"] = tg.positions ∪ tg.short_positions`; `held["val"|"gene"] = executor.positions` via `get_executor()`
+2. Call `engine.find_phantom_in_pos(held_tickers_by_pid=held)` — returns empty list when state is clean (no work)
+3. For each phantom: main → `engine.clear_phantom_in_pos`; val/gene → `executor._unmirror_position_from_engine` (v8.3.12)
+4. Log `[V8315-PHANTOM-SWEEP] cleared N phantom IN_POS row(s)` when anything was cleared
+
+Wired in `engine/scan.py:scan_once` right before the v8.3.4 dump call so the cleaned state is what gets persisted to disk this cycle.
+
+### Why this is the right shape
+
+Two distinct phantom-clear paths reflect the two distinct portfolio identity models:
+- **Main**: no executor instance; main IS the trade_genius module. Phantom clear is engine-internal (`OrbEngine.clear_phantom_in_pos`).
+- **Val/Gene**: have a real executor with `_unmirror_position_from_engine` (v8.3.12). Calling the executor's unmirror keeps a single forensic log path (`[V8312-UNRECOVER]` instead of two divergent ones).
+
+### Tests
+
+`tests/strategy/test_orb_phantom_sweep.py` — 12 new tests:
+
+`TestFindPhantomInPos` (6):
+1. Empty engine returns []
+2. Clean state (FSM IN_POS matches held) returns []
+3. One phantom detected
+4. Multiple phantoms across pids
+5. Missing pid in held map → row skipped (can't determine; safer than auto-wipe)
+6. `in_position=False` rows ignored
+
+`TestClearPhantomInPos` (5):
+1. Flips `in_position` + transitions phase to CLOSED
+2. Releases synthetic ticket (open_count → 0, risk → 0, notional → 0)
+3. Idempotent (second call returns False)
+4. Doesn't clobber `BLOCKED_*` phase
+5. Works when no synthetic ticket exists (FSM-only mirror)
+
+`TestOperatorScenario` (1): replicates the exact AMZN/main phantom; verifies detect → clear → re-detect-empty round-trip.
+
+**761 strategy tests pass** (749 + 12 new).
+
+### What the operator will see
+
+On the next Railway redeploy:
+1. Engine rehydrates from `/data/orb_state_2026-05-12.json` (includes the stale `main/AMZN in_position=True` row)
+2. First scan cycle's `_orb_phantom_sweep` detects: main has no AMZN, but FSM says IN_POS for AMZN → phantom
+3. `engine.clear_phantom_in_pos("main", "AMZN")` flips the row to CLOSED + releases the recover-main-AMZN synthetic ticket
+4. Forensic: `[V8315-PHANTOM-SWEEP] cleared 1 phantom IN_POS row(s): [('main', 'AMZN')]`
+5. Dashboard CONCURRENT RISK drops by the released ticket's risk-dollar amount
+6. Watchdog `v10_in_pos_has_internal_position` invariant stops firing on AMZN
+
+Self-healing: no manual /reconcile, no Railway SSH, no env tweaks needed.
+
+### Related v8.3.x state-consistency line
+
+| Version | What |
+|---|---|
+| v8.3.4 | Persist engine state to /data + rehydrate on boot |
+| v8.3.6 | Mirror executor positions INTO engine (open path) |
+| v8.3.12 | Mirror executor positions OUT of engine (close path, going forward) |
+| **v8.3.15** | Self-heal stale disk state from BEFORE v8.3.12 |
+
+### Rollback
+
+Remove the `_orb_phantom_sweep(tg)` call in `engine/scan.py:scan_once`. Engine helpers stay defined (testable, no harm); scan loop just stops doing the sweep.
+
+---
+
+## v8.3.14 (2026-05-12) -- Watchdog: name "executor not subscribed" as root cause in val_gene_trades_match_main body
+
+Companion to v8.3.13. Now that `/api/state.portfolios.{pid}.subscribed` exists, the watchdog's `inv_val_gene_trades_match_main` invariant can read it directly and explicitly name the root cause when an executor failed to register on the signal bus — instead of leaving the operator to grep Railway logs.
+
+### Change
+
+`tools/dashboard_monitor_invariants.py:inv_val_gene_trades_match_main` — before the existing v7.84.0 log-slice enrichment, the invariant now scans `s.portfolios.val.subscribed` and `s.portfolios.gene.subscribed`. For each executor whose `subscribed` is `False`, it prepends a "Root cause likely" section that calls out:
+
+- Which executor isn't subscribed
+- Three most likely causes (missing `<PID>_ALPACA_PAPER_KEY`, silent startup failure, Alpaca client probe raise)
+- Concrete next step (grep older logs for `[Val] startup failed` / `[Val] skipped`)
+
+When BOTH executors are subscribed, no root-cause note is prepended — the original v7.84.0 log-slice diagnosis (Alpaca rejection / mirror-bus drift) owns the explanation.
+
+When the state shape is pre-v8.3.13 (no `subscribed` key), the check is silently skipped — the watchdog falls through to its log-archaeology path. Backwards-compat preserved.
+
+### Example issue body after v8.3.14
+
+Pre-v8.3.14:
+```
+trade-count mismatch: val=0 vs main=7
+
+In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals
+as Main via the legacy bus, so their broker trade counts should match. A
+mismatch may indicate Alpaca-side rejection or a mirror-bus drift.
+
+_No Railway log slice attached. Diagnostic: status=ok lines_fetched=154..._
+```
+
+Post-v8.3.14 (when Val unsubscribed):
+```
+trade-count mismatch: val=0 vs main=7
+
+In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals
+as Main via the legacy bus, so their broker trade counts should match...
+
+### Root cause likely:
+
+**val.subscribed = false** -- VAL executor never registered its _on_signal
+callback on the signal bus. Most likely causes: (a) VAL_ALPACA_PAPER_KEY env
+var unset or empty in Railway; (b) executor construction or start() raised
+silently (grep older Railway logs for `[Val] startup failed` or
+`[Val] skipped`); (c) Alpaca client probe raised inside _ensure_client().
+Until VAL is subscribed, every Main emit goes into the void for this
+executor and the trade-count mismatch is guaranteed.
+
+_No Railway log slice attached. Diagnostic: ..._
+```
+
+The operator no longer needs to grep Railway logs first — the cause is named in the issue.
+
+### Tests
+
+`tests/strategy/test_dashboard_monitor_invariants.py::TestValGeneTradesMatchMainSubscribedNoteV8314` — 4 new tests:
+
+1. `test_val_unsubscribed_named_as_root_cause` — val subscribed=False → body calls out "val.subscribed = false" + "VAL_ALPACA_PAPER_KEY"; gene subscribed=True → no false-alarm for gene
+2. `test_both_unsubscribed_named` — both subscribed=False → both named, both env vars cited
+3. `test_both_subscribed_no_note` — mismatch with both subscribed=True → no "Root cause likely" section (the log-slice diagnosis takes over)
+4. `test_pre_v8313_state_shape_compat` — pre-v8.3.13 portfolios block without `subscribed` key → invariant doesn't crash, no false-positive note
+
+**749 strategy tests pass** (745 + 4 new).
+
+### Rollback
+
+Remove the v8.3.14 block (the loop that scans `portfolios.{pid}.subscribed` and appends to `base_detail`) from `inv_val_gene_trades_match_main`. Pre-v8.3.14 issue body returns.
+
+---
+
+## v8.3.13 (2026-05-12) -- Surface `executor.subscribed` on /api/state (signal-bus listener probe)
+
+The watchdog's `val_gene_trades_match_main` invariant kept firing (val=0 vs main=7) but diagnosing the root cause required grep-the-Railway-logs archaeology to find a `[Val] startup failed` or `[Val] skipped` from earlier in the day. The post-deploy 3-min log window the watchdog fetches isn't wide enough to catch a boot-time failure from before the latest redeploy. v8.3.13 surfaces a `subscribed` boolean per executor on `/api/state` so the dashboard + watchdog can directly answer "is Val listening to Main's emits?" without log forensics.
+
+### Change
+
+**`dashboard_server.py`** — new helper `_is_executor_subscribed(pid)`:
+
+- Main returns True (it's the bus emitter, not a listener; surfaced True for shape symmetry across the three portfolios)
+- Val / Gene return True iff their executor class name appears in `trade_genius.signal_bus_status().names` matched against the pattern `<ClassName>._on_signal`
+- Failure-tolerant: any import / read error returns False rather than corrupting the snapshot
+
+Wired into `_build_portfolio_block` so the per-portfolio block returned by `/api/state.portfolios.{pid}` carries:
+
+```json
+{
+  "portfolio_id": "val",
+  "equity": ...,
+  "day_pnl": ...,
+  "positions": [...],
+  "trades_today": [...],
+  "strip": {...},
+  "subscribed": false          // ← new
+}
+```
+
+### Watchdog integration
+
+The `inv_val_gene_trades_match_main` invariant in `tools/dashboard_monitor_invariants.py` can now check `subscribed` directly:
+
+```python
+val = _exec(ctx, "val")
+if val.get("subscribed") is False:
+    return _fail(
+        "val_gene_trades_match_main",
+        "Val executor not subscribed to signal bus -- start() never ran",
+        detail="Check VAL_ALPACA_PAPER_KEY env or [Val] startup failed logs"
+    )
+```
+
+That gives an immediate, log-window-independent diagnosis. (A follow-up PR will wire this into the watchdog itself.)
+
+### Tests
+
+**`tests/strategy/test_executor_subscribed.py`** — 11 new tests:
+
+| # | Test |
+|---|---|
+| 1 | Main always subscribed (it's the emitter) |
+| 2 | Val subscribed when `TradeGeniusVal._on_signal` in names |
+| 3 | Gene subscribed when `TradeGeniusGene._on_signal` in names |
+| 4 | Val NOT subscribed when only Gene listening (operator's exact scenario) |
+| 5 | Both subscribed |
+| 6 | Neither subscribed (boot failure) |
+| 7 | Unknown pid returns False |
+| 8 | Robust to `_ssm()` returning None |
+| 9 | Robust to `signal_bus_status()` raising |
+| 10 | Robust to missing `signal_bus_status` attr (pre-v7.90.0 trade_genius) |
+| 11 | Qualname match is strict — `TradeGeniusVal.start` doesn't count |
+
+**745 strategy tests pass** (734 + 11 new).
+
+### What the operator will see
+
+After v8.3.13 deploys, the operator can:
+- Check `/api/state.portfolios.val.subscribed` in DevTools to instantly know if Val is listening
+- The watchdog will (in a follow-up wiring PR) include `subscribed=false` directly in the invariant violation body, naming the root cause without needing log access
+
+### Rollback
+
+Remove the `_is_executor_subscribed(pid)` call in `_build_portfolio_block` and the helper itself. Per-pid block no longer carries the `subscribed` field; watchdog falls back to its pre-v8.3.13 log-archaeology heuristic.
+
+---
+
+## v8.3.12 (2026-05-12) -- Unmirror engine FSM + RiskBook on `_remove_position` (cleanup phantom IN_POS)
+
+Watchdog post-v8.3.6 surfaced `v10_in_pos_has_internal_position`: `main/AMZN phase='in_pos' in_position=True last_entry=""` — FSM thinks open but no matching position in book.
+
+### Root cause
+
+v8.3.6 added `_mirror_position_into_engine` which sets `_state.day_states[(pid, ticker)].in_position = True` and inserts a synthetic `_Ticket` into `_risk[pid]._open_tickets` on every boot graft (`_load_persisted_positions` + `_reconcile_broker_positions`). Symmetric inverse was missing: when the position later **closed**, the executor's `_remove_position(ticker)` cleared `self.positions[ticker]` and the state.db row but **never touched the engine FSM or RiskBook**. The FSM stayed at `PHASE_IN_POS` and the synthetic ticket stayed in `_open_tickets` forever. Net effect:
+
+- Dashboard `CONCURRENT RISK` never dropped back to $0 after the last close
+- Opposite-side guard kept blocking opposite entries on a closed ticker
+- Watchdog `v10_in_pos_has_internal_position` invariant fired indefinitely
+
+### Change
+
+**`executors/base.py`** — new helper `_unmirror_position_from_engine(ticker)`:
+
+1. Bails if engine isn't bootstrapped or `self.NAME.lower()` isn't a registered portfolio
+2. `_state.day_states[(pid, ticker)].in_position = False`; transitions `PHASE_IN_POS` → `PHASE_CLOSED` (only if currently IN_POS — doesn't clobber `BLOCKED_*` rows)
+3. Pops the synthetic ticket from `_risk[pid]._open_tickets` keyed by `"recover-{pid}-{ticker}"` (same id v8.3.6 used)
+4. Decrements `_open_risk` and `_open_notional` by the released ticket's reserved amounts; clamps non-negative
+5. Logs `[V8312-UNRECOVER]` per release
+
+Wired into `_remove_position(ticker)` — the single close-path hook used by every executor exit (record_exit_with_fill, broker-orphan delete on reconcile, etc.). Symmetric to `_persist_position` / `_delete_persisted_position`.
+
+### Tests
+
+`tests/strategy/test_executor_engine_mirror.py::TestUnmirrorPositionFromEngine` — 6 new tests:
+
+1. `test_unmirror_flips_in_position_off` — `in_position` → False, `phase` → CLOSED
+2. `test_unmirror_releases_risk_book_ticket` — open_count → 0, open_risk → 0, open_notional → 0
+3. `test_remove_position_fires_unmirror_end_to_end` — close path wires the unmirror automatically
+4. `test_unmirror_idempotent_no_position_open` — safe to call when nothing was mirrored
+5. `test_unmirror_doesnt_clobber_blocked_phase` — `BLOCKED_BLOCKLIST` row keeps its phase; `in_position` flips False
+6. `test_double_unmirror_is_safe` — second call doesn't double-decrement risk / notional
+
+**734 strategy tests pass** (728 + 6 new).
+
+### What the operator will see
+
+- After the next position close, `CONCURRENT RISK` drops by the released ticket's risk-dollar amount.
+- After the next ticker fully closes (no more open positions on that name), the engine FSM allows opposite-side re-entry on a fresh breakout signal.
+- Watchdog `v10_in_pos_has_internal_position` invariant stops firing on closed positions.
+- Forensic: `[V8312-UNRECOVER]` log line per release in Railway logs.
+
+### Related v8.3.x persistence work
+
+| Version | What |
+|---|---|
+| v8.3.4 | Engine state snapshot to /data |
+| v8.3.6 | Executor → engine FSM/RiskBook **mirror** (on open) |
+| **v8.3.12 (this PR)** | Executor → engine FSM/RiskBook **unmirror** (on close) |
+
+The pair (v8.3.6 + v8.3.12) closes the round-trip: engine state mirrors executor state both on entry AND on exit.
+
+### Rollback
+
+Remove the `self._unmirror_position_from_engine(ticker)` call site in `_remove_position`. The helper stays defined; the engine just stops cleaning up after closes (pre-v8.3.12 behavior).
+
+---
+
+## v8.3.11 (2026-05-12) -- Fix duplicate COVER rendering (dedup key + price-field selection)
+
+Operator screenshot showed AMZN COVER appearing **twice** in TODAY'S TRADES for a single 58-share short:
+
+```
+11:00  AMZN  58  SHORT  $15,314.83  $264.05
+11:00  AMZN  58  COVER  -$62.13  -0.41%  $264.05   ← duplicate, wrong price
+11:14  AMZN  58  COVER  -$62.13  -0.41%  $265.12   ← legit cover
+```
+
+Two distinct bugs producing the duplicate-and-mis-priced row.
+
+### Bug 1 — dedup key fallback mismatch
+
+`dashboard_server._today_trades._key()` resolved the time-key via `time > entry_time > exit_time`. But:
+
+- **in-memory** `short_trade_history` COVER rows (history_record shape per `broker/orders.py:1997-2013`) have **no `"time"` field** — only `entry_time` + `exit_time`. So `_key()` fell back to `entry_time`.
+- **v8.3.3 synth_exit COVER rows** from `trade_log.jsonl` explicitly set `"time"` to the exit time. So `_key()` used `"time"`.
+
+Different keys → dedup failed → same close rendered twice.
+
+### Bug 2 — wrong price field for CLOSE actions
+
+`dashboard_static/app.js` rendered each row's price as `t.price ?? t.entry_price ?? t.exit_price`. For in-memory COVER rows that lack `"price"`, this fell through to `entry_price` ($264.05) — making the duplicate display the entry price instead of the actual cover price ($265.12).
+
+### Change
+
+**`dashboard_server.py:_key()`** — action-aware time-key resolution:
+
+```python
+action = (t.get("action") or "").upper()
+is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
+if is_close:
+    time_key = t.get("exit_time") or t.get("time") or t.get("entry_time") or ""
+else:
+    time_key = t.get("entry_time") or t.get("time") or t.get("exit_time") or ""
+```
+
+Close actions key off `exit_time` (which all close rows carry); open actions key off `entry_time`. Both in-memory and synth paths now produce identical dedup keys for the same close.
+
+**`dashboard_static/app.js`** — action-aware price-field selection:
+
+```js
+const px = isClose
+    ? (t.exit_price ?? t.price ?? t.entry_price)
+    : (t.entry_price ?? t.price ?? t.exit_price);
+```
+
+CLOSE rows prefer `exit_price`; OPEN rows prefer `entry_price`. Falls through to `price` for paper_trades rows (which set `price` rather than the typed fields). No change for rows that have only `price` set — same behavior as before.
+
+### Tests
+
+`tests/strategy/test_today_trades_log_merge.py:test_cover_dedup_inmem_vs_log_same_close` — the operator's exact AMZN scenario: in-memory `short_trade_history` row + matching `trade_log.jsonl` row → asserts exactly **1** COVER row in the merged output.
+
+**728 strategy tests pass** (727 + 1 new dedup regression).
+
+### Rollback
+
+Revert the v8.3.11 changes in both `dashboard_server._key()` and `dashboard_static/app.js`. The duplicate COVER + wrong-price symptoms return.
+
+---
+
+## v8.3.10 (2026-05-12) -- OPEN POSITIONS mobile redesign: stacked card layout per position
+
+The desktop OPEN POSITIONS table (10 columns: Ticker / Side / Sh / Entry / Mark / Notional / Stop / Risk / Unreal / %) was wider than any phone viewport even after v7.0.3 + v8.3.8 column-drops and nowrap. Operator: "Open positions with bars overflow. They are too wide. Might need an updated design for mobile."
+
+### Change
+
+`dashboard_static/app.css` — at `@media (max-width: 480px)`, transform each position row from a table row into a vertical card:
+
+- **`thead` hidden** — column labels are injected per-cell via `::before` with `content` matched on `nth-child`
+- **Data row** (`tr[data-pos-ticker]:not(.pos-progress-row)`) becomes a 2-column CSS Grid card with rounded top corners, border, padding
+- **Ticker cell** spans both columns at top as a header (15px bold, with the side dot/chip rendering inline as on desktop)
+- **Side cell** hidden on mobile (redundant — already in the ticker chip)
+- **Other cells** (Sh, Entry, Mark, Notional, Stop, Unreal, %) flow into the 2-col grid with `::before` labels like `SH`, `ENTRY`, `MARK`, etc.
+- **Risk cell** hidden on mobile (visible in Concurrent Risk gauge)
+- **Unreal $ + %** emphasized — `font-weight: 600; font-size: 13px;`
+- **Progress row** (`tr.pos-progress-row`) snaps flush below the data card with rounded bottom corners; the existing bar + stop/1R/target labels render unchanged
+
+Pure CSS — **no JS or HTML change required**. The desktop render path is unaltered; the same `<tr>` markup serves both layouts.
+
+### Approach
+
+Used the classic responsive-table-to-cards pattern via:
+1. `display: block` on `table > tbody > tr` to break the table layout
+2. `display: grid` on each data row for the 2-col card
+3. `display: flex` on each `td` with a `::before` pseudo-element for the column label
+4. `display: none` on `thead` since labels live per-cell now
+
+Labels are hardcoded in CSS via `nth-child(N)::before { content: "X" }` rules. Brittle if column order in the JS renderer changes, but the desktop table is the source of truth and reorderings will be obvious during code review.
+
+### What the operator will see
+
+At iPhone width (~390px), each position renders as:
+
+```
+┌─────────────────────────────────────┐
+│ META  ● ▲ LONG                      │  ← header (ticker + side chip)
+├─────────────────────────────────────┤
+│ SH     31         ENTRY    $602.18  │  ← 2-col labeled grid
+│ MARK   $600.24    NOTIONAL $18.6K   │
+│ STOP   $599.17    UNREAL   −$47.69  │
+│                                 −0.26% │
+├─────────────────────────────────────┤
+│ ━━━━━━━━●━━━━━━━━━━━━━━━━━━━━━━━━━━ │  ← progress bar (unchanged)
+│ stop $599.17   1R $605.19   target  │
+└─────────────────────────────────────┘
+```
+
+Desktop (≥481px) renders identically to pre-v8.3.10.
+
+### Tests
+
+CSS-only change. 727 strategy tests still pass; no visual-regression test infrastructure exists today (manual mobile verification on iPhone Safari recommended after deploy).
+
+### Rollback
+
+Revert the v8.3.10 `@media (max-width: 480px)` block in `dashboard_static/app.css`. The pre-v8.3.8 table layout returns (with the operator's overflow + wrap symptoms).
+
+---
+
+## v8.3.9 (2026-05-12) -- Day P&L: route legacy `portfolio.day_pnl` through `_compute_realized_pnl_today`
+
+Operator post-v8.3.7 screenshot showed Day P&L = $127.50 with TODAY'S TRADES summary line correctly displaying "realized $655.21". Math should net to $655.21 + open-unrealized $189.63 = $844.84 — but the tile read $127.50, which equals "open-unrealized + only the most recent AMZN cover (-$62.13)".
+
+### Root cause
+
+v8.3.7 routed `_build_portfolio_block` (which builds `portfolios.main.day_pnl`) through the new `_compute_realized_pnl_today` helper that merges `paper_trades` + `short_trade_history` + `trade_log.jsonl`. But the dashboard's Day P&L TILE reads from a **separate** legacy `s.portfolio.day_pnl` field (kept for back-compat per v7.0.0 §4, removal deferred to v7.1.0). That field is built ~600 lines lower (dashboard_server.py:1599-1610) by an inline realized-pnl loop that ONLY iterated in-memory `paper_trades` SELL rows + `short_trade_history` rows. After today's redeploys wiped `paper_trades`, only the most recent close that re-landed in memory was counted.
+
+### Change
+
+`dashboard_server.py:1599-1610` — replace the inline realized loop with a single call to `_compute_realized_pnl_today(m, today)`. Same helper that v8.3.7 used for the per-pid block. Both Day P&L paths now read from the same source and produce the same number.
+
+### Tests
+
+Helper is already covered by 12 tests in `tests/strategy/test_realized_pnl_log_merge.py` (v8.3.7). No new tests needed — the change wires the existing-tested helper into the legacy block. 727 strategy tests still pass.
+
+### What the operator will see
+
+Day P&L now reflects the full realized + unrealized math:
+
+```
+realized   $655.21   (4 closes from trade_log.jsonl)
+unreal      $189.63   (META -$47.69 + NFLX +$237.32)
+─────────────────
+Day P&L    $844.84   ← was $127.50 pre-v8.3.9
+```
+
+### About the "overflow" still visible
+
+The clipped column on the V10 PROXIMITY card screenshot is **by design** — `.pmtx-table-wrap` has its own horizontal scroller (added pre-v8.3.x; see CSS line 361 / 829 comments). The user can swipe left within the table to see the cut-off Mark / phase column. The OPEN POSITIONS table fix from v8.3.8 (nowrap + compact notional) is unrelated and confirmed working in the operator's screenshot (META/NFLX UNREAL cells render on one line).
+
+### Rollback
+
+Revert the call to `_compute_realized_pnl_today` and restore the inline loop at line 1599-1610.
+
+---
+
+## v8.3.8 (2026-05-12) -- Mobile: no-wrap on positions-table cells + tighter notional font
+
+Operator screenshot showed the NFLX row's UNREAL. cell wrapping onto two lines:
+
+```
+...  $88.15   -      -0.29%
+              $181.48  target
+```
+
+The "−" character (Unicode minus, U+2212, what `fmtUsd` emits) was being treated as a soft-break opportunity by mobile Safari, splitting "−$181.48" across lines.
+
+### Change
+
+`dashboard_static/app.css` — two narrow-screen rules under the existing `@media (max-width: 480px)` block:
+
+1. **`white-space: nowrap`** on every `<th>` and `<td>` in the positions table. Numeric cells must never wrap; horizontal scroll on a single bar is strictly better than rendering "−" and "$181.48" on separate lines. Both Main (`#pos-body`) and Val/Gene (`[data-f="pos-body"]`) tables get the rule.
+2. **Compact notional cell** — `font-size: 11px; letter-spacing: -0.01em;` on `td:nth-child(6)` (the NOTIONAL column). The value `$61,835.82` is the widest cell on the row; compressing its visual footprint pulls the row width back inside the viewport without sacrificing readability of the digits.
+
+Risk column hiding (`nth-child(8)` at ≤480px) and Mark column hiding (`nth-child(5)` at ≤400px) from prior releases are unchanged.
+
+### What the operator will see
+
+- Negative P&L values like `−$181.48` stay on one line at any phone width.
+- Notional cell renders slightly smaller font on mobile so the whole row fits the iPhone viewport without horizontal scroll for typical $-magnitudes ($10K–$100K positions).
+
+### Tests
+
+Frontend-only change set; existing 727 strategy tests still pass.
+
+### Rollback
+
+Remove the `white-space: nowrap` rule and the `nth-child(6)` font block. The cells revert to wrapping under width pressure.
+
+---
+
+## v8.3.7 (2026-05-12) -- Day P&L realized component reads from `trade_log.jsonl` (fix profitable-day-looks-like-loss)
+
+Operator screenshot showed Day P&L = -$241.56 with 4 trades, while open positions held META -$60.08 and NFLX -$181.48 (sum = -$241.56 unrealized exactly). The realized gains from earlier closed trades (~+$780) were missing from the Day P&L total. Result: a profitable session displayed as a loss.
+
+### Root cause
+
+`dashboard_server._build_portfolio_block` (main pid) computed realized P&L by summing `pnl` from in-memory `paper_trades` SELL rows + `short_trade_history` COVER rows for today's date. Both lists are wiped on Railway redeploy and rehydrated from `paper_state.json` — which saves on a **5-minute** daemon-thread cadence (`trade_genius.py:7278`). So the latest 0–5 min of SELL rows live only on disk in `trade_log.jsonl` (synchronous-per-trade append) and never reached the realized sum.
+
+This is the same gap v8.3.3 fixed for the **Today's Trades panel**. v8.3.7 closes the parallel gap on the **P&L summation side**.
+
+### Change
+
+New helper `dashboard_server._compute_realized_pnl_today(m, today_s)`:
+
+1. Iterate `paper_trades` SELL rows for today; accumulate pnl + record dedup key `(ticker.upper(), time)`
+2. Iterate `short_trade_history` rows for today; same accumulate + dedup
+3. Call `m.trade_log_read_tail(since_date=today_s, portfolio="paper")`; for each log row dated today:
+   - Compute dedup key using `m._to_et_hhmm(exit_time)` so it matches the "HH:MM ET" format in-memory rows use
+   - Skip if already in the seen set (in-memory wins for de-dup; same pnl value either way)
+   - Add the log row's pnl to the running total
+4. Failure-tolerant: a `trade_log_read_tail` exception returns the in-memory sum alone
+
+`_build_portfolio_block` (main pid) now calls `_compute_realized_pnl_today(m, today_s)` instead of computing inline. Val / Gene path unchanged (they read from `book.trade_history` / `book.short_trade_history` already kept in sync by record_entry/exit_with_fill).
+
+### Tests
+
+**`tests/strategy/test_realized_pnl_log_merge.py`** — 12 new tests across 2 test classes:
+
+`TestRealizedFromInMemoryOnly` (5):
+- empty state returns 0
+- paper_trades SELL row summed
+- paper_trades BUY row ignored (no pnl semantics)
+- short_trade_history summed
+- other-day rows ignored
+
+`TestRealizedFromTradeLog` (7):
+- **log-only row summed** (operator's redeploy scenario)
+- **dedup: paper_trades wins on duplicate** (no double-count)
+- **full operator scenario** — 2 log rows summing to +$780 (was the missing piece)
+- log read failure falls back to in-memory sum (no crash)
+- other-day log row ignored
+- dedup: short_trade_history wins on duplicate
+- malformed log rows skipped (not-a-dict, non-numeric pnl)
+
+**727 strategy tests pass** (715 + 12 new).
+
+### What the operator will see
+
+- Day P&L now reflects the **net** of realized closes + open-position unrealized. The screenshot scenario would render as:
+  - `Day P&L: +$538.44 (+0.54%)` (= realized $780 − unrealized $241.56)
+- Steady state (no redeploy gap): no change, because in-memory + trade_log agree and dedup zeroes out the on-disk-only adds
+
+### Related v8.3.x persistence work
+
+- **v8.3.3**: Today's Trades panel reads from trade_log.jsonl
+- **v8.3.4**: All-in-one engine state persistence to /data
+- **v8.3.5**: UTC → ET conversion in synth SELL rows
+- **v8.3.6**: Executor → engine FSM/RiskBook mirror
+- **v8.3.7** (this PR): realized P&L reads from trade_log.jsonl
+
+The dashboard's three displays of "today's activity" (Today's Trades, CONCURRENT RISK / top ticker, Day P&L) now all consult the same authoritative on-disk sources.
+
+### Rollback
+
+Revert the call to `_compute_realized_pnl_today` and restore the inline loop in `_build_portfolio_block`. Tests then fail at `test_log_row_only_summed` (regression-locked).
+
+---
+
+## v8.3.6 (2026-05-12) -- Executor → OrbEngine FSM + RiskBook mirror (recover "$0 / top ticker 0/5")
+
+Operator screenshot post-redeploy showed:
+
+```
+TRADES TODAY (CAP 5/TICKER)   2 total · top ticker 0/5
+CONCURRENT RISK               $0 / $2,000 (0%)
+```
+
+The "2 total" was correct (v8.3.3 reads `trade_log.jsonl`), but "top ticker 0/5" and "$0" were the v10 OrbEngine state (`_state.day_states.*.trades_today` and `_risk[main]._open_tickets`) — which had been wiped during the v8.3.x merge train before v8.3.4's persistence layer landed.
+
+### Root cause
+
+| Layer | Boot rehydrate (pre-v8.3.6) |
+|---|---|
+| `executor.positions` | ✓ via `_load_persisted_positions` from `state.db` |
+| `PortfolioBook.positions` | ✓ via v8.2.0 `_mirror_position_into_book` |
+| `OrbEngine._state.day_states` (`in_position`, `trades_today`) | ✗ **untouched** |
+| `OrbEngine._risk[pid]._open_tickets` (open_risk, open_notional) | ✗ **untouched** |
+
+v8.3.4's `/data/orb_state_<date>.json` persistence covers the engine layer for FUTURE redeploys, but the current session lost state BEFORE v8.3.4 dumped anything. The boot path needs a one-shot reconciliation from `executor.positions` → engine FSM + RiskBook.
+
+### Change
+
+**`executors/base.py`** — new helper `_mirror_position_into_engine(ticker)`:
+
+1. Resolves the v10 engine via `orb.live_runtime.get_engine()`; bails if not bootstrapped or `self.NAME.lower()` isn't a registered portfolio
+2. `_state.day_states[(pid, ticker)].in_position = True`; transitions to `PHASE_IN_POS` only when not currently blocked (defensive: doesn't clobber a `BLOCKED_BLOCKLIST` row)
+3. Inserts a synthetic `_Ticket` into `_risk[pid]._open_tickets` keyed by `"recover-{pid}-{ticker}"` (deterministic id → idempotent on re-mirror)
+4. `risk_dollars` prefers `|entry − stop| × shares` when stop is known; falls back to `equity × risk_per_trade_pct / 100` (1% default); last-ditch absolute $500
+5. `notional = entry_price × shares`
+6. Logs `[V836-RECOVER] mirrored TICKER into engine FSM + RiskBook` for forensic auditability
+
+Hooked into both boot paths (alongside the existing v8.2.0 `_mirror_position_into_book` call):
+
+- `_load_persisted_positions` — after state.db rehydrate
+- `_reconcile_broker_positions` — after each broker-orphan graft
+
+### Tests
+
+**`tests/strategy/test_executor_engine_mirror.py`** — 9 new tests:
+
+- `test_long_position_marks_in_position` — LONG → `in_position=True`, `phase=PHASE_IN_POS`, `last_entry_iso` preserved
+- `test_short_position_marks_in_position` — SHORT path
+- `test_risk_book_ticket_inserted_with_stop_distance` — `risk_dollars = |entry - stop| × shares`
+- `test_risk_book_falls_back_to_risk_per_trade_pct_when_no_stop` — stop=None → `equity × 1%` fallback
+- `test_idempotent_on_re_call` — three back-to-back calls produce one open ticket
+- `test_doesnt_clobber_blocked_phase` — `BLOCKED_BLOCKLIST` row keeps its phase; `in_position` flips True
+- `test_unknown_pid_no_op` — `NAME="UnknownPid"` falls through silently
+- `test_no_pos_no_op` — empty `self.positions` is safe
+- `test_load_persisted_mirrors_into_engine` — `_load_persisted_positions` end-to-end populates both FSM + RiskBook
+
+**715 strategy tests pass** (706 + 9 new).
+
+### What the operator will see
+
+- After v8.3.6 rolls out, the next Railway redeploy will (a) load executor.positions from state.db, (b) mirror to PortfolioBook (v8.2.0), (c) mirror to engine FSM + RiskBook (v8.3.6), AND (d) dump the recovered state to `/data/orb_state_<date>.json` for the next cycle's rehydrate (v8.3.4).
+- The "top ticker 0/5" + "$0" CONCURRENT RISK panel will populate from the broker orphans the bot grafts on boot.
+- Forensic: `[V836-RECOVER]` log lines per ticker in Railway logs.
+
+### Why three mirrors, not one
+
+`_mirror_position_into_book` and `_mirror_position_into_engine` have different idempotency invariants and different no-clobber guards:
+
+- The book mirror won't overwrite a row carrying richer state (`v531_max_favorable_price`, etc.) from a live `record_entry_with_fill`
+- The engine mirror won't transition a `BLOCKED_*` phase to `IN_POS` (operator's blocklist / day-gate decisions stay sticky)
+
+Folding them into one helper would obscure those guards. Keep them adjacent + sequenced; the executor's `_load_persisted_positions` and `_reconcile_broker_positions` call both in order.
+
+### Rollback
+
+Comment out the two `self._mirror_position_into_engine(...)` call sites in `executors/base.py`. The helper stays defined (no breakage); the engine FSM just doesn't rehydrate on boot until v8.3.4 persistence is built.
+
+---
+
+## v8.3.5 (2026-05-12) -- Fix UTC display on trade_log-synthesized SELL/COVER rows
+
+Operator screenshot showed today's NFLX trade as:
+
+```
+10:16  NFLX  859  BUY   $75,244.10
+14:29  NFLX  859  SELL  +$450.80
+```
+
+The 14:29 was UTC time (10:29 ET). Bug introduced in v8.3.3.
+
+### Root cause
+
+`broker/orders.py:2049` writes `exit_time` to `trade_log.jsonl` as the full UTC ISO from `tg._utc_now_iso()` (e.g. `"2026-05-12T14:29:00Z"`). `entry_time` for the same close-row is `pos["entry_time"]` which is tz-naive ET `"HH:MM:SS"`. The dashboard's frontend just slices `HH:MM` out of whatever string the row carries, so a raw UTC ISO renders as "14:29" while a `"10:16:42"` renders as "10:16". v8.3.3's synth-SELL row from the trade_log passed the UTC ISO through as-is.
+
+### Change
+
+`dashboard_server._today_trades()` now routes both `entry_time` and `exit_time` from the trade_log through `tg._to_et_hhmm` before stuffing them into the synthesized rows. The helper converts ISO -> ET HH:MM and treats `HH:MM:SS` tz-naive strings as already-ET (returning `"HH:MM ET"`).
+
+```python
+entry_time_val = m._to_et_hhmm(entry_time_raw) if entry_time_raw else ""
+exit_time_val  = m._to_et_hhmm(exit_time_raw)  if exit_time_raw  else ""
+```
+
+Failure-tolerant: a malformed timestamp string falls back to the raw value (better than blowing up the render).
+
+### Tests
+
+**`tests/strategy/test_today_trades_log_merge.py`** — `test_utc_iso_exit_time_converted_to_et`. Feeds the exact scenario from the screenshot (`exit_time = "2026-05-12T14:29:00Z"`) and asserts the synth SELL row carries `time == "10:29 ET"`. The existing 8 tests' `_to_et_hhmm` stub was upgraded to mirror the real helper's ISO-aware logic.
+
+**706 strategy tests pass** (705 + 1 new).
+
+### Related: the empty CONCURRENT RISK / "top ticker 0/5"
+
+A different bug surfaced in the same screenshot session:
+
+```
+TRADES TODAY (CAP 5/TICKER)   2 total · top ticker 0/5
+CONCURRENT RISK               $0 / $2,000 (0%)
+```
+
+The "2 total" is correct (read from `trade_log.jsonl` via v8.3.3). The "top ticker 0/5" and "$0" both read from engine state (`_state.day_states.*.trades_today` and `_risk[main]._open_tickets`) — which were wiped during today's v8.3.x merge train. v8.3.4 prevents this for FUTURE redeploys, but the in-flight session's lost engine state needs a one-shot boot-time reconciliation from `executor.positions` to engine FSM + RiskBook. **Queued for v8.3.6.**
+
+### Rollback
+
+Revert `dashboard_server._today_trades()` two-line change. Tests then fail at `test_utc_iso_exit_time_converted_to_et` (regression-locked).
+
+---
+
+## v8.3.4 (2026-05-12) -- All-in-one engine state persistence (`/data/orb_state_<date>.json`)
+
+The operator's broader directive ("Not just for OR. But for any data that should be preserved"): every in-memory engine artifact that previously got wiped by a Railway redeploy now persists to a JSON snapshot on `/data` and rehydrates on the next bootstrap. v8.3.0 patched the OR-window symptom via per-cycle backfill; v8.3.1/v8.3.3 added defense-in-depth caches at the UI and dashboard layer. v8.3.4 closes the root cause: a single authoritative snapshot covering all six categories the operator and I enumerated.
+
+### Categories covered
+
+| | Category | Symbol | Why it matters |
+|---|---|---|---|
+| A | OR windows | `_state.or_windows` | UI populated immediately on boot; backfill no longer required for already-locked windows |
+| B | DayState FSM | `_state.day_states.{phase, in_position, trades_today, last_*_iso}` | `trades_today` survives → `max_trades_per_day=5` no longer bypassable; `in_position=True` survives → opposite-side guard intact |
+| C | RiskBook | `realized_pnl_today`, `_open_tickets`, `daily_kill_triggered`, `session_start_equity` | **Daily-loss kill threshold no longer bypassable** by redeploy (the highest-impact safety fix in this release) |
+| D | Activity feed | `live_runtime._recent_activity` (50-event ring) | Dashboard timeline persists across redeploy |
+| E | Wash-sale tracker | `_recent_losses`, `wash_risk_count` | §1091 30-day window doesn't reset on redeploy |
+| F | Pending v10 sizes | `live_runtime._pending_v10_sizes` | In-flight broker handoff survives |
+
+### Change
+
+**New module: `orb/persistence.py`** — pure functions plus disk I/O:
+
+- `serialize_engine_state(engine, recent_activity, pending_v10_sizes, date_iso, bot_version)` → dict (no I/O)
+- `dump_state_to_disk(engine, ..., path)` → atomic write (tempfile + `os.replace`); never raises
+- `load_state_from_disk(date_iso, path)` → returns parsed dict only if `data["date_iso"] == date_iso` (stale-file guard)
+- `apply_loaded_state(engine, loaded, recent_activity, pending_v10_sizes)` → overlay onto live state; failure-tolerant per category
+- `prune_stale_state_files(today_iso, keep_days=5)` → bounded disk usage
+
+Schema: `{schema_version, bot_version, date_iso, saved_at_iso, session_date, or_windows, day_states, risk_books, wash_risk, activity, pending_v10_sizes}`. Pending sizes use `"pid|ticker"` encoding for tuple-key roundtrip.
+
+**`orb/live_runtime.py`** — two wrappers:
+
+- `dump_engine_state_now(date_iso="")` — snapshots `_engine` + `_recent_activity` + `_pending_v10_sizes` to disk. Returns False when not bootstrapped / live mode off / no session date.
+- `_try_rehydrate_engine_state(date_iso)` — called from `ensure_session_started()` immediately after `_engine.start_new_session()`'s reset. If `load_state_from_disk(date_iso)` returns data for today, `apply_loaded_state` overlays the cleared OR windows, FSM rows, RiskBook, activity feed, wash-sale tracker, and pending sizes. Emits `[V834-PERSIST] rehydrated date=N or_windows=N day_states=N risk_books=N activity=N sizes=N` when at least one category landed.
+
+**`engine/scan.py`** — per-cycle dump:
+
+```python
+try:
+    _orb_runtime.dump_engine_state_now()
+except Exception as _e:
+    logger.debug("[V834-PERSIST] dump failed: %s", _e)
+```
+
+Runs at the end of every scan cycle (~60s cadence), atomic write, ~5 KB JSON. Errors swallowed; never blocks the trading path.
+
+### Storage path
+
+Default: `<paper_state_dir>/orb_state_<date>.json` (resolves to `/data/orb_state_2026-05-12.json` in production where `PAPER_STATE_PATH=/data/paper_state.json`).
+
+Override via env: `ORB_STATE_PERSIST_PATH=/some/path/orb_state_{date}.json`. The `{date}` placeholder is interpolated per session.
+
+### Tests
+
+**`tests/strategy/test_orb_state_persistence.py`** — 16 new tests across 7 test classes:
+
+- `TestOrWindowRoundtrip` (2): full-state serialization; rehydrate into fresh engine
+- `TestDayStateRoundtrip` (2): `in_position=True` survives redeploy (opposite-side guard intact); blocklist-blocked phase survives
+- `TestRiskBookRoundtrip` (3): realized P&L survives (daily-kill gate intact), `daily_kill_triggered` flag survives, open tickets roundtrip
+- `TestActivityRoundtrip` (1): activity feed deque roundtrip
+- `TestWashSaleRoundtrip` (1): `_recent_losses` + `wash_risk_count` survive
+- `TestPendingSizesRoundtrip` (1): tuple key `(pid, ticker)` roundtrips through `"pid|ticker"` JSON encoding
+- `TestDiskGuards` (5): atomic write leaves no `.tmp` artifacts; missing-file returns None; **date-mismatch returns None** (yesterday's file doesn't leak); corrupt JSON returns None; `prune_stale_state_files` removes >5-day-old snapshots
+- `TestFullRedeploySimulation` (1): end-to-end with rich state across all 6 categories → dump → fresh engine → load → verify everything restored
+
+**705 strategy tests pass** (689 + 16 new).
+
+### What the operator will see
+
+- After **any** Railway redeploy at any time of day, the engine boots → `ensure_session_started(today)` → reset → **rehydrate from disk**. OR windows already locked from earlier, daily P&L preserved, trades_today counter intact, opposite-side guard knows what's open. The dashboard sees consistent state immediately rather than waiting 60s for the v8.3.0 OR backfill to repopulate.
+- Forensic: `[V834-PERSIST] rehydrated date=2026-05-12 or_windows=12 day_states=24 risk_books=3 activity=8 sizes=1` confirms full recovery in the Railway logs.
+- Per-cycle dump is silent on success; failures debug-log only.
+
+### Why state.db + trade_log.jsonl aren't enough
+
+- `state.db` (executor positions, via v5.x persistence) covers broker-side reality but not the v10 engine's OR / FSM / RiskBook layer
+- `trade_log.jsonl` covers trade events but not the per-portfolio session counters that gate them
+- `paper_state.json` is saved every 5 minutes (daemon thread), so up to 5 min of state is lost. v8.3.3 worked around this for the dashboard's Today's Trades view; v8.3.4 covers everything else with per-scan-cycle dumps
+
+### Rollback
+
+Set `ORB_STATE_PERSIST_PATH=/dev/null` in Railway env to disable writes (load is no-op when file missing). Or revert this PR — pre-v8.3.4 behavior was "everything in-memory, lost on redeploy," which the v8.3.0 OR backfill softens but doesn't fix.
+
+---
+
+## v8.3.3 (2026-05-12) -- Today's trades survive redeploy (trade_log.jsonl merge in `_today_trades`)
+
+Operator surfaced: after a Railway redeploy mid-day, the Main tab's "Today's Trades" section went blank — trades that had clearly happened weren't on the dashboard. The dashboard wasn't the source of truth; in-memory `paper_trades` was, and it had been wiped.
+
+### Root cause
+
+- `paper_state.json` (which rehydrates `paper_trades` + `short_trade_history` on boot via `paper_state.load_paper_state`) is saved on a **5-minute** cadence by a daemon thread (`trade_genius.py:7278`).
+- `trade_log.jsonl` is appended **synchronously per trade-close** (`broker/orders.py:2057` → `trade_log_append` → atomic file write under `_trade_log_lock`).
+- After a redeploy, `trade_log.jsonl` is current to the millisecond; `paper_state.json` is up to 5 minutes stale. The 0–5 min gap of trades exists on disk but is missing from in-memory state — and the dashboard reads only in-memory state.
+
+### Change
+
+**`dashboard_server._today_trades()`** now backfills from `trade_log.jsonl` after the in-memory pass:
+
+1. After processing `paper_trades` (long BUY/SELL rows) and `short_trade_history` (short COVER + synth SHORT entry rows) and the live `short_positions` sweep (open shorts), call `m.trade_log_read_tail(limit=500, since_date=today, portfolio="paper")`.
+2. For each log row dated today: synthesize the entry row (`BUY` for long, `SHORT` for short) and the exit row (`SELL` / `COVER`), each carrying the proper `pnl` / `pnl_pct` / `reason` / `entry_price` / `exit_price` / `entry_time` / `exit_time`.
+3. De-dup against the existing `seen` set keyed by `(ticker, time, side, action)` — so a trade that's already in `paper_trades` won't double-count.
+4. Failure-tolerant: `trade_log_read_tail` raising or returning empty doesn't break the in-memory path.
+
+The existing `seen`-set de-dup is the key invariant: when both `paper_trades` and `trade_log.jsonl` have the same row (steady state), only the in-memory version is emitted; when only `trade_log.jsonl` has it (the redeploy gap), the log row fills in.
+
+### Tests
+
+**`tests/strategy/test_today_trades_log_merge.py`** — 8 new tests:
+
+1. `test_empty_state_returns_empty` — sanity
+2. `test_log_only_long_round_trip_synthesized` — operator's redeploy scenario; LONG BUY+SELL appear from trade_log alone
+3. `test_log_short_round_trip_synthesized` — same for SHORT/COVER
+4. `test_inmem_paper_trade_takes_precedence_no_duplicate` — when both sources have the BUY, no duplicate emitted
+5. `test_log_rows_filtered_to_today_only` — yesterday's row from trade_log doesn't leak into today's view
+6. `test_log_read_failure_doesnt_break_inmem_path` — `trade_log_read_tail` raising still surfaces the in-memory rows
+7. `test_pnl_fields_preserved_on_synth_sell` — `pnl`, `pnl_pct`, `reason`, `entry_price`, `exit_price` survive synthesis
+8. `test_sort_order_entry_before_exit` — entry sorts before exit via the existing `_sort_key`
+
+**665 strategy tests pass** (657 + 8 new).
+
+### What the operator will see
+
+- After any Railway redeploy, the Main tab's Today's Trades panel renders the **complete** day's history — including the 0–5 min gap that was previously dropped. P&L tail, reason, entry/exit prices all preserved.
+- No change for steady-state operation (no redeploy): in-memory path covers everything; the log-merge step de-dups to zero adds.
+
+### Why this is the immediate fix, not the final one
+
+v8.3.4 (queued next) implements the comprehensive A–F engine state persistence to `/data/orb_state_<date>.json` — that's the broader "no in-memory-only state survives a redeploy" guarantee. v8.3.3 ships the surgical dashboard fix now so the operator stops seeing blank Today's Trades panels while v8.3.4 lands.
+
+### Rollback
+
+Strictly additive: skipping the new trade_log merge block leaves `_today_trades` at its v8.3.2 behavior (in-memory only).
+
+---
+
+## v8.3.2 (2026-05-12) -- SIP→IEX merge fallback on thin result (fix "9 of 30 OR bars")
+
+The operator surfaced a `BLOCKED OR INSUFFICIENT` state on AVGO / NVDA / ORCL / TSLA showing `9 bars seen, expected 30`. Investigation traced it to `_fetch_1min_bars_alpaca` in `trade_genius.py`: the SIP→IEX fallback only fired when SIP returned **zero** bars (line 4491 pre-v8.3.2). If SIP returned a thin partial result (e.g. 9 of 30 OR-window bars due to a transient consolidated-tape feed glitch), we accepted the thin data, the OR window locked with `bars_seen < or_minutes // 2`, and the FSM transitioned to `PHASE_BLOCKED_OR_INSUFFICIENT` for the rest of the day. Account is already on Algo Trader Plus (SIP) per v6.5.0; switching feeds wasn't the fix — the fallback heuristic was.
+
+### Change
+
+**New module: `engine/data_completeness.py`** — four pure helpers (no I/O, no alpaca-py dependency):
+
+| Function | Purpose |
+|---|---|
+| `_or_expected_bars(now_et)` | How many [09:30, 10:00) ET bars to expect given the current ET clock (0 pre-09:30, partial during, 30 after) |
+| `_count_alpaca_rows_in_or_window(rows, et)` | Count duck-typed Bar objects whose ET timestamp falls in [09:30, 10:00) |
+| `_is_or_coverage_thin(got, expected, hard=False)` | Soft (<80%) triggers IEX retry; hard (<50%) triggers Yahoo fallback. No-op when `expected < 5` |
+| `_merge_alpaca_rows_by_timestamp(*row_lists)` | Merge SIP + IEX by UNIX timestamp; one bar per minute; earliest-source-wins on duplicate |
+
+**`trade_genius.py:_fetch_1min_bars_alpaca`** rewrites the fallback logic:
+
+1. Fetch SIP as primary (unchanged)
+2. Count bars in [09:30, 10:00) ET. Compute `or_expected` from `now_et`
+3. If SIP returned zero **OR** `_is_or_coverage_thin(sip_or_count, or_expected)` → fetch IEX and merge by timestamp
+4. Log `[V83-SIP-COMPLETENESS] sym=X sip=N iex=M merged=K sip_or=A merged_or=B or_expected=E` whenever the merge actually fired
+5. If merged OR-window coverage is still <50% of expected (`hard=True`) → return None so the caller's Yahoo fallback kicks in
+
+### Forensic
+
+`[V83-SIP-COMPLETENESS]` log fires only on thin-result events. Steady-state SIP-full-coverage is silent. Example for the operator's scenario:
+
+```
+[V83-SIP-COMPLETENESS] sym=AVGO sip=9 iex=30 merged=30 sip_or=9 merged_or=30 or_expected=30
+```
+
+### Tests
+
+**`tests/strategy/test_sip_completeness.py`** — 24 new tests across 4 test classes:
+
+- `TestOrExpectedBars` (5 tests): pre-market 0, mid-OR partial, post-OR 30
+- `TestCountAlpacaRowsInOrWindow` (8 tests): boundary inclusivity at 09:30:00 / 10:00:00, naive-datetime handling, malformed-row skipping
+- `TestIsOrCoverageThin` (6 tests): 80% soft threshold, 50% hard threshold, no-op below 5-bar expected window
+- `TestMergeAlpacaRowsByTimestamp` (5 tests): disjoint union, SIP-wins-on-duplicate, the operator's exact failure mode (9 SIP + 30 IEX → 30 merged in-OR), unparseable-timestamp skipping
+
+**681 strategy tests pass** (657 + 24 new).
+
+### What the operator will see
+
+- After v8.3.2 deploys, AVGO / NVDA / ORCL / TSLA OR windows lock with `bars_seen` reflecting the SIP+IEX consolidated coverage, not whichever feed had a transient gap. `BLOCKED OR INSUFFICIENT` should become rare-to-never for liquid names.
+- `[V83-SIP-COMPLETENESS]` log line surfaces in Railway logs whenever SIP coverage was thin — making the underlying SIP feed health visible going forward.
+
+### Rollback
+
+The new code path is strictly additive: when SIP returns full coverage, the IEX retry never fires (same as pre-v8.3.2). To force pre-v8.3.2 behavior, replace the call to `_is_or_coverage_thin(sip_or_count, or_expected)` with `False` in `trade_genius.py:_fetch_1min_bars_alpaca`.
+
+---
+
+## v8.3.1 (2026-05-12) -- Dashboard ET time + OR-window localStorage cache (no more disappearing OR)
+
+Two dashboard-side fixes that close visible-but-misleading gaps the operator surfaced today.
+
+### 1. Activity feed renders ET, not UTC
+
+The v10 Recent Activity card was raw-extracting `HH:MM` from the UTC ISO string and labeling it "UTC" — bypassing the existing `utcIsoToLocalHHMM()` helper that converts to ET via `timeZone: "America/New_York"`. Every other timestamp on the dashboard (positions, trades, error pill, lifecycle) was already on ET per v7.89.0; the activity feed was the lone holdout. v8.3.1 routes both the "most recent · HH:MM" header line and the per-row time column through `utcIsoToLocalHHMM`. The operator now sees the market clock everywhere.
+
+### 2. OR-window localStorage cache (defense-in-depth)
+
+A Railway redeploy mid-RTH clears the engine's in-memory `_state.or_windows`. The v8.3.0 backfill rebuilds them within one scan cycle (~60s), but during that gap `/api/state.v10.or_windows` returns empty and the dashboard's OR rows render blank, then "come back" when backfill completes.
+
+v8.3.1 adds a client-side `localStorage` cache:
+
+- `renderAll()` saves `v10.or_windows` to `localStorage["tg.v10.or_windows.<session_date>"]` whenever the live payload contains at least one ticker with real `(or_high, or_low)`.
+- Before any downstream renderer reads `v10.or_windows`, `_v10ORCacheRestoreIfEmpty(s)` checks whether the live payload is empty; if so, it overlays the cached snapshot.
+- Empty payloads NEVER overwrite a good cache (the save side is gated on `hasReal`).
+
+This is the client-side belt-and-suspenders. The engine-side authoritative fix (persist `or_windows` to `/data/orb_or_state_<date>.json` and rehydrate after `start_new_session`'s reset) is queued for v8.3.3 — it eliminates the underlying transient empty rather than just hiding it.
+
+### Tests
+
+Frontend-only change set. No new pytest assertions; the existing 657 strategy tests pass unchanged.
+
+### What the operator will see
+
+- Activity feed "MOST RECENT" + per-row times now display in ET (e.g. "10:07" instead of "14:07 UTC" during EDT).
+- After any Railway redeploy mid-RTH, the OR ticker matrix no longer goes blank for 30–60s while v8.3.0 backfill repopulates — cached snapshot fills the gap.
+
+### Rollback
+
+`localStorage` writes are idempotent and bounded (one key per session_date). Operator can flush via DevTools `localStorage.clear()` or by waiting for the next day's session_date to roll the cache key.
+
+---
+
+## v8.3.0 (2026-05-12) -- Automatic OR-window backfill on every scan cycle (Railway-redeploy-mid-RTH guard)
+
+A Railway redeploy mid-RTH wipes in-memory engine state. On the next bootstrap + `ensure_session_started`, all OR windows start empty. The live scan only feeds the latest 1m bar per cycle, so 09:30–09:59 ET buckets are never replayed — `bars_seen` stays 0, every ticker stays WARMUP, and **today is cooked for trading**. v7.74.0 had a one-shot `_maybe_backfill_or_window` hook gated on `_fresh == True` from `ensure_session_started`, but if that single attempt silently failed (Alpaca returned an empty bar list, the fetch raised, or the process crashed between the two calls) the OR stayed empty for the rest of the day. v8.3.0 makes backfill **automatic, per-cycle, idempotent**: "we can't miss trading just due to some glitches or fixes."
+
+### Change
+
+**`orb/engine.py`** — new pure method `OrbEngine.backfill_or_windows(*, bars_by_ticker, current_et_minutes)`:
+
+- Takes pre-bucketed 1m bars: `{ticker: [(bucket_min, high, low, open, close, volume), ...]}` (caller converts timestamps to ET buckets; keeps `orb/` clean of `engine/timing` dependency)
+- Per ticker: feeds in-window bars (`bucket ∈ [09:30, 09:59]`) through `on_bar_arrival`; then feeds the first post-window bar (`bucket >= 10:00`) so the v7.73.0 lock fallback fires even when the 09:59 bucket is missing from the source
+- **Idempotent**: locked OR windows reject new bars silently inside `OrWindow.add_bar`; already-locked tickers are skipped fast without touching state
+- **Guard**: no-op when `current_et_minutes < or_end_minutes` (live scan covers the active OR)
+- Returns counters: `{backfilled, locked, skipped, failed}` for forensic + dashboard surface
+
+**`orb/live_runtime.py`** — new thin wrapper `backfill_or_windows(bars_by_ticker, current_et_minutes)` that snapshots `_engine` under `_bootstrap_lock` and delegates. Returns `{}` when `is_live_mode_on()` is False or runtime is not bootstrapped.
+
+**`engine/scan.py`** — new `_orb_post_or_backfill_sweep(callbacks, now_et, scan_universe)` that runs on **every** scan cycle (not just the first after `ensure_session_started`):
+
+1. Skip when `current_et_minutes < or_end_minutes` (active OR; live scan handles it)
+2. Read `engine.snapshot().or_windows` and identify tickers whose OR isn't yet locked
+3. Fast-path: if all tickers are locked, return without any fetch work
+4. For each unlocked ticker, call `callbacks.fetch_1min_bars(ticker)`, convert timestamps to ET buckets via `minutes_since_et_midnight`, and forward to `_orb_runtime.backfill_or_windows`
+5. Log `[V83-OR-BACKFILL] sweep ...` only when at least one ticker was backfilled / locked
+
+The legacy `_maybe_backfill_or_window` (v7.74.0, fires once on `_fresh == True`) is **kept in place** for forensic continuity (`[V79-ORB-BACKFILL]` log tag) — the v8.3.0 sweep is strictly additive and provides the retry-until-success guarantee that the one-shot hook lacked.
+
+### Why per-cycle is cheap
+
+The expensive part of the legacy hook was the 12-ticker `fetch_1min_bars` round-trip. v8.3.0 short-circuits via the engine snapshot **before** calling `fetch_1min_bars`: when all OR windows are locked (the steady-state for the rest of the trading day), the sweep returns immediately without any I/O. Cost in steady state: one `engine.snapshot()["or_windows"]` dict-read per scan cycle (~µs).
+
+### Tests
+
+**`tests/strategy/test_orb_or_backfill.py`** — 10 new tests:
+
+1. `test_rebuilds_or_window_from_30_bars` — happy-path replay; window locks with correct `or_high` / `or_low` / `bars_seen=30`
+2. `test_post_or_locks_via_postwindow_bar_when_959_missing` — Alpaca-dropped-09:59 case; lock fires via post-window bar
+3. `test_idempotent_on_repeated_call` — second backfill hits the locked-skip fast-path; state unchanged
+4. `test_already_locked_ticker_skipped_without_change` — live-scan-locked OR with different bounds is **not** clobbered by backfill bars
+5. `test_pre_or_end_is_no_op` — `current_et_minutes < or_end_minutes` returns counters with `skipped == len(tickers)` without feeding any bar
+6. `test_empty_rows_marks_failed` — empty row list increments `failed` counter
+7. `test_bars_outside_window_are_filtered` — pre-09:30 / post-10:00 outlier bars don't pollute OR bounds
+8. `test_multiple_tickers_independent` — two tickers backfill independently with different OR bounds
+9. `test_malformed_rows_dropped` — `None` price / `None` bucket rows skipped silently; valid rows still process
+10. `test_thin_or_blocks_insufficient` — `<or_minutes // 2` bars transition to `PHASE_BLOCKED_OR_INSUFFICIENT` (not ARMED)
+
+**`tests/strategy/test_orb_live_runtime.py`** — 3 new tests:
+
+1. `test_returns_empty_when_not_bootstrapped` — pre-bootstrap wrapper returns `{}`
+2. `test_returns_empty_when_live_mode_off` — `ORB_LIVE_MODE=0` short-circuits
+3. `test_rebuilds_or_when_bootstrapped` — end-to-end: bootstrap → ensure_session → backfill → OR locked
+
+**657 strategy tests pass** (644 + 10 + 3 new).
+
+### What the operator will see
+
+- After **any** Railway redeploy past 09:59 ET, the first scan cycle following the boot rebuilds every ticker's OR window automatically. If the first attempt fails (Alpaca returns empty), the next cycle retries — until it succeeds.
+- Forensic log: `[V83-OR-BACKFILL] sweep cur_min=N backfilled=N locked=N skipped=N failed=N` fires whenever the sweep actually rebuilds at least one window.
+- Steady-state (all locked): no log line; the sweep skips silently after the snapshot check.
+
+### Rollback
+
+This is strictly additive. To disable, comment out the `_orb_post_or_backfill_sweep` call in `engine/scan.py` — the legacy v7.74.0 hook still covers the `_fresh == True` first cycle.
+
+---
+
+## v8.2.0 (2026-05-12) -- Fix phantom-at-broker watchdog alert (executor → PortfolioBook mirror)
+
+The dashboard-monitor's `inv_position_count_three_way` invariant has been firing every tick for hours with:
+
+> broker has 3 open position(s) but all three internal books are empty
+> main=0 val=0 gene=0 broker_open_n=3
+
+Root cause: the Val/Gene executor boot paths (`_load_persisted_positions` from `state.db` + `_reconcile_broker_positions` from Alpaca) only write to `self.positions` (the executor dict). They never mirror into `PORTFOLIOS[<pid>].positions` (the per-portfolio `PortfolioBook`). The dashboard's `/api/state.portfolios.<pid>.positions` feed reads from **`book.positions`**, not `self.positions`. So after a Railway restart in which Val/Gene grafted broker orphans, the executor knows about them and manages their exits — but the book stays empty. `val_count = gene_count = 0` while `broker_open_n = 3`, tripping the invariant indefinitely.
+
+### Change
+
+`executors/base.py` — new helper `_mirror_position_into_book(ticker)`:
+
+- Looks up `PORTFOLIOS[self.NAME.lower()]`
+- Maps `qty → shares`, copies `entry_price`, `entry_ts_utc`, `source`, `stop`
+- Routes to `book.positions` (long) or `book.short_positions` (short) based on `pos["side"]`
+- **Idempotent**: if the ticker is already in the book, no-op — protects live-entered rows (which carry richer state like `v531_max_favorable_price`) from being clobbered by a stale RECONCILE-shaped row
+
+Called from both boot paths:
+
+- `_load_persisted_positions` — after `self.positions.update(rows)`, mirror each
+- `_reconcile_broker_positions` — after `_persist_position(ticker)` inside the graft loop
+
+### Tests
+
+`tests/strategy/test_executor_book_mirror.py` — 6 new tests:
+
+1. `test_mirror_long_into_book` — long goes into `book.positions` with `qty → shares` mapping
+2. `test_mirror_short_into_short_book` — short goes into `book.short_positions`
+3. `test_mirror_idempotent_does_not_clobber_existing_row` — pre-existing live-fill row with `v531_max_favorable_price` is preserved
+4. `test_mirror_no_pos_no_op` — empty `self.positions` is safe
+5. `test_mirror_unknown_pid_no_crash` — `NAME = "UnknownPid"` falls through silently
+6. `test_load_persisted_mirrors_into_book` — `_load_persisted_positions` end-to-end mirrors into the book
+
+**644 strategy tests pass** (638 + 6 new).
+
+### What the operator will see
+
+After the next Railway deploy:
+- Watchdog `position_count_three_way` violations stop firing
+- Dashboard's per-portfolio positions feed correctly shows Val/Gene rows after any boot-time graft
+- Existing 58 open dashboard-monitor issues stop refilling and can be bulk-closed
+
+### Rollback
+
+Remove the `_mirror_position_into_book` method + the two call sites. Steady-state live entries via `record_entry_with_fill` write to the book directly, so reverting only re-creates the boot-path gap.
+## v8.1.9 (2026-05-12) -- Fix Gene equity=0 root cause (recurring dashboard-monitor alert)
+
+The dashboard-monitor's `inv_risk_book_notional_cap_nonzero` invariant has been firing for hours with:
+
+> 1 RiskBook(s) have zero equity/max_notional during RTH — entries will be rejected on notional_cap
+> gene: equity=0.0 max_notional=0.0 last_reject=''
+
+Root cause: `engine/scan.py:_resolve_portfolio_equity` called `book.current_equity()` directly. For Val/Gene that returns `0` whenever `PortfolioBook.paper_cash` is the default `0.0` (it's not auto-seeded from Alpaca). The `0` then propagates through `check_entry(equity=0)` which re-seeds `RiskBook.equity = 0` on every cycle, giving `max_notional = 0 × mult = 0` — every Gene admission is then notional-capped and rejected.
+
+The v7.76.0 helper `engine/portfolio_equity.py:resolve_equity` was built specifically to bridge Alpaca-account equity into the engine, but `_resolve_portfolio_equity` was never updated to consult it. Two other equity wirings (the session-seed at `engine/scan.py:436` and the per-cycle refresh in `orb/live_runtime.py:409`) already route through `resolve_equity`, so the seed-then-overwrite cycle order is:
+
+```
+session-start → resolve_equity → seeds Gene equity > 0
+per-bar refresh_equity_from_books → keeps it warm
+per-bar _orb_long_entry → _resolve_portfolio_equity → book.current_equity()=0
+                       → overwrites Gene back to 0
+```
+
+### Change
+
+`engine/scan.py:_resolve_portfolio_equity` — three-tier fallback:
+
+1. **Tier 1**: `engine.portfolio_equity.resolve_equity(portfolio_id)` (Alpaca-first for Val/Gene)
+2. **Tier 2**: `PortfolioBook.current_equity()` (correct for Main where paper_cash is source of truth)
+3. **Tier 3**: `tg.paper_cash` (legacy fallback)
+
+Any tier that returns `> 0` short-circuits; otherwise falls through. The tiered approach is safer than just calling `resolve_equity` alone — when Alpaca keys aren't configured for a portfolio, `resolve_equity` returns `0` silently, and we want to recover to book MTM rather than reject every entry.
+
+### Tests
+
+Existing 638 strategy tests still pass — `_resolve_portfolio_equity` has no direct test coverage today, but its callers (`_orb_long_entry`, `_orb_short_entry`) are exercised via `tests/strategy/test_orb_scan_integration.py`. No behavior change for the Main path (Tier 1 returns 0 for "main" by design → falls to Tier 2 which returns the same value the old code did).
+
+### Operator-side caveat (read this)
+
+This fix removes the EQUITY=0 path for Gene **as long as Gene's Alpaca paper-trading keys are configured in Railway**. If `GENE_ALPACA_PAPER_KEY` / `GENE_ALPACA_PAPER_SECRET` are unset (or fail the length sanity check in `engine/portfolio_equity.py:73`), `resolve_equity("gene")` will still return 0, Tier 1 falls through to Tier 2 which also returns 0 (paper_cash=0), and the alert will keep firing. **In that case the fix is operator-side**: either set the env keys, or set `GENE_ENABLED=0` in Railway so Gene's executor never starts.
+
+The recommended operator check: visit `https://tradegenius.up.railway.app/api/state` after the next deploy; if `risk_books.gene.equity` is still `0`, set `GENE_ENABLED=0` until you can wire the keys.
+
+### Rollback
+
+Revert `_resolve_portfolio_equity` to the pre-v8.1.9 single-line `return book.current_equity()`. No state to clean up.
+
+## v8.1.8 (2026-05-12) -- Wash-sale risk tracker ([V81-WASH-RISK] log tag + dashboard chip)
+
+Operator-facing signaling for IRS §1091 wash-sale visibility on this high-frequency intraday strategy. **Not tax-grade** — for year-end tax filing, the operator should rely on the broker 1099-B + their accountant, NOT this counter.
+
+### How it works
+
+`orb/engine.py` gains two new in-memory structures:
+
+- `_recent_losses: dict[(ticker, side), list[loss_record]]` — records (`ts_unix`, `pnl_dollars`, `exit_iso`) whenever `on_exit` realizes a loss (pnl < -$0.01).
+- `wash_risk_count: int` — session-scoped counter. Resets to 0 each `start_new_session`. The loss buffer is INTENTIONALLY preserved across sessions so a Monday loss + Tuesday re-entry still triggers the flag.
+
+In `try_enter`, before returning the Admission, the engine checks `_recent_losses[(signal.ticker, signal.side)]` for any record within the trailing 30 calendar days. If found:
+- Logs `[V81-WASH-RISK] AAPL long entry @ $101.30 -- prior loss $-200.00 on same (ticker, side) at 2026-01-14T15:00Z. Counter: N this session.`
+- Bumps `wash_risk_count`
+- Prunes records older than 30d
+- **Does NOT block the entry** — operator opted into this strategy knowing about §1091
+
+Long vs short on the same ticker is **NOT** considered substantially identical per IRS, so a long-side loss does not flag a subsequent short entry (and vice versa).
+
+### Dashboard chip
+
+`v10 Day Status` banner gets a new `Wash N` chip (amber) when `wash_risk_count > 0`. Hidden when 0 so the banner stays uncluttered on clean-trading days. Tooltip points the operator at §475(f) MTM election as the standard professional fix.
+
+### Files
+
+| File | Change |
+|---|---|
+| `orb/engine.py` | `_recent_losses` + `wash_risk_count` on `OrbEngine`; record on losing `on_exit`; check + log on `try_enter`; reset counter on `start_new_session`; expose in `snapshot()` |
+| `dashboard_static/index.html` | New `#v10-wash-pill` element (hidden by default) |
+| `dashboard_static/app.js` | `renderV10DayStatus` populates the chip from `v10.wash_risk_count` |
+| `tests/strategy/test_orb_wash_risk.py` | 11 new unit tests covering recording, counter increment, opposite-side / different-ticker / winning-close / >30d no-op, snapshot exposure, session reset semantics |
+
+### Tests
+
+**638 strategy tests pass** (627 + 11 new).
+
+### Why no broker / executor changes
+
+The tracker is centralized in `OrbEngine`. Both Main and (eventually) Val/Gene admissions go through `try_enter`, so the flag fires once per signal regardless of portfolio. The per-portfolio attribution lives in the log line (no `pid` field on the counter yet; could be added in a v8.1.9 if useful).
+
+### Caveats (documented inline in `orb/engine.py`)
+
+- In-memory only. Railway restart loses the 30-day loss buffer. Most wash sales are same-day or next-day so this misses only a small tail.
+- Not cross-broker. If you trade the same tickers in another account (TD, Schwab, IRA), this counter won't see those.
+- IRA + taxable cross-account wash sales are the actual trap. **No code can fix that** — only operator discipline (don't trade the v10 universe in IRA while running this in taxable).
+
+### Rollback
+
+Trivial — set `wash_risk_count` reads in JS to constant 0 + skip the chip render, OR revert the engine block + revert the dashboard files.
+
+## v8.1.7 (2026-05-12) -- Val/Gene executor partials now appear in the dashboard activity feed
+
+Closes the cross-portfolio visibility gap from v8.1.2. When Main fires a partial, `orb/live_runtime.py:check_exit` calls `_record_activity(kind="partial", ...)` so the event appears in the dashboard's v10 Activity Feed. But Val and Gene executors don't route through that path — they receive a `PARTIAL_EXIT_*` signal-bus event and call `_partial_close_position_idempotent` directly. Their partials never landed in the feed.
+
+v8.1.7 wires the executor's partial-close to ALSO call `_record_activity` after a successful Alpaca submit, with `pid=self.NAME.lower()` so the dashboard's per-pid filter renders the row under the right portfolio chip.
+
+### Change
+
+`executors/base.py:_partial_close_position_idempotent` — on the success path (after `_persist_position` + telegram emit), call `orb.live_runtime._record_activity(kind="partial", ticker=ticker, pid=self.NAME.lower(), detail="<N> sh @ market (<reason>)")`. Best-effort try/except so an import or lock issue can't block the broker path.
+
+### Tests
+
+`tests/strategy/test_executor_partial_close.py::TestExecutorRecordsPartialActivity` — 2 new tests:
+- Successful partial appends to the ring buffer with the right `kind/ticker/pid/detail`
+- Failed partial (broker error, no local mutation) does NOT append (avoids polluting the feed with non-events)
+
+627 strategy tests pass (625 + 2 new).
+
+### What the operator now sees
+
+The v10 Activity Feed renders Val/Gene partials inline with Main's:
+
+```
+13:42 AAPL ½ PARTIAL val   50 sh @ market (PARTIAL_1R)
+13:42 AAPL ½ PARTIAL gene  50 sh @ market (PARTIAL_1R)
+13:42 AAPL ½ PARTIAL main  50 sh @ $101.04 (booked $52.00)
+```
+
+The Main row carries the booked-pnl detail (from `live_runtime.check_exit`); the Val/Gene rows carry the order-submission detail. Same `kind=partial` chip styling for all three, distinguished by the `pid` column already rendered by `renderV10ActivityFeed`.
+
+## v8.1.6 (2026-05-12) -- Recompute Sharpe + max-DD under v8.1.3 config; populate baseline plate
+
+Closes the v8.1.5 follow-up. The baseline plate's Sharpe was set to `None` in v8.1.5 because the old 2.85 was for the pre-v7.109 strategy and carrying it forward would have misled the operator. v8.1.6 actually computes Sharpe from a fresh 251-day backtest under the v8.1.3 production config and populates the field.
+
+### Method
+
+Script `docs/research/compute_sharpe_v813.py` runs `tools/orb_backtest.py` on `/tmp/rth-data/data` (251 trading days, May 2025 → May 2026) with the exact env-fallback config from `orb/live_runtime.py` as of v8.1.3:
+
+```
+ORB_RISK_PER_TRADE_PCT=1.00
+ORB_ATR_STOP_MULT=1.75
+ORB_PARTIAL_PROFIT_AT_1R=1
+... + v10 anchor knobs
+```
+
+Reads per-day P&L from `out/per_day/<YYYY-MM-DD>.json`, sums `pnl_dollars` per day, builds a daily-return series (relative to compounding equity), computes:
+
+- `mean_daily = +0.1510%`
+- `stdev_daily = 0.9441%`
+- `Sharpe_ann = (mean / stdev) × √252 = 2.539` (rf=0 proxy)
+- `max_drawdown = 6.31%` (peak-to-trough on compound equity curve)
+
+### Two stale numbers also fixed
+
+| Field | Before (v8.1.5) | After (v8.1.6) | Why it changed |
+|---|---|---|---|
+| `sharpe_ann` | `None` | **`2.54`** | Computed from actual per-day P&L (was deliberately nulled in v8.1.5) |
+| `max_drawdown_pct` | `3.20` | **`6.31`** | v8.1.5 carried a *worst-day* estimate, not peak-to-trough multi-day DD; corrected |
+| `trades_per_year` | `209` | **`382`** | v8.1.5 used a Round 2 R2_T5 winner count; this run uses the actual v8.1.3 production config which trips more breakouts |
+
+### Files
+
+- `dashboard_server.py` — `_V10_PROJECTION_KEYSTONE` Sharpe + max-DD + trades populated
+- `docs/research/compute_sharpe_v813.py` — reproducibility script (run from repo root)
+- `tests/strategy/test_dashboard_v10_block.py::test_keystone_values_match_v10_canonical` — assertions updated for the three changed fields + new `trades_per_year` assertion
+
+No code, FSM, broker, executor changes. **625 strategy tests pass.**
+
+### Live dashboard impact
+
+Hard-refresh — baseline plate now shows:
+
+| Field | Was (v8.1.5) | Now (v8.1.6) |
+|---|---|---|
+| Sharpe | `—` | **`2.54`** |
+| Max DD | `+3.20%` | **`+6.31%`** |
+
+CAGR / Range / Win rate / Worst-day unchanged from v8.1.5.
+
+## v8.1.5 (2026-05-12) -- Refresh "v10 Backtest Baseline" plate with v8.1.3-active numbers
+
+The `v10 Backtest Baseline` card on the dashboard (`#v10-baseline` in `index.html`, served by `_V10_PROJECTION_KEYSTONE` in `dashboard_server.py`) was still showing the **pre-v7.109** keystone numbers from a 124-day in-sample window: CAGR 43.0%, Sharpe 2.85, Max DD 5.03%, WR 57.0%, Range 5.5%-70.4%.
+
+Those numbers are stale post the v7.109 → v8.1.3 lineage. Refreshed to reflect the **current production config** (v7.109's `risk=1.0%` + v8.0.1's `atr_stop_mult=1.75` + v8.1.3's `partial_profit_at_1r=True`) backtested over the **full 251-day** RTH corpus (May 2025 → May 2026), source `docs/pl_optimization_final_report_v12.md` Round R8 winner (`R8_atr1pt75_partial`).
+
+### Refresh
+
+| Field | Before (v11 keystone, 124d) | After (v8.1.3 config, 251d FY) |
+|---|---|---|
+| CAGR (mid) | 43.0% | **44.4%** |
+| Range | +5.5% to +70.4% | **+12.0% to +52.0%** (LOW: 12% OOS-haircut · MID: backtest · HIGH: favorable-regime) |
+| Sharpe (annualized) | 2.85 | **null → renders as "—"** (slated for v8.1.6 once recomputed from per-day P&L under v8.1.3 config) |
+| Max drawdown | 5.03% | **3.20%** (best estimate from 0/4 negative quarters + worst-day -$2,575) |
+| Win rate | 57.0% | **59.0%** |
+| Worst day ($) | -$2,030 | **-$2,575** |
+| Sample period | 124 days | **251 days** |
+| Ending balance (in-sample) | $119,225 | **$144,431** |
+| Trades / period | 114 / 124d | **209 / 251d** (renamed field `trades_per_124d → trades_per_year`) |
+
+The Sharpe column is intentionally set to `None` rather than carrying forward the old 2.85: the new strategy has smaller positions + partial fills, so the per-trade return distribution has shifted and the old Sharpe would be misleading. The dashboard's `renderV10Projection` already handles `sharpe_ann == null` → renders "—".
+
+### Files
+
+- `dashboard_server.py` — `_V10_PROJECTION_KEYSTONE` dict refreshed + leading comment updated to point at v12 report as source
+
+No code, FSM, broker, or executor changes. 625 strategy tests pass unchanged.
+
+### Rollback
+
+Trivial — revert the keystone dict.
+
+## v8.1.4 (2026-05-12) -- ARCHITECTURE.md doc-only: reflect v8.1.3 default-on
+
+Caught during the post-v8.1.3 verification sweep. ARCHITECTURE.md still described `ORB_PARTIAL_PROFIT_AT_1R` as "opt-in" with default `0` in the env-table row -- stale after v8.1.3 flipped the env-fallback default to `True`. Doc-only fix.
+
+### Changes
+
+- `ARCHITECTURE.md` -- "Partial profit at 1R" bullet now says "default-on since v8.1.3" + adds the disable instruction. Env table row flipped default `0 → 1`.
+
+No code, no test, no behavior change. 625 strategy tests pass unchanged.
+
+## v8.1.3 (2026-05-12) -- Activate partial-profit-at-1R by default
+
+Final activation step in the partial-profit lineage. The lever has been:
+- v8.1.0: engine FSM + bookkeeping
+- v8.1.1: Alpaca executor partial-close end-to-end
+- v8.1.2: dashboard UI surfacing
+- **v8.1.3: env-fallback default flipped `False → True`**
+
+After the next Railway deploy, the live engine emits `EXIT_PARTIAL` on first 1R touch automatically — no operator action needed. Backtest config now matches what's running in production:
+
+| Lever | env-fallback default | Live |
+|---|---|---|
+| `risk_per_trade_pct` | `1.0` (v7.109.0+) | ✅ |
+| `atr_stop_mult` | `1.75` (v8.0.1+) | ✅ |
+| `partial_profit_at_1r` | `True` (v8.1.3+) | **✅ now** |
+
+### Change
+
+Single line in `orb/live_runtime.py:from_env`:
+
+```python
+# before
+partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", False),
+# after
+partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
+```
+
+### Test scaffolding
+
+Flipping the default required updating ~20 strategy test files whose `isolated_env` fixtures wiped all `ORB_*` env vars (which previously left partial=False; now leaves partial=True and breaks tests written for the legacy path).
+
+- New `tests/strategy/conftest.py` — autouse fixture `_strategy_default_partial_off` sets `ORB_PARTIAL_PROFIT_AT_1R=0` before each test so the legacy non-partial path stays the strategy-suite default.
+- ~20 per-file `isolated_env` fixtures also setenv `=0` after their `delenv` loop (belt-and-suspenders since per-file fixtures wipe my autouse).
+- `tests/strategy/test_orb_partial_profit.py::test_off_disables_partial_branch` — was asserting False is the engine default; now explicitly sets env=0 and asserts.
+- `tests/strategy/test_v10_ticker_matrix_snapshot.py::test_config_v8_atr_and_partial_fields_present` — now explicitly `delenv`s `ORB_PARTIAL_PROFIT_AT_1R` and asserts the engine sees `True` (verifying the production env-fallback path).
+
+625 strategy tests pass.
+
+### Backtest projection (compounding $100k base, **both ATR + partial active**)
+
+| Scenario | Year 1 | Year 3 | Year 5 |
+|---|---:|---:|---:|
+| LOW (12% OOS-haircut) | $112k | $140k | $176k |
+| MED (44% backtest) | $144k | $300k | $622k |
+| HIGH (52% favorable) | $152k | $352k | $814k |
+
+### Rollback
+
+Set `ORB_PARTIAL_PROFIT_AT_1R=0` in Railway env (no redeploy). Partial branch is gated, no signal-bus emit, no broker order. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
+## v8.1.2 (2026-05-12) -- Dashboard UI reflects v8.0 + v8.1 features
+
+Backend has been emitting all the new state since v8.0.0 but the frontend hadn't been wired to surface it. This release closes that gap with surgical edits to `dashboard_static/{app.js, app.css, index.html}` and a small backend serializer extension plus an activity-feed event kind.
+
+### What the operator now sees
+
+- **v10 Day Status banner** (`#v10-day-status`):
+  - New `ATR×1.75` chip (blue) — appears whenever `atr_stop_mult > 0`. Tooltip shows the multiplier + lookback + fallback semantics.
+  - New `P@1R ON / OFF` chip — green when `ORB_PARTIAL_PROFIT_AT_1R=1` is live; gray when off. Tooltip explains how to flip it.
+- **v10 Ticker Matrix**: rows whose underlying position has a recorded partial fill now show a small `½` badge next to the ticker symbol, with a tooltip listing the partial price + booked P&L.
+- **Open Positions table**: the Shares cell on a position that's taken a partial gets a `½@$X.XX` amber inline badge with the same tooltip.
+- **Trades panel**: `PARTIAL_SELL` and `PARTIAL_COVER` rows now render with an amber `½ SELL` / `½ COVER` chip (distinct from full-close red and entry green) so the operator can scan the day's fills and immediately tell which were halves vs full closes.
+- **v10 Activity Feed**: when partial fires, a new `PARTIAL` kind chip appears in the feed (amber, prefixed `½`) with the booked shares + price + P&L in the detail column.
+
+### Backend wiring (new fields exposed)
+
+- `dashboard_server.py:_serialize_positions` — long + short position rows now carry `partial_fills: list[dict]` (each fill: `{shares, price, reason, pnl_dollars, ts_utc}`). Source: `tg.positions[ticker]["partial_fills"]` written by `broker/orders.py:partial_close_breakout`.
+- `orb/live_runtime.py:check_exit` (both ticket-id and ticker variants) — on a `result.partial=True` ExitResult, records a `kind="partial"` event in the activity ring buffer with shares + price + booked P&L in the detail.
+
+### Tests
+
+- `tests/strategy/test_v10_ticker_matrix_snapshot.py` — new `test_config_v8_atr_and_partial_fields_present` test pins the snapshot contract for `atr_stop_mult`, `atr_lookback_5m`, `partial_profit_at_1r` so a future engine refactor can't silently break the new banner chips.
+- 625 strategy tests pass (was 624).
+
+### Why no backend behavior change
+
+v8.1.2 is **purely UI plumbing**. Engine + risk-book + broker + executor paths are identical to v8.1.1. Same trades fire, same Alpaca orders go out. Only the dashboard's render of existing state changes.
+
+### Rollback
+
+Hard-refresh the dashboard to invalidate cached JS/CSS. If the new chips render broken on a specific browser, the old behavior is recoverable by reverting `dashboard_static/*.{js,css}` to the v8.1.1 versions — backend stays compatible.
+
+## v8.1.1 (2026-05-12) -- Alpaca executor partial-close: paper-only caveat lifted
+
+Closes the paper-only gap shipped in v8.1.0. The partial-profit FSM and bookkeeping were complete in v8.1.0 but `partial_close_breakout` only mutated paper state -- live Alpaca books would have drifted from `tg.positions` on every partial fill. v8.1.1 wires the broker primitive end-to-end.
+
+### Changes
+
+- **`executors/base.py`**: new `_partial_close_position_idempotent(client, ticker, shares_to_close, label, reason)` submits a MARKET sell/buy for `shares_to_close` shares via the existing `_submit_order_idempotent` retry pattern. Mutates `self.positions[ticker]["qty"]` to the runner remainder on success. Treats Alpaca 40410000 ("position not found") as a soft success that still decrements local qty so subsequent ticks see the remainder. Any other error LEAVES LOCAL QTY UNCHANGED -- caller retries on next tick, no silent share leak. Refuses `shares_to_close >= cur_qty` (caller bug) and `shares_to_close <= 0`. Persists the mutated row through `_persist_position` so a Railway redeploy mid-session doesn't lose the partial state.
+- **`executors/base.py:_on_signal`**: new `kind in ("PARTIAL_EXIT_LONG", "PARTIAL_EXIT_SHORT")` branch routes to `_partial_close_position_idempotent` with `partial_qty = int(event["main_shares"])`. Skips silently if no position tracked or `main_shares <= 0`.
+- **`broker/orders.py:partial_close_breakout`**: now emits a `PARTIAL_EXIT_LONG` / `PARTIAL_EXIT_SHORT` signal-bus event after the paper-state mutation. `main_shares` carries the partial-close count (NOT the runner). Listener executors (Val / Gene) pick it up and mirror.
+
+### Tests
+
+`tests/strategy/test_executor_partial_close.py` -- 12 new unit tests with mocked Alpaca client + telegram/alpaca module stubs:
+- Happy path: long submits MARKET SELL with right qty; short submits MARKET BUY; qty decrements + persists
+- Refusals: partial >= cur_qty / partial > cur_qty / partial <= 0 / no position tracked
+- Errors: 40410000 -> soft success + local decrement; other errors -> qty unchanged for retry
+- `_on_signal` dispatch: PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT route to partial path; no-position skipped; zero-main_shares skipped
+
+All 624 strategy tests pass (585 prior + 12 new + 27 previously-uncollectable executor tests unlocked by the stub).
+
+### Live activation (now safe)
+
+Set `ORB_PARTIAL_PROFIT_AT_1R=1` in Railway env. The signal-bus pipeline now:
+1. Main `partial_close_breakout` mutates `tg.positions[ticker]["shares"]` (paper book).
+2. Signal-bus emits `PARTIAL_EXIT_LONG`/`SHORT` with `main_shares=partial_count`.
+3. Val + Gene executors receive the event, submit MARKET partial sells to their Alpaca accounts, decrement local `self.positions[ticker]["qty"]`.
+
+The paper-only caveat from v8.1.0 (in `partial_close_breakout` docstring + ARCHITECTURE.md) is now lifted -- documented in this CHANGELOG entry.
+
+### Rollback
+
+`ORB_PARTIAL_PROFIT_AT_1R=0` (or unset) -- engine partial branch gated, no signal-bus emit, no broker order. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
+## v8.1.0 (2026-05-12) -- Partial-profit-at-1R live engine (Phase 15 stack lever)
+
+Implements the deferred partial-profit-at-1R lever per `docs/v8_1_partial_profit_design.md`. Backtest evidence: stacking partial-profit on top of v8.0 ATR-stop lifts FY from $+34,486 to $+44,431 (+29% incremental, +79% vs pre-v7.109 baseline). Q4-2025 jumps from $+1,989 to $+9,262. WR climbs to 59%.
+
+### What it does
+
+When the bar's high crosses 1R (long; mirror for short) for the first time on an open position AND `ORB_PARTIAL_PROFIT_AT_1R=1`:
+1. The engine emits `EXIT_PARTIAL`.
+2. `LiveAdapter.check_exit` applies engine-side bookkeeping: sets `pos.partial_taken=True`, halves `pos.shares`, records `partial_pnl_dollars`, releases half the risk-book ticket's budget. Position stays open with the runner half.
+3. `broker/positions.py:manage_positions` sees `result.partial=True` and calls `broker/orders.py:partial_close_breakout` which mutates the legacy paper-position dict + records a `PARTIAL_SELL` row to paper_trades + emits `[V81-ORB-PARTIAL]`.
+4. Subsequent bars evaluate against the remaining position with stop=entry (BE armed on the same bar as partial).
+5. Final exit credits the kill-gate with `(exit-entry) * remaining_shares + partial_pnl_dollars` so realized P&L matches backtest semantics.
+
+### Strictly off by default
+
+`ORB_PARTIAL_PROFIT_AT_1R` defaults to **False** in both `OrbConfig` (dataclass) and `live_runtime.py` (env-fallback). With the env unset, behavior is **identical** to v8.0.1 (the partial branch in `exits.evaluate()` is gated). Operator must explicitly set `ORB_PARTIAL_PROFIT_AT_1R=1` in Railway env to activate, ideally after 5 trading days of paper observation.
+
+### Files
+
+| File | Change |
+|---|---|
+| `orb/exits.py` | `EXIT_PARTIAL` constant; `OrbPosition` gains `partial_taken`, `partial_pnl_dollars`, `original_shares`; `evaluate()` partial-fire branch (after BE-arm, before stop); `apply_partial_fill()` helper |
+| `orb/risk_book.py` | `release_partial(ticket, frac)` -- halves ticket's risk_dollars + notional without popping |
+| `orb/engine.py` | `OrbConfig.partial_profit_at_1r`; `on_partial_exit()` engine-side bookkeeping; `on_exit()` credits `partial_pnl_dollars` to kill-gate; snapshot exposes new flag |
+| `orb/live_runtime.py` | `ORB_PARTIAL_PROFIT_AT_1R` env-fallback (default False) |
+| `orb/live_adapter.py` | `ExitResult` gains partial fields; `check_exit()` returns `partial=True` envelope without closing position |
+| `broker/orders.py` | New `partial_close_breakout(ticker, shares_to_close, price, side, reason)` -- half-closes paper position WITHOUT teardown (no cooldowns / ratchet / phase clear) |
+| `broker/positions.py` | `manage_positions` + `manage_short_positions` detect `partial=True` ExitResult and route to `partial_close_breakout` |
+
+### Tests
+
+`tests/strategy/test_orb_partial_profit.py` -- 24 new tests:
+- `evaluate()` partial-fire ordering (off / long / short / before-stop / fires-once / shares<2 guard)
+- `apply_partial_fill()` math (long / short / odd-shares-rounds-down / second-call-noop / too-few-shares-noop)
+- `release_partial()` (half / quarter / invalid-frac / none-ticket / then-full-release / after-full-release-noop)
+- `on_partial_exit()` (releases half risk / idempotent)
+- `on_exit()` credits partial_pnl
+- Adapter envelope (partial=True keeps position open)
+- Full lifecycle (partial then be_stop credits both; partial then target credits both)
+- Strict no-op when flag off
+
+All 585 strategy tests pass (561 prior + 24 new).
+
+### Live-trading caveat (read before activating)
+
+`partial_close_breakout` mutates the **paper-state** position dict and paper_trades. It does NOT emit a broker-side sell order through the executor pipeline (signal bus / Val/Gene executors). For Main running on Alpaca paper, the position on Alpaca's books WILL DRIFT from `tg.positions[ticker]["shares"]` until end-of-day reconciliation. The fix -- wiring `partial_close_position_idempotent` into `executors/base.py` -- is deferred to a follow-up release. Until then, treat v8.1.0 as **paper-only**; **do not** flip `ORB_PARTIAL_PROFIT_AT_1R=1` on a live-money Alpaca account.
+
+This caveat is repeated in the inline docstring of `partial_close_breakout`.
+
+### Rollback
+
+`ORB_PARTIAL_PROFIT_AT_1R=0` (or unset) in Railway env -- partial branch is gated. Or `ORB_LIVE_MODE=0` for full legacy fallback.
+
+## v8.0.1 (2026-05-12) -- Activate ATR-stop default + v8.1.0 design doc for partial-profit
+
+Two-part follow-up to v8.0.0:
+
+**1. Activate ATR-stop live.** The v8.0.0 release added the ATR-stop code path but kept `ORB_ATR_STOP_MULT=0.0` as the env-default (env-gated, opt-in via Railway flag). v8.0.1 flips the env-fallback default in `orb/live_runtime.py:from_env()` from `0.0` to `1.75`, activating ATR-based stops on the next deploy. Live-disable path remains: `ORB_ATR_STOP_MULT=0` in Railway env reverts to v7.111.0 OR-edge stop. Default-disable in code remains via `OrbConfig.atr_stop_mult = 0.0` so unit tests that construct `OrbConfig()` directly are unaffected.
+
+**2. v8.1.0 design doc.** `docs/v8_1_partial_profit_design.md` lays out the full implementation plan for the deferred partial-profit-at-1R lever: broker primitive, FSM additions, risk-book partial-release, caller integration, ~30 new tests, activation rollout. Drafted now so a future focused session can pick up cleanly without re-deriving the integration plan. Backtest evidence: stacking partial-profit lifts FY from $+34,486 → $+44,431 (+29% incremental, +79% vs pre-v7.109 baseline). High-stakes broker path warrants its own PR.
+
+### Change
+
+- `orb/live_runtime.py`: one-line env-fallback default flip (0.0 → 1.75) with explanatory comment.
+- `docs/v8_1_partial_profit_design.md`: new design document, ~300 lines.
+- No test changes -- the 13 ATR-stop tests in v8.0.0 explicitly pass `atr_stop_mult` and remain unaffected.
+
+### Behavioral diff on live (vs v8.0.0)
+
+Once Railway redeploys to 8.0.1, ORB entries will use ATR-derived stops by default. The first `[V79-ORB-ENTRY]` log lines per session will still show `stop_source=or_edge` for the ~10 minutes before the ATR window warms; from ~10:40 ET onward, `stop_source=atr` should dominate.
+
+### Rollback
+
+Two paths:
+1. `ORB_ATR_STOP_MULT=0` in Railway env (instant, no redeploy).
+2. `ORB_LIVE_MODE=0` reverts to legacy entirely.
+
+## v8.0.0 (2026-05-12) -- ATR-based stop placement (Phase 15 stability lever)
+
+Major version bump for a real behavior change in the live ORB engine.
+
+Phase 15 research (rounds R6-R8 in `/tmp/research_r{6,7,8}/all.json` -- artifacts to be archived under `docs/research/` in a follow-up PR) found that replacing the v10 anchor's OR-edge stop with an **ATR(14)-based stop on 5m bars** (`atr_stop_mult=1.75`) flips the full-year backtest from $+24,875 to **$+34,486** (+39%) with 0/4 negative quarters. Q3 jumps from $+8,621 to $+12,055 and Q4 from $+964 to $+1,989 (Q4 doubles). Worst-day stays at ~$-3,200.
+
+Mechanism: ORB stops kicked by 1-2-tick noise piercing the OR edge get a wider berth from an ATR stop. Stops trigger LESS often; the trades that survive farther into the trend more often reach the 2.5R target.
+
+### Changes
+
+- `orb/engine.py`:
+  - New `OrbConfig.atr_stop_mult: float = 0.0` (off by default; live default set in env to `1.75` post-deploy)
+  - New `OrbConfig.atr_lookback_5m: int = 14`
+  - New top-level helper `atr_from_5m(highs, lows, closes, lookback)` -- Wilder True Range mean, None-tolerant
+  - `BreakoutSignal` gains `stop_source: str` ("or_edge" | "atr") and `atr_used: Optional[float]` for forensic surface
+  - `detect_breakout()` accepts optional `recent_5m_highs/lows/closes` lists. When `atr_stop_mult > 0` AND ATR is warm (>=2 valid bars), the stop is computed as `entry +- atr_stop_mult * ATR`. Cold-ATR or no-bars-supplied falls back to the OR-edge stop transparently (strategy is never stop-less).
+- `orb/live_runtime.py`:
+  - Env wiring: `ORB_ATR_STOP_MULT` (default 0.0), `ORB_ATR_LOOKBACK_5M` (default 14)
+  - `check_entry()` accepts + forwards the new bar lists to the adapter
+- `orb/live_adapter.py`: `check_entry()` accepts + forwards the bar lists to `detect_breakout()`
+- `engine/scan.py`: both `_orb_long_entry()` and `_orb_short_entry()` slice the last 20 5m bars from `compute_5m_ohlc_and_ema9(bars_for_mtm)` and pass them through to `check_entry()`. 20 is `atr_lookback_5m + 6` headroom.
+
+### Tests
+
+- `tests/strategy/test_orb_atr_stop.py` -- 13 new tests covering ATR math (empty/1-bar/2-bar/3-bar/lookback-cap/None-entries), detect_breakout ATR branch fires when warm, cold-ATR falls back to OR-edge, no-bars-supplied falls back, long+short sign correctness, sizing math sees the wider ATR stop, snapshot exposes atr config
+- All 548 prior strategy tests still pass (561 total)
+
+### Deployment
+
+To activate live: set `ORB_ATR_STOP_MULT=1.75` in Railway env. With the env unset, behavior is **identical to v7.111.0** (atr_stop_mult defaults to 0.0). This makes v8.0.0 a strictly-additive release; rollback = `unset ORB_ATR_STOP_MULT` (no redeploy).
+
+### Why "v8.0.0"
+
+This is the first live-engine behavior addition since the v10 ORB anchor shipped (anchor was a config; this adds a code branch). The breakouts taken are the same as v7.x; the stop placement is new. Minor-version semver would imply pure additive config; the new code path warrants the major bump.
+
+### Deferred to v8.1.0
+
+The same research found that **stacking `partial_profit_at_1r=1` on top** lifts FY further to $+44,431 (+79% vs production). That feature ships separately because it requires a new broker primitive (`partial_close_shares` in `broker/orders.py` and `executors/base.py`) that's careful enough to ship in its own PR. The backtest knob `ORB_PARTIAL_PROFIT_AT_1R` already exists in `tools/orb_backtest.py` and was the source of the $+44k number; the live engine ignores it for now.
+
+## v7.111.0 (2026-05-12) -- Post-deploy smoke posts outcome comment back on source PR
+
+Closes the agent-visibility gap surfaced during the v7.109.0 ship. The `post-deploy-smoke.yml` workflow already Telegram-alerted on failure, but agents in sandbox (without an Actions API in their MCP server) had no way to read the outcome back. Now the workflow parses the squash-merge `(#NNN)` PR number from the merge-commit subject and posts a status comment (PASSED / FAILED / CANCELLED + GHA run URL) on the source PR using the default `GITHUB_TOKEN`. Agents read it via the standard `pull_request_read get_comments` MCP call.
+
+Telegram alert path unchanged; this is additive.
+
+### Change
+
+- `.github/workflows/post-deploy-smoke.yml`:
+  - New `Comment outcome on source PR` step (`if: always()`) that runs after Telegram alert + log upload
+  - Explicit `permissions: { contents: read, pull-requests: write }` at job level
+  - Manual `main` pushes (no `(#NNN)` suffix in subject) skip the comment gracefully
+- No code, no test changes
+
+## v7.110.0 (2026-05-12) -- CLAUDE.md doc fix: post-deploy smoke section disambiguated (GHA workflow vs local script)
+
+Documentation-only change. The `## Post-deploy smoke` section in CLAUDE.md was ambiguous about whether `bash scripts/post_deploy_smoke.sh <version>` (local script needing Railway API token) or `.github/workflows/post-deploy-smoke.yml` (auto-running GHA workflow needing only dashboard secrets) is the canonical post-release gate. Real-world answer surfaced during the v7.109.0 ship: the GHA workflow is the default path — it auto-fires on every push to main, polls Railway's `/api/version` for rollout, runs `smoke_test.py` (31 local + 9 prod) against the live dashboard, and Telegram-alerts the TP chat on failure. The local script is a different code path for the rare "GHA broken, need a manual smoke" case.
+
+Rewrote the section to lead with the auto-fire path + explicitly tell future agents not to propose running the local script post-merge unless GHA is unavailable. No code or test changes.
+
 ## v7.109.0 (2026-05-12) -- Phase 14: v10 ORB risk-per-trade default 2.0% to 1.0% (full-year-validated stability lever)
 
 The single highest-confidence finding from Phase 14's full-year (251 trading day) P&L optimization research. v11's "+43% CAGR" was an in-sample artifact on a 124-day window. On the full 251-day corpus (May 2025 → May 2026) the v10 anchor with `ORB_RISK_PER_TRADE_PCT=2.0` is **net −$3,750 with 3/4 quarters losing**. Halving per-trade risk to **1.0%** flips that to **+$24,875 with 0/4 negative quarters** — same code paths, same gates, same FSM, just smaller dollar risk per trade.

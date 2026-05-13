@@ -60,7 +60,7 @@ import json
 import os
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Iterator
 
@@ -301,6 +301,137 @@ class ORBConfig:
     vol_target_atr_pct: float = 0.0      # target ATR as % of price; 0 = off
     vol_target_min_scale: float = 0.5    # cap downscale (less risk per trade)
     vol_target_max_scale: float = 2.0    # cap upscale (more risk per trade)
+    # v18 day-end-giveback defenses (2026-05-12). Two rules, configurable
+    # independently. Both default off; tested in r6_drawdown_rules.py and
+    # documented in docs/pl_optimization_final_report_v13.md.
+    loss_lock_threshold_usd: float = 0.0  # >0: after a closed leg with
+                                          #     pnl < -threshold, lock that
+                                          #     (ticker, side) pair for the
+                                          #     rest of the trading day --
+                                          #     no further entries on that
+                                          #     pair. 0 = off.
+    peak_dd_halt_usd: float = 0.0         # >0: when intraday realized PnL
+                                          #     drops this many $ below the
+                                          #     running peak, halt all new
+                                          #     entries for the rest of the
+                                          #     day (same effect as the
+                                          #     existing daily_loss_kill).
+                                          #     0 = off.
+    # v19 signal-magnitude / cadence-latency filter (2026-05-13). Tests the
+    # hypothesis that production fires later than the first marginal break
+    # because of scan-loop cadence latency. Two independent levers:
+    min_break_bps: float = 0.0            # >0: require signal close to be
+                                          #     min_break_bps past OR_high
+                                          #     (long) or OR_low (short)
+                                          #     before admitting. Suppresses
+                                          #     marginal breaks like the
+                                          #     observed AMZN -4.5bps fire.
+    confirm_bars_n: int = 0               # >0: require the prior N 5m closes
+                                          #     (including this signal bar)
+                                          #     to ALL be past the OR
+                                          #     boundary in the same
+                                          #     direction. Approximates
+                                          #     production firing on the
+                                          #     "3rd consecutive bar".
+    # v20 chase-prevention filters (2026-05-13). Targets the per-ticker
+    # forensic finding that losers chase too far past session VWAP and
+    # fire against pre-market drift. Universal levers; default off.
+    max_vwap_dev_bps: float = 0.0         # >0: reject if entry price is
+                                          #     more than N bps past
+                                          #     session VWAP in the
+                                          #     breakout direction.
+                                          #     Signed: long entries
+                                          #     above VWAP and short
+                                          #     entries below VWAP count
+                                          #     as positive deviation.
+    max_vwap_dev_tickers: tuple = ()      # if non-empty, apply
+                                          #     max_vwap_dev_bps ONLY to
+                                          #     these tickers (per-list
+                                          #     fence). Empty = global.
+    max_vwap_dev_bps_long: float = 0.0    # if >0, overrides
+                                          #     max_vwap_dev_bps for the
+                                          #     LONG side. Lets us run
+                                          #     asymmetric thresholds
+                                          #     (forensic showed long
+                                          #     chase-failure is sharper
+                                          #     than short).
+    max_vwap_dev_bps_short: float = 0.0   # if >0, overrides for SHORT.
+    # v21 more fenced filters for mega-caps (2026-05-13).
+    confirm_bars_n_tickers: tuple = ()    # fence list for confirm_bars_n.
+                                          #     Empty = global (existing
+                                          #     behavior). When non-empty,
+                                          #     N-bar confirmation only
+                                          #     applies to those tickers.
+    min_break_bps_tickers: tuple = ()     # fence list for min_break_bps.
+                                          #     Empty = global.
+    fenced_or_min_pct: float = 0.0        # >0: skip the fenced tickers
+                                          #     when OR width is below
+                                          #     this threshold.
+    fenced_or_max_pct: float = 0.0        # >0: skip the fenced tickers
+                                          #     when OR width is above
+                                          #     this threshold.
+    fenced_or_tickers: tuple = ()         # fence list for the OR-width
+                                          #     gate. Empty = no gate.
+    fenced_gap_pct: float = 0.0           # >0: tighter gap-skip threshold
+                                          #     applied only to
+                                          #     fenced_gap_tickers.
+    fenced_gap_tickers: tuple = ()        # fence list for tighter gap.
+    # v22 regime-conditional day-skip (2026-05-13). Skip the entire
+    # trading day when the prior session's SPY close-to-close return is
+    # in the [lo, hi] bps band. R12 forensic showed the strategy bleeds
+    # most on days after a moderate SPY drop (-1.0% to -0.5%): 24 days
+    # in the FY corpus, -$4,988 net.
+    skip_prior_spy_ret_lt_bps: float = 0.0  # >0 (or <0): skip if prior
+                                            # SPY return is BELOW this
+                                            # (in bps). e.g. -50 = skip
+                                            # days where prior SPY < -0.5%.
+    skip_prior_spy_ret_gt_bps: float = 0.0  # paired upper bound: when
+                                            # both _lt and _gt set, skip
+                                            # only days IN [lt, gt] band.
+                                            # When only _lt set, skip
+                                            # everything below _lt.
+    regime_low_skip_tickers: tuple = ()     # if non-empty, on regime-low
+                                            # days (per skip_prior_spy_ret_*
+                                            # thresholds) skip ONLY these
+                                            # tickers instead of the whole
+                                            # day. Empty = whole-day skip.
+                                            # R12c+ feature: keep
+                                            # profitable non-T5 trading on
+                                            # bad-regime days while
+                                            # blocking the specific
+                                            # bleeders (TSLA, NFLX, ORCL).
+    # R13b conservative-on-bad-day overrides. When set (>0), replace the
+    # corresponding base config field on regime-low days only. Combines
+    # with regime_low_skip_tickers (each lever independent).
+    regime_low_risk_per_trade_pct: float = 0.0  # halve sizing on bad days
+    regime_low_atr_stop_mult: float = 0.0       # tighter stops on bad days
+    regime_low_max_trades_per_day: int = 0      # cap entries on bad days
+    regime_low_max_vwap_dev_bps: float = 0.0    # tighter chase fence on bad days
+    regime_low_min_break_bps: float = 0.0       # require bigger break on bad days
+    # R14 afternoon fade mode (2026-05-13). The 11:00 cutoff exists
+    # because afternoon breakouts have negative expected value (R14
+    # forensic: 11:30-15:30 buckets all net negative, -$17K over the
+    # 12 buckets). Hypothesis: in the chop/mean-revert afternoon,
+    # FADE the breakout instead of trading it -- close > OR_high means
+    # SHORT (price extended too far), close < OR_low means LONG.
+    afternoon_fade_enabled: bool = False
+    afternoon_fade_end_et: int = 15 * 60 + 30  # default 15:30 (avoid EOD)
+    # R15b mid-day OR: when enabled, build a second opening range
+    # in the afternoon (default 12:00-12:30 ET) and trade breakouts
+    # of THAT range during pm_or_end..pm_trade_end. Tests if
+    # directional breakout edge exists when measured against an
+    # afternoon anchor instead of morning OR.
+    pm_or_enabled: bool = False
+    pm_or_start_et: int = 12 * 60       # default 12:00 ET
+    pm_or_minutes: int = 30             # default 30-min PM OR
+    pm_trade_end_et: int = 15 * 60      # default 15:00 ET stop entries
+    premkt_align_bps: float = 0.0         # >0: require pre-market move
+                                          #     (09:00-09:29 ET) of at
+                                          #     least N bps in the
+                                          #     breakout direction.
+                                          #     Filters reversal-style
+                                          #     breakouts that fire
+                                          #     against premkt drift.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -369,6 +500,63 @@ class ORBConfig:
             vol_target_atr_pct=_envf("ORB_VOL_TARGET_ATR_PCT", 0.0),
             vol_target_min_scale=_envf("ORB_VOL_TARGET_MIN_SCALE", 0.5),
             vol_target_max_scale=_envf("ORB_VOL_TARGET_MAX_SCALE", 2.0),
+            # v18 day-end-giveback defenses
+            loss_lock_threshold_usd=_envf("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
+            peak_dd_halt_usd=_envf("ORB_PEAK_DD_HALT_USD", 0.0),
+            # v19 signal-magnitude / cadence-latency filter
+            min_break_bps=_envf("ORB_MIN_BREAK_BPS", 0.0),
+            confirm_bars_n=_envi("ORB_CONFIRM_BARS_N", 0),
+            # v20 chase-prevention filters
+            max_vwap_dev_bps=_envf("ORB_MAX_VWAP_DEV_BPS", 0.0),
+            max_vwap_dev_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_MAX_VWAP_DEV_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            max_vwap_dev_bps_long=_envf("ORB_MAX_VWAP_DEV_BPS_LONG", 0.0),
+            max_vwap_dev_bps_short=_envf("ORB_MAX_VWAP_DEV_BPS_SHORT", 0.0),
+            confirm_bars_n_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_CONFIRM_BARS_N_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            min_break_bps_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_MIN_BREAK_BPS_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            fenced_or_min_pct=_envf("ORB_FENCED_OR_MIN_PCT", 0.0),
+            fenced_or_max_pct=_envf("ORB_FENCED_OR_MAX_PCT", 0.0),
+            fenced_or_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_FENCED_OR_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            fenced_gap_pct=_envf("ORB_FENCED_GAP_PCT", 0.0),
+            fenced_gap_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_FENCED_GAP_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            skip_prior_spy_ret_lt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", 0.0),
+            skip_prior_spy_ret_gt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_GT_BPS", 0.0),
+            regime_low_skip_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_REGIME_LOW_SKIP_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            regime_low_risk_per_trade_pct=_envf("ORB_REGIME_LOW_RISK_PER_TRADE_PCT", 0.0),
+            regime_low_atr_stop_mult=_envf("ORB_REGIME_LOW_ATR_STOP_MULT", 0.0),
+            regime_low_max_trades_per_day=_envi("ORB_REGIME_LOW_MAX_TRADES_PER_DAY", 0),
+            regime_low_max_vwap_dev_bps=_envf("ORB_REGIME_LOW_MAX_VWAP_DEV_BPS", 0.0),
+            regime_low_min_break_bps=_envf("ORB_REGIME_LOW_MIN_BREAK_BPS", 0.0),
+            afternoon_fade_enabled=_envs("ORB_AFTERNOON_FADE_ENABLED", "0") == "1",
+            afternoon_fade_end_et=_et_to_minutes(_envs("ORB_AFTERNOON_FADE_END_ET", "15:30")),
+            pm_or_enabled=_envs("ORB_PM_OR_ENABLED", "0") == "1",
+            pm_or_start_et=_et_to_minutes(_envs("ORB_PM_OR_START_ET", "12:00")),
+            pm_or_minutes=_envi("ORB_PM_OR_MINUTES", 30),
+            pm_trade_end_et=_et_to_minutes(_envs("ORB_PM_TRADE_END_ET", "15:00")),
+            premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
 
@@ -573,6 +761,16 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
     if not (cfg.range_min_pct <= or_range_pct <= cfg.range_max_pct):
         return []
 
+    # v21 fenced OR-width gate. When the ticker is in fenced_or_tickers,
+    # also enforce a tighter range. 0 thresholds = uncapped on that side.
+    if cfg.fenced_or_tickers and ticker in cfg.fenced_or_tickers:
+        if (cfg.fenced_or_min_pct > 0
+                and or_range_pct < cfg.fenced_or_min_pct):
+            return []
+        if (cfg.fenced_or_max_pct > 0
+                and or_range_pct > cfg.fenced_or_max_pct):
+            return []
+
     # Aggregate post-OR bars to 5-min candles for breakout signals.
     post_or_1m = [b for b in rth if b.bucket >= or_end]
     candles_5m = aggregate_5m(post_or_1m)
@@ -580,6 +778,32 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         return []
 
     blocked_sides = {s.upper() for s in cfg.blocklist.get(ticker, [])}
+
+    # v20 premkt-alignment precompute (once per ticker-day). Uses bars in
+    # the 09:00-09:29 ET window. premkt_move_bps = (premkt_close - premkt_open)
+    # in bps. Signed so that a long entry needs positive premkt move.
+    premkt_move_bps = 0.0
+    if cfg.premkt_align_bps > 0:
+        pre_start = _et_to_minutes("09:00")
+        pre_bars = [b for b in bars_1m
+                    if pre_start <= b.bucket < SESSION_START_ET]
+        if pre_bars and pre_bars[0].open > 0:
+            premkt_move_bps = ((pre_bars[-1].close - pre_bars[0].open)
+                               / pre_bars[0].open * 10000.0)
+
+    # R15b: pm OR precompute. Build a second opening range from
+    # bars in [pm_or_start_et, pm_or_start_et + pm_or_minutes). When
+    # set, breakouts of the pm range are traded during
+    # [pm_or_end, pm_trade_end_et].
+    pm_or_high = pm_or_low = 0.0
+    pm_or_end = 0
+    if cfg.pm_or_enabled:
+        pm_or_end = cfg.pm_or_start_et + cfg.pm_or_minutes
+        pm_bars = [b for b in rth
+                   if cfg.pm_or_start_et <= b.bucket < pm_or_end]
+        if pm_bars:
+            pm_or_high = max(b.high for b in pm_bars)
+            pm_or_low = min(b.low for b in pm_bars)
 
     pairs: list[dict] = []
     trades_today = 0
@@ -591,18 +815,94 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         if trades_today >= cfg.max_trades_per_day:
             break
         sig = candles_5m[i]
-        if sig.bucket >= cfg.time_cutoff_et:
-            break
+        # R14 afternoon-fade: when past the cutoff and fade mode is on,
+        # keep scanning until afternoon_fade_end_et and FLIP the signal
+        # side.
+        # R15b pm-OR: when enabled, after pm_or_end use pm_or_high/low
+        # as the reference range; admit until pm_trade_end_et.
+        is_fade_mode = False
+        use_pm_or = False
+        if (cfg.pm_or_enabled
+                and pm_or_high > pm_or_low
+                and sig.bucket >= pm_or_end
+                and sig.bucket < cfg.pm_trade_end_et):
+            use_pm_or = True
+        if sig.bucket >= cfg.time_cutoff_et and not use_pm_or:
+            if (cfg.afternoon_fade_enabled
+                    and sig.bucket < cfg.afternoon_fade_end_et):
+                is_fade_mode = True
+            elif cfg.pm_or_enabled:
+                # PM window comes later; skip this bar but keep scanning.
+                continue
+            else:
+                break
+
+        # Choose reference range (morning OR or pm OR)
+        ref_high = pm_or_high if use_pm_or else or_high
+        ref_low = pm_or_low if use_pm_or else or_low
+
         # Signal: close above OR_high (long) or below OR_low (short).
-        side = None
-        if sig.close > or_high:
-            side = "long"
-        elif sig.close < or_low:
-            side = "short"
-        if side is None:
+        # Compute break magnitude in the ORIGINAL direction before any
+        # fade-mode flip; the break_bps reflects how strongly price has
+        # extended past OR (this is independent of whether we're trading
+        # with or against the move).
+        original_side = None
+        break_bps_orig = 0.0
+        if sig.close > ref_high:
+            original_side = "long"
+            if ref_high > 0:
+                break_bps_orig = (sig.close - ref_high) / ref_high * 10000.0
+        elif sig.close < ref_low:
+            original_side = "short"
+            if ref_low > 0:
+                break_bps_orig = (ref_low - sig.close) / ref_low * 10000.0
+        if original_side is None:
             continue
+        side = original_side
+        if is_fade_mode:
+            side = "short" if side == "long" else "long"
         if side.upper() in blocked_sides:
             continue
+
+        # v19: minimum break magnitude in bps. Uses break_bps_orig so the
+        # filter is symmetric for breakout and fade entries: both need
+        # the underlying move to be strong enough.
+        if cfg.min_break_bps > 0 and (
+            not cfg.min_break_bps_tickers
+            or ticker in cfg.min_break_bps_tickers
+        ):
+            if break_bps_orig < cfg.min_break_bps:
+                continue
+
+        # v19: N-bar confirmation. Require the prior N 5m closes including
+        # this bar to all be on the same side of the OR boundary.
+        # v21 fence: when confirm_bars_n_tickers non-empty, only apply to
+        # those tickers.
+        if cfg.confirm_bars_n > 1 and (
+            not cfg.confirm_bars_n_tickers
+            or ticker in cfg.confirm_bars_n_tickers
+        ):
+            start = i - cfg.confirm_bars_n + 1
+            if start < 0:
+                continue
+            window = candles_5m[start : i + 1]
+            if side == "long":
+                if not all(c.close > or_high for c in window):
+                    continue
+            else:
+                if not all(c.close < or_low for c in window):
+                    continue
+
+        # v20 premkt alignment: require the 09:00-09:29 move to be in the
+        # breakout direction by at least premkt_align_bps. Filters
+        # counter-premkt reversal trades that bled in the per-ticker
+        # forensic (AAPL/short, MSFT/short, META/short, GOOG/short).
+        if cfg.premkt_align_bps > 0:
+            need = cfg.premkt_align_bps
+            if side == "long" and premkt_move_bps < need:
+                continue
+            if side == "short" and premkt_move_bps > -need:
+                continue
 
         # v9 lever: volume confirmation -- require signal candle's
         # volume >= mult * mean(prior candles_5m). Skip if too quiet.
@@ -658,6 +958,32 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         slip = raw_entry * slip_bps / 10000.0
         entry_price = raw_entry + slip if side == "long" else raw_entry - slip
 
+        # v20 chase-prevention: reject if entry has already moved more
+        # than max_vwap_dev_bps past session VWAP in the breakout
+        # direction. session VWAP computed through the signal bar's last
+        # 1m (sig.bucket + 4 = signal bar's closing 1m bucket).
+        # When max_vwap_dev_tickers is non-empty the filter only applies
+        # to those tickers (per-list fence). Per-side overrides
+        # (max_vwap_dev_bps_long/short) take precedence over the symmetric
+        # threshold when set.
+        side_thr = (
+            cfg.max_vwap_dev_bps_long if side == "long"
+            else cfg.max_vwap_dev_bps_short
+        )
+        effective_thr = side_thr if side_thr > 0 else cfg.max_vwap_dev_bps
+        if effective_thr > 0 and (
+            not cfg.max_vwap_dev_tickers
+            or ticker in cfg.max_vwap_dev_tickers
+        ):
+            vwap_at = session_vwap_at(rth, sig.bucket + 4)
+            if vwap_at > 0:
+                if side == "long":
+                    dev_bps = (entry_price - vwap_at) / vwap_at * 10000.0
+                else:
+                    dev_bps = (vwap_at - entry_price) / vwap_at * 10000.0
+                if dev_bps > effective_thr:
+                    continue
+
         # Stop: opposite side of OR with buffer adder. v10: optional ATR
         # override -- entry +- atr_stop_mult * ATR for volatility-adaptive
         # stops. ATR computed on candles up to and including signal bar.
@@ -670,16 +996,17 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                 else:
                     stop = entry_price + cfg.atr_stop_mult * atr
             else:
-                # fallback to OR stop if ATR not yet warm
+                # fallback to OR stop if ATR not yet warm. Use active
+                # reference range (pm OR when in pm window).
                 if side == "long":
-                    stop = or_low - stop_buf
+                    stop = ref_low - stop_buf
                 else:
-                    stop = or_high + stop_buf
+                    stop = ref_high + stop_buf
         else:
             if side == "long":
-                stop = or_low - stop_buf
+                stop = ref_low - stop_buf
             else:
-                stop = or_high + stop_buf
+                stop = ref_high + stop_buf
 
         risk = abs(entry_price - stop)
         if risk <= 0.001:
@@ -1140,7 +1467,71 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     if cfg.skip_vix_above > 0:
         vix_closes = load_vix_closes(cfg.vix_csv_path)
 
+    # v22: pre-compute prior-day SPY close-to-close return per date.
+    # Uses SPY's last RTH bar (or last bar) as the daily close. The
+    # value stored at `date` is the return FROM the day-before-prior
+    # close TO the prior-day close (i.e. the regime indicator for
+    # entering `date`'s session).
+    prior_spy_ret_bps: dict[str, float] = {}
+    if cfg.skip_prior_spy_ret_lt_bps != 0.0 or cfg.skip_prior_spy_ret_gt_bps != 0.0:
+        spy_closes_per_date: dict[str, float] = {}
+        for d in dates:
+            try:
+                bars = load_day_bars(corpus_dir, d, "SPY")
+            except Exception:
+                bars = []
+            if not bars:
+                continue
+            rth = [b for b in bars
+                   if SESSION_START_ET <= b.bucket < _et_to_minutes("16:00")]
+            if rth:
+                spy_closes_per_date[d] = rth[-1].close
+        sorted_d = sorted(spy_closes_per_date.keys())
+        for i, d in enumerate(sorted_d):
+            if i < 2:
+                continue
+            pd = sorted_d[i-1]
+            pp = sorted_d[i-2]
+            base = spy_closes_per_date.get(pp, 0.0)
+            close = spy_closes_per_date.get(pd, 0.0)
+            if base > 0:
+                prior_spy_ret_bps[d] = (close - base) / base * 10000.0
+
+    spy_regime_days_skipped = 0
     for date in dates:
+        # v22 prior-day SPY regime skip. Apply BEFORE per-ticker work to
+        # short-circuit days entirely. Two modes:
+        #   - only _lt_bps set:   skip if prior_spy_ret < _lt_bps
+        #   - both set:           skip if prior_spy_ret in [_lt_bps, _gt_bps]
+        # v22b: when regime_low_skip_tickers is set, skip only those
+        # tickers on regime-low days instead of the whole day.
+        is_regime_low_today = False
+        if cfg.skip_prior_spy_ret_lt_bps != 0.0 or cfg.skip_prior_spy_ret_gt_bps != 0.0:
+            prior = prior_spy_ret_bps.get(date)
+            if prior is not None:
+                lt = cfg.skip_prior_spy_ret_lt_bps
+                gt = cfg.skip_prior_spy_ret_gt_bps
+                if gt != 0.0 and lt != 0.0:
+                    if lt <= prior <= gt:
+                        is_regime_low_today = True
+                elif lt != 0.0 and prior < lt:
+                    is_regime_low_today = True
+        # Full-day skip only when no partial-trade mechanism is active.
+        # Partial-trade modes (any non-zero regime-low override or skip
+        # list) take precedence -- they signal the operator wants to
+        # trade these days under modified config.
+        has_partial_mode = bool(
+            cfg.regime_low_skip_tickers
+            or cfg.regime_low_risk_per_trade_pct > 0
+            or cfg.regime_low_atr_stop_mult > 0
+            or cfg.regime_low_max_trades_per_day > 0
+            or cfg.regime_low_max_vwap_dev_bps > 0
+            or cfg.regime_low_min_break_bps > 0
+        )
+        if is_regime_low_today and not has_partial_mode:
+            spy_regime_days_skipped += 1
+            continue
+
         # v11 compounding: at the start of each day, snapshot the running
         # balance into `current_account` so position sizes (and risk caps)
         # scale with the latest balance. After the day's P&L is finalized,
@@ -1179,14 +1570,38 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 regime_skip_reason = f"vix_high_{prior_vix:.1f}"
                 vix_days_skipped += 1
 
+        # R13b: build a regime-adjusted cfg when today is regime-low and
+        # any override field is set. Keeps cfg immutable for non-regime
+        # days.
+        eff_cfg = cfg
+        if is_regime_low_today:
+            overrides = {}
+            if cfg.regime_low_risk_per_trade_pct > 0:
+                overrides["risk_per_trade_pct"] = cfg.regime_low_risk_per_trade_pct
+            if cfg.regime_low_atr_stop_mult > 0:
+                overrides["atr_stop_mult"] = cfg.regime_low_atr_stop_mult
+            if cfg.regime_low_max_trades_per_day > 0:
+                overrides["max_trades_per_day"] = cfg.regime_low_max_trades_per_day
+            if cfg.regime_low_max_vwap_dev_bps > 0:
+                overrides["max_vwap_dev_bps"] = cfg.regime_low_max_vwap_dev_bps
+            if cfg.regime_low_min_break_bps > 0:
+                overrides["min_break_bps"] = cfg.regime_low_min_break_bps
+            if overrides:
+                eff_cfg = dataclass_replace(cfg, **overrides)
+
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
             for tk in tickers:
+                # v22b: regime-low conditional per-ticker skip.
+                if (is_regime_low_today
+                        and cfg.regime_low_skip_tickers
+                        and tk in cfg.regime_low_skip_tickers):
+                    continue
                 try:
                     bars = load_day_bars(corpus_dir, date, tk)
                     if not bars:
                         continue
-                    pairs = run_ticker_day(date, tk, bars, cfg, current_account)
+                    pairs = run_ticker_day(date, tk, bars, eff_cfg, current_account)
                     candidate_pairs.extend(pairs)
                 except (RuntimeError, AssertionError):
                     # Genuine bugs -- re-raise rather than silently dropping.
@@ -1350,12 +1765,25 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         open_notional = 0.0
         open_risk = 0.0
         cum_pnl = 0.0
+        peak_pnl = 0.0
         kill_active = False
+        # v18 day-end-giveback defenses
+        #   locked_pairs[(ticker, side)] = ts when the pair was locked.
+        #   New entries on a locked pair after that ts are rejected.
+        locked_pairs: dict[tuple[str, str], int] = {}
+        r18_lock_rejects = 0
         for ts, kind, idx, p, notional, risk in events:
             if kind == "entry":
                 if kill_active:
                     rejected_idx.add(idx)
                     continue
+                # v18 rule #1 -- per-(ticker, side) lock after a losing leg
+                if cfg.loss_lock_threshold_usd > 0:
+                    key = (p["ticker"], p["side"])
+                    if key in locked_pairs and locked_pairs[key] < ts:
+                        rejected_idx.add(idx)
+                        r18_lock_rejects += 1
+                        continue
                 if open_notional + notional > max_notional:
                     rejected_idx.add(idx)
                     continue
@@ -1370,7 +1798,22 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     open_notional -= notional
                     open_risk -= risk
                     cum_pnl += p["pnl_dollars"]
+                    if cum_pnl > peak_pnl:
+                        peak_pnl = cum_pnl
                     if cum_pnl <= kill_threshold:
+                        kill_active = True
+                    # v18 rule #1 lock: this leg ended with a loss large
+                    # enough to lock the (ticker, side) for the rest of
+                    # the day.
+                    if (cfg.loss_lock_threshold_usd > 0
+                            and p["pnl_dollars"] < -cfg.loss_lock_threshold_usd):
+                        locked_pairs[(p["ticker"], p["side"])] = ts
+                    # v18 rule #2 halt: realized drawdown from peak crossed
+                    # the threshold. Same effect as kill_active but a
+                    # different trigger.
+                    if (cfg.peak_dd_halt_usd > 0
+                            and not kill_active
+                            and cum_pnl <= peak_pnl - cfg.peak_dd_halt_usd):
                         kill_active = True
 
         day_pairs = [
@@ -1409,6 +1852,10 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             "pnl_pairs": day_pairs,
             "rejected_concurrent_cap": rejected,
             "kill_switch_fired": kill_active,
+            # v18 diagnostics
+            "r18_lock_rejects": r18_lock_rejects,
+            "r18_locked_pairs": [list(k) for k in locked_pairs.keys()],
+            "r18_peak_pnl": round(peak_pnl, 2),
             "regime": regime,
             "regime_skip_day": regime_skip_day,
             "regime_skip_reason": regime_skip_reason,

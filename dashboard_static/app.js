@@ -49,6 +49,30 @@
     if (v === null || v === undefined || isNaN(v)) return "—";
     return "$" + Number(v).toFixed(2);
   }
+  // v8.3.18 -- time-in-position formatter for the OPEN POSITIONS
+  // "Held" column. Computes (now - entry_ts_utc) and renders as one
+  // of "Nm" / "Nh Nm" / "Nd Nh". Bot-internal stamps use UTC ISO
+  // strings; the math is timezone-agnostic so we stay correct in
+  // both EDT and EST without DST handling.
+  function fmtHeld(entryIso) {
+    if (!entryIso) return "—";
+    try {
+      const d = new Date(entryIso);
+      const t = d.getTime();
+      if (!isFinite(t)) return "—";
+      const seconds = Math.floor((Date.now() - t) / 1000);
+      if (seconds < 0) return "—";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      if (hours < 24) return hours + "h " + mins + "m";
+      const days = Math.floor(hours / 24);
+      const rem = hours % 24;
+      return days + "d " + rem + "h";
+    } catch (e) { return "—"; }
+  }
+  window.fmtHeld = fmtHeld;  // exposed for IIFE-2 (Val/Gene tabs)
   function fmtPct(v, digits) {
     if (v === null || v === undefined || isNaN(v)) return "—";
     const abs = Math.abs(v);
@@ -453,10 +477,30 @@
             && Number.isFinite(_riskEntry) && _riskEntry > 0) {
           _notionalTxt = fmtUsd(_riskShareCount * _riskEntry);
         }
+        // v8.1.2 -- partial-fill indicator on the shares cell. If the
+        // position has any partial_fills (written by
+        // broker/orders.py:partial_close_breakout when the engine
+        // emits EXIT_PARTIAL on 1R touch), render a small "½@$X"
+        // badge with a tooltip showing booked partial pnl.
+        var _partialFills = Array.isArray(p.partial_fills) ? p.partial_fills : [];
+        var _partialBadge = "";
+        if (_partialFills.length > 0) {
+          var _pf = _partialFills[_partialFills.length - 1];
+          var _pfShares = Number(_pf && _pf.shares) || 0;
+          var _pfPrice = Number(_pf && _pf.price) || 0;
+          var _pfPnl = Number(_pf && _pf.pnl_dollars) || 0;
+          var _pfTitle = "Partial fill taken at 1R: "
+            + _pfShares + " sh @ $" + _pfPrice.toFixed(2)
+            + " (booked $" + _pfPnl.toFixed(2) + "). "
+            + "Runner riding to RR=2.5 target.";
+          _partialBadge = ' <span class="partial-badge" title="'
+            + escapeHtml(_pfTitle) + '">½@$'
+            + _pfPrice.toFixed(2) + '</span>';
+        }
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
-          <td class="right">${p.shares}</td>
+          <td class="right">${p.shares}${_partialBadge}</td>
           <td class="right">${fmtPx(p.entry)}</td>
           <td class="right">${fmtPx(p.mark)}</td>
           <td class="right" title="Notional at cost: shares × entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap.">${_notionalTxt}</td>
@@ -464,6 +508,7 @@
           <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
           <td class="right ${pnlCls}">${pctTxt}</td>
+          <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
         </tr>${progressRow}`;
       }).join("");
       body.innerHTML = `<table>
@@ -478,6 +523,7 @@
           <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
           <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
           <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+          <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
     }
@@ -648,17 +694,38 @@
       // v5.5.7 — classify by open vs close, not strictly BUY/SELL.
       // SHORT entries pair with COVER exits; treating only BUY/SELL as
       // tradable actions hid realized pnl on COVER rows.
+      // v8.1.2 -- PARTIAL_SELL / PARTIAL_COVER are HALF-closes
+      // (booked realized P&L on half the position; position stays
+      // open). Treat as "close" for the chip/color but mark with a
+      // ½ glyph + tooltip so operator can distinguish.
+      const isPartial = (act === "PARTIAL_SELL" || act === "PARTIAL_COVER");
       const isOpen  = (act === "BUY" || act === "SHORT");
-      const isClose = (act === "SELL" || act === "COVER");
+      const isClose = (act === "SELL" || act === "COVER" || isPartial);
       const side  = t.side || "LONG";
       const sym   = t.ticker || "—";
       const shares = t.shares;
-      const px    = t.price ?? t.entry_price ?? t.exit_price;
+      // v8.3.11 -- pick the action-relevant price. For close actions
+      // (SELL / COVER / PARTIAL_*) prefer exit_price; for opens
+      // prefer entry_price. The in-memory short_trade_history COVER
+      // row has no "price" field (only entry_price + exit_price),
+      // so the old chain `t.price ?? t.entry_price ?? t.exit_price`
+      // fell through to entry_price and displayed the wrong number
+      // for CLOSE rows (operator screenshot: AMZN COVER showing
+      // $264.05 entry instead of $265.12 cover).
+      const px = isClose
+        ? (t.exit_price ?? t.price ?? t.entry_price)
+        : (t.entry_price ?? t.price ?? t.exit_price);
 
       // Action chip — open (green) / close (red). Symbol still
       // carries LONG/SHORT colour coding to avoid double-cueing.
-      const actCls = isClose ? "act-sell" : "act-buy";
-      const actLbl = act || (side === "SHORT" ? "SHORT" : "LONG");
+      // Partial fills get an amber tone (between win green and loss
+      // red) since they're half-closes booking profit on a still-
+      // open position.
+      const actCls = isPartial ? "act-partial" :
+                     (isClose ? "act-sell" : "act-buy");
+      const actLbl = isPartial
+        ? (act === "PARTIAL_SELL" ? "½ SELL" : "½ COVER")
+        : (act || (side === "SHORT" ? "SHORT" : "LONG"));
 
       // v4.2.1 — tail column (between action and unit price):
       //   open  → total cost, subdued
@@ -3204,9 +3271,71 @@
   // Idempotent: only moves if the current parent/sibling differs from
   // the desired anchor.
   // v7.58.0 -- positionEarningsWatcherCard removed (vestigial: card HTML deleted in this PR).
+  // v8.3.1 -- defense-in-depth localStorage cache for v10.or_windows.
+  // Why: a Railway redeploy mid-RTH clears the engine's in-memory OR
+  // windows; the v8.3.0 backfill rebuilds them within one scan cycle
+  // (~60s) but during that gap /api/state returns empty or_windows
+  // and the dashboard's OR rows render blank, then "come back" when
+  // backfill completes. Cache today's locked OR snapshot in
+  // localStorage so the UI keeps showing the last-known-good data
+  // through that gap. Engine-side persistence (v8.3.3) is the
+  // authoritative fix; this is the client-side belt-and-suspenders.
+  function _v10ORCacheKey(dateIso) {
+    return "tg.v10.or_windows." + String(dateIso || "");
+  }
+  function _v10ORCacheSaveIfNonEmpty(s) {
+    try {
+      var v10 = (s && s.v10) || {};
+      var ws = v10.or_windows || {};
+      var d = (v10.day_status && v10.day_status.session_date) || "";
+      if (!d) return;
+      // Save only if at least one ticker has a real (or_high, or_low)
+      // pair -- empty / not-yet-populated payloads must NOT overwrite
+      // a good cache.
+      var keys = Object.keys(ws);
+      var hasReal = false;
+      for (var i = 0; i < keys.length; i++) {
+        var w = ws[keys[i]] || {};
+        if (typeof w.or_high === "number" && typeof w.or_low === "number") {
+          hasReal = true; break;
+        }
+      }
+      if (!hasReal) return;
+      window.localStorage.setItem(_v10ORCacheKey(d), JSON.stringify(ws));
+    } catch (e) { /* localStorage may be disabled; ignore */ }
+  }
+  function _v10ORCacheRestoreIfEmpty(s) {
+    try {
+      if (!s || !s.v10) return;
+      var v10 = s.v10;
+      var ws = v10.or_windows || {};
+      var d = (v10.day_status && v10.day_status.session_date) || "";
+      if (!d) return;
+      // Only restore when live payload has no real OR data.
+      var keys = Object.keys(ws);
+      var hasReal = false;
+      for (var i = 0; i < keys.length; i++) {
+        var w = ws[keys[i]] || {};
+        if (typeof w.or_high === "number" && typeof w.or_low === "number") {
+          hasReal = true; break;
+        }
+      }
+      if (hasReal) return;
+      var raw = window.localStorage.getItem(_v10ORCacheKey(d));
+      if (!raw) return;
+      var cached = JSON.parse(raw);
+      if (!cached || typeof cached !== "object") return;
+      v10.or_windows = cached;
+      v10._or_windows_from_cache = true;  // surfaced on UI as "cached"
+    } catch (e) { /* parse / storage failure: render whatever came in */ }
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
+    // v8.3.1 -- cache-restore BEFORE any renderer reads v10.or_windows.
+    _v10ORCacheRestoreIfEmpty(s);
+    _v10ORCacheSaveIfNonEmpty(s);
     // Publish latest state so the executor-tab IIFE can read market-wide
     // widgets (proximity, regime, gates) from the same source as Main.
     try {
@@ -3792,18 +3921,27 @@
       </div>
     </section>
 
-    <section class="grid" data-f="v10-pid-activity-section">
+    <!-- v9.1.0 -- EOD Reversal addon card on Val/Gene tabs (mirrors
+         the Main panel v10-eod-section). Populated by
+         renderV10EodReversal with pidFilter=${exec}. Per CLAUDE.md
+         cross-tab parity rule. -->
+    <section class="grid" data-f="v10-eod-section">
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">—</span></span>
-          <span class="chip" data-f="v10-pid-act-summary">—</span>
+          <span class="card-title" title="v9.1.0 EOD Reversal addon. Fires 15:30 ET, flattens 15:59 ET. R17 backtest validated.">EOD Reversal &middot; ${label}</span>
+          <span class="chip" data-f="v10-eod-pid-status">&mdash;</span>
+          <span class="chip" data-f="v10-eod-pid-fire" style="background:rgba(245,158,11,0.18);color:#f59e0b">paper</span>
         </div>
-        <div class="card-body flush" data-f="v10-pid-act-body">
-          <div class="empty">No v10 events on this portfolio yet today.</div>
+        <div class="card-body flush" data-f="v10-eod-pid-body" style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#e5e7eb">
+          <div style="color:#6b7280">No EOD activity yet today.</div>
         </div>
       </div>
     </section>
 
+    <!-- v8.3.21 -- Proximity moved ABOVE Recent activity so Val/Gene
+         section order matches Main (Day Status -> Ticker Matrix ->
+         Baseline -> Proximity -> Activity -> Trades). New CLAUDE.md
+         rule: section order parity across all three tabs. -->
     <!-- v7.55.0 -- v10 Proximity card on Val/Gene tabs (mirrors the
          Main panel card from v7.52.0). Same renderer, same scope (the
          v10 universe is market-wide), but the per-pid phase chips
@@ -3817,6 +3955,18 @@
         </div>
         <div class="card-body flush" data-f="v10-prox-pid-body">
           <div class="empty">Waiting for v10 universe...</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid" data-f="v10-pid-activity-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Recent activity &middot; ${label}<span class="count" data-f="v10-pid-act-count">—</span></span>
+          <span class="chip" data-f="v10-pid-act-summary">—</span>
+        </div>
+        <div class="card-body flush" data-f="v10-pid-act-body">
+          <div class="empty">No v10 events on this portfolio yet today.</div>
         </div>
       </div>
     </section>
@@ -3906,6 +4056,9 @@
     // can still surface the universe + current prices pre-bootstrap.
     if (s && s.v10) {
       try { renderV10ProximityForPanel(s, panel, pid); }
+      catch (e) { /* never break exec render */ }
+      // v9.1.0 -- EOD reversal addon card.
+      try { renderV10EodReversal(s, pid, panel); }
       catch (e) { /* never break exec render */ }
     } else if (proxSection) {
       proxSection.style.display = "none";
@@ -4046,11 +4199,67 @@
         var killCls = 'v10-gauge-kill' + (killTriggered ? ' danger' : '');
         html += _gaugeHtml('Daily-kill', killValue, killPct, killCls);
       }
-      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>';
+
+      // v9.0.0 -- session-wide chase-prevention + regime-skip chips
+      // for parity with Main tab. Compact strip below the gauges.
+      var v9cfg = (v10 && v10.config) || {};
+      var v9ds = (v10 && v10.day_status) || {};
+      var v9chips = [];
+      var v9spyThr = parseFloat(v9ds.spy_threshold_bps || 0);
+      if (v9spyThr !== 0) {
+        var v9spyRet = v9ds.spy_d1_ret_bps;
+        var v9spyTxt, v9spyBg, v9spyFg;
+        if (v9spyRet == null) {
+          v9spyTxt = "SPY n/a"; v9spyBg = "#374151"; v9spyFg = "#e5e7eb";
+        } else {
+          var v9retPct = (v9spyRet / 100).toFixed(2);
+          var v9blocked = v9spyRet < v9spyThr;
+          v9spyTxt = "SPY " + (v9spyRet >= 0 ? "+" : "") + v9retPct + "% · "
+            + (v9blocked ? "BLOCK" : "PASS");
+          v9spyBg = v9blocked ? "rgba(220,38,38,0.18)" : "rgba(22,163,74,0.18)";
+          v9spyFg = v9blocked ? "#fca5a5" : "#86efac";
+        }
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:' + v9spyBg + ';color:' + v9spyFg + '" title="Prior-day SPY return regime gate (v9.0.0+). Threshold ' + (v9spyThr/100).toFixed(2) + '%.">'
+            + v9spyTxt + '</span>'
+        );
+      }
+      var v9mbrN = parseInt((v10 && v10.mbr_reject_count) || 0, 10) || 0;
+      if (v9mbrN > 0) {
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(59,130,246,0.18);color:#60a5fa" title="Weak-break entries rejected this session (v9.0.0 mbr filter). Threshold ' + parseFloat(v9cfg.min_break_bps || 0).toFixed(0) + 'bps.">mbr ' + v9mbrN + '</span>'
+        );
+      }
+      var v9chaseN = parseInt((v10 && v10.vwap_chase_reject_count) || 0, 10) || 0;
+      if (v9chaseN > 0) {
+        var v9fence = (v9cfg.max_vwap_dev_tickers || []);
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(168,85,247,0.18);color:#c4b5fd" title="Mega-cap chase-fence rejections (v9.0.0+). Threshold ' + parseFloat(v9cfg.max_vwap_dev_bps || 0).toFixed(0) + 'bps. Fence: ' + (v9fence.length ? v9fence.join(",") : "global") + '.">chase ' + v9chaseN + '</span>'
+        );
+      }
+      var v9chipsHtml = v9chips.length
+        ? '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">Session:</span>' + v9chips.join('') + '</div>'
+        : '';
+
+      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml;
     }
 
+    // v8.3.16 -- suppress same-tick opposite_side rejects from the
+    // executor-tab activity feed. They fire for every 5m candle that
+    // straddles both OR bounds; the engine correctly admits one side
+    // and rejects the other. These rejects are guard-rail success
+    // signals, not actionable failures. Keeping them in the feed
+    // drowns out real notional_cap / no_signal / kill events the
+    // operator needs to see.
+    function _is_noise_reject(ev) {
+      if ((ev.kind || "").toLowerCase() !== "reject") return false;
+      var d = String(ev.detail || "");
+      return d.indexOf("opposite_side:") !== -1;
+    }
     var events = (v10.activity || []).filter(function (e) {
-      return (e.pid || "").toLowerCase() === pid;
+      if ((e.pid || "").toLowerCase() !== pid) return false;
+      if (_is_noise_reject(e)) return false;
+      return true;
     });
     var actCount = execField(panel, "v10-pid-act-count");
     if (actCount) actCount.textContent = "· " + events.length;
@@ -4072,9 +4281,16 @@
         var rowsHtml = [];
         for (var j = 0; j < events.length; j++) {
           var e = events[j];
-          var ts = e.ts_iso || "";
-          var hhmm2 = (ts && ts.indexOf("T") > 0)
-            ? ts.split("T")[1].slice(0, 5) : "—";
+          // v8.3.16 -- ET conversion (matches v8.3.1's Main-tab fix).
+          // Pre-v8.3.16 this path used a raw ts.split("T")[1].slice(0,5)
+          // which renders UTC. The Val tab showed "16:04" while it was
+          // really 12:04 ET (during EDT). Route through the shared
+          // helper so all activity-feed surfaces agree on the market
+          // clock zone.
+          var hhmm2 = (typeof window.utcIsoToLocalHHMM === "function")
+              ? window.utcIsoToLocalHHMM(e.ts_iso || "")
+              : ((e.ts_iso || "").split("T")[1] || "").slice(0, 5);
+          if (!hhmm2) hhmm2 = "—";
           var kindCls = "act-kind-" + (e.kind || "info");
           var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
           var ticker = e.ticker || "—";
@@ -4596,6 +4812,7 @@
             <td class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">${(function(){var s=Number(p.qty),e=Number(p.avg_entry),st=_stopInfo&&Number.isFinite(_stopInfo.eff)?_stopInfo.eff:NaN;if(!(s>0&&e>0&&Number.isFinite(st)))return "\u2014";var rps=Math.abs(e-st);return rps>0?fmtUsd(rps*s):"\u2014";})()}</td>
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
+            <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${(typeof window.fmtHeld==='function'?window.fmtHeld(p.entry_ts_utc):'—')}</td>
           </tr>${_progressRow}`;
         }).join("");
         posBody.innerHTML = `<table>
@@ -4610,6 +4827,7 @@
             <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
             <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
             <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+            <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
           </tr></thead>
           <tbody>${rows}</tbody></table>`;
       }
@@ -5179,10 +5397,109 @@
   // not show Val or Gene information"). Pass null to keep the legacy
   // cross-portfolio aggregation (no current caller; reserved for a
   // future cross-book overview view if we add one).
+  // v9.1.0 -- EOD reversal addon renderer. Shared between Main banner
+  // (DOM id v10-eod-section) and Val/Gene per-pid bodies (data-f
+  // v10-eod-pid-body). When pidFilter is null/undefined, renders the
+  // Main DOM. When pidFilter is set ("val" | "gene"), expects the
+  // panel arg and renders into v10-eod-pid-body within that panel.
+  function renderV10EodReversal(s, pidFilter, panel) {
+    var v10 = s && s.v10;
+    var eod = v10 && v10.eod;
+    if (pidFilter && panel) {
+      var hostBody = panel.querySelector('[data-f="v10-eod-pid-body"]');
+      var hostStatus = panel.querySelector('[data-f="v10-eod-pid-status"]');
+      var hostFire = panel.querySelector('[data-f="v10-eod-pid-fire"]');
+      if (!hostBody) return;
+      _v10EodFillBody(eod, pidFilter, hostBody, hostStatus, hostFire);
+      return;
+    }
+    var section = document.getElementById("v10-eod-section");
+    var body = document.getElementById("v10-eod-body");
+    var statusEl = document.getElementById("v10-eod-status");
+    var fireEl = document.getElementById("v10-eod-fire-pill");
+    if (!section || !body) return;
+    if (!eod || !eod.enabled) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    _v10EodFillBody(eod, "main", body, statusEl, fireEl);
+  }
+
+  function _v10EodFillBody(eod, pid, bodyEl, statusEl, fireEl) {
+    if (!eod) { bodyEl.innerHTML = '<div style="color:#6b7280">No EOD data.</div>'; return; }
+    var perPid = (eod.per_portfolio || {})[pid] || {open_count:0, open_positions:[], closed_legs:[], realized_pnl_today:0, entry_attempted:false, rejected_count:0};
+    var cfg = eod.config || {};
+    var entryEt = cfg.entry_et || "15:30";
+    var exitEt = cfg.exit_et || "15:59";
+    var realized = parseFloat(perPid.realized_pnl_today || 0) || 0;
+    var openCount = perPid.open_count || 0;
+    var closedCount = (perPid.closed_legs || []).length;
+    if (statusEl) {
+      var parts = [];
+      parts.push("window " + entryEt + "-" + exitEt);
+      parts.push("open " + openCount);
+      parts.push("closed " + closedCount);
+      var realStr = (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2);
+      var realCol = realized >= 0 ? "#86efac" : "#fca5a5";
+      parts.push('PnL <span style="color:' + realCol + '">' + realStr + '</span>');
+      statusEl.innerHTML = parts.join(' <span style="color:#374151">·</span> ');
+    }
+    if (fireEl) {
+      var firing = !!cfg.fire_broker;
+      fireEl.textContent = firing ? "LIVE" : "paper";
+      fireEl.style.background = firing ? "rgba(22,163,74,0.18)" : "rgba(245,158,11,0.18)";
+      fireEl.style.color = firing ? "#86efac" : "#f59e0b";
+      fireEl.title = firing
+        ? "ORB_EOD_FIRE_BROKER=1 -- real broker orders firing."
+        : "Paper-fire-observation mode: signals are tracked but broker orders are not placed. Set ORB_EOD_FIRE_BROKER=1 in Railway env to enable live firing.";
+    }
+    // Body: list open positions + closed legs.
+    var rows = [];
+    (perPid.open_positions || []).forEach(function (p) {
+      var sideCol = p.side === "long" ? "#86efac" : "#fca5a5";
+      rows.push(
+        '<div style="display:flex;gap:10px;align-items:center">'
+        + '<span style="color:' + sideCol + ';font-weight:700;min-width:46px">' + p.side.toUpperCase() + '</span>'
+        + '<span style="color:#e5e7eb;font-weight:700;min-width:46px">' + p.ticker + '</span>'
+        + '<span style="color:#9ca3af">' + p.shares + ' sh @ $' + (parseFloat(p.entry_price)||0).toFixed(2) + '</span>'
+        + '<span style="color:#a78bfa">rod3=' + (parseFloat(p.rod3_bps)||0).toFixed(1) + 'bps</span>'
+        + '<span style="color:#374151">·</span>'
+        + '<span style="color:#9ca3af">$' + Math.round(p.notional || 0).toLocaleString() + ' notional</span>'
+        + '</div>'
+      );
+    });
+    (perPid.closed_legs || []).forEach(function (leg) {
+      var pnl = parseFloat(leg.pnl) || 0;
+      var col = pnl >= 0 ? "#86efac" : "#fca5a5";
+      var sideCol = leg.side === "long" ? "#86efac" : "#fca5a5";
+      rows.push(
+        '<div style="display:flex;gap:10px;align-items:center;opacity:0.75">'
+        + '<span style="color:' + sideCol + ';min-width:46px">' + leg.side.toUpperCase() + '</span>'
+        + '<span style="color:#e5e7eb;min-width:46px">' + leg.ticker + '</span>'
+        + '<span style="color:#9ca3af">' + leg.shares + ' sh $' + (parseFloat(leg.entry_price)||0).toFixed(2) + ' -> $' + (parseFloat(leg.exit_price)||0).toFixed(2) + '</span>'
+        + '<span style="color:' + col + ';font-weight:700">' + (pnl >= 0 ? "+" : "") + '$' + pnl.toFixed(2) + '</span>'
+        + '<span style="color:#6b7280">' + (leg.exit_reason || 'eod') + '</span>'
+        + '</div>'
+      );
+    });
+    if (!rows.length) {
+      var msg = perPid.entry_attempted
+        ? "No EOD signal admitted today (insufficient cross-section)."
+        : "Waiting for " + entryEt + " ET entry window.";
+      bodyEl.innerHTML = '<div style="color:#6b7280">' + msg + '</div>';
+    } else {
+      bodyEl.innerHTML = rows.join('');
+    }
+  }
+
   function renderV10DayStatus(s, pidFilter) {
     var v10 = s && s.v10;
     var banner = document.getElementById("v10-day-status");
     if (!banner) return;
+    // v9.1.0 -- render the EOD reversal card alongside the morning
+    // v10 banner. Both feed off s.v10.* fields.
+    try { renderV10EodReversal(s, null, null); } catch (_e) {}
     // Fail open: if v10 block is missing, hide the banner.
     if (!v10 || v10.available === false) {
       banner.style.display = "none";
@@ -5245,6 +5562,161 @@
       } else {
         dayStateEl.textContent = "OK";
         dayStateEl.style.color = "#22c55e";
+      }
+    }
+
+    // v8.1.2 -- ATR-stop + Partial-profit chips. Read from
+    // v10.config which the engine populates via snapshot(). Hide
+    // the chip entirely when the corresponding feature is off so
+    // operators only see what's actually active.
+    var cfg = (v10 && v10.config) || {};
+    var atrMult = parseFloat(cfg.atr_stop_mult || 0);
+    var atrPill = document.getElementById("v10-atr-pill");
+    var atrDiv = document.getElementById("v10-atr-pill-divider");
+    if (atrPill && atrDiv) {
+      if (atrMult > 0) {
+        atrPill.textContent = "ATR×" + atrMult.toFixed(2);
+        atrPill.title = "ATR-based stop placement: stop = entry ∓ "
+          + atrMult.toFixed(2) + " × ATR(" + (cfg.atr_lookback_5m || 14)
+          + ", 5m). Cold-ATR falls back to OR-edge silently. v8.0.0+.";
+        atrPill.style.display = "";
+        atrDiv.style.display = "";
+      } else {
+        atrPill.style.display = "none";
+        atrDiv.style.display = "none";
+      }
+    }
+    // v8.1.8 -- wash-sale risk counter chip. Hidden when count=0
+    // so the banner stays uncluttered on clean-trading days.
+    var washN = parseInt(v10.wash_risk_count || 0, 10) || 0;
+    var washPill = document.getElementById("v10-wash-pill");
+    var washDiv = document.getElementById("v10-wash-pill-divider");
+    if (washPill && washDiv) {
+      if (washN > 0) {
+        washPill.textContent = "Wash " + washN;
+        washPill.title = washN + " entr"
+          + (washN === 1 ? "y" : "ies")
+          + " this session re-opened a (ticker, side) within 30 "
+          + "days of a losing close. The IRS §1091 wash-sale rule "
+          + "may defer the loss for tax purposes. Strategy is "
+          + "unblocked -- this is operator visibility only. "
+          + "Most active intraday traders elect §475(f) MTM to "
+          + "exempt themselves from §1091.";
+        washPill.style.display = "";
+        washDiv.style.display = "";
+      } else {
+        washPill.style.display = "none";
+        washDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- prior-day SPY regime pill. Shows SPY(D-1) close-to-close
+    // return + threshold + pass/block status. Hidden when feature is
+    // off (threshold = 0).
+    var spyThr = parseFloat(ds.spy_threshold_bps || 0);
+    var spyRet = ds.spy_d1_ret_bps;
+    var spyPill = document.getElementById("v10-spy-pill");
+    var spyDiv = document.getElementById("v10-spy-pill-divider");
+    if (spyPill && spyDiv) {
+      if (spyThr !== 0) {
+        var spyText, spyBg, spyFg, spyPass;
+        if (spyRet == null) {
+          spyText = "SPY n/a"; spyBg = "#374151"; spyFg = "#e5e7eb"; spyPass = "missing";
+        } else {
+          var retPct = (spyRet / 100).toFixed(2);
+          spyPass = spyRet < spyThr ? "BLOCK" : "PASS";
+          spyText = "SPY " + (spyRet >= 0 ? "+" : "") + retPct + "%";
+          if (spyPass === "BLOCK") { spyBg = "rgba(220,38,38,0.18)"; spyFg = "#fca5a5"; }
+          else { spyBg = "rgba(22,163,74,0.18)"; spyFg = "#86efac"; }
+        }
+        spyPill.textContent = spyText + " · " + spyPass;
+        spyPill.style.background = spyBg;
+        spyPill.style.color = spyFg;
+        spyPill.title = "Prior-session SPY close-to-close return. "
+          + "Threshold " + (spyThr / 100).toFixed(2)
+          + "% (v9.0.0 regime gate). Day is blocked when prior SPY "
+          + "return is below threshold (R12 backtest: bleed concentrated "
+          + "on moderate-down-day carryover).";
+        spyPill.style.display = "";
+        spyDiv.style.display = "";
+      } else {
+        spyPill.style.display = "none";
+        spyDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- min_break rejection counter. Hidden when count=0.
+    var mbrN = parseInt(v10.mbr_reject_count || 0, 10) || 0;
+    var mbrPill = document.getElementById("v10-mbr-pill");
+    var mbrDiv = document.getElementById("v10-mbr-pill-divider");
+    if (mbrPill && mbrDiv) {
+      if (mbrN > 0) {
+        var mbrThr = parseFloat(cfg.min_break_bps || 0);
+        mbrPill.textContent = "mbr " + mbrN;
+        mbrPill.title = mbrN + " entr" + (mbrN === 1 ? "y" : "ies")
+          + " rejected this session because the signal-bar close was "
+          + "within " + mbrThr.toFixed(0) + "bps of the OR boundary "
+          + "(weak breakout). Threshold set by ORB_MIN_BREAK_BPS. "
+          + "v9.0.0+.";
+        mbrPill.style.display = "";
+        mbrDiv.style.display = "";
+      } else {
+        mbrPill.style.display = "none";
+        mbrDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- vwap-chase rejection counter (mega-cap fence). Hidden
+    // when count=0.
+    var chaseN = parseInt(v10.vwap_chase_reject_count || 0, 10) || 0;
+    var chasePill = document.getElementById("v10-chase-pill");
+    var chaseDiv = document.getElementById("v10-chase-pill-divider");
+    if (chasePill && chaseDiv) {
+      if (chaseN > 0) {
+        var chaseThr = parseFloat(cfg.max_vwap_dev_bps || 0);
+        var fence = cfg.max_vwap_dev_tickers || [];
+        chasePill.textContent = "chase " + chaseN;
+        chasePill.title = chaseN + " entr" + (chaseN === 1 ? "y" : "ies")
+          + " rejected this session because the entry price was more "
+          + "than " + chaseThr.toFixed(0) + "bps past session VWAP in "
+          + "the breakout direction. "
+          + (fence.length
+              ? "Fence applies to: " + fence.join(", ") + ". "
+              : "Filter applies globally. ")
+          + "v9.0.0 chase-prevention (R10 backtest winner).";
+        chasePill.style.display = "";
+        chaseDiv.style.display = "";
+      } else {
+        chasePill.style.display = "none";
+        chaseDiv.style.display = "none";
+      }
+    }
+
+    var partialOn = !!cfg.partial_profit_at_1r;
+    var pPill = document.getElementById("v10-partial-pill");
+    var pDiv = document.getElementById("v10-partial-pill-divider");
+    if (pPill && pDiv) {
+      if (partialOn) {
+        pPill.textContent = "P@1R ON";
+        pPill.style.background = "#166534"; // green-700
+        pPill.style.color = "#dcfce7";       // green-100
+        pPill.title = "Partial-profit-at-1R is ACTIVE. Engine emits "
+          + "EXIT_PARTIAL on first 1R touch; broker submits MARKET "
+          + "half-sell; runner rides to 2.5R with BE stop. v8.1.0+.";
+        pPill.style.display = "";
+        pDiv.style.display = "";
+      } else {
+        // Render greyed when off so operator can confirm the
+        // env flag state at a glance (vs no chip at all, which
+        // is ambiguous between "off" and "not deployed yet").
+        pPill.textContent = "P@1R OFF";
+        pPill.style.background = "#374151"; // gray-700
+        pPill.style.color = "#9ca3af";       // gray-400
+        pPill.title = "Partial-profit-at-1R env flag is unset/0. "
+          + "Set ORB_PARTIAL_PROFIT_AT_1R=1 in Railway to activate. "
+          + "v8.1.0+.";
+        pPill.style.display = "";
+        pDiv.style.display = "";
       }
     }
 
@@ -5587,6 +6059,26 @@
       return;
     }
 
+    // v8.1.2 -- index of partial-taken positions by ticker. Source
+    // is the legacy /api/state.main_book.positions blob (where
+    // broker/orders.py:partial_close_breakout writes partial_fills).
+    // Used to render a 🔄 indicator on matrix rows whose runner is
+    // still open.
+    var _partialByTicker = {};
+    try {
+      var _mb = (s && (s.main_book || s)) || {};
+      var _posList = (_mb && _mb.positions) || (s && s.positions) || [];
+      for (var _pi = 0; _pi < _posList.length; _pi++) {
+        var _ppi = _posList[_pi];
+        if (_ppi && _ppi.ticker && Array.isArray(_ppi.partial_fills)
+            && _ppi.partial_fills.length > 0) {
+          _partialByTicker[_ppi.ticker] = _ppi.partial_fills[
+            _ppi.partial_fills.length - 1
+          ];
+        }
+      }
+    } catch (_e) { /* defensive: never block the matrix render */ }
+
     var rows = [];
     rows.push('<table id="v10-tm-table"><thead><tr>'
       + '<th>Ticker</th>'
@@ -5617,8 +6109,21 @@
         var phaseTxt = phase.replace(/_/g, " ").toUpperCase();
         var reason = d.block_reason || (d.in_position ? 'open ticket' : '');
         var tradesCell = (d.trades_today || 0) + ' / ' + maxTrades;
+        // v8.1.2 -- partial-fill indicator on the ticker cell when
+        // the runner half is still open.
+        var _tkLabel = esc(tk);
+        if (phase === "in_pos" && _partialByTicker[tk]) {
+          var _pft = _partialByTicker[tk];
+          var _pftPrice = Number(_pft && _pft.price) || 0;
+          var _pftPnl = Number(_pft && _pft.pnl_dollars) || 0;
+          var _pftTitle = "Partial taken at 1R: $"
+            + _pftPrice.toFixed(2) + " (booked $"
+            + _pftPnl.toFixed(2) + "). Runner half open.";
+          _tkLabel += ' <span class="partial-badge" title="'
+            + esc(_pftTitle) + '">½</span>';
+        }
         rows.push('<tr class="' + rowCls + '">'
-          + (p === 0 ? '<td rowspan="' + pids.length + '">' + esc(tk) + '</td>' : '')
+          + (p === 0 ? '<td rowspan="' + pids.length + '">' + _tkLabel + '</td>' : '')
           + (multiPid ? '<td><span class="v10-tm-pid">' + esc(pid2) + '</span></td>' : '')
           + '<td><span class="v10-tm-phase ' + phaseCls + '">' + esc(phaseTxt) + '</span></td>'
           + (p === 0
@@ -6075,6 +6580,14 @@
         return (ev.pid || "").toLowerCase() === pidFilter;
       });
     }
+    // v8.3.16 -- suppress same-tick opposite_side rejects. They fire
+    // for every 5m candle that straddles both OR bounds; the engine
+    // correctly admits one side and rejects the other. Noise, not
+    // signal. Same filter applied to the per-pid Val/Gene feed.
+    events = events.filter(function (ev) {
+      if ((ev.kind || "").toLowerCase() !== "reject") return true;
+      return String(ev.detail || "").indexOf("opposite_side:") === -1;
+    });
     var body = document.getElementById("v10-act-body");
     var countEl = document.getElementById("v10-act-count");
     var summaryEl = document.getElementById("v10-act-summary");
@@ -6084,10 +6597,11 @@
         summaryEl.textContent = "no events yet";
       } else {
         var first = events[0];
-        var t = first.ts_iso || "";
-        var hhmm = t && t.indexOf("T") > 0
-          ? t.split("T")[1].slice(0, 5) + " UTC"
-          : t;
+        // v8.3.1 -- convert UTC ISO to ET via the shared helper so the
+        // operator sees the market clock instead of the storage clock.
+        var hhmm = (typeof utcIsoToLocalHHMM === "function")
+          ? utcIsoToLocalHHMM(first.ts_iso || "")
+          : (first.ts_iso || "");
         summaryEl.textContent = "most recent · " + hhmm;
       }
     }
@@ -6099,10 +6613,11 @@
     var rows = [];
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
-      var t2 = e.ts_iso || "";
-      var hhmm2 = t2 && t2.indexOf("T") > 0
-        ? t2.split("T")[1].slice(0, 5)
-        : "—";
+      // v8.3.1 -- per-row time in ET (was raw HHMM from UTC ISO).
+      var hhmm2 = (typeof utcIsoToLocalHHMM === "function")
+        ? utcIsoToLocalHHMM(e.ts_iso || "")
+        : (e.ts_iso || "—");
+      if (!hhmm2) hhmm2 = "—";
       var kindCls = "act-kind-" + (e.kind || "info");
       var kindTxt = (e.kind || "info").toUpperCase().replace(/_/g, " ");
       var ticker = e.ticker || "—";

@@ -86,6 +86,44 @@ class OrbConfig:
     skip_gap_above_pct: float = 1.5
     fail_closed_on_missing_vix: bool = True   # True for live; False for backtest parity
     ticker_side_blocklist: dict = None  # type: ignore
+    # v8.0.0 -- ATR-based stop. If > 0, replaces the OR-edge stop with
+    # entry +/- atr_stop_mult * ATR(14) on 5m bars. Caller (scan.py)
+    # supplies the recent 5m HLC history to detect_breakout(). When the
+    # ATR window isn't warm yet (<2 bars), the engine silently falls
+    # back to the OR-edge stop so the strategy is never stop-less.
+    atr_stop_mult: float = 0.0
+    atr_lookback_5m: int = 14   # standard Wilder ATR lookback
+    # v8.1.0 -- partial-profit-at-1R. When True, the exit evaluator
+    # emits EXIT_PARTIAL on first 1R touch, signalling the caller to
+    # sell half. Defaults False so v8.1.0 is strictly additive until
+    # the operator flips ORB_PARTIAL_PROFIT_AT_1R=1 in Railway env.
+    partial_profit_at_1r: bool = False
+    # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
+    # Both default 0.0 = off (R10/R12 research showed they hurt
+    # when stacked with chase-prevention, so stay off in v9).
+    loss_lock_threshold_usd: float = 0.0
+    peak_dd_halt_usd: float = 0.0
+    # v9.0.0 -- chase-prevention filters (R10 + R10b research).
+    # Defaults ON: per the v13 report, this filter set + the env
+    # vars (cut=11, VIX<=20, daily_loss_kill=1.0) produce a
+    # backtested +$24,784/yr / 0/4 neg quarters / 24.8% CAGR /
+    # Sharpe 2.80.
+    min_break_bps: float = 5.0
+    max_vwap_dev_bps: float = 25.0
+    # Mega-cap chase-fence: filter only applies to these tickers.
+    # Empty tuple = filter applies globally (do not change in v9).
+    max_vwap_dev_tickers: tuple = (
+        "META", "MSFT", "AAPL", "AMZN", "GOOG", "AVGO",
+    )
+    # v9.0.0 -- prior-day SPY regime gate (R12 research). Default
+    # threshold -40 bps; skip the whole day if prior session SPY
+    # close-to-close return was below this. Set to 0.0 to disable.
+    skip_prior_spy_ret_lt_bps: float = -40.0
+    fail_closed_on_missing_spy: bool = False  # fail-open: trade if
+                                              # SPY daily feed
+                                              # missing (data feed
+                                              # outage shouldn't
+                                              # strand the system)
 
     @property
     def or_end_minutes(self) -> int:
@@ -106,8 +144,14 @@ class BreakoutSignal:
     signal_bar_close: float    # close price at signal
     or_high: float
     or_low: float
-    proposed_stop: float       # raw stop (OR opposite + buffer)
+    proposed_stop: float       # final stop fed to risk-book sizing
     proposed_entry: float      # next 5m candle open (caller fills this in at fire)
+    # v8.0.0 -- forensic: how the stop was derived ("or_edge" | "atr"),
+    # plus the ATR value that fed the calc (None when atr branch off /
+    # not warm). Used by the [V79-ORB-ENTRY] log emitter to surface
+    # which stop mode actually fired live.
+    stop_source: str = "or_edge"
+    atr_used: Optional[float] = None
 
 
 @dataclass
@@ -115,6 +159,38 @@ class Admission:
     """Returned by try_enter() on success. None on rejection."""
     position: _exits.OrbPosition
     risk_ticket: object        # _risk_book._Ticket; opaque to caller
+
+
+# ----- ATR helper (v8.0.0) -------------------------------------------
+
+
+def atr_from_5m(highs: list[float], lows: list[float], closes: list[float],
+                lookback: int = 14) -> float:
+    """Wilder ATR on 5m bars. Returns 0.0 when fewer than 2 bars provided
+    (caller's contract: fall back to OR-edge stop). Closed-form mean of
+    True Range over the last `lookback+1` bars; the first TR can only be
+    computed against the previous bar's close, so a series of N bars
+    yields N-1 TRs and we average up to `lookback` of those.
+
+    Look-ahead clean: True Range for bar i uses bar i's high/low and
+    bar i-1's close. No data from i+1 or later contributes.
+    """
+    n = min(len(highs), len(lows), len(closes))
+    if n < 2:
+        return 0.0
+    trs: list[float] = []
+    for i in range(1, n):
+        h = highs[i]
+        lo = lows[i]
+        prev_close = closes[i - 1]
+        if h is None or lo is None or prev_close is None:
+            continue
+        tr = max(h - lo, abs(h - prev_close), abs(lo - prev_close))
+        trs.append(tr)
+    if not trs:
+        return 0.0
+    window = trs[-lookback:] if len(trs) > lookback else trs
+    return sum(window) / len(window)
 
 
 # ----- Public surface ------------------------------------------------
@@ -145,13 +221,163 @@ class OrbEngine:
                 max_concurrent_notional_mult=cfg.max_concurrent_notional_mult,
                 equity=100_000.0,  # caller refresh via update_equity
                 daily_loss_kill_pct=cfg.daily_loss_kill_pct,
+                # v8.3.34 -- day-end-giveback defenses
+                loss_lock_threshold_usd=cfg.loss_lock_threshold_usd,
+                peak_dd_halt_usd=cfg.peak_dd_halt_usd,
             )
 
         # Cached day-gate result (computed once per session)
         self._day_result: Optional[_day_gates.DayGateResult] = None
         self._day_result_date: str = ""
 
+        # v8.1.8 -- wash-sale risk tracker. NOT tax-grade -- this is
+        # operator-facing signaling for §1091 wash-sale visibility.
+        # When a position closes at a LOSS, we record (ticker, side,
+        # ts, pnl_dollars) here. On the next try_enter() for the SAME
+        # (ticker, side), if a recorded loss falls within the last
+        # 30 calendar days, we log [V81-WASH-RISK] and increment the
+        # session counter. The entry is NEVER blocked -- the operator
+        # opted into this strategy knowing about the rule (and
+        # typically files §475(f) MTM which exempts them anyway).
+        #
+        # Bounded by recency (>30d entries are pruned on each check).
+        # No persistence across Railway restarts; this is in-memory
+        # session signaling only. For year-end tax reconciliation
+        # the operator should rely on the broker 1099-B + their
+        # accountant, NOT this counter.
+        from collections import defaultdict as _dd
+        self._recent_losses: dict = _dd(list)
+        # Session-scoped counter -- resets to 0 each new session.
+        self.wash_risk_count: int = 0
+        # v9.0.0 -- session-scoped rejection counters for chase filters.
+        # Reset in start_new_session() and exposed via snapshot() for
+        # the dashboard.
+        self._mbr_reject_count: int = 0
+        self._vwap_chase_reject_count: int = 0
+
     # --- session lifecycle ---
+
+    def backfill_or_windows(self, *,
+                            bars_by_ticker: dict,
+                            current_et_minutes: int) -> dict:
+        """v8.3.0 -- replay pre-bucketed 1m bars to rebuild any OR
+        window that wasn't locked in real-time.
+
+        Why: a Railway redeploy mid-RTH wipes in-memory engine state.
+        On the next bootstrap + ensure_session_started, all OR windows
+        start empty. The live scan only feeds the latest bar per
+        cycle, so 09:30-09:59 bars are never replayed -> WARMUP
+        forever -> zero trades the rest of the day. Without this
+        function, a redeploy at 10:00 ET cooks the entire trading
+        day.
+
+        Idempotent: bars going to a locked OR window are silently
+        rejected by add_bar() (orb.state.OrWindow.add_bar drops
+        anything when locked=True). Safe to call on every scan cycle.
+        Tickers already locked are skipped fast.
+
+        No-op when current_et_minutes < or_end_minutes (the live scan
+        will populate OR windows normally during the active OR).
+
+        Args:
+            bars_by_ticker: {ticker: list[row]} where each row is a
+                tuple (or list / dict-like with index access) of
+                (bucket_min, high, low, open, close, volume). The
+                caller is responsible for converting raw timestamps
+                to ET-minute buckets (since orb/ doesn't import
+                from engine/ to keep the dependency graph clean).
+                Bars are filtered here -- in-OR bars feed
+                on_bar_arrival; the first post-OR bar feeds
+                on_bar_arrival to trigger the v7.73.0 lock fallback
+                if 09:59 was missing.
+            current_et_minutes: minutes since ET midnight (now).
+                Used to short-circuit when we're still inside or
+                before the OR window.
+
+        Returns:
+            {"backfilled": int, "locked": int, "skipped": int,
+             "failed": int} -- per-ticker counters. "skipped" counts
+             tickers that were already locked OR the entire call
+             when we're pre-or-end; "failed" counts tickers with no
+             usable bars; "backfilled" counts tickers that received
+             at least one in-window bar; "locked" counts tickers
+             that were force-locked via a post-window bar.
+        """
+        out = {"backfilled": 0, "locked": 0, "skipped": 0, "failed": 0}
+        cfg = self.cfg
+        if current_et_minutes < cfg.or_end_minutes:
+            out["skipped"] = len(bars_by_ticker)
+            return out
+        for ticker, rows in bars_by_ticker.items():
+            w = self._state.or_windows.get(ticker)
+            if w is not None and w.locked:
+                out["skipped"] += 1
+                continue
+            if not rows:
+                out["failed"] += 1
+                continue
+            fed_in_window = 0
+            for r in rows:
+                try:
+                    bucket = int(r[0])
+                    hi = float(r[1])
+                    lo = float(r[2])
+                    op = float(r[3])
+                    cl = float(r[4])
+                    vo = float(r[5] or 0.0) if len(r) > 5 else 0.0
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if bucket < cfg.session_start_minutes:
+                    continue
+                if bucket >= cfg.or_end_minutes:
+                    continue
+                try:
+                    self.on_bar_arrival(
+                        ticker=ticker, bar_high=hi, bar_low=lo,
+                        bar_open=op, bar_close=cl, bar_volume=vo,
+                        bar_bucket_min=bucket,
+                    )
+                    fed_in_window += 1
+                except Exception as e:
+                    logger.debug(
+                        "[V83-OR-BACKFILL] feed_bar %s b=%d: %s",
+                        ticker, bucket, e,
+                    )
+            if fed_in_window == 0:
+                out["failed"] += 1
+                continue
+            out["backfilled"] += 1
+            # Pass 2: force-lock via the first post-window bar so the
+            # OR locks even when the 09:59 bucket was missing from
+            # the source (Alpaca IEX occasionally drops a bar).
+            w2 = self._state.or_windows.get(ticker)
+            if w2 is not None and not w2.locked:
+                for r in rows:
+                    try:
+                        bucket = int(r[0])
+                        hi = float(r[1])
+                        lo = float(r[2])
+                        op = float(r[3])
+                        cl = float(r[4])
+                        vo = float(r[5] or 0.0) if len(r) > 5 else 0.0
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if bucket < cfg.or_end_minutes:
+                        continue
+                    try:
+                        self.on_bar_arrival(
+                            ticker=ticker, bar_high=hi, bar_low=lo,
+                            bar_open=op, bar_close=cl, bar_volume=vo,
+                            bar_bucket_min=bucket,
+                        )
+                        out["locked"] += 1
+                    except Exception as e:
+                        logger.debug(
+                            "[V83-OR-BACKFILL] post-bar %s b=%d: %s",
+                            ticker, bucket, e,
+                        )
+                    break  # one post-window bar is enough to lock
+        return out
 
     def start_new_session(self, *, date_iso: str,
                           tickers: list[str],
@@ -159,6 +385,7 @@ class OrbEngine:
                           ticker_open_today: dict[str, Optional[float]],
                           ticker_prev_close: dict[str, Optional[float]],
                           equity_per_portfolio: dict[str, float],
+                          spy_prior_ret_bps: Optional[float] = None,
                           ) -> _day_gates.DayGateResult:
         """Reset all state for a new trading day.
 
@@ -167,6 +394,14 @@ class OrbEngine:
         """
         # 1. Reset state
         self._state.reset_for_new_session(date_iso)
+        # v8.1.8 -- reset session-scoped wash-risk counter. The
+        # _recent_losses buffer is INTENTIONALLY NOT cleared here --
+        # a losing close on Monday + new entry Tuesday still hits
+        # the 30-day window and should fire the flag.
+        self.wash_risk_count = 0
+        # v9.0.0 -- reset chase-filter rejection counters.
+        self._mbr_reject_count = 0
+        self._vwap_chase_reject_count = 0
         # v7.33.0: update equity BEFORE reset_all_sessions so the
         # session-start equity snapshot inside RiskBook.reset_session
         # captures the actual session-start equity (not the stale
@@ -187,6 +422,8 @@ class OrbEngine:
             earnings_days_after=self.cfg.earnings_days_after,
             skip_gap_above_pct=self.cfg.skip_gap_above_pct,
             ticker_side_blocklist=self.cfg.ticker_side_blocklist,
+            skip_prior_spy_ret_lt_bps=self.cfg.skip_prior_spy_ret_lt_bps,
+            fail_closed_on_missing_spy=self.cfg.fail_closed_on_missing_spy,
         )
         self._day_result = _day_gates.evaluate_day(
             gate_cfg,
@@ -196,6 +433,7 @@ class OrbEngine:
             ticker_open_today=ticker_open_today,
             ticker_prev_close=ticker_prev_close,
             is_earnings_window_fn=self._earnings_fn,
+            spy_prior_ret_bps=spy_prior_ret_bps,
         )
         self._day_result_date = date_iso
 
@@ -308,11 +546,22 @@ class OrbEngine:
                         five_min_close: float,
                         five_min_close_iso: str,
                         next_open: float,
+                        recent_5m_highs: Optional[list[float]] = None,
+                        recent_5m_lows: Optional[list[float]] = None,
+                        recent_5m_closes: Optional[list[float]] = None,
                         ) -> Optional[BreakoutSignal]:
         """Check whether a 5m bar's close just broke past the OR
         boundary AND the portfolio's FSM allows a new entry.
 
         Returns a BreakoutSignal on a fresh signal; None otherwise.
+
+        v8.0.0 -- if `cfg.atr_stop_mult > 0` AND `recent_5m_*` lists are
+        supplied AND the ATR(14) window is warm (>=2 bars), the
+        BreakoutSignal's `proposed_stop` is computed from ATR instead
+        of the OR edge. The `stop_source` field on the signal records
+        which branch fired ("or_edge" | "atr"). Cold-ATR ("warm-up")
+        falls back to the OR-edge stop transparently so the strategy
+        is never stop-less.
         """
         cfg = self.cfg
         ds = self._state.get_day_state(portfolio_id, ticker)
@@ -322,38 +571,76 @@ class OrbEngine:
         if w is None or not w.locked:
             return None
 
+        buffer_pct = cfg.stop_buffer_bps / 10000.0
+
+        # Pre-compute ATR (independent of side) so both branches can
+        # use the same value + same warmup-fallback decision.
+        atr = 0.0
+        if (cfg.atr_stop_mult > 0
+                and recent_5m_highs and recent_5m_lows
+                and recent_5m_closes):
+            atr = atr_from_5m(
+                recent_5m_highs, recent_5m_lows, recent_5m_closes,
+                lookback=cfg.atr_lookback_5m,
+            )
+
         # Long signal: 5m close strictly above OR_high
         if five_min_close > w.or_high:
-            buffer_pct = cfg.stop_buffer_bps / 10000.0
-            stop = w.or_low * (1.0 - buffer_pct)  # below OR_low for long
+            or_edge_stop = w.or_low * (1.0 - buffer_pct)
+            if atr > 0:
+                atr_stop = next_open - cfg.atr_stop_mult * atr
+                stop = atr_stop
+                stop_source = "atr"
+            else:
+                stop = or_edge_stop
+                stop_source = "or_edge"
             return BreakoutSignal(
                 portfolio_id=portfolio_id, ticker=ticker, side="long",
                 signal_bar_close_iso=five_min_close_iso,
                 signal_bar_close=five_min_close,
                 or_high=w.or_high, or_low=w.or_low,
                 proposed_stop=stop, proposed_entry=next_open,
+                stop_source=stop_source,
+                atr_used=(atr if atr > 0 else None),
             )
         # Short signal: 5m close strictly below OR_low
         if five_min_close < w.or_low:
-            buffer_pct = cfg.stop_buffer_bps / 10000.0
-            stop = w.or_high * (1.0 + buffer_pct)  # above OR_high for short
+            or_edge_stop = w.or_high * (1.0 + buffer_pct)
+            if atr > 0:
+                atr_stop = next_open + cfg.atr_stop_mult * atr
+                stop = atr_stop
+                stop_source = "atr"
+            else:
+                stop = or_edge_stop
+                stop_source = "or_edge"
             return BreakoutSignal(
                 portfolio_id=portfolio_id, ticker=ticker, side="short",
                 signal_bar_close_iso=five_min_close_iso,
                 signal_bar_close=five_min_close,
                 or_high=w.or_high, or_low=w.or_low,
                 proposed_stop=stop, proposed_entry=next_open,
+                stop_source=stop_source,
+                atr_used=(atr if atr > 0 else None),
             )
         return None
 
     def try_enter(self, signal: BreakoutSignal,
                   *, equity: float, fill_price: Optional[float] = None,
+                  session_vwap: Optional[float] = None,
                   ) -> Optional[Admission]:
         """Attempt admission for a breakout signal. Returns Admission on
         success, None if RiskBook rejected.
 
         If `fill_price` is provided, it OVERRIDES `signal.proposed_entry`
         (use this when the broker reported a different fill).
+
+        v9.0.0 -- two new pre-admission filters:
+          * min_break_bps: reject if the signal-bar close is too close
+            to OR boundary (weak breakout)
+          * max_vwap_dev_bps: reject if entry price has chased too far
+            past session VWAP in the breakout direction (apply only to
+            fenced tickers if max_vwap_dev_tickers is non-empty)
+        Both are short-circuited when their threshold is 0.
 
         Position is constructed but NOT recorded on any external book;
         caller must call on_exit() with the same position when it closes
@@ -380,6 +667,49 @@ class OrbEngine:
         risk_per_share = abs(entry_price - signal.proposed_stop)
         if risk_per_share <= 0.001:
             return None
+
+        # v9.0.0 -- min_break_bps: reject weak breakouts. Measured on
+        # the signal-bar close vs the OR boundary in the breakout's
+        # natural direction; independent of any fenced-ticker logic.
+        if cfg.min_break_bps > 0:
+            if signal.side == "long" and signal.or_high > 0:
+                break_bps = (signal.signal_bar_close - signal.or_high) / signal.or_high * 10000.0
+            elif signal.side == "short" and signal.or_low > 0:
+                break_bps = (signal.or_low - signal.signal_bar_close) / signal.or_low * 10000.0
+            else:
+                break_bps = 0.0
+            if break_bps < cfg.min_break_bps:
+                self._mbr_reject_count += 1
+                logger.info(
+                    "[V900-MBR-REJECT] %s/%s %s break=%.1fbps < threshold=%.1fbps",
+                    signal.portfolio_id, signal.ticker, signal.side,
+                    break_bps, cfg.min_break_bps,
+                )
+                return None
+
+        # v9.0.0 -- max_vwap_dev_bps: chase-prevention. Reject when
+        # entry has extended too far past session VWAP in the breakout
+        # direction. Applies globally if max_vwap_dev_tickers is empty;
+        # otherwise only to the fenced ticker set (R10 winning config:
+        # fence applied to META/MSFT/AAPL/AMZN/GOOG/AVGO only).
+        # When session_vwap is missing or zero we fail OPEN (allow the
+        # entry); the caller's scan loop is responsible for supplying it.
+        if cfg.max_vwap_dev_bps > 0 and session_vwap is not None and session_vwap > 0:
+            fence = cfg.max_vwap_dev_tickers or ()
+            if not fence or signal.ticker in fence:
+                if signal.side == "long":
+                    dev_bps = (entry_price - session_vwap) / session_vwap * 10000.0
+                else:
+                    dev_bps = (session_vwap - entry_price) / session_vwap * 10000.0
+                if dev_bps > cfg.max_vwap_dev_bps:
+                    self._vwap_chase_reject_count += 1
+                    logger.info(
+                        "[V900-VWAP-CHASE] %s/%s %s entry=%.2f vwap=%.2f dev=%.1fbps "
+                        "> threshold=%.1fbps",
+                        signal.portfolio_id, signal.ticker, signal.side,
+                        entry_price, session_vwap, dev_bps, cfg.max_vwap_dev_bps,
+                    )
+                    return None
         risk_dollars_target = equity * cfg.risk_per_trade_pct / 100.0
         shares = max(1, int(risk_dollars_target / risk_per_share))
         # Notional cap (per-trade)
@@ -393,6 +723,8 @@ class OrbEngine:
         ticket = rb.try_admit(
             risk_dollars=risk_dollars_actual,
             notional=notional,
+            ticker=signal.ticker,    # v8.3.34 -- Rule #1 lookup
+            side=signal.side,        # v8.3.34 -- Rule #1 lookup
         )
         if ticket is None:
             return None
@@ -419,6 +751,35 @@ class OrbEngine:
         ds.last_signal_bucket = None
         ds.last_entry_iso = signal.signal_bar_close_iso
 
+        # v8.1.8 -- wash-sale check. If a losing close on the SAME
+        # (ticker, side) happened within the last 30 calendar days,
+        # log [V81-WASH-RISK] + bump the session counter. Operator-
+        # facing only; never blocks the entry. Pruning happens here
+        # so the buffer doesn't grow unbounded.
+        try:
+            import time as _time
+            key = (signal.ticker, signal.side)
+            cutoff = _time.time() - 30 * 24 * 3600
+            recent = [r for r in self._recent_losses.get(key, [])
+                      if r.get("ts_unix", 0) > cutoff]
+            self._recent_losses[key] = recent
+            if recent:
+                prior = recent[-1]
+                self.wash_risk_count += 1
+                logger.info(
+                    "[V81-WASH-RISK] %s %s entry @ $%.2f -- prior "
+                    "loss $%.2f on same (ticker, side) at %s. "
+                    "Counter: %d this session.",
+                    signal.ticker, signal.side, entry_price,
+                    prior.get("pnl_dollars", 0.0),
+                    prior.get("exit_iso") or "?",
+                    self.wash_risk_count,
+                )
+        except Exception:
+            # Wash-sale tracking is best-effort signaling. Never
+            # block the trading path on its bookkeeping.
+            pass
+
         return Admission(position=pos, risk_ticket=ticket)
 
     # --- exit path ---
@@ -429,13 +790,47 @@ class OrbEngine:
                                ) -> Optional[_exits.ExitDecision]:
         """Convenience wrapper. Returns the exit decision if the bar
         closes the position, else None.
+
+        v8.1.0 -- forwards cfg.partial_profit_at_1r so exits.evaluate()
+        can emit EXIT_PARTIAL on first 1R touch.
         """
         return _exits.evaluate(
             pos,
             bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
             bar_bucket_min=bar_bucket_min,
             eod_cutoff_min=self.cfg.eod_cutoff_minutes,
+            partial_profit_at_1r=self.cfg.partial_profit_at_1r,
         )
+
+    def on_partial_exit(self, pos: _exits.OrbPosition,
+                        partial_price: float) -> tuple[int, float]:
+        """v8.1.0 -- engine-side partial-fill bookkeeping.
+
+        Called by the adapter AFTER the broker partial-close order has
+        been submitted (caller's responsibility). Mutates the position
+        and releases proportional risk-book budget. Returns
+        (shares_closed, pnl_dollars_booked).
+
+        On (0, 0.0), the partial was a no-op (already taken or shares
+        too small). Caller should not have submitted the broker order
+        in that case; defensive guard against double-fire.
+
+        Idempotent on duplicate calls (apply_partial_fill is itself
+        idempotent on partial_taken=True).
+        """
+        # Apply partial bookkeeping on the position itself.
+        shares_closed, pnl = _exits.apply_partial_fill(pos, partial_price)
+        if shares_closed == 0:
+            return (0, 0.0)
+        # Release half the risk-book budget for this ticket so the
+        # remaining position carries only its remaining risk weight.
+        rb = self._risk.get(pos.portfolio_id)
+        if rb is not None and pos.risk_ticket_id:
+            with rb._lock:
+                ticket = rb._open_tickets.get(pos.risk_ticket_id)
+            if ticket is not None:
+                rb.release_partial(ticket, frac=0.5)
+        return (shares_closed, pnl)
 
     def on_exit(self, pos: _exits.OrbPosition,
                 exit_decision: _exits.ExitDecision,
@@ -486,7 +881,31 @@ class OrbEngine:
                         pnl = shares * (exit_price - entry_price)
                     else:  # short
                         pnl = shares * (entry_price - exit_price)
-                    kill_just_triggered = rb.record_realized_pnl(pnl)
+                    # v8.1.0 -- include any partial-profit P&L booked
+                    # earlier in this position's lifecycle so the
+                    # daily-loss-kill gate sees the full realized P&L
+                    # of this trade, not just the runner half. Matches
+                    # backtest semantics where pnl = (exit-entry) *
+                    # remaining + partial_pnl_dollars.
+                    pnl += float(getattr(pos, "partial_pnl_dollars", 0.0) or 0.0)
+                    # v8.3.34 -- pass ticker+side so the risk_book can
+                    # apply Rule #1 (loss-lock) on this exit's pnl.
+                    kill_just_triggered = rb.record_realized_pnl(
+                        pnl, ticker=pos.ticker, side=pos.side,
+                    )
+                    # v8.1.8 -- record losing closes for the wash-sale
+                    # tracker. The threshold is a couple cents (not
+                    # strictly zero) to avoid recording rounding noise
+                    # from slippage at break-even. A re-entry on the
+                    # same (ticker, side) within 30 days will trigger
+                    # a [V81-WASH-RISK] log + counter bump.
+                    if pnl < -0.01:
+                        import time as _time
+                        self._recent_losses[(pos.ticker, pos.side)].append({
+                            "ts_unix": _time.time(),
+                            "pnl_dollars": float(pnl),
+                            "exit_iso": exit_iso or "",
+                        })
             except Exception as e:
                 logger.warning(
                     "[V79-ORB-KILL] pnl accounting failed pos=%s.%s: %s",
@@ -527,6 +946,198 @@ class OrbEngine:
                 reason=f"daily_loss_kill portfolio={portfolio_id}",
             )
 
+    # --- consistency sweeps (v8.3.15) ---
+
+    def find_phantom_in_pos(self, *, held_tickers_by_pid: dict) -> list:
+        """v8.3.15 -- find FSM rows that say in_position=True but the
+        ticker isn't in the caller's held-positions map.
+
+        Self-heal target: stale `/data/orb_state_<date>.json` files
+        where the bot closed a position in a prior process but the
+        snapshot was written BEFORE the v8.3.12 unmirror landed (or
+        the close path crashed mid-write). v8.3.4 rehydrate then
+        reloads the stale row on every subsequent bootstrap; the
+        FSM stays IN_POS forever, surfacing as the watchdog's
+        `v10_in_pos_has_internal_position` invariant.
+
+        Pure: no side effects. Returns [(pid, ticker)] list of
+        phantoms; caller decides how to clear each (different
+        clearing paths for main vs val/gene executors).
+
+        Args:
+            held_tickers_by_pid: {pid: set(tickers)} -- the tickers
+                each portfolio actually holds right now, as reported
+                by tg.positions (main) or executor.positions (val/
+                gene). Should include both long and short side.
+
+        Returns:
+            list[tuple[str, str]] -- (portfolio_id, ticker) pairs
+            that need unmirroring. Empty list when state is clean.
+        """
+        out: list = []
+        for (pid, ticker), ds in self._state.day_states.items():
+            if not ds.in_position:
+                continue
+            held = held_tickers_by_pid.get(pid)
+            if held is None:
+                # No data for this pid -- can't determine; skip.
+                continue
+            if ticker in held:
+                continue
+            out.append((pid, ticker))
+        return out
+
+    def clear_phantom_in_pos(self, portfolio_id: str, ticker: str) -> bool:
+        """v8.3.15 -- direct phantom clearing helper, used by the
+        sweep when the executor's _unmirror_position_from_engine
+        path isn't available (e.g. for main, which has no executor
+        instance -- it's the trade_genius module itself).
+
+        Returns True if any state was actually cleared.
+        """
+        cleared = False
+        ds = self._state.get_day_state(portfolio_id, ticker)
+        if ds.in_position:
+            ds.in_position = False
+            if ds.phase == _state.PHASE_IN_POS:
+                ds.transition(_state.PHASE_CLOSED)
+            cleared = True
+        rb = self._risk.get(portfolio_id)
+        if rb is not None:
+            ticket_id = f"recover-{portfolio_id}-{ticker}"
+            with rb._lock:
+                ticket = rb._open_tickets.pop(ticket_id, None)
+                if ticket is not None:
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+                    cleared = True
+        return cleared
+
+    def find_phantom_recover_tickets(self, *,
+                                     held_tickers_by_pid: dict) -> list:
+        """v8.3.20 -- second-level phantom sweep, finds orphan
+        `recover-{pid}-{ticker}` tickets in RiskBook._open_tickets
+        where the ticker isn't held by the corresponding portfolio.
+
+        Why v8.3.15's existing sweep isn't enough: that one only
+        catches phantoms where FSM `in_position=True` AND ticker not
+        held. But it's possible for `in_position` to be False (e.g.
+        rehydrated from disk that way, or set False by a partial
+        _unmirror that crashed mid-way) while the recover ticket
+        still sits in `_open_tickets`. Pre-v8.3.20 those tickets
+        leaked their reserved risk + notional forever, surfacing as
+        the watchdog `no_phantom_positions` invariant ("main has 1
+        position in /api/state but RiskBook reports open_count=4")
+        AND blocking new entries via `risk_reject:notional_cap`
+        because the cap was already consumed by ghosts.
+
+        Returns [(portfolio_id, ticket_id, ticker)] for each orphan
+        recover ticket. Caller releases each via
+        `release_recover_ticket(pid, ticket_id)`.
+
+        Scope: only `recover-{pid}-{ticker}`-prefixed tickets (the
+        deterministic ids v8.3.6 mirror creates). uuid-style tickets
+        from the normal `try_admit` path aren't touched -- they're
+        either real in-flight admits or v7.81.0 rollback failures
+        that need a separate solution (we'd need a ticket -> ticker
+        map on the position to identify them safely).
+        """
+        out: list = []
+        for pid, rb in self._risk._books.items():
+            held = held_tickers_by_pid.get(pid)
+            if held is None:
+                continue
+            prefix = f"recover-{pid}-"
+            with rb._lock:
+                ticket_ids = list(rb._open_tickets.keys())
+            for tid in ticket_ids:
+                if not tid.startswith(prefix):
+                    continue
+                ticker = tid[len(prefix):]
+                if ticker in held:
+                    continue
+                out.append((pid, tid, ticker))
+        return out
+
+    def release_recover_ticket(self, portfolio_id: str,
+                               ticket_id: str) -> bool:
+        """v8.3.20 -- pop a phantom `recover-*` ticket from
+        RiskBook._open_tickets and decrement open_risk +
+        open_notional. Used by the v8.3.20 sweep to free budget
+        held by leaked tickets without needing to also touch FSM
+        state (which v8.3.15's `clear_phantom_in_pos` handles
+        when applicable).
+
+        Returns True iff a ticket was actually released.
+        """
+        rb = self._risk.get(portfolio_id)
+        if rb is None:
+            return False
+        with rb._lock:
+            ticket = rb._open_tickets.pop(ticket_id, None)
+            if ticket is None:
+                return False
+            rb._open_risk -= float(ticket.risk_dollars)
+            rb._open_notional -= float(ticket.notional)
+            if rb._open_risk < 0:
+                rb._open_risk = 0.0
+            if rb._open_notional < 0:
+                rb._open_notional = 0.0
+        return True
+
+    def purge_non_recover_tickets(self) -> dict:
+        """v8.3.22 -- nuke every ticket in RiskBook._open_tickets
+        that ISN'T a deterministic `recover-{pid}-{ticker}` id. The
+        only legitimate path that creates uuid-style tickets is
+        `try_admit` during `OrbEngine.try_enter` -- those are
+        ephemeral (released by `on_exit` on close, or by
+        `rollback_admit` when the broker fire fails). If a uuid
+        ticket survives across a Railway redeploy + v8.3.4 rehydrate,
+        it's leaked: the position it represented was never persisted
+        (would have been in executor.positions / tg.positions and
+        re-mirrored as a `recover-*` ticket on boot via v8.3.6) so
+        the ticket has no real position behind it.
+
+        Use case: bootstrap. Run ONCE on the first scan cycle after
+        ensure_session_started. The v8.3.6 mirror re-adds clean
+        `recover-*` tickets from held positions, so this purge only
+        clears the orphan uuid leftovers that consume budget but
+        track nothing.
+
+        Returns counters {pid: n_purged} so the caller can log a
+        single `[V8322-UUID-PURGE]` summary line.
+
+        Side effects: decrements `_open_risk` + `_open_notional` per
+        cleared ticket; clamps non-negative.
+        """
+        out: dict = {}
+        for pid, rb in self._risk._books.items():
+            with rb._lock:
+                ticket_ids = list(rb._open_tickets.keys())
+            cleared = 0
+            for tid in ticket_ids:
+                if tid.startswith(f"recover-{pid}-"):
+                    continue
+                # Anything else is uuid (try_admit) -- orphan leftover.
+                with rb._lock:
+                    ticket = rb._open_tickets.pop(tid, None)
+                    if ticket is None:
+                        continue
+                    rb._open_risk -= float(ticket.risk_dollars)
+                    rb._open_notional -= float(ticket.notional)
+                    if rb._open_risk < 0:
+                        rb._open_risk = 0.0
+                    if rb._open_notional < 0:
+                        rb._open_notional = 0.0
+                cleared += 1
+            if cleared > 0:
+                out[pid] = cleared
+        return out
+
     # --- snapshots / introspection ---
 
     def snapshot(self) -> dict:
@@ -549,12 +1160,29 @@ class OrbEngine:
                 "skip_gap_above_pct": self.cfg.skip_gap_above_pct,
                 "skip_earnings_window": self.cfg.skip_earnings_window,
                 "blocklist": self.cfg.ticker_side_blocklist or {},
+                "atr_stop_mult": self.cfg.atr_stop_mult,
+                "atr_lookback_5m": self.cfg.atr_lookback_5m,
+                "partial_profit_at_1r": self.cfg.partial_profit_at_1r,
+                # v9.0.0 chase-prevention + regime-skip config
+                "min_break_bps": self.cfg.min_break_bps,
+                "max_vwap_dev_bps": self.cfg.max_vwap_dev_bps,
+                "max_vwap_dev_tickers": list(self.cfg.max_vwap_dev_tickers or ()),
+                "skip_prior_spy_ret_lt_bps": self.cfg.skip_prior_spy_ret_lt_bps,
             },
+            # v8.1.8 -- wash-sale risk counter (session-scoped).
+            # Operator-facing signaling for §1091 visibility.
+            "wash_risk_count": self.wash_risk_count,
+            # v9.0.0 chase-filter rejection counters (session-scoped).
+            "mbr_reject_count": self._mbr_reject_count,
+            "vwap_chase_reject_count": self._vwap_chase_reject_count,
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,
                 "block_reason": self._day_result.block_reason if self._day_result else "",
                 "vix_d1_close": self._day_result.vix_d1_close if self._day_result else None,
                 "vix_threshold": self._day_result.vix_threshold if self._day_result else 0.0,
+                # v9.0.0 SPY regime fields surfaced for the dashboard.
+                "spy_d1_ret_bps": self._day_result.spy_d1_ret_bps if self._day_result else None,
+                "spy_threshold_bps": self._day_result.spy_threshold_bps if self._day_result else 0.0,
                 "session_date": self._day_result_date,
             },
             "or_windows": self._state.snapshot_or_windows(),
