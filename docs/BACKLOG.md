@@ -56,6 +56,31 @@ in `docs/pl_optimization_final_report_v<N>.md`.
 
 ## Engineering
 
+### Phase 3: merge `lever-sweep.yml` + `lever-sweep-auto.yml` (2026-05-13)
+
+**Source.** Workflow audit during v9.1.18 (unified monitor) found these two workflows are tightly coupled: `lever-sweep-auto.yml` resolves variants from a pushed JSON file in `.github/sweep-trigger/` and then dispatches the same matrix that `lever-sweep.yml` runs from `workflow_dispatch`. Two workflows, one job.
+
+**Action.** Merge into a single `lever-sweep.yml` with two trigger paths:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      variants:    # JSON string
+      max_parallel:
+  push:
+    branches: [main]
+    paths: [".github/sweep-trigger/**.json"]
+```
+
+The job's first step reads variants from either the input (workflow_dispatch) or the newly-pushed file (push). Saves one workflow file and one cron-contention slot. Estimated ~45 min including testing.
+
+### Phase 4: consolidate `pull-rth-bars` + `pull-premarket` + `pull-tick-data` (2026-05-13)
+
+**Source.** Same audit. Three workflows that all pull historical bar data via different sources (Polygon REST for RTH, Polygon REST for pre-market, Alpaca SIP for ticks) into different branches. Identical scaffolding (checkout + setup-python + install + run + commit-to-branch).
+
+**Action.** Single `pull-bars.yml` parameterized on `bar_type` (`rth` | `premarket` | `tick`) + `tickers` + `date_range`. Each pull-type calls its own underlying tool. Identical commit path. Estimated ~1h including testing.
+
 ### Chart canvas survives state-poll re-renders (2026-05-13)
 
 **Source.** Operator reported mid-drag interactivity on charts gets killed

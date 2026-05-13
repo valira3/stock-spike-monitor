@@ -1,49 +1,75 @@
 ---
 name: state-snapshot-retrieval
-description: Pull live dashboard state (positions, OR boundaries, RiskBook, day_states, trade_log) + Alpaca broker state (account equity, open positions, today's orders) without secrets in the sandbox. Uses the snapshots-live + alpaca-live branches updated by GHA cron every 10 min during US RTH.
+description: Pull live dashboard state (positions, OR boundaries, RiskBook, day_states, trade_log) + Alpaca broker state + Railway forensic logs + dashboard invariant results without secrets in the sandbox. Uses the monitor-live branch updated by the unified .github/workflows/monitor.yml every 5 min during US RTH.
 ---
 
 # Retrieving live state from sandbox
 
-The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist) and from Alpaca's API. To analyze live trading state without the operator pasting JSON, pull the snapshots committed by dedicated GHA workflows. Two relays live today:
-
-| Relay | Branch | Path | Source | Workflow |
-|---|---|---|---|---|
-| Dashboard (`/api/state` + executors + trade_log) | `snapshots-live` | `data/snapshots/latest.json` | `tradegenius.up.railway.app` | `.github/workflows/state-snapshot.yml` |
-| Alpaca broker state (per-portfolio equity, positions, orders) | `alpaca-live` | `data/alpaca/latest.json` | `paper-api.alpaca.markets` | `.github/workflows/alpaca-snapshot.yml` |
+The Claude Code sandbox is firewalled from `tradegenius.up.railway.app`, Alpaca's API, and `backboard.railway.app`. To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `monitor-live` branch via the GitHub MCP:
 
 ```
 mcp__github__get_file_contents(
     owner="valira3", repo="stock-spike-monitor",
-    path="data/snapshots/latest.json", ref="snapshots-live"
-)
-# or
-mcp__github__get_file_contents(
-    owner="valira3", repo="stock-spike-monitor",
-    path="data/alpaca/latest.json", ref="alpaca-live"
+    path="data/monitor/latest.json", ref="monitor-live"
 )
 ```
 
-Both cron schedules use the v9.1.6 off-peak slot pattern (`*,12-22 UTC, Mon-Fri`):
-* dashboard relay: `2,12,22,32,42,52 12-22 * * 1-5`
-* alpaca relay:   `5,15,25,35,45,55 12-22 * * 1-5` (offset by ~5 min so a single GH-cron contention slot doesn't take out both)
+Single source of truth. Every 5 min during RTH (`3,8,13,...,58 12-22 UTC, Mon-Fri`) `.github/workflows/monitor.yml` runs `python -m tools.unified_monitor` which:
 
-Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl` and `data/alpaca/YYYY-MM-DD.jsonl`.
+1. Pulls dashboard `/api/state` + `/api/executor/{val,gene}` + `/api/trade_log?limit=5000`
+2. Pulls Alpaca per-portfolio account + positions + orders_today
+3. Pulls last 2000 Railway log lines filtered to forensic tags (`[V9*-*]`, `[V79-ORB-*]`, `[V10-FIRE]`, `Traceback`, ...)
+4. Runs the dashboard invariant battery (`tools.dashboard_monitor_invariants.INVARIANTS`)
+5. Telegrams `TELEGRAM_TP_CHAT_ID` on any invariant failure (mirrors retired dashboard-monitor's alert behavior)
+6. Commits the result to `monitor-live`
 
-For an immediate refresh outside the cron window: Actions tab → `state-snapshot` / `alpaca-snapshot` → Run workflow (`workflow_dispatch`).
+For an immediate refresh outside the cron window: Actions tab → `monitor` → Run workflow (`workflow_dispatch`).
 
-## Snapshot shape
+Daily JSONL history at `data/monitor/YYYY-MM-DD.jsonl`.
+
+## Pre-v9.1.18 (retired)
+
+The unified monitor replaces three separate cron workflows that each maintained their own branch:
+
+| Pre-v9.1.18 workflow | Pre-v9.1.18 branch | Status |
+|---|---|---|
+| `state-snapshot.yml` | `snapshots-live` | Retired — read `monitor-live` instead |
+| `alpaca-snapshot.yml` | `alpaca-live` | Retired — read `monitor-live` instead |
+| `dashboard-monitor.yml` | (no branch; Telegram-only) | Retired — alerting rolled into `monitor.yml` |
+
+The `snapshots-live` and `alpaca-live` branches still exist but are no longer being updated after v9.1.18. New code should read `monitor-live`.
+
+## Snapshot shape (v9.1.18+, `monitor-live` branch, `data/monitor/latest.json`)
 
 ```json
 {
   "schema_version": 1,
-  "captured_at_utc": "2026-05-13T00:11:23Z",
+  "captured_at_utc": "2026-05-13T17:30:00Z",
   "dashboard_base_url": "https://tradegenius.up.railway.app",
-  "endpoints": {
-    "/api/state":              { ... full /api/state ... },
-    "/api/executor/val":       { ... val executor diagnostics ... },
-    "/api/executor/gene":      { ... gene executor diagnostics ... },
-    "/api/trade_log?limit=5000": { "rows": [...], "count": N }
+  "dashboard": {
+    "endpoints": {
+      "/api/state":              { ... full /api/state ... },
+      "/api/executor/val":       { ... val executor diagnostics ... },
+      "/api/executor/gene":      { ... gene executor diagnostics ... },
+      "/api/trade_log?limit=5000": { "rows": [...], "count": N }
+    }
+  },
+  "alpaca": {
+    "_any_ok": true,
+    "portfolios": {
+      "main": { "account": {...}, "positions": [...], "orders_today": [...] },
+      "val":  { ... },
+      "gene": { ... }
+    }
+  },
+  "railway_logs": {
+    "total_fetched": 2000,
+    "forensic_matches": [ ... last 200 forensic-pattern lines ... ],
+    "filter_summary": { "[V900-": 3, "[V910-": 1, "Traceback": 0, ... }
+  },
+  "invariants": {
+    "results": [ {"name":"inv_state_reachable","status":"pass","summary":"..."}, ... ],
+    "failed_count": 0
   }
 }
 ```
