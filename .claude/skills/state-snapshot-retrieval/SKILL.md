@@ -51,3 +51,63 @@ The snapshot file is large (often 150-400KB). `mcp__github__get_file_contents` w
 If you need state from a specific point in time and the cron didn't capture it:
 1. Check `data/snapshots/YYYY-MM-DD.jsonl` for an earlier same-day capture (one line per cron tick)
 2. If the historical capture you need doesn't exist, **don't try to recreate it from live** — the data is gone. Note the gap in your analysis.
+
+## Practical command pattern (v9.1.13+)
+
+`mcp__github__get_file_contents` on this path returns an error saying the result exceeds the token cap. The harness automatically writes the full payload to a temp file under `/root/.claude/projects/.../tool-results/`. The recipe to extract and analyze:
+
+```bash
+# 1. The MCP wraps the response as a JSON array:
+#    [{"type":"text","text":"successfully downloaded ..."},
+#     {"type":"text","text":"[Resource from github ...] {...actual JSON...}"}]
+# 2. Index [1] is the resource. Strip the leading "[Resource from github ...]"
+#    preamble (everything up to the first '{').
+jq -r '.[1].text' /path/to/mcp-github-get_file_contents-*.txt \
+  | sed -e '1s/^[^{]*//' > /tmp/snap.json
+
+# 3. Now parse normally with python or jq.
+python3 << 'PY'
+import json
+d = json.load(open('/tmp/snap.json'))
+st = d['endpoints']['/api/state']
+print(st.get('version'), len(st.get('trades_today') or []))
+PY
+```
+
+## Live watchdog pattern (background diff stream)
+
+When you want to be notified of state transitions during a session (deploy lands, new trade fires, EOD entry attempt, error count rises) without polling manually, arm a Monitor that polls the raw GitHub URL — **no auth required** since the repo is public:
+
+```bash
+URL="https://raw.githubusercontent.com/valira3/stock-spike-monitor/snapshots-live/data/snapshots/latest.json"
+prev_state=""
+while true; do
+  body=$(curl -sS --max-time 15 -H 'Cache-Control: no-cache' "$URL?cb=$RANDOM" 2>/dev/null || true)
+  state=$(echo "$body" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+st=d.get('endpoints',{}).get('/api/state',{})
+print('|'.join([
+  d.get('captured_at_utc','?'),
+  st.get('version','?'),
+  str(len(st.get('trades_today') or [])),
+  str(len(st.get('positions') or [])),
+  str((st.get('errors') or {}).get('count',0)),
+]))
+")
+  if [ "$state" != "$prev_state" ]; then
+    echo "[$(date -u +%H:%M:%SZ)] $state"
+    prev_state="$state"
+  fi
+  sleep 90
+done
+```
+
+Each `echo` line becomes a Monitor notification. Emit only when state changes so the operator's chat isn't spammed with no-ops. Monitors are capped at 30 min wall-clock; re-arm on timeout if you need a longer watch.
+
+## When the cron is stale + Claude can't refresh
+
+Two non-obvious limits to know:
+
+1. **Claude can't trigger workflow_dispatch via MCP.** There's no `mcp__github__run_workflow_dispatch` tool. Asking the operator to click `Actions → state-snapshot → Run workflow` is the only refresh path.
+2. **The cron itself is unreliable.** GitHub Actions cron is best-effort and frequently delays/skips runs (especially `*/10` patterns that land on top-of-hour). v9.1.6 shifted the schedule to off-peak minutes (`2,12,22,32,42,52`) and widened the window (`12-22 UTC`). When the latest snapshot is more than ~20 min old during RTH, assume the cron has gaps and prompt the operator to manually fire.

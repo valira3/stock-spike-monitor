@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.15 (2026-05-13) — Document live-state probing patterns in the snapshot-retrieval skill
+
+Doc-only. Today's session used the `snapshots-live` branch heavily for live-state analysis during a 15-release iteration sprint. The pre-existing `state-snapshot-retrieval` skill covered the basic `mcp__github__get_file_contents` path but missed three patterns we landed on today:
+
+* **The result-too-large unwrap recipe.** The latest snapshot is ~300 KB and exceeds the MCP tool's token cap. The harness writes the full payload to a temp file; the right extraction is `jq -r '.[1].text' /tmp/file | sed -e '1s/^[^{]*//' > /tmp/snap.json` to strip the MCP wrapper + the `[Resource from github ...]` preamble before parsing.
+* **The live watchdog Monitor pattern.** Polling `raw.githubusercontent.com` directly (no auth — public repo) every 90 s and emitting deltas on `(version, trades_today, positions, errors, eod state)` lets the session sit in the background while still surfacing notable transitions. Code snippet inlined in the skill.
+* **The two non-obvious limits**: Claude can't trigger `workflow_dispatch` via the current MCP surface (no tool exists), and GH cron is best-effort enough that the snapshot is sometimes >20 min stale during RTH even after v9.1.6's schedule fix. When stale, the operator manually fires `Actions → state-snapshot → Run workflow`.
+
+No runtime change. CI still passes the version-bump check via the standard `bot_version.py` + `trade_genius.py` bump.
+
+---
+
 ## v9.1.14 (2026-05-13) — Revert v9.1.13 canvas-transplant + drop date filter that was suppressing markers
 
 ### Part A — Revert v9.1.13's canvas-transplant interactivity attempt
