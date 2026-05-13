@@ -21,7 +21,22 @@
         },
         "orders_today": [
           {
-            "canceled_at": "2026-05-13 18:00:07.177684+00:00",
+            "canceled_at": "2026-05-13 20:00:01.455207+00:00",
+            "client_order_id": "c16bc5f5-a12c-47f1-b728-d39e62e7a924",
+            "filled_at": "",
+            "filled_avg_price": "",
+            "filled_qty": "0",
+            "id": "92c276d2-06e4-43d3-a84d-c328c8894c71",
+            "qty": "1",
+            "side": "OrderSide.BUY",
+            "status": "OrderStatus.CANCELED",
+            "submitted_at": "2026-05-13 20:00:01.440808+00:00",
+            "symbol": "SPY",
+            "time_in_force": "TimeInForce.DAY",
+            "type": "OrderType.LIMIT"
+          },
+          {
+            "canceled_at": "2026-05-13 18:00:07.177685+00:00",
             "client_order_id": "611d5400-6f6c-44e9-a55f-d795546eff45",
             "filled_at": "",
             "filled_avg_price": "",
@@ -30,7 +45,7 @@
             "qty": "1",
             "side": "OrderSide.BUY",
             "status": "OrderStatus.CANCELED",
-            "submitted_at": "2026-05-13 18:00:06.639559+00:00",
+            "submitted_at": "2026-05-13 18:00:06.639560+00:00",
             "symbol": "SPY",
             "time_in_force": "TimeInForce.IOC",
             "type": "OrderType.LIMIT"
@@ -204,7 +219,22 @@
         },
         "orders_today": [
           {
-            "canceled_at": "2026-05-13 18:00:07.177684+00:00",
+            "canceled_at": "2026-05-13 20:00:01.455207+00:00",
+            "client_order_id": "c16bc5f5-a12c-47f1-b728-d39e62e7a924",
+            "filled_at": "",
+            "filled_avg_price": "",
+            "filled_qty": "0",
+            "id": "92c276d2-06e4-43d3-a84d-c328c8894c71",
+            "qty": "1",
+            "side": "OrderSide.BUY",
+            "status": "OrderStatus.CANCELED",
+            "submitted_at": "2026-05-13 20:00:01.440808+00:00",
+            "symbol": "SPY",
+            "time_in_force": "TimeInForce.DAY",
+            "type": "OrderType.LIMIT"
+          },
+          {
+            "canceled_at": "2026-05-13 18:00:07.177685+00:00",
             "client_order_id": "611d5400-6f6c-44e9-a55f-d795546eff45",
             "filled_at": "",
             "filled_avg_price": "",
@@ -213,7 +243,7 @@
             "qty": "1",
             "side": "OrderSide.BUY",
             "status": "OrderStatus.CANCELED",
-            "submitted_at": "2026-05-13 18:00:06.639559+00:00",
+            "submitted_at": "2026-05-13 18:00:06.639560+00:00",
             "symbol": "SPY",
             "time_in_force": "TimeInForce.IOC",
             "type": "OrderType.LIMIT"
@@ -373,7 +403,7 @@
       }
     }
   },
-  "captured_at_utc": "2026-05-13T19:57:19Z",
+  "captured_at_utc": "2026-05-13T20:21:12Z",
   "dashboard": {
     "endpoints": {
       "/api/executor/gene": {
@@ -534,7 +564,7 @@
           "val": []
         },
         "earnings_watcher": {
-          "current_window": "rth_idle",
+          "current_window": "afterhours",
           "enabled": false,
           "last_cycle": {
             "date": "2026-05-07",
@@ -587,127 +617,127 @@
         },
         "gates": {
           "halt_reason": "",
-          "next_scan_sec": 42,
+          "next_scan_sec": 0,
           "or_collected_date": "2026-05-13",
           "per_ticker": [
             {
               "break": true,
               "di": false,
-              "extension_pct": 0.78,
+              "extension_pct": 0.77,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "AAPL",
-              "ts": "2026-05-13T19:56:54.274677+00:00"
+              "ts": "2026-05-13T19:58:59.469237+00:00"
             },
             {
               "break": true,
               "di": true,
-              "extension_pct": 1.78,
+              "extension_pct": 1.89,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "AMZN",
-              "ts": "2026-05-13T19:56:54.520993+00:00"
+              "ts": "2026-05-13T19:58:59.574863+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 0.09,
+              "extension_pct": 0.22,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "AVGO",
-              "ts": "2026-05-13T19:56:54.605814+00:00"
+              "ts": "2026-05-13T19:58:59.679488+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 4.0,
+              "extension_pct": 4.05,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "GOOG",
-              "ts": "2026-05-13T19:56:54.689537+00:00"
+              "ts": "2026-05-13T19:58:59.788118+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 2.68,
+              "extension_pct": 2.75,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "META",
-              "ts": "2026-05-13T19:56:54.779242+00:00"
+              "ts": "2026-05-13T19:58:59.896025+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 0.09,
+              "extension_pct": 0.11,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "MSFT",
-              "ts": "2026-05-13T19:56:54.878749+00:00"
+              "ts": "2026-05-13T19:58:59.994222+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 0.79,
+              "extension_pct": 0.81,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "NFLX",
-              "ts": "2026-05-13T19:56:54.971821+00:00"
+              "ts": "2026-05-13T19:59:00.209852+00:00"
             },
             {
               "break": false,
               "di": false,
-              "extension_pct": -0.46,
+              "extension_pct": -0.38,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": false,
               "side": "LONG",
               "ticker": "NVDA",
-              "ts": "2026-05-13T19:56:55.069767+00:00"
+              "ts": "2026-05-13T19:59:00.576500+00:00"
             },
             {
-              "break": true,
+              "break": false,
               "di": false,
-              "extension_pct": 0.17,
+              "extension_pct": -0.01,
               "index": false,
               "or_stale_skip_count": 0,
-              "polarity": false,
+              "polarity": true,
               "side": "LONG",
               "ticker": "ORCL",
-              "ts": "2026-05-13T19:56:55.188626+00:00"
+              "ts": "2026-05-13T19:59:00.839806+00:00"
             },
             {
               "break": true,
               "di": false,
-              "extension_pct": 1.23,
+              "extension_pct": 1.26,
               "index": false,
               "or_stale_skip_count": 0,
               "polarity": true,
               "side": "LONG",
               "ticker": "TSLA",
-              "ts": "2026-05-13T19:56:55.291527+00:00"
+              "ts": "2026-05-13T19:59:01.033663+00:00"
             }
           ],
-          "scan_idle_hours": false,
-          "scan_paused": false,
+          "scan_idle_hours": true,
+          "scan_paused": true,
           "scan_paused_user": false,
           "trading_halted": false
         },
         "ingest_status": {
-          "bars_today": 13029,
+          "bars_today": 13311,
           "gap_audit": {
             "date": "2026-05-13",
             "fill_rate": 0.0,
@@ -732,10 +762,10 @@
                 }
               ]
             },
-            "is_rth": true,
+            "is_rth": false,
             "per_ticker": {}
           },
-          "last_bar_age_s": 9.2,
+          "last_bar_age_s": 57.1,
           "open_gaps_today": 0,
           "status": "live",
           "ws_state": "LIVE"
@@ -752,8 +782,8 @@
           "AAPL": {
             "boundary_hold": {
               "last_two_closes": [
-                299.08,
-                299.33
+                299.33,
+                299.25
               ],
               "long_consecutive_outside": 2,
               "or_high": 296.93,
@@ -763,9 +793,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 20.602118760360515,
+              "di_minus_1m": 21.136644753391675,
               "di_minus_5m": 21.796613016245054,
-              "di_plus_1m": 16.016052314776715,
+              "di_plus_1m": 16.540185802908553,
               "di_plus_5m": 16.852908653187537,
               "seed_bars": 65,
               "sufficient": true,
@@ -774,7 +804,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 300.55,
-              "last": 299.25,
+              "last": 299.2199,
               "lo": 293.53,
               "open": 294.76,
               "points": [
@@ -838,45 +868,45 @@
                 299.04,
                 299.3,
                 299.08,
-                299.25
+                299.2199
               ]
             },
             "momentum_distances": {
-              "adx_1m": 23.72179748649113,
+              "adx_1m": 22.610222021970042,
               "adx_5m": 20.06603033855719,
               "adx_5m_gap": -0.066,
               "adx_threshold": 20.0,
-              "di_cross_gap": -4.586,
+              "di_cross_gap": -4.596,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0059,
-              "vwap_gap_pct": 0.4113
+              "ema9_gap_pct": -0.0159,
+              "vwap_gap_pct": 0.396
             },
             "vol_bucket": {
-              "baseline_at_minute": 244614.1935483871,
-              "current_1m_vol": 243637,
+              "baseline_at_minute": 8907.125,
+              "current_1m_vol": 725,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.9960051641558003,
-              "ratio_to_55bar_avg": 0.9960051641558003,
-              "state": "PASS"
+              "lookup_bucket": "1620",
+              "ratio": 0.08139551201987173,
+              "ratio_to_55bar_avg": 0.08139551201987173,
+              "state": "FAIL"
             },
             "weather": {
-              "avwap": 298.0241419095345,
+              "avwap": 298.03976185662975,
               "direction": "flat",
               "divergence": false,
               "ema9_5m": 299.26753967782247,
               "global_direction": "down",
-              "last": 299.25,
+              "last": 299.2199,
               "last_close_5m": 299.33
             }
           },
           "AMZN": {
             "boundary_hold": {
               "last_two_closes": [
-                270.295,
-                269.87
+                269.87,
+                269.82
               ],
               "long_consecutive_outside": 2,
               "or_high": 265.09,
@@ -886,9 +916,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 34.01851230665902,
+              "di_minus_1m": 30.30525288931845,
               "di_minus_5m": 15.733116693833455,
-              "di_plus_1m": 17.538498123581764,
+              "di_plus_1m": 19.466165490937694,
               "di_plus_5m": 27.144098486352394,
               "seed_bars": 64,
               "sufficient": true,
@@ -897,7 +927,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 270.3199,
-              "last": 269.81,
+              "last": 270.095,
               "lo": 264.37,
               "open": 267.46,
               "points": [
@@ -961,45 +991,45 @@
                 269.95,
                 270.31,
                 270.3199,
-                269.81
+                270.095
               ]
             },
             "momentum_distances": {
-              "adx_1m": 24.207228543016925,
+              "adx_1m": 24.527945828754184,
               "adx_5m": 25.31317234928817,
               "adx_5m_gap": -5.313,
               "adx_threshold": 20.0,
-              "di_cross_gap": -16.48,
+              "di_cross_gap": -10.839,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0888,
-              "vwap_gap_pct": 0.6987
+              "ema9_gap_pct": 0.0167,
+              "vwap_gap_pct": 0.796
             },
             "vol_bucket": {
-              "baseline_at_minute": 256934.85483870967,
-              "current_1m_vol": 182316,
+              "baseline_at_minute": 16912.022222222222,
+              "current_1m_vol": 527,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.7095806449243661,
-              "ratio_to_55bar_avg": 0.7095806449243661,
+              "lookup_bucket": "1620",
+              "ratio": 0.031161264636202255,
+              "ratio_to_55bar_avg": 0.031161264636202255,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 267.93782870832115,
+              "avwap": 267.96198766053317,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 270.0498151186696,
               "global_direction": "down",
-              "last": 269.81,
+              "last": 270.095,
               "last_close_5m": 269.87
             }
           },
           "AVGO": {
             "boundary_hold": {
               "last_two_closes": [
-                416.26,
-                415.99
+                416.49,
+                416.225
               ],
               "long_consecutive_outside": 2,
               "or_high": 415.845,
@@ -1009,9 +1039,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 37.620137445046105,
+              "di_minus_1m": 31.635008007067366,
               "di_minus_5m": 31.32751166925373,
-              "di_plus_1m": 9.479258443322655,
+              "di_plus_1m": 11.507540607792718,
               "di_plus_5m": 21.44504597656831,
               "seed_bars": 65,
               "sufficient": true,
@@ -1020,7 +1050,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 423.75,
-              "last": 416.185,
+              "last": 416.78,
               "lo": 408.42,
               "open": 423.75,
               "points": [
@@ -1084,45 +1114,45 @@
                 417.79,
                 417.405,
                 416.31,
-                416.185
+                416.78
               ]
             },
             "momentum_distances": {
-              "adx_1m": 29.999812580106802,
+              "adx_1m": 32.696205792318665,
               "adx_5m": 16.348272327834028,
               "adx_5m_gap": 3.652,
               "adx_threshold": 20.0,
-              "di_cross_gap": -28.141,
+              "di_cross_gap": -20.127,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.2774,
-              "vwap_gap_pct": 0.5754
+              "ema9_gap_pct": -0.1348,
+              "vwap_gap_pct": 0.7079
             },
             "vol_bucket": {
-              "baseline_at_minute": 120412.75806451614,
-              "current_1m_vol": 93092,
+              "baseline_at_minute": 8806.92,
+              "current_1m_vol": 995,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.7731074472201865,
-              "ratio_to_55bar_avg": 0.7731074472201865,
+              "lookup_bucket": "1620",
+              "ratio": 0.11297933897435199,
+              "ratio_to_55bar_avg": 0.11297933897435199,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 413.8039043018615,
+              "avwap": 413.8505454176288,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 417.34270849247935,
               "global_direction": "down",
-              "last": 416.185,
+              "last": 416.78,
               "last_close_5m": 415.99
             }
           },
           "GOOG": {
             "boundary_hold": {
               "last_two_closes": [
-                398.79,
-                398.98
+                398.94,
+                399.01
               ],
               "long_consecutive_outside": 2,
               "or_high": 383.65,
@@ -1132,9 +1162,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 26.724636611249828,
+              "di_minus_1m": 24.043411031627098,
               "di_minus_5m": 24.62922952794925,
-              "di_plus_1m": 24.888691929976716,
+              "di_plus_1m": 26.970116642819537,
               "di_plus_5m": 24.312113388525894,
               "seed_bars": 65,
               "sufficient": true,
@@ -1143,7 +1173,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 399.615,
-              "last": 398.98,
+              "last": 399.21,
               "lo": 383.18,
               "open": 384.2,
               "points": [
@@ -1207,45 +1237,45 @@
                 399.135,
                 398.745,
                 398.19,
-                398.98
+                399.21
               ]
             },
             "momentum_distances": {
-              "adx_1m": 17.471616726890144,
+              "adx_1m": 15.823525413117332,
               "adx_5m": 36.6785358791584,
               "adx_5m_gap": -16.679,
               "adx_threshold": 20.0,
-              "di_cross_gap": -1.836,
+              "di_cross_gap": 2.927,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0109,
-              "vwap_gap_pct": 1.3061
+              "ema9_gap_pct": 0.0467,
+              "vwap_gap_pct": 1.342
             },
             "vol_bucket": {
-              "baseline_at_minute": 110304.95161290323,
-              "current_1m_vol": 94588,
+              "baseline_at_minute": 6618.333333333333,
+              "current_1m_vol": 1724,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.8575136348542245,
-              "ratio_to_55bar_avg": 0.8575136348542245,
-              "state": "PASS"
+              "lookup_bucket": "1620",
+              "ratio": 0.26048854192898513,
+              "ratio_to_55bar_avg": 0.26048854192898513,
+              "state": "FAIL"
             },
             "weather": {
-              "avwap": 393.83599065280544,
-              "direction": "down",
-              "divergence": false,
+              "avwap": 393.923411816808,
+              "direction": "up",
+              "divergence": true,
               "ema9_5m": 399.0236293652584,
               "global_direction": "down",
-              "last": 398.98,
+              "last": 399.21,
               "last_close_5m": 398.98
             }
           },
           "META": {
             "boundary_hold": {
               "last_two_closes": [
-                615.9,
-                616.92
+                616.585,
+                616.43
               ],
               "long_consecutive_outside": 2,
               "or_high": 600.37,
@@ -1255,9 +1285,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 18.839532764854685,
+              "di_minus_1m": 17.707232683483017,
               "di_minus_5m": 23.05196341319069,
-              "di_plus_1m": 27.298926061960366,
+              "di_plus_1m": 27.051770780734948,
               "di_plus_5m": 21.566127949003203,
               "seed_bars": 62,
               "sufficient": true,
@@ -1265,110 +1295,110 @@
             },
             "mini_chart": {
               "count": 61,
-              "hi": 619.1919,
-              "last": 616.435,
-              "lo": 597.7,
-              "open": 602.0,
+              "hi": 619.115,
+              "last": 616.87,
+              "lo": 597.54,
+              "open": 603.8,
               "points": [
+                603.8,
+                604.2,
+                602.7,
+                603.28,
                 602.0,
-                602.17,
-                601.5494,
+                602.15,
+                602.25,
+                602.28,
+                601.98,
                 601.7572,
-                601.45,
-                601.25,
-                600.52,
-                600.6596,
-                600.27,
-                599.0,
-                598.25,
-                597.88,
-                597.7,
+                601.54,
+                601.0,
+                600.48,
+                600.99,
+                599.7,
+                599.21,
+                597.54,
+                597.5814,
                 598.3,
-                598.98,
-                598.4146,
-                599.98,
-                598.475,
-                601.125,
-                602.92,
-                607.15,
-                605.43,
-                606.355,
+                598.2,
+                598.79,
+                599.68,
+                600.71,
+                598.895,
+                604.83,
+                606.665,
+                605.61,
                 606.57,
-                603.77,
-                605.01,
-                605.74,
-                605.15,
-                603.84,
-                605.405,
-                606.64,
-                607.31,
-                608.16,
+                603.9,
+                605.245,
+                604.76,
+                604.25,
+                604.29,
+                606.8,
+                606.405,
+                607.677,
                 608.48,
-                609.85,
-                610.19,
-                611.2,
-                612.835,
-                612.39,
-                612.705,
-                616.475,
-                615.36,
-                615.165,
+                609.2,
+                609.71,
+                611.92,
+                613.08,
+                612.42,
+                615.28,
+                615.24,
+                614.935,
                 615.65,
-                615.29,
-                615.73,
-                615.7501,
-                616.29,
-                617.3,
-                618.31,
-                617.67,
-                619.1919,
-                618.75,
+                615.3143,
+                615.85,
+                615.3345,
+                616.25,
+                618.07,
+                617.96,
+                618.715,
+                619.115,
                 617.17,
-                617.36,
-                617.81,
-                616.515,
-                616.59,
-                616.855,
-                615.52,
-                616.435
+                617.32,
+                618.035,
+                616.39,
+                616.81,
+                616.92,
+                616.87
               ]
             },
             "momentum_distances": {
-              "adx_1m": 19.495306258623135,
+              "adx_1m": 19.34145581572837,
               "adx_5m": 30.156683331744894,
               "adx_5m_gap": -10.157,
               "adx_threshold": 20.0,
-              "di_cross_gap": 8.459,
+              "di_cross_gap": 9.345,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0925,
-              "vwap_gap_pct": 0.965
+              "ema9_gap_pct": -0.022,
+              "vwap_gap_pct": 1.0261
             },
             "vol_bucket": {
-              "baseline_at_minute": 84970.14516129032,
-              "current_1m_vol": 52317,
+              "baseline_at_minute": 7028.295454545455,
+              "current_1m_vol": 1167,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.615710375693626,
-              "ratio_to_55bar_avg": 0.615710375693626,
+              "lookup_bucket": "1620",
+              "ratio": 0.16604310498148717,
+              "ratio_to_55bar_avg": 0.16604310498148717,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 610.5435054503102,
+              "avwap": 610.6043294585102,
               "direction": "up",
               "divergence": true,
               "ema9_5m": 617.0058396843162,
               "global_direction": "down",
-              "last": 616.435,
+              "last": 616.87,
               "last_close_5m": 616.92
             }
           },
           "MSFT": {
             "boundary_hold": {
               "last_two_closes": [
-                405.2,
-                405.01
+                405.04,
+                405.11
               ],
               "long_consecutive_outside": 2,
               "or_high": 404.745,
@@ -1378,9 +1408,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 23.57447906061686,
+              "di_minus_1m": 21.5217615849567,
               "di_minus_5m": 18.373499473172252,
-              "di_plus_1m": 17.619988846153475,
+              "di_plus_1m": 19.37520241860366,
               "di_plus_5m": 24.37546209043581,
               "seed_bars": 65,
               "sufficient": true,
@@ -1389,7 +1419,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 407.3,
-              "last": 405.14,
+              "last": 405.195,
               "lo": 402.13,
               "open": 407.3,
               "points": [
@@ -1453,45 +1483,45 @@
                 404.55,
                 405.385,
                 405.24,
-                405.14
+                405.195
               ]
             },
             "momentum_distances": {
-              "adx_1m": 16.960530668522587,
+              "adx_1m": 15.776239686717778,
               "adx_5m": 18.723627470336222,
               "adx_5m_gap": 1.276,
               "adx_threshold": 20.0,
-              "di_cross_gap": -5.954,
+              "di_cross_gap": -2.147,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": 0.0145,
-              "vwap_gap_pct": 0.2856
+              "ema9_gap_pct": 0.028,
+              "vwap_gap_pct": 0.2957
             },
             "vol_bucket": {
-              "baseline_at_minute": 171533.37096774194,
-              "current_1m_vol": 116191,
+              "baseline_at_minute": 10026.509433962265,
+              "current_1m_vol": 2375,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.6773667382882048,
-              "ratio_to_55bar_avg": 0.6773667382882048,
+              "lookup_bucket": "1620",
+              "ratio": 0.23687206556204776,
+              "ratio_to_55bar_avg": 0.23687206556204776,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 403.98640130515776,
+              "avwap": 404.0002669186876,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 405.0813924906353,
               "global_direction": "down",
-              "last": 405.14,
+              "last": 405.195,
               "last_close_5m": 405.01
             }
           },
           "NFLX": {
             "boundary_hold": {
               "last_two_closes": [
-                87.605,
-                87.615
+                87.615,
+                87.565
               ],
               "long_consecutive_outside": 2,
               "or_high": 86.87,
@@ -1501,9 +1531,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 37.31009590830583,
+              "di_minus_1m": 34.111670633081715,
               "di_minus_5m": 28.783252335693717,
-              "di_plus_1m": 11.045086416128505,
+              "di_plus_1m": 18.539647050305298,
               "di_plus_5m": 18.164261930920304,
               "seed_bars": 64,
               "sufficient": true,
@@ -1512,7 +1542,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 88.28,
-              "last": 87.555,
+              "last": 87.57,
               "lo": 86.77,
               "open": 87.38,
               "points": [
@@ -1576,45 +1606,45 @@
                 88.155,
                 87.88,
                 87.605,
-                87.555
+                87.57
               ]
             },
             "momentum_distances": {
-              "adx_1m": 40.481539322737916,
+              "adx_1m": 40.761294225844516,
               "adx_5m": 24.438856006784338,
               "adx_5m_gap": -4.439,
               "adx_threshold": 20.0,
-              "di_cross_gap": -26.265,
+              "di_cross_gap": -15.572,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.3992,
-              "vwap_gap_pct": 0.0588
+              "ema9_gap_pct": -0.3821,
+              "vwap_gap_pct": 0.0746
             },
             "vol_bucket": {
-              "baseline_at_minute": 296117.4516129032,
-              "current_1m_vol": 165838,
+              "baseline_at_minute": 12589.833333333334,
+              "current_1m_vol": 829,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.5600412913751203,
-              "ratio_to_55bar_avg": 0.5600412913751203,
+              "lookup_bucket": "1620",
+              "ratio": 0.0658467811329247,
+              "ratio_to_55bar_avg": 0.0658467811329247,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 87.50350906131114,
+              "avwap": 87.50472815571132,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 87.9059019164489,
               "global_direction": "down",
-              "last": 87.555,
+              "last": 87.57,
               "last_close_5m": 87.615
             }
           },
           "NVDA": {
             "boundary_hold": {
               "last_two_closes": [
-                225.42,
-                225.43
+                225.62,
+                225.753
               ],
               "long_consecutive_outside": 0,
               "or_high": 226.78,
@@ -1624,9 +1654,9 @@
               "state": "ARMED"
             },
             "di": {
-              "di_minus_1m": 31.04581401947966,
+              "di_minus_1m": 27.56375866021601,
               "di_minus_5m": 31.957641489004924,
-              "di_plus_1m": 11.14817682664148,
+              "di_plus_1m": 14.42427100611226,
               "di_plus_5m": 10.404474872091159,
               "seed_bars": 65,
               "sufficient": true,
@@ -1635,7 +1665,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 227.57,
-              "last": 225.74,
+              "last": 225.91,
               "lo": 223.245,
               "open": 225.5,
               "points": [
@@ -1699,45 +1729,45 @@
                 226.5069,
                 226.23,
                 225.62,
-                225.74
+                225.91
               ]
             },
             "momentum_distances": {
-              "adx_1m": 40.59284432814816,
+              "adx_1m": 39.876679042544815,
               "adx_5m": 16.845386221146658,
               "adx_5m_gap": 3.155,
               "adx_threshold": 20.0,
-              "di_cross_gap": -19.898,
+              "di_cross_gap": -13.139,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.2315,
-              "vwap_gap_pct": -0.0351
+              "ema9_gap_pct": -0.1564,
+              "vwap_gap_pct": 0.0404
             },
             "vol_bucket": {
-              "baseline_at_minute": 646318.1774193548,
-              "current_1m_vol": 489438,
+              "baseline_at_minute": 32879.96363636364,
+              "current_1m_vol": 7538,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.757270980609346,
-              "ratio_to_55bar_avg": 0.757270980609346,
+              "lookup_bucket": "1620",
+              "ratio": 0.22925816109064487,
+              "ratio_to_55bar_avg": 0.22925816109064487,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 225.8192566982607,
+              "avwap": 225.81872183176802,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 226.26390827106684,
               "global_direction": "down",
-              "last": 225.74,
+              "last": 225.91,
               "last_close_5m": 225.43
             }
           },
           "ORCL": {
             "boundary_hold": {
               "last_two_closes": [
-                189.845,
-                189.85
+                189.88,
+                190.12
               ],
               "long_consecutive_outside": 2,
               "or_high": 189.82,
@@ -1747,9 +1777,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 16.81367780464234,
+              "di_minus_1m": 13.93534369172308,
               "di_minus_5m": 19.564929537350455,
-              "di_plus_1m": 13.837778171740746,
+              "di_plus_1m": 17.59988042089201,
               "di_plus_5m": 18.846638439142126,
               "seed_bars": 65,
               "sufficient": true,
@@ -1758,11 +1788,10 @@
             "mini_chart": {
               "count": 61,
               "hi": 190.96,
-              "last": 190.14,
+              "last": 189.81,
               "lo": 185.25,
-              "open": 188.5,
+              "open": 188.36,
               "points": [
-                188.5,
                 188.36,
                 188.66,
                 189.8789,
@@ -1822,45 +1851,46 @@
                 190.49,
                 190.19,
                 189.995,
-                190.14
+                189.94,
+                189.81
               ]
             },
             "momentum_distances": {
-              "adx_1m": 24.234528493728586,
+              "adx_1m": 22.60871465932481,
               "adx_5m": 26.726118105394914,
               "adx_5m_gap": -6.726,
               "adx_threshold": 20.0,
-              "di_cross_gap": -2.976,
+              "di_cross_gap": 3.665,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0139,
-              "vwap_gap_pct": 0.5299
+              "ema9_gap_pct": -0.1874,
+              "vwap_gap_pct": 0.3492
             },
             "vol_bucket": {
-              "baseline_at_minute": 128725.66129032258,
-              "current_1m_vol": 69288,
+              "baseline_at_minute": 9505.627450980392,
+              "current_1m_vol": 253,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.5382609753600774,
-              "ratio_to_55bar_avg": 0.5382609753600774,
+              "lookup_bucket": "1620",
+              "ratio": 0.02661581271775027,
+              "ratio_to_55bar_avg": 0.02661581271775027,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 189.13771478558795,
-              "direction": "down",
-              "divergence": false,
+              "avwap": 189.14944474051694,
+              "direction": "up",
+              "divergence": true,
               "ema9_5m": 190.1663786504417,
               "global_direction": "down",
-              "last": 190.14,
+              "last": 189.81,
               "last_close_5m": 189.85
             }
           },
           "TSLA": {
             "boundary_hold": {
               "last_two_closes": [
-                445.07,
-                444.6735
+                445.25,
+                445.04
               ],
               "long_consecutive_outside": 2,
               "or_high": 439.66,
@@ -1870,9 +1900,9 @@
               "state": "SATISFIED"
             },
             "di": {
-              "di_minus_1m": 19.339609247046425,
+              "di_minus_1m": 17.46836442083029,
               "di_minus_5m": 29.771634494882797,
-              "di_plus_1m": 18.466723351653904,
+              "di_plus_1m": 17.223515754303918,
               "di_plus_5m": 13.245995987870563,
               "seed_bars": 65,
               "sufficient": true,
@@ -1881,7 +1911,7 @@
             "mini_chart": {
               "count": 61,
               "hi": 452.1,
-              "last": 445.09,
+              "last": 445.25,
               "lo": 433.66,
               "open": 438.46,
               "points": [
@@ -1945,37 +1975,37 @@
                 444.655,
                 445.285,
                 444.52,
-                445.09
+                445.25
               ]
             },
             "momentum_distances": {
-              "adx_1m": 29.74506865865023,
+              "adx_1m": 26.10197272345778,
               "adx_5m": 25.23799583912996,
               "adx_5m_gap": -5.238,
               "adx_threshold": 20.0,
-              "di_cross_gap": -0.873,
+              "di_cross_gap": -0.245,
               "di_long_gap": null,
               "di_short_gap": null,
-              "ema9_gap_pct": -0.0469,
-              "vwap_gap_pct": -0.1291
+              "ema9_gap_pct": -0.011,
+              "vwap_gap_pct": -0.0925
             },
             "vol_bucket": {
-              "baseline_at_minute": 232072.90322580645,
-              "current_1m_vol": 143198,
+              "baseline_at_minute": 9204.2,
+              "current_1m_vol": 4309,
               "days_available": 55,
               "lookback_days": 55,
-              "lookup_bucket": "1556",
-              "ratio": 0.6170388615368363,
-              "ratio_to_55bar_avg": 0.6170388615368363,
+              "lookup_bucket": "1620",
+              "ratio": 0.4681558418982638,
+              "ratio_to_55bar_avg": 0.4681558418982638,
               "state": "FAIL"
             },
             "weather": {
-              "avwap": 445.6654571845277,
+              "avwap": 445.6620957863305,
               "direction": "down",
               "divergence": false,
               "ema9_5m": 445.29884391506243,
               "global_direction": "down",
-              "last": 445.09,
+              "last": 445.25,
               "last_close_5m": 444.6735
             }
           }
@@ -2036,7 +2066,7 @@
                 "last": null
               },
               "positions": 0,
-              "state": "active"
+              "state": "paused"
             },
             "subscribed": true,
             "trades_today": [
@@ -2255,122 +2285,122 @@
         "proximity": [
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.0008169443877121352,
-            "open_side": null,
-            "or_high": 415.845,
-            "or_low": 410.01,
-            "permit_side": "NONE",
-            "price": 416.185,
-            "ticker": "AVGO"
-          },
-          {
-            "nearest_label": "OR-high",
-            "nearest_pct": 0.0009749716147504117,
-            "open_side": null,
-            "or_high": 404.745,
-            "or_low": 401.56,
-            "permit_side": "NONE",
-            "price": 405.14,
-            "ticker": "MSFT"
-          },
-          {
-            "nearest_label": "OR-high",
-            "nearest_pct": 0.001682970442831562,
+            "nearest_pct": 5.268426321053108e-05,
             "open_side": null,
             "or_high": 189.82,
             "or_low": 187.86,
             "permit_side": "NONE",
-            "price": 190.14,
+            "price": 189.81,
             "ticker": "ORCL"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.004607070080623691,
+            "nearest_pct": 0.0011105763891459386,
+            "open_side": null,
+            "or_high": 404.745,
+            "or_low": 401.56,
+            "permit_side": "NONE",
+            "price": 405.195,
+            "ticker": "MSFT"
+          },
+          {
+            "nearest_label": "OR-high",
+            "nearest_pct": 0.00224338979797482,
+            "open_side": null,
+            "or_high": 415.845,
+            "or_low": 410.01,
+            "permit_side": "NONE",
+            "price": 416.78,
+            "ticker": "AVGO"
+          },
+          {
+            "nearest_label": "OR-high",
+            "nearest_pct": 0.0038510911424903924,
             "open_side": null,
             "or_high": 226.78,
             "or_low": 224.25,
             "permit_side": "NONE",
-            "price": 225.74,
+            "price": 225.91,
             "ticker": "NVDA"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.007752715121136151,
+            "nearest_pct": 0.007652900091203789,
             "open_side": null,
             "or_high": 296.93,
             "or_low": 293.5,
             "permit_side": "NONE",
-            "price": 299.25,
+            "price": 299.2199,
             "ticker": "AAPL"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.007823653703386469,
+            "nearest_pct": 0.007993605115907146,
             "open_side": null,
             "or_high": 86.87,
             "or_low": 86.29,
             "permit_side": "NONE",
-            "price": 87.555,
+            "price": 87.57,
             "ticker": "NFLX"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.012199779819811612,
+            "nearest_pct": 0.012554744525547388,
             "open_side": null,
             "or_high": 439.66,
             "or_low": 435.43,
             "permit_side": "NONE",
-            "price": 445.09,
+            "price": 445.25,
             "ticker": "TSLA"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.017493791927652894,
+            "nearest_pct": 0.018530517040300825,
             "open_side": null,
             "or_high": 265.09,
             "or_low": 263.365,
             "permit_side": "NONE",
-            "price": 269.81,
+            "price": 270.095,
             "ticker": "AMZN"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.026061141888439075,
+            "nearest_pct": 0.026747937166663963,
             "open_side": null,
             "or_high": 600.37,
             "or_low": 597.11,
             "permit_side": "NONE",
-            "price": 616.435,
+            "price": 616.87,
             "ticker": "META"
           },
           {
             "nearest_label": "OR-high",
-            "nearest_pct": 0.03842297859541842,
+            "nearest_pct": 0.038976979534580805,
             "open_side": null,
             "or_high": 383.65,
             "or_low": 381.72,
             "permit_side": "NONE",
-            "price": 398.98,
+            "price": 399.21,
             "ticker": "GOOG"
           }
         ],
         "regime": {
           "breadth": "UNKNOWN",
           "breadth_detail": "",
-          "mode": "POWER",
-          "mode_reason": "final 5 min - no new entries",
+          "mode": "AFTER",
+          "mode_reason": "after-hours session",
           "rsi_detail": "",
           "rsi_regime": "UNKNOWN",
           "sovereign": {
             "qqq_above_pdc": true,
-            "qqq_delta_pct": 0.9713817091793456,
+            "qqq_delta_pct": 1.0314744641140148,
             "qqq_pdc": 707.24,
-            "qqq_price": 714.11,
+            "qqq_price": 714.535,
             "reason": "PDC eject retired in v5.9.1 \u2014 informational only",
             "spy_above_pdc": true,
-            "spy_delta_pct": 0.5798043837546516,
+            "spy_delta_pct": 0.5784497006150391,
             "spy_pdc": 738.18,
-            "spy_price": 742.46,
+            "spy_price": 742.45,
             "status": "DISARMED"
           }
         },
@@ -2378,13 +2408,13 @@
           "long_open": false,
           "qqq_5m_close": 714.11,
           "qqq_5m_ema9": 715.332097393859,
-          "qqq_avwap_0930": 711.9614718257693,
-          "qqq_current_price": 714.49,
+          "qqq_avwap_0930": 711.9879944824967,
+          "qqq_current_price": 714.61,
           "short_open": false,
           "sovereign_anchor_open": true
         },
-        "server_time": "2026-05-13T15:57:09.257428-04:00",
-        "server_time_label": "Wed May 13 \u00b7 15:57:09 ET",
+        "server_time": "2026-05-13T16:20:57.118341-04:00",
+        "server_time_label": "Wed May 13 \u00b7 16:20:57 ET",
         "shadow_data_status": "live",
         "shadow_disabled": false,
         "signal_bus": {
@@ -2418,15 +2448,15 @@
               "permit": false,
               "qqq_5m_close": 714.11,
               "qqq_5m_ema9": 715.332097393859,
-              "qqq_avwap_0930": 711.9614718257693,
-              "qqq_last": 714.49
+              "qqq_avwap_0930": 711.9879944824967,
+              "qqq_last": 714.61
             },
             "short": {
               "permit": false,
               "qqq_5m_close": 714.11,
               "qqq_5m_ema9": 715.332097393859,
-              "qqq_avwap_0930": 711.9614718257693,
-              "qqq_last": 714.49
+              "qqq_avwap_0930": 711.9879944824967,
+              "qqq_last": 714.61
             }
           },
           "phase2": [
@@ -2511,7 +2541,7 @@
               "ticker": "AAPL",
               "two_consec_above": true,
               "two_consec_below": false,
-              "vol_gate_status": "PASS"
+              "vol_gate_status": "FAIL"
             },
             {
               "sma_stack": {
@@ -2760,7 +2790,7 @@
               "ticker": "GOOG",
               "two_consec_above": true,
               "two_consec_below": false,
-              "vol_gate_status": "PASS"
+              "vol_gate_status": "FAIL"
             },
             {
               "sma_stack": {
@@ -3459,175 +3489,175 @@
               "kind": "reject",
               "pid": "gene",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "val",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "main",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "gene",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "val",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "main",
               "ticker": "TSLA",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:01Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "gene",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "val",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "main",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "gene",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "val",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "main",
               "ticker": "NFLX",
-              "ts_iso": "2026-05-13T19:56:55Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "gene",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "val",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "main",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "gene",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "val",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "main",
               "ticker": "MSFT",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:59:00Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "gene",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "val",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "main",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "gene",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "val",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "LONG \u00b7 time_cutoff",
               "kind": "reject",
               "pid": "main",
               "ticker": "META",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             },
             {
               "detail": "SHORT \u00b7 opposite_side:long",
               "kind": "reject",
               "pid": "gene",
               "ticker": "GOOG",
-              "ts_iso": "2026-05-13T19:56:54Z"
+              "ts_iso": "2026-05-13T19:58:59Z"
             }
           ],
           "available": true,
@@ -4095,7 +4125,7 @@
           "or_windows": {
             "AAPL": {
               "bars_seen": 58,
-              "current_price": 299.25,
+              "current_price": 299.2199,
               "locked": true,
               "locked_at_iso": "or_close.AAPL",
               "or_close": 295.415,
@@ -4107,7 +4137,7 @@
             },
             "AMZN": {
               "bars_seen": 58,
-              "current_price": 269.81,
+              "current_price": 270.095,
               "locked": true,
               "locked_at_iso": "or_close.AMZN",
               "or_close": 265.0775,
@@ -4119,7 +4149,7 @@
             },
             "AVGO": {
               "bars_seen": 58,
-              "current_price": 416.185,
+              "current_price": 416.78,
               "locked": true,
               "locked_at_iso": "or_close.AVGO",
               "or_close": 408.46,
@@ -4131,7 +4161,7 @@
             },
             "GOOG": {
               "bars_seen": 58,
-              "current_price": 398.98,
+              "current_price": 399.21,
               "locked": true,
               "locked_at_iso": "or_close.GOOG",
               "or_close": 387.58,
@@ -4143,7 +4173,7 @@
             },
             "META": {
               "bars_seen": 58,
-              "current_price": 616.435,
+              "current_price": 616.87,
               "locked": true,
               "locked_at_iso": "or_close.META",
               "or_close": 605.71,
@@ -4155,7 +4185,7 @@
             },
             "MSFT": {
               "bars_seen": 58,
-              "current_price": 405.14,
+              "current_price": 405.195,
               "locked": true,
               "locked_at_iso": "or_close.MSFT",
               "or_close": 402.735,
@@ -4167,7 +4197,7 @@
             },
             "NFLX": {
               "bars_seen": 58,
-              "current_price": 87.555,
+              "current_price": 87.57,
               "locked": true,
               "locked_at_iso": "or_close.NFLX",
               "or_close": 86.835,
@@ -4179,7 +4209,7 @@
             },
             "NVDA": {
               "bars_seen": 58,
-              "current_price": 225.74,
+              "current_price": 225.91,
               "locked": true,
               "locked_at_iso": "or_close.NVDA",
               "or_close": 224.1,
@@ -4191,7 +4221,7 @@
             },
             "ORCL": {
               "bars_seen": 58,
-              "current_price": 190.14,
+              "current_price": 189.81,
               "locked": true,
               "locked_at_iso": "or_close.ORCL",
               "or_close": 186.835,
@@ -4203,7 +4233,7 @@
             },
             "TSLA": {
               "bars_seen": 58,
-              "current_price": 445.09,
+              "current_price": 445.25,
               "locked": true,
               "locked_at_iso": "or_close.TSLA",
               "or_close": 433.64,
@@ -4215,16 +4245,16 @@
             }
           },
           "prices": {
-            "AAPL": 299.25,
-            "AMZN": 269.81,
-            "AVGO": 416.185,
-            "GOOG": 398.98,
-            "META": 616.435,
-            "MSFT": 405.14,
-            "NFLX": 87.555,
-            "NVDA": 225.74,
-            "ORCL": 190.14,
-            "TSLA": 445.09
+            "AAPL": 299.2199,
+            "AMZN": 270.095,
+            "AVGO": 416.78,
+            "GOOG": 399.21,
+            "META": 616.87,
+            "MSFT": 405.195,
+            "NFLX": 87.57,
+            "NVDA": 225.91,
+            "ORCL": 189.81,
+            "TSLA": 445.25
           },
           "risk_books": {
             "gene": {
@@ -4301,7 +4331,7 @@
             }
           },
           "session_date": "2026-05-13",
-          "time_cutoff_reject_count": 84,
+          "time_cutoff_reject_count": 126,
           "vwap_chase_reject_count": 0,
           "wash_risk_count": 0
         },
@@ -10025,7 +10055,7 @@
         "summary": "skipped: state or v10/projection missing"
       },
       {
-        "detail": "In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals as Main via the legacy bus, so their broker trade counts should match. A mismatch may indicate Alpaca-side rejection or a mirror-bus drift.\n\n### Root cause likely:\n\n**gene.subscribed = false** -- GENE executor never registered its _on_signal callback on the signal bus. Most likely causes: (a) GENE_ALPACA_PAPER_KEY env var unset or empty in Railway; (b) executor construction or start() raised silently (grep older Railway logs for `[Gene] startup failed` or `[Gene] skipped`); (c) Alpaca client probe raised inside _ensure_client(). Until GENE is subscribed, every Main emit goes into the void for this executor and the trade-count mismatch is guaranteed.\n\n_No Railway log slice attached. Diagnostic: status=ok token_set=True service_set=True lines_fetched_on_10k_request=301 deployment_id=97387ab9-3e4 deployment_status=SUCCESS deployment_created=2026-05-13T19:44:36.504Z. Railway credentials probe OK -- the log fetch succeeded but the recent window genuinely contains no [SIGNAL-BUS-*] / [V79-MIRROR-*] / [Val|Gene] [ALPACA-*] lines. Main's signal emits may not be reaching Railway stdout._",
+        "detail": "In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the same signals as Main via the legacy bus, so their broker trade counts should match. A mismatch may indicate Alpaca-side rejection or a mirror-bus drift.\n\n### Root cause likely:\n\n**gene.subscribed = false** -- GENE executor never registered its _on_signal callback on the signal bus. Most likely causes: (a) GENE_ALPACA_PAPER_KEY env var unset or empty in Railway; (b) executor construction or start() raised silently (grep older Railway logs for `[Gene] startup failed` or `[Gene] skipped`); (c) Alpaca client probe raised inside _ensure_client(). Until GENE is subscribed, every Main emit goes into the void for this executor and the trade-count mismatch is guaranteed.\n\n_No Railway log slice attached. Diagnostic: status=ok token_set=True service_set=True lines_fetched_on_10k_request=0 deployment_id=0df59a66-b4d deployment_status=BUILDING deployment_created=2026-05-13T20:19:13.837Z. Railway credentials probe OK -- the log fetch succeeded but the recent window genuinely contains no [SIGNAL-BUS-*] / [V79-MIRROR-*] / [Val|Gene] [ALPACA-*] lines. Main's signal emits may not be reaching Railway stdout._",
         "name": "val_gene_trades_match_main",
         "ok": false,
         "summary": "trade-count mismatch: val=0 vs main=12"
@@ -10070,7 +10100,7 @@
         "detail": "",
         "name": "or_locked_after_or_end",
         "ok": true,
-        "summary": "10/10 OR windows locked"
+        "summary": "skipped: regime mode='AFTER'"
       },
       {
         "detail": "",
@@ -10100,13 +10130,13 @@
         "detail": "",
         "name": "risk_book_notional_cap_nonzero",
         "ok": true,
-        "summary": "skipped: 1 dormant unconfigured portfolio(s): gene(17) -- set <PID>_ALPACA_PAPER_KEY/_SECRET or <PID>_ENABLED=0 to clear"
+        "summary": "skipped: regime mode='AFTER'"
       },
       {
         "detail": "",
         "name": "railway_logs_clean",
         "ok": true,
-        "summary": "scanned 301 lines, 0 sub-threshold signals"
+        "summary": "skipped: Railway log fetch unavailable (missing RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID or API error)"
       },
       {
         "detail": "",
@@ -10117,122 +10147,17 @@
     ]
   },
   "railway_logs": {
-    "filter_summary": {
-      "[V79-ORB-": 6,
-      "[V900-": 2,
-      "[V917-": 11
-    },
-    "forensic_matches": [
-      {
-        "message": "2026-05-13 19:53:21,172 [WARNING] [V79-ORB-PERSIST] live engine not bootstrapped yet -- 3 portfolio(s) of saved tickets dropped",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:22.622734985Z"
-      },
-      {
-        "message": "2026-05-13 19:53:23,819 [INFO] [V79-ORB-BOOT] portfolios=['main', 'val', 'gene'] rr=2.5 or_min=30 vix_thr=22.0",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:28.154943853Z"
-      },
-      {
-        "message": "2026-05-13 19:53:23,819 [INFO] [V79-ORB-BOOT] live_mode=True portfolios=main,val,gene",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:28.154948316Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,326 [WARNING] [V900-SPY-LOADER] auto-load failed: No module named 'tools.orb_spy_loader'",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611596563Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,462 [INFO] [V917-TIME-CUTOFF-REJECT] val/AAPL long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611603606Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,327 [INFO] [V900-SPY-GATE] missing SPY D-1 return + fail_closed=False -> day NOT blocked (fail-open).",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611606011Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,327 [INFO] [V79-ORB-RESET] date=2026-05-13 vix_d1=18.38 block_day=False reason=",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611614363Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,462 [INFO] [V917-TIME-CUTOFF-REJECT] gene/AAPL long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611617713Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,344 [INFO] [V834-PERSIST] rehydrated date=2026-05-13 or_windows=10 day_states=30 risk_books=3 activity=50 sizes=1",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611631990Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,344 [INFO] [V79-ORB-BACKFILL] start cur_min=953 or_start=570 or_end=600 tickers=10",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611642813Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,366 [INFO] [V79-ORB-BACKFILL] done backfilled_tickers=10 locked_tickers=10",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611649991Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,462 [INFO] [V917-TIME-CUTOFF-REJECT] main/AAPL long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:47.611673467Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,577 [INFO] [V917-TIME-CUTOFF-REJECT] main/AMZN long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814525162Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,577 [INFO] [V917-TIME-CUTOFF-REJECT] val/AMZN long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814531251Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,578 [INFO] [V917-TIME-CUTOFF-REJECT] gene/AMZN long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814537286Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,831 [INFO] [V917-TIME-CUTOFF-REJECT] main/GOOG long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814555746Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,832 [INFO] [V917-TIME-CUTOFF-REJECT] val/GOOG long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814562690Z"
-      },
-      {
-        "message": "2026-05-13 19:53:45,832 [INFO] [V917-TIME-CUTOFF-REJECT] gene/GOOG long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814568778Z"
-      },
-      {
-        "message": "2026-05-13 19:53:46,015 [INFO] [V917-TIME-CUTOFF-REJECT] main/META long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814581907Z"
-      },
-      {
-        "message": "2026-05-13 19:53:46,016 [INFO] [V917-TIME-CUTOFF-REJECT] val/META long sig_et=15:53 >= cutoff=11:00",
-        "severity": "error",
-        "timestamp": "2026-05-13T19:53:49.814588496Z"
-      }
-    ],
+    "filter_summary": {},
+    "forensic_matches": [],
     "probe": {
-      "deployment_created": "2026-05-13T19:44:36.504Z",
-      "deployment_id": "97387ab9-3e40-4de5-94fd-13f00054cda3",
-      "deployment_status": "SUCCESS",
+      "deployment_created": "2026-05-13T20:19:13.837Z",
+      "deployment_id": "0df59a66-b4da-46c1-85ae-c754feea4864",
+      "deployment_status": "BUILDING",
       "service_set": true,
       "status": "ok",
       "token_set": true
     },
-    "total_fetched": 305
+    "total_fetched": 0
   },
   "schema_version": 1
 }
