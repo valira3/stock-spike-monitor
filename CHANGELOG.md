@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.30 (2026-05-13) -- Tick-vs-Bar ATR validation pipeline (auto-fires after tick pulls)
+
+v8.3.28-29 shipped the tick-data pull + fixed the R2 upload path. This release closes the loop: once tick data lands in R2, a SECOND workflow auto-fires that compares `ATR(5m, 14)` computed from raw ticks vs the same metric from 1-min OHLC bars, and commits the comparison to a `tick-validation-results` branch. Zero manual intervention after this PR merges — drop a tick-trigger JSON → data pull → validation → MCP-readable result.
+
+### `tools/compare_atr.py`
+
+Pure-Python comparison tool:
+- `_load_ticks_from_r2(ticker, date)` -- gzip-stream the tick JSONL from `s3://$R2_BUCKET/tick-data/<DATE>/<TK>.jsonl.gz` via boto3
+- `aggregate_ticks_to_5m(ticks)` -- bucket raw trades into 5-min OHLC bars, true intra-minute high/low captured from every print
+- `aggregate_1m_to_5m(bars_1m)` -- same bucket convention applied to the existing 1-min archive
+- `compute_atr(bars_5m, anchor, lookback=14)` -- Wilder-style ATR(5m, 14) anchored at OR-end (10:00 ET, where entries fire)
+- `compare_one(ticker, date, bar_archive)` -- ATR-from-ticks vs ATR-from-1m for one (ticker, date) pair
+- `verdict_for(rows)` -- median ratio → qualitative verdict:
+  - `< 0.80` → `tick_atr_meaningfully_tighter` → pursue full FY pull + replay integration
+  - `0.80-0.95` → `tick_atr_modestly_tighter` → marginal call
+  - `0.95-1.05` → `no_meaningful_difference` → hypothesis falsified, fidelity bounded elsewhere
+  - `> 1.05` → `tick_atr_wider` → bug investigation
+
+### `.github/workflows/tick-atr-validation.yml`
+
+Two triggers:
+1. `workflow_run` on completion of `Pull Alpaca tick data` (auto-fires when upstream succeeded)
+2. `workflow_dispatch` for ad-hoc validation of any date already in R2
+
+Runner flow:
+1. Checkout `main` (code) + `data-extensions/rth-expand` (1-min bar archive) in parallel
+2. Install boto3
+3. Resolve the validation date from the most recent tick-trigger JSON (auto path) OR from the workflow_dispatch input
+4. Run `python -m tools.compare_atr` with R2 creds in env
+5. Commit `tick-atr/<DATE>/summary.json` to the `tick-validation-results` branch
+6. Also upload as a 30-day GHA artifact for fallback
+
+### Retrieval pattern (sandbox-side)
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="tick-atr/2026-05-12/summary.json",
+    ref="tick-validation-results"
+)
+```
+
+The summary JSON carries per-ticker rows (`atr_5m_14_from_ticks`, `atr_5m_14_from_1m`, `ratio_tick_over_1m`, `abs_diff`, etc.) AND a top-level `verdict` field that drives the next-step decision.
+
+### Tests
+
+`tests/strategy/test_compare_atr.py` — **15 new tests** covering:
+- Tick→5m aggregation: window boundary, close-is-last-tick, two-window handling, missing-field tolerance
+- 1m→5m aggregation: same bucket convention, close-uses-last-minute
+- `compute_atr`: insufficient-bars returns None, simple flat-volatility case, anchor filters late bars
+- `verdict_for`: no_data, meaningful, no_diff, modest, missing-ratios skipping
+- End-to-end zero-volatility synthetic (both methods agree)
+
+**844 strategy tests pass** (829 + 15 new).
+
+### Decision logic
+
+After the first auto-fired run lands the summary on `tick-validation-results`, the agent can read the verdict and decide whether to invest in full corpus integration:
+- `meaningfully_tighter` → ship a separate PR that modifies `tools/orb_replay_day.py` to consume tick-derived ATR, then re-run the replay sweep
+- `no_meaningful_difference` → shelve the tick approach; replay fidelity is bounded elsewhere (Val/Gene portfolios, exit sentinels, or production-vs-archive bar source differences)
+
+---
+
 ## v8.3.29 (2026-05-12) -- `pull-tick-data.yml` credential diagnostics + artifact fallback
 
 v8.3.28's first auto-fired run failed at the R2 upload step with:
