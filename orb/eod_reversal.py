@@ -211,13 +211,35 @@ class EodReversalEngine:
                     date_iso, self.portfolio_ids)
 
     def is_entry_window(self, current_et_minutes: int) -> bool:
-        """True iff current ET minute is the entry tick (15:30 by default).
+        """True if current ET minute is at-or-after entry_et AND before exit_et.
 
-        We use a single-minute window so the entry fires once per session
-        even if the scan loop spins multiple times within that minute.
-        Re-entry guard is on `entry_attempted` per-portfolio.
+        v9.1.22 -- widened from a single-minute window (`cur == entry_et`)
+        to a half-open range (`entry_et <= cur < exit_et`). The
+        single-minute window made the strategy fragile against any
+        delay (deploy, cron miss, engine restart) that crossed the
+        15:00:00-15:00:59 ET tick -- today's session, three compound
+        bugs in the same path (cur_min NameError v9.1.20, equity
+        TypeError v9.1.21) prevented the entry minute from firing,
+        and even after both were fixed the EOD entry could no longer
+        admit because the single-minute window had already passed.
+
+        Re-entry within a session is still guarded by `entry_attempted`
+        per-portfolio (scan.py:1390), so the wider window doesn't fire
+        a second time -- it only gives the engine the full
+        [entry_et, exit_et) window to land the first admission.
+
+        Trade-off vs the original design: late entries (e.g. 15:25 ET
+        because the deploy was 25 min late) are slightly off the
+        backtest's 15:00 anchor. The hold is correspondingly shorter
+        (e.g. 34 min vs design's 59 min). Net P&L impact is unknown
+        and worth a follow-up sweep, but late-entry-better-than-no-
+        entry is the immediate trade.
         """
-        return current_et_minutes == self.cfg.entry_et_minutes
+        return (
+            self.cfg.entry_et_minutes
+            <= current_et_minutes
+            < self.cfg.exit_et_minutes
+        )
 
     def is_exit_window(self, current_et_minutes: int) -> bool:
         """True if at-or-past the exit minute. Allows for late ticks to

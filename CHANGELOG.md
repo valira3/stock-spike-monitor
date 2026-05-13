@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.22 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 3): EOD entry window widened from single minute to [entry, exit) range
+
+Today's EOD entry never fired despite v9.1.20 + v9.1.21 hotfixes. Root cause: a third bug in the same code path. **Three compound silent failures in one strategy** — that's why "no trades" persisted even after we shipped the two earlier hotfixes.
+
+**Root cause:** `orb/eod_reversal.py:220`:
+```python
+def is_entry_window(self, current_et_minutes: int) -> bool:
+    return current_et_minutes == self.cfg.entry_et_minutes
+```
+
+The entry window was a **single 60-second minute** (only `cur_min == 900` for the default 15:00 ET entry). Any delay — deploy, cron miss, engine restart, prior-scan-cycle crash — that pushed `cur_min` past 900 meant the entry never fires for the day. v9.1.20 deployed at ~15:25 ET → `cur_min=925 ≠ 900` → False. v9.1.21 at ~15:53 ET → `cur_min=953 ≠ 900` → False. Same engine, same code path, three layers of brittleness.
+
+**Fix:** widened to `entry_et <= cur_min < exit_et` (half-open range). Idempotency for re-entry is unchanged — it lives on the per-portfolio `entry_attempted` flag at `scan.py:1390`, which already gates re-fires. The wider window just means "any tick inside the EOD window can land the first admission" rather than "only the entry minute can".
+
+**Trade-off:** late entries (e.g. 15:25 ET instead of 15:00 ET) are off the backtest's anchor. Hold shortens correspondingly (34 min vs 59 min). Net P&L impact requires a follow-up sweep; the immediate trade is "late entry > no entry at all".
+
+**Today's EOD trade is lost.** Window closes at 15:59 ET (about now). The v9.1.22 fix lands too late for today but unblocks every future trading day from this class of failure.
+
+### Sequence of today's compound failure (postmortem)
+
+| Time ET | Event | State |
+|---|---|---|
+| 15:00 | Engine reaches EOD entry minute (cur_min=900). `scan_loop` calls `_eod_reversal_pass(callbacks, cur_min)` | NameError on cur_min (v9.1.20 bug) → wrapper catches, logs, no admit |
+| 15:00–15:24 | Every scan cycle: NameError → log → swallowed | `entry_attempted=False`, dashboard shows "Waiting for 15:00 ET" |
+| 15:13 | Operator catches it | We diagnose cur_min NameError, ship v9.1.20 |
+| 15:18 | v9.1.20 merged | |
+| 15:24 | While waiting for Railway, audit surfaces equity TypeError | We ship v9.1.21 |
+| 15:25 | v9.1.20 deploys on Railway | `_eod_reversal_pass` runs but `is_entry_window(925)` returns False (single-minute bug, v9.1.22). Even if we'd had v9.1.21 ready, the entry minute had already passed |
+| 15:39 | v9.1.21 merged | |
+| 15:53 | v9.1.21 deploys on Railway | Same outcome: `is_entry_window(953)` False, engine doesn't admit |
+| 15:57 | Operator + AI confirm bug #3 (single-minute window) | Ship v9.1.22 (this PR) |
+| 15:59 | EOD flatten — window closes | Today's trade unrecoverable |
+
+### Mandatory backlog items
+
+* **Add `tests/strategy/test_eod_reversal_scan_integration.py`** — covers the full `scan._eod_reversal_pass` code path with mocked callbacks + PORTFOLIOS + bar archive. All three bugs today were in this untested path. Without integration coverage the same class of failure can recur.
+* **Audit `equity = float(getattr(...))` pattern across the codebase** — same anti-pattern could exist elsewhere; bound-method-as-attribute is a class of mistake.
+* **Consider a `[V910-EOD-WINDOW-CHECK]` heartbeat log** that fires every scan cycle inside the EOD window so operators have positive confirmation the engine is checking, not just absence of `[V910-EOD-ENTRY]`.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.21 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 2): equity TypeError in EOD admit loop
 
 While the v9.1.20 deploy was rolling out, audit of the same code block surfaced a **second SEV-1 in the same path** that v9.1.20 just unblocked. Both have been latent since v9.1.0.
