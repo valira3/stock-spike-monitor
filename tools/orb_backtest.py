@@ -60,7 +60,7 @@ import json
 import os
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Iterator
 
@@ -400,6 +400,14 @@ class ORBConfig:
                                             # bad-regime days while
                                             # blocking the specific
                                             # bleeders (TSLA, NFLX, ORCL).
+    # R13b conservative-on-bad-day overrides. When set (>0), replace the
+    # corresponding base config field on regime-low days only. Combines
+    # with regime_low_skip_tickers (each lever independent).
+    regime_low_risk_per_trade_pct: float = 0.0  # halve sizing on bad days
+    regime_low_atr_stop_mult: float = 0.0       # tighter stops on bad days
+    regime_low_max_trades_per_day: int = 0      # cap entries on bad days
+    regime_low_max_vwap_dev_bps: float = 0.0    # tighter chase fence on bad days
+    regime_low_min_break_bps: float = 0.0       # require bigger break on bad days
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -520,6 +528,11 @@ class ORBConfig:
                 for t in _envs("ORB_REGIME_LOW_SKIP_TICKERS", "").split(",")
                 if t.strip()
             ),
+            regime_low_risk_per_trade_pct=_envf("ORB_REGIME_LOW_RISK_PER_TRADE_PCT", 0.0),
+            regime_low_atr_stop_mult=_envf("ORB_REGIME_LOW_ATR_STOP_MULT", 0.0),
+            regime_low_max_trades_per_day=_envi("ORB_REGIME_LOW_MAX_TRADES_PER_DAY", 0),
+            regime_low_max_vwap_dev_bps=_envf("ORB_REGIME_LOW_MAX_VWAP_DEV_BPS", 0.0),
+            regime_low_min_break_bps=_envf("ORB_REGIME_LOW_MIN_BREAK_BPS", 0.0),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -1479,6 +1492,25 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 regime_skip_reason = f"vix_high_{prior_vix:.1f}"
                 vix_days_skipped += 1
 
+        # R13b: build a regime-adjusted cfg when today is regime-low and
+        # any override field is set. Keeps cfg immutable for non-regime
+        # days.
+        eff_cfg = cfg
+        if is_regime_low_today:
+            overrides = {}
+            if cfg.regime_low_risk_per_trade_pct > 0:
+                overrides["risk_per_trade_pct"] = cfg.regime_low_risk_per_trade_pct
+            if cfg.regime_low_atr_stop_mult > 0:
+                overrides["atr_stop_mult"] = cfg.regime_low_atr_stop_mult
+            if cfg.regime_low_max_trades_per_day > 0:
+                overrides["max_trades_per_day"] = cfg.regime_low_max_trades_per_day
+            if cfg.regime_low_max_vwap_dev_bps > 0:
+                overrides["max_vwap_dev_bps"] = cfg.regime_low_max_vwap_dev_bps
+            if cfg.regime_low_min_break_bps > 0:
+                overrides["min_break_bps"] = cfg.regime_low_min_break_bps
+            if overrides:
+                eff_cfg = dataclass_replace(cfg, **overrides)
+
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
             for tk in tickers:
@@ -1491,7 +1523,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     bars = load_day_bars(corpus_dir, date, tk)
                     if not bars:
                         continue
-                    pairs = run_ticker_day(date, tk, bars, cfg, current_account)
+                    pairs = run_ticker_day(date, tk, bars, eff_cfg, current_account)
                     candidate_pairs.extend(pairs)
                 except (RuntimeError, AssertionError):
                     # Genuine bugs -- re-raise rather than silently dropping.
