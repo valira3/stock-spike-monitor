@@ -2728,6 +2728,15 @@ body.v10-live .legacy-v10-hidden {
   width: 100%;
   min-height: 320px;
 }
+/* v9.1.9 -- open-positions inline chart (same shape as v10 proximity
+   detail row, just a different parent). Shared chart hydration via
+   window.__tgRenderTickerChart. */
+.pos-chart-row td { background: var(--surface-2); padding: 0 !important; border-bottom: 0; }
+.pos-chart-cell { padding: 14px !important; }
+.pos-chart-mount {
+  width: 100%;
+  min-height: 320px;
+}
 /* v7.59.0 -- leading-indicator gate cells (Range / Block columns) */
 .v10-prox-col-gate,
 .v10-prox-col-block {

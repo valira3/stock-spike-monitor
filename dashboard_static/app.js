@@ -524,7 +524,19 @@
             + escapeHtml(_pfTitle) + '">½@$'
             + _pfPrice.toFixed(2) + '</span>';
         }
-        return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-controls="pmtx-body" style="cursor:pointer">
+        // v9.1.9 -- per-row chart-detail when the operator has the
+        // position expanded (toggled via row click). The chart hydrates
+        // through window.__tgRenderTickerChart, the same pipeline the
+        // v10 Proximity matrix uses (one entry point so future chart
+        // changes apply everywhere automatically).
+        const _expanded = body.__posExpanded && body.__posExpanded.has(p.ticker);
+        const _chartRow = _expanded
+          ? '<tr class="pos-chart-row" data-pos-chart="' + escapeHtml(p.ticker) + '">'
+            + '<td colspan="11" class="pos-chart-cell">'
+            + '<div class="pos-chart-mount" data-chart-mount="' + escapeHtml(p.ticker) + '"></div>'
+            + '</td></tr>'
+          : '';
+        return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-expanded="${_expanded ? 'true' : 'false'}" style="cursor:pointer">
           <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
           <td><span class="${sideCls}">${p.side}</span></td>
           <td class="right">${p.shares}${_partialBadge}</td>
@@ -536,7 +548,7 @@
           <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
           <td class="right ${pnlCls}">${pctTxt}</td>
           <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
-        </tr>${progressRow}`;
+        </tr>${progressRow}${_chartRow}`;
       }).join("");
       body.innerHTML = `<table>
         <thead><tr>
@@ -555,55 +567,39 @@
         <tbody>${rows}</tbody></table>`;
     }
 
-    // v5.21.0 — Click-to-Titan: clicking any position row expands the
-    // matching Titan in the Permit Matrix and scrolls it into view.
-    // Wire once using __posClickWired sentinel (renderPositions rebuilds
-    // innerHTML on every SSE tick, so we must not re-attach every time).
+    // v9.1.9 -- click a position row to toggle an inline intraday chart
+    // beneath it. Mirrors the v10 Proximity expansion pattern; uses the
+    // shared window.__tgRenderTickerChart hydration pipeline so any
+    // future chart change (e.g. v9.1.9's RTH-only window) propagates
+    // automatically. Pre-v9.1.9 the click scrolled to the legacy Tiger
+    // Sovereign Permit Matrix, which has been hidden under body.v10-live
+    // since v7.27.0 -- so the old handler was a dead-end UX.
+    if (!body.__posExpanded) body.__posExpanded = new Set();
     if (!body.__posClickWired) {
       body.addEventListener("click", function _posRowClick(ev) {
+        // Ignore clicks inside the progress / chart detail rows --
+        // those are non-interactive surfaces beneath the main row.
+        if (ev.target.closest("tr.pos-progress-row")) return;
+        if (ev.target.closest("tr.pos-chart-row")) return;
         const tr = ev.target.closest("tr[data-pos-ticker]");
         if (!tr) return;
         const ticker = tr.getAttribute("data-pos-ticker");
         if (!ticker) return;
-        // v5.23.0 — Locate the Permit Matrix body in the *active* tab.
-        // The Main tab body uses id="pmtx-body" while Val/Gene panels
-        // use data-f="pmtx-body". The previous selector only matched
-        // Val/Gene, so clicking from the Main positions table either
-        // hit the wrong (hidden) panel or no-op'd entirely. Try the
-        // visible candidates in order: Main id, then any panel whose
-        // own data-f body is currently in the viewport flow.
-        let pmtxBody = document.getElementById("pmtx-body");
-        if (!pmtxBody) {
-          // Fallback: pick the data-f body inside the currently active
-          // tab panel (data-tg-active-tab on body).
-          const activeTab = document.body.getAttribute("data-tg-active-tab") || "main";
-          const activePanel = document.getElementById("tg-panel-" + activeTab);
-          if (activePanel) {
-            pmtxBody = activePanel.querySelector('[data-f="pmtx-body"]');
-          }
+        if (body.__posExpanded.has(ticker)) {
+          body.__posExpanded.delete(ticker);
+        } else {
+          body.__posExpanded.add(ticker);
         }
-        if (!pmtxBody) {
-          // Last-resort: any data-f pmtx-body in the document.
-          pmtxBody = document.querySelector('[data-f="pmtx-body"]');
-        }
-        if (!pmtxBody) return;
-        const titanRow = pmtxBody.querySelector('tr.pmtx-row[data-pmtx-tkr="' + ticker + '"]');
-        if (!titanRow) return; // position exists but no Titan row (stale/delisted)
-        // Single-open semantics: clear existing expansion, add this ticker.
-        if (!pmtxBody.__pmtxExpandedSet) pmtxBody.__pmtxExpandedSet = new Set();
-        pmtxBody.__pmtxExpandedSet.clear();
-        pmtxBody.__pmtxExpandedSet.add(ticker);
-        if (typeof pmtxBody.__pmtxApplyExpanded === "function") pmtxBody.__pmtxApplyExpanded();
-        // Update aria-expanded on the clicked row.
-        const allPosTrs = body.querySelectorAll("tr[data-pos-ticker]");
-        allPosTrs.forEach((r) => r.setAttribute("aria-expanded", "false"));
-        tr.setAttribute("aria-expanded", "true");
-        // Scroll the Titan row into view only when it is in the DOM.
-        if (document.body.contains(titanRow)) {
-          titanRow.scrollIntoView({ behavior: "smooth", block: "center" });
+        // Re-render via the exposed entry point so the chart row is
+        // inserted/removed deterministically; alternative would be DOM
+        // surgery here but a re-render guarantees the chart hydration
+        // path runs exactly once per state change.
+        if (typeof window !== "undefined"
+            && typeof window.__tgRenderPositions === "function"
+            && window.__tgLastState) {
+          window.__tgRenderPositions(window.__tgLastState, sl);
         }
       });
-      // Keyboard: Enter/Space on a focused position row triggers expand.
       body.addEventListener("keydown", function _posRowKey(ev) {
         if (ev.key !== "Enter" && ev.key !== " ") return;
         const tr = ev.target.closest("tr[data-pos-ticker]");
@@ -613,6 +609,20 @@
       });
       body.__posClickWired = true;
     }
+
+    // v9.1.9 -- hydrate every inline chart mount via the shared
+    // pipeline. Re-runs on each render; the underlying cache in
+    // _pmtxHydrateIntradayCharts is keyed by ticker so a re-render
+    // mid-fetch reuses the in-flight payload instead of double-fetching.
+    try {
+      const _mountFn = (typeof window !== "undefined") && window.__tgRenderTickerChart;
+      if (typeof _mountFn === "function") {
+        body.querySelectorAll('.pos-chart-row [data-chart-mount]').forEach(function (mount) {
+          const tk = mount.getAttribute("data-chart-mount");
+          if (tk) _mountFn(tk, mount);
+        });
+      }
+    } catch (e) { /* never break the positions renderer */ }
 
     // v7.89.0 -- port-strip footer below the positions table is
     // retired; Equity is shown in the KPI row above the table and
@@ -1535,13 +1545,17 @@
   // window per ticker in a plain dict that survives canvas destruction,
   // and seed each freshly-mounted canvas from it. Hover/wired stay
   // per-canvas (transient UI state).
-  // v6.14.6: chart session window: 08:00 ET (07:00 CT, et_min=480)
-  // to 20:00 ET (et_min=1200). Val's preference is to start charts at
-  // 7am CT so the visible window emphasizes the pre-open hour and full
-  // RTH+post-market without empty 04:00-07:00 ET dead-space. Downstream
-  // clamps enforce this 480/1200 envelope for pan/zoom.
-  const _CHART_FULL_X_MIN = 480;
-  const _CHART_FULL_X_MAX = 1200;
+  // v9.1.9 -- chart session window narrowed to RTH only: 09:30 ET
+  // (et_min=570) to 16:00 ET (et_min=960). Operator preference -- the
+  // strategy is RTH-only and the pre-market / post-market candles
+  // were just visual noise. The 480/1200 (8am ET / 8pm ET) envelope
+  // used pre-v9.1.9 is preserved as a wider zoom-out ceiling so the
+  // user CAN still pan to those bars on demand, but the default view
+  // and the page-load default state are both RTH-only now. Downstream
+  // pan/zoom clamps in _drawIntradayChart use the wider 240/1200
+  // ceiling so manual zoom-out remains available.
+  const _CHART_FULL_X_MIN = 570;
+  const _CHART_FULL_X_MAX = 960;
   const _chartViewState = new WeakMap();
   const _chartViewByTkr = {};
   function _chartTkrKey(canvas) {
@@ -1632,8 +1646,12 @@
     // (v5.23.3 used 480/1080 = 8am ET / 18:00 ET = late-premarket only.)
     // v6.0.0 — X window is per-canvas state so wheel/drag pan-zoom works.
     const _vs = _chartGetState(canvas);
-    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : 240;
-    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : 1200;
+    // v9.1.9 -- default to RTH-only (570/960) when no persisted view
+    // exists for this canvas. The 240/1200 envelope is preserved as
+    // the manual-zoom-out ceiling so pan/wheel can still expose the
+    // pre/post-market bars on demand.
+    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : _CHART_FULL_X_MIN;
+    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : _CHART_FULL_X_MAX;
     if (X_MAX - X_MIN < 30) X_MAX = X_MIN + 30; // floor at 30 min
     if (X_MIN < 240) X_MIN = 240;
     if (X_MAX > 1200) X_MAX = 1200;
@@ -4594,6 +4612,13 @@
   }
 
   function renderExecutor(name, data) {
+    // v9.1.9 -- cache the latest data so the position-row click
+    // handler can re-render via window.__tgRenderExecutor(name, ...)
+    // without waiting for the next state poll.
+    if (typeof window !== "undefined") {
+      window.__tgLastExecData = window.__tgLastExecData || {};
+      window.__tgLastExecData[name] = data;
+    }
     renderBadge(name, data);
     const panel = ensureExecSkeleton(name);
     if (!panel) return;
@@ -4858,7 +4883,19 @@
             if (!(s>0 && e>0)) return "\u2014";
             return fmtUsd(s*e);
           })();
-          return `<tr data-pos-ticker="${esc(p.symbol)}">
+          // v9.1.9 -- cross-tab parity with Main's renderPositions: each
+          // open position is expandable on click, revealing the same
+          // intraday chart the v10 Proximity matrix uses (shared via
+          // window.__tgRenderTickerChart). Expansion state lives on the
+          // posBody element so it survives re-renders.
+          var _expanded = posBody.__posExpanded && posBody.__posExpanded.has(p.symbol);
+          var _chartRow = _expanded
+            ? '<tr class="pos-chart-row" data-pos-chart="' + esc(p.symbol) + '">'
+              + '<td colspan="11" class="pos-chart-cell">'
+              + '<div class="pos-chart-mount" data-chart-mount="' + esc(p.symbol) + '"></div>'
+              + '</td></tr>'
+            : '';
+          return `<tr data-pos-ticker="${esc(p.symbol)}" tabindex="0" role="button" aria-expanded="${_expanded ? 'true' : 'false'}" style="cursor:pointer">
             <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span></td>
             <td><span class="${sideCls}">${esc(p.side)}</span></td>
             <td class="right">${fmtNum(p.qty, 0)}</td>
@@ -4870,7 +4907,7 @@
             <td class="right ${pnlCls}">${fmtUsd(p.unrealized_pnl)}</td>
             <td class="right ${pnlCls}">${fmtPctExec(p.unrealized_pnl_pct, 2)}</td>
             <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${(typeof window.fmtHeld==='function'?window.fmtHeld(p.entry_ts_utc):'—')}</td>
-          </tr>${_progressRow}`;
+          </tr>${_progressRow}${_chartRow}`;
         }).join("");
         posBody.innerHTML = `<table>
           <thead><tr>
@@ -4887,6 +4924,60 @@
             <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
           </tr></thead>
           <tbody>${rows}</tbody></table>`;
+
+        // v9.1.9 -- click-to-expand parity with Main's renderPositions.
+        // Toggle the ticker in posBody.__posExpanded and re-render via
+        // window.__tgRenderExecutor(name, cachedData) so the chart row
+        // is inserted/removed deterministically. The handler is wired
+        // once via sentinel; on each click it resolves the exec name
+        // from the panel id ("tg-panel-val" / "tg-panel-gene") and
+        // pulls the latest data from window.__tgLastExecData, so the
+        // closure doesn't go stale across renders.
+        if (!posBody.__posExpanded) posBody.__posExpanded = new Set();
+        if (!posBody.__posClickWired) {
+          posBody.addEventListener("click", function _exPosRowClick(ev) {
+            if (ev.target.closest("tr.pos-progress-row")) return;
+            if (ev.target.closest("tr.pos-chart-row")) return;
+            var tr = ev.target.closest("tr[data-pos-ticker]");
+            if (!tr) return;
+            var tk = tr.getAttribute("data-pos-ticker");
+            if (!tk) return;
+            if (posBody.__posExpanded.has(tk)) {
+              posBody.__posExpanded.delete(tk);
+            } else {
+              posBody.__posExpanded.add(tk);
+            }
+            // Re-render through the public executor entry point with
+            // the live (not closure-captured) data.
+            try {
+              var pId = (panel && panel.id) || "";
+              var execName = pId.replace(/^tg-panel-/, "");
+              var liveData = (window.__tgLastExecData || {})[execName];
+              if (typeof window.__tgRenderExecutor === "function" && liveData) {
+                window.__tgRenderExecutor(execName, liveData);
+              }
+            } catch (_e) { /* fall through to next state poll */ }
+          });
+          posBody.addEventListener("keydown", function _exPosRowKey(ev) {
+            if (ev.key !== "Enter" && ev.key !== " ") return;
+            var tr = ev.target.closest("tr[data-pos-ticker]");
+            if (!tr) return;
+            ev.preventDefault();
+            tr.click();
+          });
+          posBody.__posClickWired = true;
+        }
+
+        // Hydrate any chart mounts. Shared pipeline with Main.
+        try {
+          var _mountFn = (typeof window !== "undefined") && window.__tgRenderTickerChart;
+          if (typeof _mountFn === "function") {
+            posBody.querySelectorAll('.pos-chart-row [data-chart-mount]').forEach(function (mount) {
+              var tk = mount.getAttribute("data-chart-mount");
+              if (tk) _mountFn(tk, mount);
+            });
+          }
+        } catch (_e) { /* never break the executor renderer */ }
       }
     }
 
@@ -4907,6 +4998,15 @@
     // Market-state widgets (shared) + per-executor Today's Trades -----
     renderExecMarketState(panel);
     renderExecTrades(panel, data, disabled);
+  }
+
+  // v9.1.9 -- expose renderExecutor + the last per-executor data so the
+  // inline position-row click handler can trigger a deterministic
+  // re-render without waiting for the next state poll. The cache is
+  // keyed by exec name ("val" / "gene") and refreshed on every render.
+  if (typeof window !== "undefined") {
+    window.__tgRenderExecutor = renderExecutor;
+    window.__tgLastExecData = window.__tgLastExecData || {};
   }
 
   // Refresh the shared Session KPI cell on a given executor panel from
