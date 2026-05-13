@@ -185,14 +185,18 @@ class LiveAdapter:
         # v9.0.0: snapshot pre-try_enter counters to detect chase
         # rejection (a None return from try_enter could be RiskBook OR
         # chase-filter; counters tell us which).
+        # v9.1.7: time_cutoff counter added to the disambiguation set.
         mbr_before = self.engine._mbr_reject_count
         chase_before = self.engine._vwap_chase_reject_count
+        cutoff_before = self.engine._time_cutoff_reject_count
 
         admission = self.engine.try_enter(
             sig, equity=equity, session_vwap=session_vwap,
         )
         if admission is None:
             # Disambiguate the rejection reason.
+            if self.engine._time_cutoff_reject_count > cutoff_before:
+                return EntryResult(ok=False, reason_no="time_cutoff")
             if self.engine._mbr_reject_count > mbr_before:
                 return EntryResult(ok=False, reason_no="break_too_small")
             if self.engine._vwap_chase_reject_count > chase_before:

@@ -149,6 +149,27 @@ def _build_config_from_env() -> OrbConfig:
         if v is None:
             return default
         return v.strip() in ("1", "true", "True", "yes", "YES")
+
+    def _et_to_min(name: str, default_min: int) -> int:
+        """v9.1.7 -- parse HH:MM env var to minutes-since-midnight.
+
+        Mirrors tools/orb_backtest.py:_et_to_minutes. Falls back to
+        default_min on any parse error so a typo in Railway env can't
+        strand the cutoff (logs the failure for forensic).
+        """
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default_min
+        try:
+            h, m = raw.strip().split(":", 1)
+            return int(h) * 60 + int(m)
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                "[ORB-ENV] %s=%r malformed (expected HH:MM): %s -- "
+                "falling back to %d:%02d",
+                name, raw, e, default_min // 60, default_min % 60,
+            )
+            return default_min
     import json as _json
     bl_raw = os.environ.get("ORB_TICKER_SIDE_BLOCKLIST", "")
     blocklist = None
@@ -221,6 +242,11 @@ def _build_config_from_env() -> OrbConfig:
         # threshold; skip whole day on moderate SPY drop carryover.
         skip_prior_spy_ret_lt_bps=_f("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", -40.0),
         fail_closed_on_missing_spy=_b("ORB_FAIL_CLOSED_SPY", False),
+        # v9.1.7 -- ORB_TIME_CUTOFF_ET wires the env var through to the
+        # live engine. Default 11:00 ET matches the R12 backtest winner
+        # baked into the v13 final report. Set to "0:00" in Railway
+        # env to disable (allows all-day entries until eod_cutoff).
+        time_cutoff_minutes=_et_to_min("ORB_TIME_CUTOFF_ET", 11 * 60),
     )
 
 
