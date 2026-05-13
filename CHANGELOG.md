@@ -4,6 +4,59 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.26 (2026-05-13) — Val/Gene admit independence: route real engine ticket release through `on_exit` (closes the 14-event admit gap)
+
+The 2026-05-13 audit (`/tmp/trading_audit_2026-05-13.md`) found Val.RiskBook.admit_count=3 vs Main=17 on the same OR data. Diagnosis: when Val's broker position closed via the bus EXIT path (`executors.base._on_signal` → `_close_position_idempotent` → `_unmirror_position_from_engine`), the unmirror released ONLY the synthetic `recover-{pid}-{ticker}` ticket. The REAL ticket created by `engine.try_enter` (uuid-style) leaked: FSM stayed `IN_POS` until a phantom-sweep cycle (1+ scan tick later) and `trades_today` was never incremented. The result was a structural cap on Val/Gene admit rate per day vs Main on bus-mirrored exits.
+
+### Fix
+
+Two surgical changes:
+
+1. **`executors/base.py:_unmirror_position_from_engine`** — when an adapter has a real uuid ticket for the ticker (the production case after every Val/Gene `try_admit`), build a synthetic `ExitDecision(reason="bus_exit_mirror", price=pos.entry_price)` and call `engine.on_exit(pos, decision)`. `on_exit` owns the canonical cleanup: real ticket release via `rb.release(ticket)`, `trades_today += 1`, FSM transition `IN_POS → CLOSED`. The adapter's `_open_positions[ticket_id]` and `_ticker_to_ticket[ticker]` are cleared to match `adapter.check_exit`'s normal path. Legacy recover-* code stays as a fallback for the no-real-ticket case (early-startup mirror).
+
+2. **`orb/engine.py:clear_phantom_in_pos`** — symmetric mirror for Main's phantom-sweep path (scan.py:833 calls this when Main has no executor instance). Same logic: if `adapter._ticker_to_ticket[ticker]` resolves to a uuid ticket, route through `on_exit`. Legacy path unchanged.
+
+Forensic: `[V9126-ENGINE-EXIT] %s/%s real ticket released via on_exit (bus mirror path)`.
+
+The engine-side P&L for these synthetic exits is zero (we don't know the actual broker exit price from inside the unmirror; the real P&L was already booked by Alpaca + `executor.todays_trades`). Engine `realized_pnl_today` stays untouched for Val/Gene — that was the pre-fix behaviour too.
+
+### Independence shape after the fix
+
+| Direction | Pre-v9.1.26 | Post-v9.1.26 |
+|---|---|---|
+| Entry decision | Independent per portfolio (v8.3.23) | Same |
+| Entry broker fire | Independent per portfolio (v8.3.23) | Same |
+| **Exit decision** | Main only (broker/positions.py:1019 hard-codes pid="main") | Same — Main still drives the exit timing via legacy sentinel |
+| **Exit accounting** | Main: clean. Val/Gene: leak real ticket, FSM stuck, `trades_today` never bumped | **Val/Gene clean** via `on_exit` synthesized from the bus mirror |
+| Exit broker fire | Bus EXIT → Val/Gene `_on_signal` → Alpaca close | Same |
+
+So the fix is engine-side accounting, not new exit decision-making. Val/Gene still mirror Main's exit *timing* via the bus. What changes is that the engine FSM cleans up promptly on each exit, restoring the per-portfolio FSM cycle to `ARMED → IN_POS → CLOSED → ARMED` immediately rather than waiting for phantom-sweep (1+ scan tick later). The result: Val/Gene can re-admit on the next bar instead of missing 11+ breakouts per day.
+
+A future PR (deferred) will wire truly independent EXIT decisions by adding per-portfolio `check_exit_by_ticker` calls in `broker/positions.py`. That requires also suppressing the bus mirror under `ORB_PORTFOLIO_FIRE=1` to avoid double-close — bigger blast radius. The v9.1.26 fix is the engine-accounting subset that's needed for ANY future exit-independence design AND is safe to ship on its own.
+
+### Tests
+
+`tests/strategy/test_unmirror_real_engine_ticket.py` — 6 tests:
+
+* `test_real_ticket_release_via_on_exit` — admit Val.TSLA via real `try_enter`, call unmirror, assert FSM → CLOSED, `trades_today == 1`, `open_risk == 0`, adapter maps cleaned. This is the headline regression for the 2026-05-13 bug.
+* `test_unmirror_then_readmit_succeeds` — after unmirror, re-admit on a fresh OR breakout succeeds and bumps `admit_count` from 1 → 2. Pre-v9.1.26 this would fail because the FSM was stuck `IN_POS` and the ticket consumed `open_risk`.
+* `test_unmirror_no_position_is_noop` — no engine ticket, no FSM state → no-op (legacy contract).
+* `test_unmirror_releases_recover_ticket_only_when_no_real_ticket` — legacy recover-* path still works when no adapter ticket is present (early-startup mirror state).
+* `test_clear_phantom_in_pos::test_real_ticket_routes_through_on_exit` — same shape for the Main phantom-sweep entry point.
+* `test_clear_phantom_in_pos::test_legacy_recover_only_path_unchanged` — recover-* fallback still works.
+
+### Verification
+
+* `pytest tests/strategy/` — **986 pass, 8 skip** (was 980/8 pre-v9.1.26; +6 new green).
+* No change to `engine.on_exit` itself — same canonical cleanup as Main's exit path has used since v7.x.
+* `ORB_PORTFOLIO_FIRE=0` env kill switch still works the same way (reverts Val/Gene to legacy bus-only mirroring); the new code path is only triggered when an adapter ticket exists.
+
+### Expected P&L impact
+
+Conservative lower bound: Val matches Main's admit rate on bus-mirrored exits → ~$5-15k/yr from missed re-entries that previously fell into the phantom-sweep gap. Upper bound (if Gene is also activated): ~$15-30k/yr. The fix unlocks the structural ceiling; actual lift depends on whether the missed admits are net winners (they were today — Val's 75% hit rate beat Main's 67%).
+
+---
+
 ## v9.1.25 (2026-05-13) — Coverage-debt closure on the 2026-05-13 SEV-1 chain (forensic sampling + scan-integration tests + smoke wiring + bundled-SEV1 rule)
 
 Operator asked for the top-3 ship-this-week actions from the day audit (`/tmp/trading_audit_2026-05-13.md`). All three landed in this release plus the underlying refactor that made the test seam tractable.
