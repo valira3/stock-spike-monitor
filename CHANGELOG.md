@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.4 (2026-05-13) — Daily-kill gauge cross-tab parity fix
+
+Operator noticed Val's tab shows a Daily-kill gauge in the v10 ORB header but Main's tab doesn't, despite all three portfolios having `daily_kill_threshold` configured. Root cause: two different render conditionals.
+
+* Val/Gene (`renderV10PerPortfolio`, app.js:4196): `if (killThr > 0) { render }` — always visible when threshold is set.
+* Main (`renderV10DayStatus`, app.js:5888): `if (killWorstPct > 0 || anyKillTriggered) { render }` — hidden until realized P&L goes negative or kill fires.
+
+This violated the v8.3.18 cross-tab parity rule from `CLAUDE.md`. With today's clean books (realized=0 across all portfolios), Val's empty gauge rendered but Main's didn't.
+
+Fix (single file, two hunks in `dashboard_static/app.js`):
+
+* The per-pid loop now picks `killWorstPid / killWorstThreshold` even when no loss has happened, so the gauge has a valid threshold value to render against.
+* The render gate flipped from `killWorstPct > 0 || anyKillTriggered` to `killWorstThreshold > 0`, matching Val/Gene's gate.
+
+Visual result on Main at $0 realized P&L: the Daily-kill gauge renders with framing like `MAIN $0 / -$1,500 (0%)`, gauge bar empty. Once realized P&L turns negative, the existing worst-pct logic takes over and fills the bar.
+
+No behavioral change to risk_book or the kill-switch trigger logic — purely a UI parity fix. The kill-switch BANNER at the top of the page was already cross-tab consistent and is untouched.
+
+---
+
 ## v9.1.3 (2026-05-13) — SPY prior-return loader self-heals via Alpaca
 
 Today's first post-deploy snapshot showed `day_status.spy_d1_ret_bps=None`, which means the v9.0.0 R12 regime-skip gate was running fail-open instead of consulting yesterday's SPY return. Root cause: the loader only had two sources — `/data/bars/<DATE>/SPY.jsonl` and `data/external/spy-daily.csv` — and the CSV fallback was never seeded in the repo. Any time the bar archive misses yesterday's RTH close (fresh deploy, wiped volume, worker restart before 15:59 ET, etc.) the gate silently bypasses.
