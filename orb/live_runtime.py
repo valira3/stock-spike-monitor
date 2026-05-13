@@ -195,11 +195,27 @@ def _build_config_from_env() -> OrbConfig:
         # setting ORB_PARTIAL_PROFIT_AT_1R=0 in Railway env (no redeploy).
         partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
         # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
-        # Both default 0.0 = off. Operator turns on via Railway env:
-        #   ORB_LOSS_LOCK_THRESHOLD_USD=150
-        #   ORB_PEAK_DD_HALT_USD=500
+        # Both default 0.0 = off (R10 research showed they hurt when
+        # stacked with v9 chase-prevention; do not enable in v9).
         loss_lock_threshold_usd=_f("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
         peak_dd_halt_usd=_f("ORB_PEAK_DD_HALT_USD", 0.0),
+        # v9.0.0 -- chase-prevention filters (R10 winning config).
+        # Defaults ON. Operator can disable via env: set to 0 to
+        # bypass either filter.
+        min_break_bps=_f("ORB_MIN_BREAK_BPS", 5.0),
+        max_vwap_dev_bps=_f("ORB_MAX_VWAP_DEV_BPS", 25.0),
+        max_vwap_dev_tickers=tuple(
+            t.strip().upper()
+            for t in os.environ.get(
+                "ORB_MAX_VWAP_DEV_TICKERS",
+                "META,MSFT,AAPL,AMZN,GOOG,AVGO",
+            ).split(",")
+            if t.strip()
+        ),
+        # v9.0.0 -- prior-day SPY regime gate (R12). Default -40 bps
+        # threshold; skip whole day on moderate SPY drop carryover.
+        skip_prior_spy_ret_lt_bps=_f("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", -40.0),
+        fail_closed_on_missing_spy=_b("ORB_FAIL_CLOSED_SPY", False),
     )
 
 
@@ -291,15 +307,28 @@ def ensure_session_started(*, date_iso: str,
                            ticker_open_today: dict[str, Optional[float]],
                            ticker_prev_close: dict[str, Optional[float]],
                            equity_per_portfolio: dict[str, float],
+                           spy_prior_ret_bps: Optional[float] = None,
                            ) -> bool:
     """Idempotent session start. Returns True if a fresh session was
     started, False if the session was already started for `date_iso`.
+
+    v9.0.0: `spy_prior_ret_bps` is the prior-session SPY return in bps.
+    When omitted, the function auto-loads via orb_spy_loader (bar
+    archive or CSV fallback). Pass an explicit value to override the
+    loader in tests.
     """
     global _session_date
     if not _bootstrapped or _engine is None:
         return False
     if _session_date == date_iso:
         return False
+    if spy_prior_ret_bps is None and _engine.cfg.skip_prior_spy_ret_lt_bps != 0.0:
+        try:
+            from tools.orb_spy_loader import prior_spy_return_bps
+            spy_prior_ret_bps = prior_spy_return_bps(date_iso)
+        except Exception as _e:
+            logger.warning("[V900-SPY-LOADER] auto-load failed: %s", _e)
+            spy_prior_ret_bps = None
     result = _engine.start_new_session(
         date_iso=date_iso,
         tickers=tickers,
@@ -307,6 +336,7 @@ def ensure_session_started(*, date_iso: str,
         ticker_open_today=ticker_open_today,
         ticker_prev_close=ticker_prev_close,
         equity_per_portfolio=equity_per_portfolio,
+        spy_prior_ret_bps=spy_prior_ret_bps,
     )
     if _adapters is not None:
         _adapters.reset_all_sessions()
@@ -613,12 +643,14 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
                 recent_5m_highs: Optional[list[float]] = None,
                 recent_5m_lows: Optional[list[float]] = None,
                 recent_5m_closes: Optional[list[float]] = None,
+                session_vwap: Optional[float] = None,
                 ) -> EntryResult:
     """Per-portfolio entry decision. Returns no-op EntryResult if the
     runtime isn't ready or live mode is off.
 
-    v7.32.0: snapshot _adapters under the bootstrap lock; see
-    feed_bar() docstring.
+    v9.0.0: `session_vwap` is the cumulative session VWAP for `ticker`
+    from session open through the signal bar (caller supplies). When
+    omitted or zero, the v9 chase filter fails open (entry allowed).
     """
     if not is_live_mode_on():
         return EntryResult(ok=False, reason_no="live_mode_off")
@@ -636,6 +668,7 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
         recent_5m_highs=recent_5m_highs,
         recent_5m_lows=recent_5m_lows,
         recent_5m_closes=recent_5m_closes,
+        session_vwap=session_vwap,
     )
     # v7.45.0: record admit / informative-reject in activity feed.
     # Skip "no_signal" rejects since they fire every tick when no

@@ -144,6 +144,7 @@ class LiveAdapter:
                     recent_5m_highs: Optional[list[float]] = None,
                     recent_5m_lows: Optional[list[float]] = None,
                     recent_5m_closes: Optional[list[float]] = None,
+                    session_vwap: Optional[float] = None,
                     ) -> EntryResult:
         """Single-side entry decision.
 
@@ -151,12 +152,16 @@ class LiveAdapter:
           1. Portfolio FSM is in armed/closed (can_enter)
           2. OR window is locked
           3. Detected a fresh breakout in the requested side
-          4. Risk-book admits the proposed sizing
+          4. v9 min_break_bps threshold met (if configured)
+          5. v9 max_vwap_dev_bps not exceeded (if configured + fenced)
+          6. Risk-book admits the proposed sizing
 
         Otherwise EntryResult.ok=False with reason_no diagnostic.
 
-        Note: side="long" returns False if the signal is short, and vice
-        versa. Caller should call once per side per tick.
+        v9.0.0: `session_vwap` is the cumulative session VWAP from
+        session open through the signal bar's close. Caller (scan.py)
+        passes it from the per-ticker accumulator; when None or zero,
+        the vwap chase filter fails open (allows entry).
         """
         s = side.lower()
         if s not in ("long", "short"):
@@ -177,8 +182,21 @@ class LiveAdapter:
         if sig.side != s:
             return EntryResult(ok=False, reason_no=f"opposite_side:{sig.side}")
 
-        admission = self.engine.try_enter(sig, equity=equity)
+        # v9.0.0: snapshot pre-try_enter counters to detect chase
+        # rejection (a None return from try_enter could be RiskBook OR
+        # chase-filter; counters tell us which).
+        mbr_before = self.engine._mbr_reject_count
+        chase_before = self.engine._vwap_chase_reject_count
+
+        admission = self.engine.try_enter(
+            sig, equity=equity, session_vwap=session_vwap,
+        )
         if admission is None:
+            # Disambiguate the rejection reason.
+            if self.engine._mbr_reject_count > mbr_before:
+                return EntryResult(ok=False, reason_no="break_too_small")
+            if self.engine._vwap_chase_reject_count > chase_before:
+                return EntryResult(ok=False, reason_no="chase_too_far")
             rb = self.engine._risk.get(self.portfolio_id)
             reason = rb.last_reject_reason if rb else "no_risk_book"
             return EntryResult(ok=False, reason_no=f"risk_reject:{reason}")

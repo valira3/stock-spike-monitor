@@ -1246,6 +1246,71 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         return False
 
 
+def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
+    """v9.0.0 -- session-cumulative VWAP from the 1m bar series.
+
+    `bars_for_mtm` is the per-ticker 1m bar dict supplied by
+    `callbacks.fetch_1min_bars`. It carries parallel arrays
+    `opens / highs / lows / closes / volumes / timestamps`.
+
+    Returns 0.0 when bars are missing or the session has not opened
+    yet (no RTH bars in the series). Caller treats 0.0 as "no VWAP
+    available" and the v9 chase filter fails OPEN in that case so
+    a fresh-bootstrap session is never stranded.
+
+    Look-ahead audit: only consumes bars whose timestamp resolves to
+    a RTH minute-of-day in [09:30, 15:59] ET; no future data.
+    """
+    if not bars_for_mtm:
+        return 0.0
+    highs = bars_for_mtm.get("highs") or []
+    lows = bars_for_mtm.get("lows") or []
+    closes = bars_for_mtm.get("closes") or []
+    vols = bars_for_mtm.get("volumes") or []
+    ts_arr = bars_for_mtm.get("timestamps") or []
+    n = min(len(highs), len(lows), len(closes), len(vols), len(ts_arr))
+    if n == 0:
+        return 0.0
+    try:
+        from engine.timing import minutes_since_et_midnight
+    except Exception:
+        return 0.0
+    cum_pv = 0.0
+    cum_v = 0.0
+    for i in range(n):
+        ts = ts_arr[i]
+        try:
+            if isinstance(ts, (int, float)):
+                import datetime as _dt
+                bucket_min = minutes_since_et_midnight(
+                    _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc)
+                )
+            elif isinstance(ts, str):
+                import datetime as _dt
+                dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                bucket_min = minutes_since_et_midnight(dt)
+            else:
+                continue
+        except Exception:
+            continue
+        if bucket_min is None or bucket_min < 9 * 60 + 30 or bucket_min > 15 * 60 + 59:
+            continue
+        h = highs[i]
+        lo = lows[i]
+        c = closes[i]
+        v = vols[i]
+        if not (isinstance(h, (int, float))
+                and isinstance(lo, (int, float))
+                and isinstance(c, (int, float))
+                and isinstance(v, (int, float))
+                and v > 0):
+            continue
+        typical = (float(h) + float(lo) + float(c)) / 3.0
+        cum_pv += typical * float(v)
+        cum_v += float(v)
+    return cum_pv / cum_v if cum_v > 0 else 0.0
+
+
 def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     bars_for_mtm: dict | None) -> None:
     """v10 ORB long-entry path -- per-portfolio fanout.
@@ -1276,6 +1341,9 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
         _h5 = list(_5m.get("highs") or [])[-20:]
         _l5 = list(_5m.get("lows") or [])[-20:]
         _c5 = list(_5m.get("closes") or [])[-20:]
+        # v9.0.0: session-cumulative VWAP for the chase-prevention
+        # filter. Computed once per side per tick; 0.0 = fail-open.
+        _session_vwap = _compute_session_vwap_from_bars(bars_for_mtm)
 
         # Resolve all enabled portfolio_ids from the live runtime
         engine = _orb_runtime.get_engine()
@@ -1293,6 +1361,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 recent_5m_highs=_h5,
                 recent_5m_lows=_l5,
                 recent_5m_closes=_c5,
+                session_vwap=_session_vwap,
             )
             if result.ok:
                 logger.info(
@@ -1379,6 +1448,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
         _h5 = list(_5m.get("highs") or [])[-20:]
         _l5 = list(_5m.get("lows") or [])[-20:]
         _c5 = list(_5m.get("closes") or [])[-20:]
+        # v9.0.0: session-cumulative VWAP for the chase-prevention
+        # filter. Computed once per side per tick; 0.0 = fail-open.
+        _session_vwap = _compute_session_vwap_from_bars(bars_for_mtm)
         engine = _orb_runtime.get_engine()
         if engine is None:
             return
@@ -1393,6 +1465,7 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 recent_5m_highs=_h5,
                 recent_5m_lows=_l5,
                 recent_5m_closes=_c5,
+                session_vwap=_session_vwap,
             )
             if result.ok:
                 logger.info(

@@ -4179,7 +4179,49 @@
         var killCls = 'v10-gauge-kill' + (killTriggered ? ' danger' : '');
         html += _gaugeHtml('Daily-kill', killValue, killPct, killCls);
       }
-      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>';
+
+      // v9.0.0 -- session-wide chase-prevention + regime-skip chips
+      // for parity with Main tab. Compact strip below the gauges.
+      var v9cfg = (v10 && v10.config) || {};
+      var v9ds = (v10 && v10.day_status) || {};
+      var v9chips = [];
+      var v9spyThr = parseFloat(v9ds.spy_threshold_bps || 0);
+      if (v9spyThr !== 0) {
+        var v9spyRet = v9ds.spy_d1_ret_bps;
+        var v9spyTxt, v9spyBg, v9spyFg;
+        if (v9spyRet == null) {
+          v9spyTxt = "SPY n/a"; v9spyBg = "#374151"; v9spyFg = "#e5e7eb";
+        } else {
+          var v9retPct = (v9spyRet / 100).toFixed(2);
+          var v9blocked = v9spyRet < v9spyThr;
+          v9spyTxt = "SPY " + (v9spyRet >= 0 ? "+" : "") + v9retPct + "% · "
+            + (v9blocked ? "BLOCK" : "PASS");
+          v9spyBg = v9blocked ? "rgba(220,38,38,0.18)" : "rgba(22,163,74,0.18)";
+          v9spyFg = v9blocked ? "#fca5a5" : "#86efac";
+        }
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:' + v9spyBg + ';color:' + v9spyFg + '" title="Prior-day SPY return regime gate (v9.0.0+). Threshold ' + (v9spyThr/100).toFixed(2) + '%.">'
+            + v9spyTxt + '</span>'
+        );
+      }
+      var v9mbrN = parseInt((v10 && v10.mbr_reject_count) || 0, 10) || 0;
+      if (v9mbrN > 0) {
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(59,130,246,0.18);color:#60a5fa" title="Weak-break entries rejected this session (v9.0.0 mbr filter). Threshold ' + parseFloat(v9cfg.min_break_bps || 0).toFixed(0) + 'bps.">mbr ' + v9mbrN + '</span>'
+        );
+      }
+      var v9chaseN = parseInt((v10 && v10.vwap_chase_reject_count) || 0, 10) || 0;
+      if (v9chaseN > 0) {
+        var v9fence = (v9cfg.max_vwap_dev_tickers || []);
+        v9chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(168,85,247,0.18);color:#c4b5fd" title="Mega-cap chase-fence rejections (v9.0.0+). Threshold ' + parseFloat(v9cfg.max_vwap_dev_bps || 0).toFixed(0) + 'bps. Fence: ' + (v9fence.length ? v9fence.join(",") : "global") + '.">chase ' + v9chaseN + '</span>'
+        );
+      }
+      var v9chipsHtml = v9chips.length
+        ? '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">Session:</span>' + v9chips.join('') + '</div>'
+        : '';
+
+      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml;
     }
 
     // v8.3.16 -- suppress same-tick opposite_side rejects from the
@@ -5446,6 +5488,88 @@
       } else {
         washPill.style.display = "none";
         washDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- prior-day SPY regime pill. Shows SPY(D-1) close-to-close
+    // return + threshold + pass/block status. Hidden when feature is
+    // off (threshold = 0).
+    var spyThr = parseFloat(ds.spy_threshold_bps || 0);
+    var spyRet = ds.spy_d1_ret_bps;
+    var spyPill = document.getElementById("v10-spy-pill");
+    var spyDiv = document.getElementById("v10-spy-pill-divider");
+    if (spyPill && spyDiv) {
+      if (spyThr !== 0) {
+        var spyText, spyBg, spyFg, spyPass;
+        if (spyRet == null) {
+          spyText = "SPY n/a"; spyBg = "#374151"; spyFg = "#e5e7eb"; spyPass = "missing";
+        } else {
+          var retPct = (spyRet / 100).toFixed(2);
+          spyPass = spyRet < spyThr ? "BLOCK" : "PASS";
+          spyText = "SPY " + (spyRet >= 0 ? "+" : "") + retPct + "%";
+          if (spyPass === "BLOCK") { spyBg = "rgba(220,38,38,0.18)"; spyFg = "#fca5a5"; }
+          else { spyBg = "rgba(22,163,74,0.18)"; spyFg = "#86efac"; }
+        }
+        spyPill.textContent = spyText + " · " + spyPass;
+        spyPill.style.background = spyBg;
+        spyPill.style.color = spyFg;
+        spyPill.title = "Prior-session SPY close-to-close return. "
+          + "Threshold " + (spyThr / 100).toFixed(2)
+          + "% (v9.0.0 regime gate). Day is blocked when prior SPY "
+          + "return is below threshold (R12 backtest: bleed concentrated "
+          + "on moderate-down-day carryover).";
+        spyPill.style.display = "";
+        spyDiv.style.display = "";
+      } else {
+        spyPill.style.display = "none";
+        spyDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- min_break rejection counter. Hidden when count=0.
+    var mbrN = parseInt(v10.mbr_reject_count || 0, 10) || 0;
+    var mbrPill = document.getElementById("v10-mbr-pill");
+    var mbrDiv = document.getElementById("v10-mbr-pill-divider");
+    if (mbrPill && mbrDiv) {
+      if (mbrN > 0) {
+        var mbrThr = parseFloat(cfg.min_break_bps || 0);
+        mbrPill.textContent = "mbr " + mbrN;
+        mbrPill.title = mbrN + " entr" + (mbrN === 1 ? "y" : "ies")
+          + " rejected this session because the signal-bar close was "
+          + "within " + mbrThr.toFixed(0) + "bps of the OR boundary "
+          + "(weak breakout). Threshold set by ORB_MIN_BREAK_BPS. "
+          + "v9.0.0+.";
+        mbrPill.style.display = "";
+        mbrDiv.style.display = "";
+      } else {
+        mbrPill.style.display = "none";
+        mbrDiv.style.display = "none";
+      }
+    }
+
+    // v9.0.0 -- vwap-chase rejection counter (mega-cap fence). Hidden
+    // when count=0.
+    var chaseN = parseInt(v10.vwap_chase_reject_count || 0, 10) || 0;
+    var chasePill = document.getElementById("v10-chase-pill");
+    var chaseDiv = document.getElementById("v10-chase-pill-divider");
+    if (chasePill && chaseDiv) {
+      if (chaseN > 0) {
+        var chaseThr = parseFloat(cfg.max_vwap_dev_bps || 0);
+        var fence = cfg.max_vwap_dev_tickers || [];
+        chasePill.textContent = "chase " + chaseN;
+        chasePill.title = chaseN + " entr" + (chaseN === 1 ? "y" : "ies")
+          + " rejected this session because the entry price was more "
+          + "than " + chaseThr.toFixed(0) + "bps past session VWAP in "
+          + "the breakout direction. "
+          + (fence.length
+              ? "Fence applies to: " + fence.join(", ") + ". "
+              : "Filter applies globally. ")
+          + "v9.0.0 chase-prevention (R10 backtest winner).";
+        chasePill.style.display = "";
+        chaseDiv.style.display = "";
+      } else {
+        chasePill.style.display = "none";
+        chaseDiv.style.display = "none";
       }
     }
 

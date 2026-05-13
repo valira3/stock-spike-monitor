@@ -55,15 +55,29 @@ class DayGateConfig:
     skip_gap_above_pct: float = 1.5       # 0 = off; absolute % from prev close
     # Universe blocklist (e.g. {"META": ["LONG", "SHORT"], "MSFT": ["LONG", "SHORT"]})
     ticker_side_blocklist: dict = None    # type: ignore
+    # v9.0.0 -- prior-day SPY regime gate. Skip the whole day when
+    # the prior session's SPY close-to-close return was below
+    # threshold (in bps; negative number means "drop deeper than").
+    # 0.0 = off. R12 backtest: -40 bps captures the bleed band.
+    skip_prior_spy_ret_lt_bps: float = -40.0
+    fail_closed_on_missing_spy: bool = False  # fail-open when SPY
+                                              # data missing (data feed
+                                              # outage should not strand
+                                              # the system)
 
 
 @dataclass
 class DayGateResult:
     """Outcome of evaluate_day(). Per-ticker results are nested."""
     block_day: bool = False
-    block_reason: str = ""           # one of: "", "vix_high", "missing_vix", "vix_threshold_zero"
+    block_reason: str = ""           # one of: "", "vix_high", "missing_vix",
+                                     # "vix_threshold_zero",
+                                     # "spy_regime_low", "missing_spy"
     vix_d1_close: Optional[float] = None
     vix_threshold: float = 0.0
+    # v9.0.0 -- SPY regime fields.
+    spy_d1_ret_bps: Optional[float] = None
+    spy_threshold_bps: float = 0.0
     per_ticker: dict[str, "TickerGateResult"] = None  # type: ignore
 
     def is_ticker_allowed(self, ticker: str, side: str = "LONG") -> bool:
@@ -123,6 +137,7 @@ def evaluate_day(cfg: DayGateConfig,
                  ticker_open_today: dict[str, Optional[float]],
                  ticker_prev_close: dict[str, Optional[float]],
                  is_earnings_window_fn=None,
+                 spy_prior_ret_bps: Optional[float] = None,
                  ) -> DayGateResult:
     """Evaluate all day-level gates.
 
@@ -135,6 +150,8 @@ def evaluate_day(cfg: DayGateConfig,
         ticker_prev_close: prior session's close per ticker. Missing keys -> gap gate fail-open.
         is_earnings_window_fn: callable (ticker, date_iso, days_before, days_after) -> bool.
             Pass tools.orb_earnings_calendar.is_earnings_window in production. None disables the gate.
+        spy_prior_ret_bps: prior-session SPY close-to-close return in bps.
+            None if missing (gate fails open or closed per cfg.fail_closed_on_missing_spy).
 
     Returns: DayGateResult.
 
@@ -143,6 +160,8 @@ def evaluate_day(cfg: DayGateConfig,
     result = DayGateResult(
         vix_d1_close=vix_close_d1,
         vix_threshold=cfg.skip_vix_above,
+        spy_d1_ret_bps=spy_prior_ret_bps,
+        spy_threshold_bps=cfg.skip_prior_spy_ret_lt_bps,
         per_ticker={},
     )
 
@@ -176,6 +195,39 @@ def evaluate_day(cfg: DayGateConfig,
         elif vix_close_d1 > cfg.skip_vix_above:
             result.block_day = True
             result.block_reason = f"vix_high ({vix_close_d1:.2f} > {cfg.skip_vix_above:.2f})"
+            return result
+
+    # v9.0.0 -- 1b. SPY-regime gate (market-wide). Skip the day when
+    # prior-session SPY return was below threshold (R12 research: bleed
+    # zone is moderate post-down days). Threshold is in bps; negative
+    # value means "below this drop level".
+    if cfg.skip_prior_spy_ret_lt_bps != 0.0:
+        if spy_prior_ret_bps is None:
+            if cfg.fail_closed_on_missing_spy:
+                logger.warning(
+                    "[V900-SPY-GATE] missing SPY D-1 return + "
+                    "fail_closed=True -> day blocked. "
+                    "Check data/external/spy-daily.csv and the "
+                    "refresh-data-feeds.yml GHA cron."
+                )
+                result.block_day = True
+                result.block_reason = "missing_spy"
+                return result
+            logger.info(
+                "[V900-SPY-GATE] missing SPY D-1 return + "
+                "fail_closed=False -> day NOT blocked (fail-open)."
+            )
+        elif spy_prior_ret_bps < cfg.skip_prior_spy_ret_lt_bps:
+            result.block_day = True
+            result.block_reason = (
+                f"spy_regime_low ({spy_prior_ret_bps:+.1f}bps < "
+                f"{cfg.skip_prior_spy_ret_lt_bps:+.1f}bps)"
+            )
+            logger.info(
+                "[V900-SPY-GATE] day blocked: prior SPY return "
+                "%.1fbps < %.1fbps threshold",
+                spy_prior_ret_bps, cfg.skip_prior_spy_ret_lt_bps,
+            )
             return result
 
     # 2. + 3. Per-ticker gates (blocklist, earnings, gap).
