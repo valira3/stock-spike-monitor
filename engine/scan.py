@@ -1280,6 +1280,70 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         return False
 
 
+def _load_eod_prior_closes(
+    date_iso: str, universe: tuple[str, ...] | list[str],
+) -> dict[str, float]:
+    """v9.1.25 -- extracted helper for the EOD reversal prior-close
+    lookup. Reads the bar archive at /data/bars/<D-n>/<TICKER>.jsonl
+    and returns the most-recent RTH close (et_bucket in [930, 1559])
+    per ticker. Walks back up to 10 calendar days to skip weekends
+    and holidays. Fail-open: missing data leaves the ticker out of
+    the returned dict; the caller's `select_signals` skips it cleanly.
+
+    Pulled out of `_eod_reversal_pass` so the runtime integration
+    test in tests/strategy/test_eod_reversal_scan_integration.py can
+    monkeypatch this single function rather than patching
+    `pathlib.Path` globally (which breaks pytest's own Path usage).
+
+    Look-ahead audit: only reads bars whose et_bucket falls in the
+    prior session's RTH window. No future-leaking data path.
+    """
+    prior_closes: dict[str, float] = {}
+    if not date_iso:
+        return prior_closes
+    try:
+        from pathlib import Path as _Path
+        import json as _json
+        from datetime import timedelta as _td
+        from datetime import datetime as _dt
+        root = _Path("/data/bars")
+        for tk in universe:
+            if tk in prior_closes:
+                continue
+            found = None
+            dt = _dt.strptime(date_iso, "%Y-%m-%d")
+            for off in range(1, 11):
+                cand = (dt - _td(days=off)).strftime("%Y-%m-%d")
+                fp = root / cand / f"{tk}.jsonl"
+                if not fp.is_file():
+                    continue
+                last_close = None
+                for line in fp.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        b = _json.loads(line)
+                    except Exception:
+                        continue
+                    bucket = b.get("et_bucket", "")
+                    try:
+                        bi = int(str(bucket))
+                    except (ValueError, TypeError):
+                        continue
+                    if 930 <= bi <= 1559:
+                        c = b.get("close")
+                        if isinstance(c, (int, float)) and c > 0:
+                            last_close = float(c)
+                if last_close is not None:
+                    found = last_close
+                    break
+            if found is not None:
+                prior_closes[tk] = found
+    except Exception:
+        logger.exception("[V910-EOD] prior-close lookup failed")
+    return prior_closes
+
+
 def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
     """v9.1.0 -- per-cycle hook for the EOD reversal addon strategy.
 
@@ -1326,53 +1390,12 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                   or (bars.get("closes") or [None])[-1])
             if isinstance(px, (int, float)) and px > 0:
                 current_prices[tk] = float(px)
-        # Prior-session closes from the production bar archive. We walk
-        # the per-ticker JSONL backward up to 10 calendar days to handle
-        # weekends/holidays. Fail-open: missing data -> ticker excluded
-        # from rod_signals -> select_signals will skip it cleanly.
-        prior_closes: dict[str, float] = {}
-        if date_iso:
-            try:
-                from pathlib import Path as _Path
-                import json as _json
-                from datetime import timedelta as _td
-                from datetime import datetime as _dt
-                root = _Path("/data/bars")
-                for tk in eod.cfg.universe:
-                    if tk in prior_closes:
-                        continue
-                    # Walk back up to 10 days for the most recent RTH close.
-                    found = None
-                    dt = _dt.strptime(date_iso, "%Y-%m-%d")
-                    for off in range(1, 11):
-                        cand = (dt - _td(days=off)).strftime("%Y-%m-%d")
-                        fp = root / cand / f"{tk}.jsonl"
-                        if not fp.is_file():
-                            continue
-                        last_close = None
-                        for line in fp.read_text().splitlines():
-                            if not line.strip():
-                                continue
-                            try:
-                                b = _json.loads(line)
-                            except Exception:
-                                continue
-                            bucket = b.get("et_bucket", "")
-                            try:
-                                bi = int(str(bucket))
-                            except (ValueError, TypeError):
-                                continue
-                            if 930 <= bi <= 1559:
-                                c = b.get("close")
-                                if isinstance(c, (int, float)) and c > 0:
-                                    last_close = float(c)
-                        if last_close is not None:
-                            found = last_close
-                            break
-                    if found is not None:
-                        prior_closes[tk] = found
-            except Exception:
-                logger.exception("[V910-EOD] prior-close lookup failed")
+        # Prior-session closes from the production bar archive.
+        # v9.1.25 -- pulled out into module-level _load_eod_prior_closes
+        # so tests/strategy/test_eod_reversal_scan_integration.py can
+        # monkeypatch this single seam instead of patching pathlib.Path
+        # globally (which breaks pytest's own internal Path usage).
+        prior_closes = _load_eod_prior_closes(date_iso, eod.cfg.universe)
 
         long_picks, short_picks = eod.select_signals(
             current_prices=current_prices, prior_closes=prior_closes,

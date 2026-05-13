@@ -5677,6 +5677,116 @@ def run_local() -> int:
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
 
+    # ---------- v9.1 EOD reversal addon wiring (v9.1.25) ----------
+    # Three layered SEV-1 bugs in engine.scan._eod_reversal_pass on
+    # 2026-05-13 prevented today's EOD reversal trade from firing.
+    # All three layers had a static-inspection signature; these
+    # smoke tests guard against re-regression.
+
+    @t("v9.1.25 EOD wiring: cur_min defined before _eod_reversal_pass call")
+    def _():
+        # v9.1.20 layer 1: pre-fix the scan_loop body called
+        # _eod_reversal_pass(callbacks, cur_min) but never defined
+        # cur_min in its local scope -> NameError every cycle, silently
+        # caught by the [V910-EOD] wrapper. This check pins the
+        # assignment AND its position before the call site.
+        import inspect
+
+        from engine import scan
+
+        src = inspect.getsource(scan.scan_loop)
+        idx_assign = src.find("cur_min = now_et.hour * 60 + now_et.minute")
+        idx_call = src.find("_eod_reversal_pass(callbacks, cur_min)")
+        assert idx_assign != -1, (
+            "scan_loop must define cur_min before calling _eod_reversal_pass "
+            "(v9.1.20 fix); pre-fix raised NameError silently"
+        )
+        assert idx_call != -1, (
+            "scan_loop must call _eod_reversal_pass(callbacks, cur_min)"
+        )
+        assert idx_assign < idx_call, (
+            f"cur_min assignment (pos {idx_assign}) must precede the "
+            f"_eod_reversal_pass call (pos {idx_call})"
+        )
+
+    @t("v9.1.25 EOD wiring: book.current_equity() called as method")
+    def _():
+        # v9.1.21 layer 2: pre-fix used
+        # `getattr(book, "current_equity", 100_000.0) or 100_000.0`.
+        # Since current_equity is a METHOD, this returned the bound
+        # method (truthy), then float(<bound_method>) raised TypeError.
+        # Pin the correct call shape.
+        import inspect
+
+        from engine import scan
+
+        src = inspect.getsource(scan._eod_reversal_pass)
+        for line in src.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            assert 'getattr(book, "current_equity"' not in line, (
+                "v9.1.21 SEV-1 regression: do not use "
+                "getattr(book, \"current_equity\", ...) -- call as a "
+                "method instead"
+            )
+        assert "book.current_equity()" in src, (
+            "scan._eod_reversal_pass must call current_equity() as a "
+            "method"
+        )
+
+    @t("v9.1.25 EOD wiring: is_entry_window uses range, not equality")
+    def _():
+        # v9.1.22 layer 3: pre-fix used
+        # `return cur == self.cfg.entry_et_minutes`, a single-minute
+        # check. Any delayed scan cycle past 15:00 silently no-op'd.
+        # Pin the range comparison.
+        import inspect
+
+        from orb.eod_reversal import EodReversalEngine
+
+        src = inspect.getsource(EodReversalEngine.is_entry_window)
+        assert "<=" in src and "<" in src, (
+            "v9.1.22 fix: is_entry_window must use range comparison "
+            "(<= and <), not single-minute equality (==)"
+        )
+        # Real-call sanity: middle of window must be True.
+        from orb.eod_reversal import EodReversalConfig
+        eng = EodReversalEngine(EodReversalConfig(), portfolio_ids=["main"])
+        assert eng.is_entry_window(15 * 60) is True
+        assert eng.is_entry_window(15 * 60 + 25) is True
+        assert eng.is_entry_window(15 * 60 + 58) is True
+        assert eng.is_entry_window(15 * 60 + 59) is False  # exit owns this min
+
+    @t("v9.1.25 EOD wiring: prior-close lookup is a module helper")
+    def _():
+        # v9.1.25 extraction: _load_eod_prior_closes is a module-level
+        # helper, not inline, so the integration test in
+        # tests/strategy/test_eod_reversal_scan_integration.py can
+        # monkeypatch a single seam.
+        from engine import scan
+
+        assert hasattr(scan, "_load_eod_prior_closes"), (
+            "v9.1.25: scan._load_eod_prior_closes must exist as a "
+            "module-level helper for the integration test seam"
+        )
+        # Empty date returns empty dict (the fail-open contract).
+        assert scan._load_eod_prior_closes("", ("ORCL",)) == {}
+
+    @t("v9.1.25 EOD wiring: legacy EOD flush is after EOD reversal exit")
+    def _():
+        # v9.1.23 layer 4: the legacy paper-book backstop at
+        # 15:49:59 ET was preempting v9.1 EOD reversal positions that
+        # flatten at 15:59 ET. v9.1.23 moved EOD_FLUSH_ET to 15:59:59.
+        # Pin the ordering.
+        from datetime import time
+
+        from engine.timing import EOD_FLUSH_ET
+
+        assert EOD_FLUSH_ET >= time(15, 59), (
+            f"v9.1.23 fix: EOD_FLUSH_ET must be at/after 15:59 ET so "
+            f"it doesn't preempt EOD reversal exits; got {EOD_FLUSH_ET}"
+        )
+
     return run_suite("LOCAL SMOKE TESTS (v5.7.1 Bison & Buffalo)")
 
 

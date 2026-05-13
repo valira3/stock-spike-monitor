@@ -4,6 +4,87 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.25 (2026-05-13) — Coverage-debt closure on the 2026-05-13 SEV-1 chain (forensic sampling + scan-integration tests + smoke wiring + bundled-SEV1 rule)
+
+Operator asked for the top-3 ship-this-week actions from the day audit (`/tmp/trading_audit_2026-05-13.md`). All three landed in this release plus the underlying refactor that made the test seam tractable.
+
+### 1. Per-tag forensic sampling in `tools/unified_monitor.py`
+
+Pre-v9.1.25 the monitor's railway-log filter took a flat `forensic[-200:]` slice. On 2026-05-13 the `[V917-TIME-CUTOFF-REJECT]` spam (5 tickers × 3 portfolios × 2 sides ≈ 30 lines/cycle) overflowed the 200-row cap inside ~7 minutes, which buried the `[V910-EOD] pass failed` traceback for the entire EOD bug window. The monitor was technically logging the failure; the operator just couldn't see it.
+
+**Fix** in `tools/unified_monitor.py:159-280`:
+
+* New `RAILWAY_TAG_BUCKETS` tuple ordered most-specific-first (`[V910-`, `[V900-`, `[V917-`, ..., `[V9`, `Traceback`, `ERROR`).
+* New `_classify_tag(msg)` -> returns the FIRST bucket prefix that appears (so V910 always wins over the V9 catch-all).
+* New `_sample_per_tag(rows, max_per_tag=20, max_total=500)` -> buckets by tag, keeps the most-recent 20 per bucket, flattens in tag-priority order, caps at 500 total. Returns `(sampled_rows, full_summary)` so the operator still sees the unfiltered count (e.g. "V917=800 sampled=20").
+* New `forensic_total` field in the committed snapshot so the operator can spot when sampling kicked in.
+
+**Tests**: `tests/strategy/test_unified_monitor_sampling.py` (14 tests):
+
+* `test_spammy_tag_does_not_evict_quiet_tag` — 1000 V917 rows + 5 V910 rows; under the new sampler all 5 V910 lines survive. Pre-v9.1.25 the flat slice would have evicted them.
+* `test_v910_wins_over_v9_catchall` — bucket ordering regression guard. Any future addition to `RAILWAY_TAG_BUCKETS` must keep specific prefixes BEFORE catch-alls.
+* Plus per-tag cap, total cap, chronological order within bucket, alias field handling (`.text` vs `.message`), and unknown-row routing to `_other`.
+
+**Estimated P&L impact:** ~$200/yr — directly fixes the monitor failure mode that turned a 1-hour silent crash into a 6-hour silent crash today.
+
+### 2. Scan-integration test for the EOD reversal addon
+
+The pre-incident EOD test coverage (`tests/strategy/test_orb_eod_integration.py`, `tests/strategy/test_orb_eod_reversal.py`) exercised the engine API directly via `admit / close / select_signals / is_*_window` — but never invoked the scan-loop wrapper that wires those calls in production. All three of today's bugs lived in that wrapper. Specifically:
+
+| Layer | Bug | Status pre-v9.1.25 |
+|---|---|---|
+| 1 (v9.1.20) | `cur_min` NameError in `scan_loop` | not covered |
+| 2 (v9.1.21) | `current_equity` bound-method TypeError | not covered |
+| 3 (v9.1.22) | single-minute `is_entry_window == 900` | covered by a TEST THAT ASSERTED THE BUG (pinned `True` only at minute 900, `False` at 899/901 — the exact wrong behavior) |
+
+**Fix** in three parts:
+
+1. **Refactor in `engine/scan.py:_load_eod_prior_closes`** — pulled the prior-close lookup out of `_eod_reversal_pass` into a module-level helper. Pure-mechanical extraction; same code, same fail-open contract, same forensic tag (`[V910-EOD] prior-close lookup failed`). Reason: gives the integration test a single monkeypatch seam instead of having to patch `pathlib.Path` globally (which breaks pytest's own internal `Path(...)` use).
+2. **New `tests/strategy/test_eod_reversal_scan_integration.py`** (9 tests). Two layers of coverage:
+   * **Static-inspection guards** for the call-shape regression:
+     * `cur_min` defined in `scan_loop` BEFORE `_eod_reversal_pass(callbacks, cur_min)` is called (catches layer 1 re-introduction).
+     * The `[V910-EOD]` wrapper try/except still surrounds the call (catches accidental removal of the safety net).
+     * `_eod_reversal_pass` calls `book.current_equity()` as a method and does NOT contain the buggy `getattr(book, "current_equity", ...)` pattern (catches layer 2 re-introduction).
+     * `EodReversalEngine.is_entry_window` uses range comparison (`<=` and `<`), not single-minute equality (catches layer 3 re-introduction).
+   * **Runtime end-to-end test** — constructs a real `EodReversalEngine`, monkeypatches `PortfolioBook.current_equity` to return a known $100k, monkeypatches `_load_eod_prior_closes` to return a fixed prior-close dict, builds a `_FakeCallbacks` with synthetic 1m bars, then calls `_eod_reversal_pass` and asserts:
+     * `test_pass_admits_at_window_open` — at `cur_min=900` all three portfolios admit AAPL long + ORCL short (the natural picks given the price layout).
+     * `test_pass_admits_on_delayed_cycle_inside_window` — at `cur_min=925` (the 2026-05-13 deploy-landing time) admission STILL fires under v9.1.22. Pre-v9.1.22 this was the exact silent no-op.
+     * `test_pass_no_op_outside_window` — at `cur_min=840` nothing admits.
+     * `test_pass_flatten_at_exit` — at `cur_min=959` all open positions close into `closed_legs`.
+     * `test_pass_does_not_crash_on_missing_engine` — null-engine fast-path.
+3. **5 new smoke tests** in `smoke_test.py` (now 359 total `@t(...)` registrations) under section `v9.1 EOD reversal addon wiring`:
+   * `cur_min` defined before `_eod_reversal_pass` call
+   * `book.current_equity()` called as method
+   * `is_entry_window` uses range, not equality
+   * `_load_eod_prior_closes` exists as module helper
+   * `EOD_FLUSH_ET >= 15:59` (the v9.1.23 ordering guard)
+
+Smoke tests run automatically post-deploy via `.github/workflows/post-deploy-smoke.yml` against the live Railway image, so any re-regression Telegram-alerts within ~5 min of merge.
+
+**Estimated P&L impact:** $30-90/yr per recurrence prevented. Structurally closes the bug class (silent failure inside the `[V910-EOD]` wrapper).
+
+### 3. CLAUDE.md "Bundled SEV-1 hotfixes" rule
+
+Added to `Mandatory PR rules`:
+
+> When fixing a SEV-1, AUDIT the surrounding ~30 lines (and any helper functions called from inside the same try/except wrapper) for sibling bugs of the same class BEFORE opening the fix PR. If a second SEV-1 is found in the same code block, bundle it into the SAME PR rather than serializing.
+
+Captures the 2026-05-13 lesson where v9.1.20 + v9.1.21 should have been one PR: both bugs lived in the same 12-line function, layer 2 was discovered while auditing the layer-1 PR, and serializing them cost ~28 min of recovery time. Bundled, the fix would have landed at ~15:30 ET (inside the 15:00-15:59 entry window). Today's trade — likely recoverable.
+
+**Estimated P&L impact (process):** $200-600/yr if the bot ships ≥1 EOD-class SEV-1 per quarter.
+
+### Verification
+* `pytest tests/strategy/` — 980 pass, 8 skip (was 957 / 8 skip pre-v9.1.25; +14 sampling tests + 9 scan-integration tests = +23 new green).
+* `python -c "import smoke_test"` — module parses + decorators register (+5 new `@t(...)` entries, smoke registry up from 354 to 359).
+* The unified monitor's commit-tail is now 500 lines max with per-tag quotas; future V917 spam can't bury V910 anymore.
+
+### What this does NOT ship (deferred)
+* `[V910-EOD-WINDOW-CHECK]` heartbeat log (Action 3 in the audit) — needs a separate sentinel-pass to avoid log volume. Tracked in BACKLOG.
+* `inv_eod_entry_attempted_by_15_30` invariant (Action 4) — needs to wire into `tools/dashboard_monitor_invariants.py`. Tracked in BACKLOG.
+* `getattr(<method>, ...)` repo-wide lint (Action 8) — today's audit verified only the v9.1.21 site was bugged; the lint is insurance. Tracked in BACKLOG.
+
+---
+
 ## v9.1.24 (2026-05-13) — External-platform backtest playbook (Perplexity Comet + web + curl)
 
 Doc-only. Operator asked for instructions on running backtests from another platform (Perplexity Comet specifically, but the doc generalizes to any browser-based agent or HTTP-capable surface).
