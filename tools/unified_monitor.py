@@ -170,6 +170,85 @@ RAILWAY_FORENSIC_PATTERN = (
 )
 RAILWAY_LOG_LIMIT = 2000
 
+# v9.1.25 -- per-tag sampling buckets. Pre-v9.1.25 the forensic
+# committed list was a flat `-200:` slice. On 2026-05-13 the V917
+# cutoff-reject spam (5 tickers x 3 portfolios x 2 sides = ~30
+# lines/cycle) overflowed the 200-row cap inside ~7 minutes, which
+# buried the [V910-EOD] pass-failed line for the entire EOD bug
+# window. Per-tag quotas (MAX_PER_TAG) prevent a single noisy
+# emitter from crowding out everything else. Total cap
+# (MAX_TOTAL) preserves the file-size guarantee for the committed
+# snapshot. Order in this tuple determines which bucket a row
+# lands in when multiple tags appear in the same message --
+# longest / most-specific prefix first.
+RAILWAY_TAG_BUCKETS: tuple[str, ...] = (
+    "[V910-",       # EOD reversal addon (today's failure mode)
+    "[V900-",       # v9 morning ORB gates / rejects
+    "[V917-",       # time-cutoff rejects (the spam tag)
+    "[V79-ORB-",    # v79 ORB engine lifecycle
+    "[V10-FIRE]",   # broker-fire dispatch
+    "[V834-",       # engine state persistence
+    "[V83-",        # OR backfill sweep
+    "[V8",          # other v8 forensic tags (catch-all)
+    "[V9",          # other v9 forensic tags (catch-all)
+    "Traceback",
+    "ERROR",
+)
+RAILWAY_MAX_PER_TAG = 20
+RAILWAY_MAX_TOTAL = 500
+
+
+def _classify_tag(msg: str) -> str:
+    """Return the first RAILWAY_TAG_BUCKETS prefix found in *msg*, or
+    `"_other"` when no known tag matches. Order matters -- the buckets
+    list puts the most-specific prefix ([V910-) before the catch-all
+    ([V9) so V910 rows are never silently swept into the catch-all.
+    """
+    for tag in RAILWAY_TAG_BUCKETS:
+        if tag in msg:
+            return tag
+    return "_other"
+
+
+def _sample_per_tag(
+    rows: list[dict[str, Any]],
+    max_per_tag: int = RAILWAY_MAX_PER_TAG,
+    max_total: int = RAILWAY_MAX_TOTAL,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Bucket *rows* by their first matched tag, keep the most-recent
+    *max_per_tag* lines per bucket, then return the flattened list
+    (in bucket order, then chronological within each bucket) capped at
+    *max_total*. Returns (sampled_rows, full_summary).
+
+    `full_summary` is the unfiltered tag -> count map (pre-sampling) so
+    operators can still see "the bot logged 800 [V917-...] lines but
+    we only committed 20 of them."
+
+    Look-ahead audit: pure post-fetch transform; no future data
+    consulted.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    summary: dict[str, int] = {}
+    for row in rows:
+        msg = str(row.get("message", "") or row.get("text", ""))
+        tag = _classify_tag(msg)
+        summary[tag] = summary.get(tag, 0) + 1
+        buckets.setdefault(tag, []).append(row)
+    # Per-bucket recency cap. Preserve chronological order within each
+    # bucket so a postmortem reader can still reconstruct sequences.
+    for tag, bucket in buckets.items():
+        if len(bucket) > max_per_tag:
+            buckets[tag] = bucket[-max_per_tag:]
+    # Flatten in tag-list order (most-important first), then "_other"
+    # last. Global cap is a slice from the END so the newest matched
+    # rows survive if max_total is exceeded.
+    out: list[dict[str, Any]] = []
+    for tag in list(RAILWAY_TAG_BUCKETS) + ["_other"]:
+        out.extend(buckets.get(tag, []))
+    if len(out) > max_total:
+        out = out[-max_total:]
+    return out, summary
+
 
 def _pull_railway_logs() -> dict[str, Any]:
     """Tail recent Railway logs filtered to forensic patterns. Falls
@@ -199,19 +278,20 @@ def _pull_railway_logs() -> dict[str, Any]:
         forensic = grep_logs(RAILWAY_FORENSIC_PATTERN, limit=RAILWAY_LOG_LIMIT) or []
     except Exception:
         forensic = []
-    summary: dict[str, int] = {}
-    for row in forensic:
-        msg = str(row.get("message", "") or row.get("text", ""))
-        for tag in ("[V900-", "[V910-", "[V917-", "[V79-ORB-", "[V10-FIRE]",
-                    "Traceback", "ERROR"):
-            if tag in msg:
-                summary[tag] = summary.get(tag, 0) + 1
-                break
-    _log(f"  railway logs OK  total={len(rows)} forensic={len(forensic)}")
+    sampled, summary = _sample_per_tag(forensic)
+    _log(
+        f"  railway logs OK  total={len(rows)} forensic={len(forensic)} "
+        f"sampled={len(sampled)} buckets={len(summary)}"
+    )
     return {
         "total_fetched": len(rows),
-        "forensic_matches": forensic[-200:],  # cap committed size
+        "forensic_total": len(forensic),
+        "forensic_matches": sampled,
         "filter_summary": summary,
+        "sampling": {
+            "max_per_tag": RAILWAY_MAX_PER_TAG,
+            "max_total": RAILWAY_MAX_TOTAL,
+        },
         "probe": probe,
     }
 
