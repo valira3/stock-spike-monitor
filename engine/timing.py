@@ -22,8 +22,21 @@ ET = ZoneInfo("America/New_York")
 # v5.13.0 PR-5 SHARED-CUTOFF: new-position cutoff (was 15:30 ET in v5.12.0).
 NEW_POSITION_CUTOFF_ET: time = time(15, 44, 59)
 
-# v5.13.0 PR-5 SHARED-EOD: EOD flush (was 15:59:50 ET in v5.12.0).
-EOD_FLUSH_ET: time = time(15, 49, 59)
+# v5.13.0 PR-5 SHARED-EOD: EOD flush (was 15:59:50 ET in v5.12.0,
+# moved earlier to 15:49:59 per Tiger Sovereign §3).
+# v9.1.23 -- moved back to 15:59:59 because the legacy paper-book
+# flush at 15:49:59 was preempting v9.1.x EOD-reversal positions
+# (entered between 15:00 and 15:49 ET) 10 min before their own
+# 15:59 ET flatten path. Tiger Sovereign is retired, so the
+# pre-15:00 timing has no remaining rationale. The new ordering:
+#
+#   15:55 ET  -- v10 ORB engine's eod_cutoff_minutes (`orb/engine.py:79`)
+#                closes morning ORB positions via exits.py:EXIT_EOD.
+#   15:59 ET  -- v9.1 EOD reversal engine's exit_et_minutes fires
+#                its own close via scan._eod_reversal_pass.
+#   15:59:59  -- legacy paper-book backstop catches any stragglers
+#                still in paper_state.positions before market close.
+EOD_FLUSH_ET: time = time(15, 59, 59)
 
 # Hunt window: from regular-session open through SHARED-CUTOFF.
 # v15.0 SPEC: Entry Window 09:36:00 to 15:44:59 EST. ORH/ORL freeze at 09:35:59;

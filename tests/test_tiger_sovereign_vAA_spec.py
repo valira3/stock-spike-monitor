@@ -336,8 +336,10 @@ def test_shared_cutoff_154459():
 def test_shared_eod_154959():
     from engine.timing import EOD_FLUSH_ET
 
+    # v9.1.23: moved 15:49:59 -> 15:59:59 so legacy paper-book flush
+    # no longer preempts EOD-reversal positions.
     assert EOD_FLUSH_ET.hour == 15
-    assert EOD_FLUSH_ET.minute == 49
+    assert EOD_FLUSH_ET.minute == 59
     assert EOD_FLUSH_ET.second == 59
 
 

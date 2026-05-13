@@ -462,7 +462,8 @@ def test_canonical_eod_constant_is_15_49_59():
     from datetime import time
     from engine.timing import EOD_FLUSH_ET
 
-    assert EOD_FLUSH_ET == time(15, 49, 59)
+    # v9.1.23: see engine/timing.py header.
+    assert EOD_FLUSH_ET == time(15, 59, 59)
 
 
 # ---------------------------------------------------------------------

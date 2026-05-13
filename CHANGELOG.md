@@ -4,6 +4,60 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.23 (2026-05-13) — Legacy paper-book EOD flush moved from 15:49:59 → 15:59:59 (no longer preempts EOD reversal positions)
+
+Operator caught this immediately after the v9.1.22 EOD-entry fix landed: "make sure we don't close EOD positions at 15:55". Audit confirmed a real conflict that would have killed every future EOD-reversal Main LONG position 10 minutes early.
+
+**Conflict path** (Main LONG side of EOD reversal):
+
+```
+scan._eod_reversal_pass  → _eod_fire_broker(pid="main", side="long")
+                         → callbacks.execute_entry(ticker, price)
+                         → broker/lifecycle.py:execute_entry
+                         → broker/orders.py:execute_breakout
+                         → paper_state.positions[ticker] = {...}
+```
+
+`paper_state.positions` is what `broker/lifecycle.py:eod_close` iterates at `EOD_FLUSH_ET`. Pre-v9.1.23 that ran at **15:49:59 ET** — meaning any EOD reversal LONG entered between 15:00 and 15:49 ET would be flushed 10 min before its intended 15:59 ET flatten.
+
+The 15:49:59 timing was set in v5.13.0 per Tiger Sovereign §3 (now retired). The pre-Tiger value was `15:59:50 ET`.
+
+**Fix:** moved `EOD_FLUSH_ET` from `time(15, 49, 59)` to `time(15, 59, 59)` in `engine/timing.py:26`. The new daily-close ordering:
+
+| Time ET | Layer | What closes |
+|---|---|---|
+| 15:55:00 | `orb/engine.py:eod_cutoff_minutes=15*60+55` | Morning ORB positions via `exits.py:EXIT_EOD` |
+| 15:59:00 | `orb/eod_reversal.py:exit_et_minutes=959` | v9.1 EOD reversal positions via scan_loop's `_eod_reversal_pass` flatten path |
+| 15:59:59 | `broker/lifecycle.py:eod_close` (legacy paper-book backstop) | Any stragglers still in `paper_state.positions` |
+| 16:00:00 | Market close (Alpaca-enforced) | All remaining (broker auto-flatten) |
+
+Each layer is now AFTER the previous engine layer's close window, so no engine preempts another.
+
+**Tests updated** — three retired-Tiger-strategy spec tests pinned the old 15:49:59 value:
+
+* `tests/test_tiger_sovereign_vAA_spec.py`
+* `tests/test_eye_of_tiger.py`
+* `tests/test_tiger_sovereign_spec.py`
+
+All updated to expect 15:59:59 with a comment pointing back to this CHANGELOG entry. The strategy itself is retired (hidden via `body.v10-live` since v7.27.0); these tests check infrastructure constants only.
+
+### Why this wasn't a SEV-1 today
+
+Today's EOD reversal never admitted (v9.1.20+v9.1.21+v9.1.22 compound bugs), so the 15:49:59 conflict was a latent trap that would have manifested tomorrow's first successful EOD admit. Catching it before tomorrow's session is good.
+
+### Risk + rollback
+
+Single-line change to a constant + 3 test pins. The new ordering is strictly safer:
+* Morning ORB closes BEFORE EOD reversal entry window (15:55 < 15:59)
+* EOD reversal closes BEFORE legacy backstop (15:59 < 15:59:59)
+* Legacy backstop closes BEFORE market close (15:59:59 < 16:00:00)
+
+Rollback = revert the single commit. Pre-v9.1.23 behavior would re-introduce the EOD-reversal-preemption bug.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.22 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 3): EOD entry window widened from single minute to [entry, exit) range
 
 Today's EOD entry never fired despite v9.1.20 + v9.1.21 hotfixes. Root cause: a third bug in the same code path. **Three compound silent failures in one strategy** — that's why "no trades" persisted even after we shipped the two earlier hotfixes.
