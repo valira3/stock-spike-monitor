@@ -317,6 +317,22 @@ class ORBConfig:
                                           #     day (same effect as the
                                           #     existing daily_loss_kill).
                                           #     0 = off.
+    # v19 signal-magnitude / cadence-latency filter (2026-05-13). Tests the
+    # hypothesis that production fires later than the first marginal break
+    # because of scan-loop cadence latency. Two independent levers:
+    min_break_bps: float = 0.0            # >0: require signal close to be
+                                          #     min_break_bps past OR_high
+                                          #     (long) or OR_low (short)
+                                          #     before admitting. Suppresses
+                                          #     marginal breaks like the
+                                          #     observed AMZN -4.5bps fire.
+    confirm_bars_n: int = 0               # >0: require the prior N 5m closes
+                                          #     (including this signal bar)
+                                          #     to ALL be past the OR
+                                          #     boundary in the same
+                                          #     direction. Approximates
+                                          #     production firing on the
+                                          #     "3rd consecutive bar".
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -388,6 +404,9 @@ class ORBConfig:
             # v18 day-end-giveback defenses
             loss_lock_threshold_usd=_envf("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
             peak_dd_halt_usd=_envf("ORB_PEAK_DD_HALT_USD", 0.0),
+            # v19 signal-magnitude / cadence-latency filter
+            min_break_bps=_envf("ORB_MIN_BREAK_BPS", 0.0),
+            confirm_bars_n=_envi("ORB_CONFIRM_BARS_N", 0),
         )
 
 
@@ -622,6 +641,33 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             continue
         if side.upper() in blocked_sides:
             continue
+
+        # v19: minimum break magnitude in bps. Suppresses marginal first-bar
+        # breaks that production tends to miss due to scan-loop cadence
+        # latency (forensic: AMZN -4.5bps was skipped, -23bps fired).
+        if cfg.min_break_bps > 0:
+            if side == "long" and or_high > 0:
+                break_bps = (sig.close - or_high) / or_high * 10000.0
+            elif side == "short" and or_low > 0:
+                break_bps = (or_low - sig.close) / or_low * 10000.0
+            else:
+                break_bps = 0.0
+            if break_bps < cfg.min_break_bps:
+                continue
+
+        # v19: N-bar confirmation. Require the prior N 5m closes including
+        # this bar to all be on the same side of the OR boundary.
+        if cfg.confirm_bars_n > 1:
+            start = i - cfg.confirm_bars_n + 1
+            if start < 0:
+                continue
+            window = candles_5m[start : i + 1]
+            if side == "long":
+                if not all(c.close > or_high for c in window):
+                    continue
+            else:
+                if not all(c.close < or_low for c in window):
+                    continue
 
         # v9 lever: volume confirmation -- require signal candle's
         # volume >= mult * mean(prior candles_5m). Skip if too quiet.
