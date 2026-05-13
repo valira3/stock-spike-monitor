@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.3 (2026-05-13) — SPY prior-return loader self-heals via Alpaca
+
+Today's first post-deploy snapshot showed `day_status.spy_d1_ret_bps=None`, which means the v9.0.0 R12 regime-skip gate was running fail-open instead of consulting yesterday's SPY return. Root cause: the loader only had two sources — `/data/bars/<DATE>/SPY.jsonl` and `data/external/spy-daily.csv` — and the CSV fallback was never seeded in the repo. Any time the bar archive misses yesterday's RTH close (fresh deploy, wiped volume, worker restart before 15:59 ET, etc.) the gate silently bypasses.
+
+Added a third-tier Alpaca historical-bars fallback that self-heals:
+
+* `tools/orb_spy_loader.py`: new `_prior_two_closes_from_alpaca(decision_date)` helper. Uses the standard `VAL_ALPACA_PAPER_KEY → GENE_ALPACA_PAPER_KEY` credential pool already wired for other data calls. Lazy-imports `alpaca-py` so unit tests don't need the SDK installed. Returns the two most recent daily closes strictly before `decision_date` via `StockBarsRequest(timeframe=TimeFrame.Day)`. Module-level cache keyed on `decision_date` collapses repeated calls in the same session to one REST hit.
+* Source priority is now bar archive → CSV → Alpaca REST → None. Fail-open contract preserved (Alpaca down or no credentials → None → gate opens as before).
+* Look-ahead audit (rule #7b) preserved: REST window ends at `decision_date - 1 day`, and a defensive filter drops any bar at or after `decision_date` in case the API mis-returns.
+* New forensic surface: `[V900-SPY-LOADER] alpaca rebuild: …` at INFO level when the third-tier path succeeds, so we can see in Railway logs which source actually answered.
+
+Tests (8 new in `tests/strategy/test_orb_v900_spy_regime.py::TestSpyLoaderAlpacaFallback`):
+
+* `test_alpaca_used_when_bar_archive_and_csv_missing` — primary path
+* `test_alpaca_not_called_when_bar_archive_succeeds` — proves we still prefer the live bar archive
+* `test_alpaca_returns_none_when_credentials_missing` — fail-open
+* `test_alpaca_returns_none_on_rest_failure` — fail-open
+* `test_alpaca_drops_same_day_bar_lookahead_guard` — rule #7b
+* `test_alpaca_returns_none_with_only_one_close`
+* `test_alpaca_cache_avoids_second_call` — 3 calls collapse to 1 REST
+* `test_gene_credentials_used_when_val_missing` — pool fallback
+
+The SDK is monkey-patched at the `sys.modules` level so the tests don't need `alpaca-py` installed and never touch the network.
+
+No env vars added, no new dependencies (Alpaca SDK was already in `requirements.txt` for the broker path), no UI changes. Operator rollback is a no-op: with the credential pool empty the function returns None, exactly as before.
+
+---
+
 ## v9.1.2 (2026-05-13) — EOD reversal entry time moved 15:30 → 15:00 ET
 
 R18c hour-by-hour entry sweep on the v9 corpus found 15:00 ET is the **optimal entry** on our 5-ticker institutional fence — not the 15:30 the Baltussen 2024 paper uses for the broader market cross-section.

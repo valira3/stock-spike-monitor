@@ -7,19 +7,26 @@ day. R12 research showed the strategy bleeds ~$208/day on days
 where prior SPY return was in the (-1.0%, -0.5%) band; the gate
 filters those out.
 
-Two data sources, tried in order:
+Three data sources, tried in order:
   1. `/data/bars/<YYYY-MM-DD>/SPY.jsonl` (production bar archive
      written by bar_archive.py). Used in live.
   2. `data/external/spy-daily.csv` (datahub-style CSV). Fallback
      for backtests + local dev when the bar archive is missing.
+  3. v9.1.3: Alpaca historical daily bars. Self-heal fallback for
+     fresh deploys / wiped volumes / missed overnight writes -- no
+     operator CSV maintenance needed. Reuses the standard
+     `VAL_ALPACA_PAPER_KEY` -> `GENE_ALPACA_PAPER_KEY` credential
+     pool already wired for other data calls. Result is cached
+     in-process per `decision_date` so repeated calls in the same
+     session are free.
 
-Fail behavior: returns None when neither source is available.
+Fail behavior: returns None when all three sources are unavailable.
 Callers (engine.start_new_session via day_gates.evaluate_day)
 should treat None as "fail-open" unless
 `fail_closed_on_missing_spy=True` is set in DayGateConfig.
 
-Look-ahead audit (rule #7b): both sources expose only closes at
-or before the decision date. The function explicitly walks
+Look-ahead audit (rule #7b): all three sources expose only closes
+at or before the decision date. The function explicitly walks
 BACKWARD from `decision_date`; same-day or future data is never
 consulted.
 """
@@ -29,6 +36,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -38,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BAR_ARCHIVE_ROOT = "/data/bars"
 DEFAULT_CSV_PATH = "data/external/spy-daily.csv"
+
+# v9.1.3 -- module-level cache keyed on decision_date so a single
+# session reset triggers at most one Alpaca REST call. Reset on
+# process restart; that's fine since each new deploy gets a fresh
+# session anyway.
+_alpaca_cache: dict[str, Optional[tuple[str, float, str, float]]] = {}
 
 
 def _last_rth_close_from_jsonl(jsonl_path: Path) -> Optional[float]:
@@ -157,6 +171,112 @@ def _walk_back_two_closes(
     return None
 
 
+def _alpaca_credentials() -> tuple[Optional[str], Optional[str]]:
+    """Return (key, secret) using the standard pool fallback chain.
+    Matches trade_genius.py's data-call lookup so we don't introduce
+    a new env var. Returns (None, None) if no credentials available.
+    """
+    key = (
+        (os.getenv("VAL_ALPACA_PAPER_KEY") or "").strip()
+        or (os.getenv("GENE_ALPACA_PAPER_KEY") or "").strip()
+    )
+    secret = (
+        (os.getenv("VAL_ALPACA_PAPER_SECRET") or "").strip()
+        or (os.getenv("GENE_ALPACA_PAPER_SECRET") or "").strip()
+    )
+    if not key or not secret:
+        return (None, None)
+    return (key, secret)
+
+
+def _prior_two_closes_from_alpaca(
+    decision_date: str,
+    *,
+    max_lookback: int = 14,
+) -> Optional[tuple[str, float, str, float]]:
+    """v9.1.3 -- third-tier fallback. Fetches the most recent two daily
+    SPY closes strictly before `decision_date` via Alpaca historical
+    bars. Returns (d1_date, d1_close, d2_date, d2_close) or None when
+    credentials are missing, the SDK is unavailable, the REST call
+    fails, or fewer than 2 closes come back. Cached per
+    `decision_date` to keep this to one network call per session.
+
+    `max_lookback` is in calendar days; 14 covers the longest holiday
+    weekend (Thanksgiving / Christmas) with margin.
+    """
+    if decision_date in _alpaca_cache:
+        return _alpaca_cache[decision_date]
+    key, secret = _alpaca_credentials()
+    if key is None or secret is None:
+        logger.debug(
+            "[V900-SPY-LOADER] alpaca: no credentials in env, skipping fallback"
+        )
+        _alpaca_cache[decision_date] = None
+        return None
+    try:
+        dt = datetime.strptime(decision_date, "%Y-%m-%d")
+    except ValueError:
+        _alpaca_cache[decision_date] = None
+        return None
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+    except ImportError as e:
+        logger.debug("[V900-SPY-LOADER] alpaca SDK not importable: %s", e)
+        _alpaca_cache[decision_date] = None
+        return None
+    start = (dt - timedelta(days=max_lookback)).strftime("%Y-%m-%d")
+    # End is decision_date - 1 day so we never read same-day or
+    # future data (look-ahead rule #7b).
+    end = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        client = StockHistoricalDataClient(key, secret)
+        req = StockBarsRequest(
+            symbol_or_symbols="SPY",
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+        )
+        resp = client.get_stock_bars(req)
+    except Exception as e:
+        logger.warning("[V900-SPY-LOADER] alpaca REST failed: %s", e)
+        _alpaca_cache[decision_date] = None
+        return None
+    raw = resp.data.get("SPY", []) if hasattr(resp, "data") else []
+    # alpaca-py returns bars in chronological order; we want the two
+    # most recent.
+    closes: list[tuple[str, float]] = []
+    for b in raw:
+        ts = getattr(b, "timestamp", None)
+        close = getattr(b, "close", None)
+        if ts is None or close is None:
+            continue
+        try:
+            iso = ts.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+        # Defensive: even with end=decision_date-1, drop any bar at
+        # or after decision_date.
+        if iso >= decision_date:
+            continue
+        if close > 0:
+            closes.append((iso, float(close)))
+    if len(closes) < 2:
+        logger.warning(
+            "[V900-SPY-LOADER] alpaca: only %d valid closes returned for %s",
+            len(closes),
+            decision_date,
+        )
+        _alpaca_cache[decision_date] = None
+        return None
+    d1_date, d1_close = closes[-1]
+    d2_date, d2_close = closes[-2]
+    result = (d1_date, d1_close, d2_date, d2_close)
+    _alpaca_cache[decision_date] = result
+    return result
+
+
 def prior_spy_return_bps(
     decision_date: str,
     *,
@@ -169,9 +289,10 @@ def prior_spy_return_bps(
     Computed as (SPY[D-1] - SPY[D-2]) / SPY[D-2] * 10000 where D-1 and
     D-2 are the two most recent trading days strictly before
     `decision_date`. Returns None when fewer than 2 prior closes are
-    available from either source.
+    available from any source.
 
-    Source priority: bar archive first (live), then CSV (backtest).
+    Source priority: bar archive (live) -> CSV (backtest) -> Alpaca
+    REST (self-heal fallback for fresh deploys / wiped volumes).
     """
     # Try bar archive first.
     d1 = _prior_close_from_bar_archive(
@@ -219,8 +340,26 @@ def prior_spy_return_bps(
                     bps,
                 )
                 return bps
+    # v9.1.3 -- third-tier Alpaca REST fallback. Self-heals on fresh
+    # deploys / wiped volumes / overnight-restart misses.
+    pair = _prior_two_closes_from_alpaca(decision_date)
+    if pair is not None:
+        d1_date, d1_close, d2_date, d2_close = pair
+        if d2_close > 0:
+            bps = (d1_close - d2_close) / d2_close * 10000.0
+            logger.info(
+                "[V900-SPY-LOADER] alpaca rebuild: D-1 %s close=%.2f, "
+                "D-2 %s close=%.2f -> %.1fbps",
+                d1_date,
+                d1_close,
+                d2_date,
+                d2_close,
+                bps,
+            )
+            return bps
     logger.warning(
-        "[V900-SPY-LOADER] no prior SPY close found for %s in either bar archive (%s) or CSV (%s)",
+        "[V900-SPY-LOADER] no prior SPY close found for %s in any of "
+        "bar archive (%s), CSV (%s), or alpaca",
         decision_date,
         bar_archive_root,
         csv_path,
