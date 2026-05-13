@@ -4,6 +4,33 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.9 (2026-05-13) — Expandable position rows with inline charts + RTH-only chart window
+
+Two operator-requested feature additions, both cross-tab.
+
+### Inline charts on Open Positions
+
+Clicking any open-position row now toggles an inline intraday chart beneath the row, mirroring the v10 Proximity matrix's expand pattern exactly. The chart hydrates through the existing `window.__tgRenderTickerChart` pipeline — same canvas, same fetch path, same pan/zoom interaction. One entry point for every chart in the dashboard, so future chart changes propagate everywhere automatically.
+
+Implementation:
+* **Main** (`renderPositions`, `dashboard_static/app.js:339`): each row gets `tabindex` / `role="button"` / `aria-expanded`. A per-`body` `Set` (`body.__posExpanded`) tracks expanded tickers across SSE re-renders. The row template appends a `<tr class="pos-chart-row">` with a `data-chart-mount` div when the ticker is expanded; the renderer hydrates every mount after innerHTML via the shared `__tgRenderTickerChart`. Re-render on click goes through the exposed `window.__tgRenderPositions` so the chart insert/remove is deterministic — no DOM surgery. Pre-v9.1.9 the click handler scrolled to the legacy Tiger Sovereign Permit Matrix, which has been hidden under `body.v10-live` since v7.27.0 (dead-end UX); that's now replaced with the chart toggle.
+* **Val/Gene** (`renderExecutor`, `dashboard_static/app.js:4614`): same shape with `posBody.__posExpanded`. Re-render via the new `window.__tgRenderExecutor(name, data)` export. To survive the once-wired click handler's closure going stale across renders, the latest data is stashed in `window.__tgLastExecData[name]` on every render, and the click handler pulls from that — never from a captured arg.
+* **CSS** (`dashboard_static/app.css:2731`): new `.pos-chart-row` / `.pos-chart-cell` / `.pos-chart-mount` rules mirror the v10 proximity-detail styling so the inline chart looks identical across Main / Val / Gene.
+
+### RTH-only chart window
+
+Chart default view narrowed from `08:00 – 20:00 ET` (`_CHART_FULL_X_MIN/MAX = 480 / 1200` minutes-since-midnight) to **`09:30 – 16:00 ET`** (`570 / 960`). Pre-market and post-market candles were visual noise on an RTH-only strategy. Operator can still pan/zoom out to the wider `04:00 – 20:00 ET` envelope (`240 / 1200`) via the existing mouse-wheel and drag handlers — the downstream clamps in `_drawIntradayChart` are unchanged, so manual zoom-out remains available.
+
+This change applies to every chart in the dashboard — proximity expansion, the new inline position charts, and any future caller of `__tgRenderTickerChart` — since the constants live at one source.
+
+### Risk + rollback
+
+Pure UI / client-side. No engine, payload, or server change. Rollback = revert the single commit; expansion state is in-memory only so nothing migrates.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.8 (2026-05-13) — HOTFIX: signal_iso wiring + progress bar fix + state persistence
 
 ### Part A — HOTFIX: v9.1.7 time cutoff was a no-op in production
