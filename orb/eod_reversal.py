@@ -67,8 +67,16 @@ class EodReversalConfig:
     # r17 sweet spot; 25% safer, 50% adds drawdown risk.
     notional_pct: float = 35.0
 
-    # Time anchors in ET minutes-from-midnight
-    entry_et_minutes: int = 15 * 60 + 30   # 15:30 ET
+    # Time anchors in ET minutes-from-midnight.
+    # v9.1.2 -- entry moved 15:30 -> 15:00 per the R18c hour-by-hour
+    # sweep. Earlier entry on our 5-ticker institutional fence catches
+    # the start of the institutional rebalancing window AND gives the
+    # reversal pattern a full hour to play out. Backtest lift:
+    # +$4,339/yr (+16% on the EOD addon). Combined v9 + v9.1.2 =
+    # $+31,282/yr / 0/5 neg quarters. Entry windows before 14:00
+    # produce structurally negative P&L (anti-momentum applied during
+    # the momentum phase); 14:00-15:00 is the inflection zone.
+    entry_et_minutes: int = 15 * 60        # 15:00 ET
     exit_et_minutes: int = 15 * 60 + 59    # 15:59 ET
 
     # v9.1.1 -- live broker firing is now the default. v9.1.0 shipped
@@ -138,7 +146,7 @@ class EodReversalConfig:
                              ("ORCL", "NFLX", "AAPL", "MSFT")),
             top_n=_i("ORB_EOD_TOP_N", 1),
             notional_pct=_f("ORB_EOD_NOTIONAL_PCT", 35.0),
-            entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60 + 30),
+            entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60),
             exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 59),
             fire_broker=_b("ORB_EOD_FIRE_BROKER", True),
         )

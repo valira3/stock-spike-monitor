@@ -4,6 +4,74 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.2 (2026-05-13) — EOD reversal entry time moved 15:30 → 15:00 ET
+
+R18c hour-by-hour entry sweep on the v9 corpus found 15:00 ET is the **optimal entry** on our 5-ticker institutional fence — not the 15:30 the Baltussen 2024 paper uses for the broader market cross-section.
+
+### Why 15:00 is the sweet spot on our universe
+
+Hour-by-hour sweep (entry, exit fixed at 15:59 ET, 5-winner fence, top-1, 35% notional, 1.5bps slip):
+
+| Entry ET | Hold | FY net | WR |
+|---|---:|---:|---:|
+| 11:00 | 4h 59m | **−$16,596** | 46.9% |
+| 12:00 | 3h 59m | −$8,595 | 46.8% |
+| 13:00 | 2h 59m | −$1,923 | 48.6% |
+| 14:00 | 1h 59m | +$1,773 | 50.8% |
+| 14:30 | 1h 29m | +$5,199 | 50.0% |
+| **15:00** | **59m** | **+$6,498** | **50.0%** |
+| 15:30 (was v9.1.1 default) | 29m | +$4,602 | 50.2% |
+
+The 14:00 ET inflection point is structural: before 14:00 the day's "biggest mover" rankings still reflect the ONGOING directional move, so the strategy is anti-momentum applied during the momentum phase (catastrophic). After 14:00 the rankings stabilize and reversal mechanics dominate. The 1-hour hold from 15:00 captures both the late-afternoon institutional rebalancing AND the pre-close retail attention buildup — more comprehensive than the 30-min 15:30 window.
+
+### Combined v9 + v9.1.2
+
+| Config | FY combined | vs v9 alone | neg quarters |
+|---|---:|---:|:---:|
+| v9.0.0 morning ORB only | +$24,784 | — | 0/5 |
+| v9.1.1 (15:30 entry) | +$26,943 | +$2,159 | 0/5 |
+| **v9.1.2 (15:00 entry)** | **+$31,282** | **+$6,498** | **0/5** |
+
+Lift over v9.1.1: **+$4,339/yr / +16% on the EOD addon**. Stability preserved.
+
+### Code change (minimal)
+
+```python
+# orb/eod_reversal.py
+- entry_et_minutes: int = 15 * 60 + 30   # 15:30 ET
++ entry_et_minutes: int = 15 * 60        # 15:00 ET
+```
+
+Plus matching `from_env()` default for `ORB_EOD_ENTRY_ET`.
+
+### Tests (5 updated)
+
+- `test_defaults_match_r17_winner` -> expects 15:00
+- `test_malformed_et_falls_back` -> expects 15:00
+- `test_entry_window_default_15_30` -> renamed `_15_00`, expects bucket 900
+- `test_snapshot_config_format` -> expects "15:00"
+- `test_v9_1_0_defaults_match_r17_winner` (integration) -> expects 15:00
+- 34 EOD tests pass; full strategy suite unchanged
+
+### Overlap with morning ORB
+
+Verified zero overlap: v9 ORB stops admitting at `ORB_TIME_CUTOFF_ET=11:00`. By 15:00 ET, all morning ORB positions are either closed or trailing to EOD flatten. EOD engine has its own independent risk book.
+
+### Operator override (no redeploy)
+
+Set `ORB_EOD_ENTRY_ET=15:30` in Railway env to revert to the v9.1.1 entry time without a code revert. Useful if live trading shows different behavior than backtest.
+
+### Research artifacts
+
+- `tools/afternoon_backtest.py` gains `AFT_ENTRY_BUCKET` + `AFT_EXIT_BUCKET` env vars for future entry-time sweeps
+- R18c sweep results: `/tmp/r18c/e<bucket>_h<hold>/` (research scratch, not committed)
+
+### No other changes
+
+Universe, fence, top-N, sizing, slippage, broker-fire gate, and all v9.0.0/v9.1.0/v9.1.1 features carry forward unchanged.
+
+---
+
 ## v9.1.1 (2026-05-13) — EOD reversal flipped to live broker firing
 
 Single-line behavioral change: the EOD reversal addon (shipped in v9.1.0 with `fire_broker=False` paper-default) is flipped to live broker firing by default in v9.1.1 per operator authorization. The engine was already tracking signals + positions + P&L from v9.1.0 ship; the only change is that real broker orders now dispatch via the existing executor surface.

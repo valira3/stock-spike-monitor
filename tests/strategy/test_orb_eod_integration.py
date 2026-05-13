@@ -181,7 +181,8 @@ class TestShipSpec:
         assert set(cfg.short_tickers) == {"ORCL", "NFLX", "AAPL", "MSFT"}
         assert cfg.top_n == 1
         assert cfg.notional_pct == 35.0
-        assert cfg.entry_et_minutes == 15 * 60 + 30
+        # v9.1.2: entry moved 15:30 -> 15:00 per R18c sweep.
+        assert cfg.entry_et_minutes == 15 * 60
         assert cfg.exit_et_minutes == 15 * 60 + 59
         # v9.1.1: live broker firing is the default (was False in v9.1.0).
         assert cfg.fire_broker is True
