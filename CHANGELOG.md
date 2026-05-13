@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.13 (2026-05-13) — Persistent chart canvas across state polls (real interactivity fix)
+
+v9.1.12 attempted to fix chart pan/zoom getting reset every state poll by making `__tgRenderTickerChart` idempotent — but the check was `containerEl.querySelector(...)` against the mount's *current* contents, and the **parent table re-renders entirely on every state poll**, so the containerEl was a fresh DOM node each time and the idempotency check always missed. The first chart in the matrix felt worst because it had been through the most teardown/rebuild cycles by the time the user tried to interact with it.
+
+Real fix: cache the chart panel DOM node at module scope, keyed by ticker. On each `__tgRenderTickerChart(tkr, containerEl)` call:
+
+1. If we've never rendered this ticker before → build the panel inline and snapshot the resulting DOM node into `_chartPanelCache[tkr]`.
+2. If we have a cached panel but it's currently detached (parent re-rendered since last time) → transplant it back into the new `containerEl` via `appendChild`. The canvas DOM, all its registered pointer/wheel/keydown handlers, and the `_chartViewState` WeakMap entry come along intact.
+3. If the cached panel is already inside `containerEl` → no DOM change needed.
+
+Then hydration runs in all three cases. `_wireIntradayChartInteraction` is sentinel-gated on `_vs.wired`, so it idempotently no-ops against the cached canvas.
+
+Result: pan/zoom interaction survives across state polls. The user can grab and drag a chart for as long as they want — the underlying canvas DOM element is the same one they grabbed.
+
+Note on entry/exit markers: operator reported markers missing on the TSLA chart even though TSLA is an open position. Draw path (`_drawIntradayChart` lines 1928-1952) is correct and renders markers when `payload.trades[].entry_ts` falls inside the visible `[X_MIN, X_MAX]` window. Source is `paper_state.positions[ticker]` (`dashboard_server.py:_intraday_today_trades`). If markers are still missing post-v9.1.13, the cause is one of: (a) `paper_state.positions["TSLA"]` lacks `entry_ts_utc`, (b) the timestamp doesn't start with today's `YYYY-MM-DD`, or (c) the marker is being clamped out of view. Investigation deferred until operator can confirm whether markers appear on a fresh post-9.1.13 chart.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.12 (2026-05-13) — Fix empty Range column + chart-interactivity teardown
 
 Two operator-reported bugs, both pre-existing but surfaced by the v9 dashboard cleanup work.
