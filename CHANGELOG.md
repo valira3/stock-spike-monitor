@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.14 (2026-05-13) — Revert v9.1.13 canvas-transplant + drop date filter that was suppressing markers
+
+### Part A — Revert v9.1.13's canvas-transplant interactivity attempt
+
+v9.1.13 cached the chart panel DOM at module scope and tried to transplant it back into each fresh mount on parent re-renders. Operator confirmed: **none of the charts are interactive after v9.1.13** — strictly worse than v9.1.12, where at least newly-expanded charts worked for ~5 s between state polls. Exact failure mode unclear from outside the live browser (likely pointer-capture loss during the `appendChild` move, or a layout race making `getBoundingClientRect` zero at the moment a pointer event arrives, or some interaction with the chart's state-poll-driven re-hydration).
+
+Reverted `__tgRenderTickerChart` to the pre-v9.1.13 plain rebuild path: every state poll rebuilds the chart fresh. The user's pan/zoom **view state** still survives across rebuilds via the per-ticker `_chartViewByTkr` dict (unchanged). What's lost is mid-drag continuity — a drag that straddles a state-poll boundary gets interrupted. Better than v9.1.13's "nothing is interactive" state.
+
+A proper fix for mid-drag continuity needs either a diff-render pass on the parent table (don't `innerHTML = html` every poll) or a fundamental restructure where the chart canvas lives outside the table tree. Both are bigger refactors and will land in a separate PR after we can reproduce the v9.1.13 failure in a browser session.
+
+### Part B — Fix entry/exit markers missing on TSLA chart
+
+Operator reported TSLA's chart wasn't drawing the entry triangle. Root cause: `_intraday_today_trades` in `dashboard_server.py` filtered open positions by `entry_ts_utc.startswith(today_utc_date)`. For v10 ORB fires the `entry_ts_utc` field is sometimes missing or in a format that doesn't pass the prefix check, so the marker was silently dropped.
+
+Fix: drop the date filter on the OPEN-position branches (long + short). An open position by definition was entered today — `eod_close` flushes everything at 15:55 ET — so we emit the marker unconditionally and let the JS `drawMark` helper drop it if the timestamp is unparseable. The closed-trade branches further down keep the filter (those iterate full-history logs and DO need to bound to today). Added a `[V914-INTRADAY-MARK]` info log whenever the date check would have failed so we can see what the actual `entry_ts_utc` value is and fix it at the source if needed.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.13 (2026-05-13) — Persistent chart canvas across state polls (real interactivity fix)
 
 v9.1.12 attempted to fix chart pan/zoom getting reset every state poll by making `__tgRenderTickerChart` idempotent — but the check was `containerEl.querySelector(...)` against the mount's *current* contents, and the **parent table re-renders entirely on every state poll**, so the containerEl was a fresh DOM node each time and the idempotency check always missed. The first chart in the matrix felt worst because it had been through the most teardown/rebuild cycles by the time the user tried to interact with it.
