@@ -4,7 +4,7 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v9.1.19 (2026-05-13) — HOTFIX: unified monitor InvariantContext signature
+## v9.1.19 (2026-05-13) — HOTFIX: unified monitor InvariantContext signature + 2 more orphan archives
 
 v9.1.18's first `workflow_dispatch` run failed at the `_run_invariants` step with `TypeError: InvariantContext.__init__() got an unexpected keyword argument 'state'`. I'd guessed the constructor signature when writing `tools/unified_monitor.py` instead of reading `tools/dashboard_monitor_invariants.py`. The actual signature is `InvariantContext(payloads, base_url)` where `payloads` is a dict keyed by short names (`state`, `exec_val`, `exec_gene`) — same shape `tools/dashboard_monitor.py` builds. The invariant result dicts also use `{name, ok, summary, detail}` not the `{name, status: pass/fail}` I assumed.
 
@@ -26,6 +26,17 @@ The failing run log also showed `alpaca gene FAILED: no credentials for gene`. T
 2. Leave them empty; the monitor proceeds with just main + val data and logs `gene FAILED` informationally
 
 Not blocking.
+
+### Additional Phase 2 archives
+
+While auditing the workflows directory I also archived two more orphans (moved to `.github/workflows/_archive/`):
+
+* **`pull-premarket.yml`** — pre-market bar puller. v10 strategy is RTH-only; pre-market bars haven't been consumed since the v9 ship. Last trigger file (`.github/premarket-trigger/full_corpus.json`) dated May 10, three days ago. No remaining downstream dependency.
+* **`r2-export-results.yml`** — Cloudflare R2 mirror for the sweep-results branch. Workflow_dispatch only (never auto-fires). The sweep-results branch itself is well within GitHub size limits and is the canonical read path. R2 mirror was a precaution that never had to activate.
+
+Archived (not deleted) so the YAML stays inspectable for the git history and the workflows can be revived by moving back if the orphan turns out to be wrong. GH Actions only honors `.github/workflows/*.yml` at the top level, so files under `_archive/` are inert.
+
+Workflow directory after this PR: 5 CI gates + 1 deploy gate + 1 unified monitor + 7 research/utility = 14 active workflows + 4 archived (was 19 active pre-v9.1.18 audit).
 
 ---
 
