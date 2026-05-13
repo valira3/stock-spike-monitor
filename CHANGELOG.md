@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.19 (2026-05-13) — HOTFIX: unified monitor InvariantContext signature + 2 more orphan archives
+
+v9.1.18's first `workflow_dispatch` run failed at the `_run_invariants` step with `TypeError: InvariantContext.__init__() got an unexpected keyword argument 'state'`. I'd guessed the constructor signature when writing `tools/unified_monitor.py` instead of reading `tools/dashboard_monitor_invariants.py`. The actual signature is `InvariantContext(payloads, base_url)` where `payloads` is a dict keyed by short names (`state`, `exec_val`, `exec_gene`) — same shape `tools/dashboard_monitor.py` builds. The invariant result dicts also use `{name, ok, summary, detail}` not the `{name, status: pass/fail}` I assumed.
+
+Fix in `tools/unified_monitor.py`:
+
+* `_run_invariants(dashboard_payload, base_url)` now builds the `payloads` dict with the correct keys (`state`, `exec_val`, `exec_gene`, `trade_log`), passes `base_url`, and reads `r.get("ok", True)` to detect failures.
+* `_maybe_alert_telegram` reads `not r.get("ok", True)` for the failure-filter (instead of `r.get("status") == "fail"`).
+* `main()` passes `base` to `_run_invariants`.
+
+Other steps of the monitor (dashboard pull, alpaca pull, railway logs, commit) already executed cleanly per the failed run log. With the invariant section fixed the next workflow tick should complete and commit `data/monitor/latest.json` to `monitor-live`.
+
+957 strategy tests pass.
+
+### Sidenote — `GENE_ALPACA_PAPER_KEY` not configured
+
+The failing run log also showed `alpaca gene FAILED: no credentials for gene`. The `VAL_ALPACA_PAPER_KEY` + `MAIN_ALPACA_PAPER_KEY` secrets are configured but `GENE_` isn't. Two options for the operator:
+
+1. Add the GENE secrets via Settings → Secrets and variables → Actions
+2. Leave them empty; the monitor proceeds with just main + val data and logs `gene FAILED` informationally
+
+Not blocking.
+
+### Additional Phase 2 archives
+
+While auditing the workflows directory I also archived two more orphans (moved to `.github/workflows/_archive/`):
+
+* **`pull-premarket.yml`** — pre-market bar puller. v10 strategy is RTH-only; pre-market bars haven't been consumed since the v9 ship. Last trigger file (`.github/premarket-trigger/full_corpus.json`) dated May 10, three days ago. No remaining downstream dependency.
+* **`r2-export-results.yml`** — Cloudflare R2 mirror for the sweep-results branch. Workflow_dispatch only (never auto-fires). The sweep-results branch itself is well within GitHub size limits and is the canonical read path. R2 mirror was a precaution that never had to activate.
+
+Archived (not deleted) so the YAML stays inspectable for the git history and the workflows can be revived by moving back if the orphan turns out to be wrong. GH Actions only honors `.github/workflows/*.yml` at the top level, so files under `_archive/` are inert.
+
+Workflow directory after this PR: 5 CI gates + 1 deploy gate + 1 unified monitor + 7 research/utility = 14 active workflows + 4 archived (was 19 active pre-v9.1.18 audit).
+
+---
+
 ## v9.1.18 (2026-05-13) — Unified monitor workflow + archive orphans (Phase 1 + 2 of GHA consolidation)
 
 Workflow audit found three scheduled monitor workflows hitting the same backend services every ~10 min with three separate GH cron contention slots and three independent Python setups + dep installs:
