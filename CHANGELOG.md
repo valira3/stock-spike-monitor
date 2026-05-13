@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.16 (2026-05-13) — Create `docs/BACKLOG.md` for research + engineering followups
+
+Doc-only. Today's live-state observation surfaced three items worth tracking but not actioning yet:
+
+* **Research:** chase-fence expansion to TSLA + NVDA. Live counter-factual analysis on 2026-05-13 showed $+203 actual vs $+552 if today's full cutoff window had been live; the chase-prevention fence (currently `META, MSFT, AAPL, AMZN, GOOG, AVGO`) didn't catch the −$647 TSLA give-back at 11:58. Sample is one day; needs a year-long lever sweep to validate.
+* **Engineering:** chart canvas surviving parent-table re-renders. v9.1.13's `appendChild`-transplant approach broke ALL interactivity; reverted in v9.1.14. The fundamental fix needs either a diff-render of the proximity/positions tables or moving the chart canvas outside the table tree.
+* **Engineering:** `risk_book.realized_pnl_today` not staying in sync with `trades_today`. All three portfolios reported `$0.00` while $+203 was actually realized — either the v9.1.8 persistence cycle isn't covering this or one of today's redeploys reset state.
+* **Engineering:** `spy_d1_ret_bps` still `None` even after v9.1.3's Alpaca-fallback ship. Likely the Alpaca path errors out silently; needs an `[V913-SPY-LOADER]` info log to confirm which branch ran at session-start.
+
+Format mirrors `CHANGELOG.md`'s "newest at top" rule with explicit ownership and falsification criteria so items either ship or get explicitly archived rather than rotting.
+
+---
+
 ## v9.1.15 (2026-05-13) — Document live-state probing patterns in the snapshot-retrieval skill
 
 Doc-only. Today's session used the `snapshots-live` branch heavily for live-state analysis during a 15-release iteration sprint. The pre-existing `state-snapshot-retrieval` skill covered the basic `mcp__github__get_file_contents` path but missed three patterns we landed on today:
