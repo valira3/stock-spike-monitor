@@ -464,7 +464,8 @@ def test_SHARED_EOD():
     """SHARED-EOD: EOD flush at 15:49:59 ET."""
     from engine.timing import EOD_FLUSH_ET, is_after_eod_et
 
-    assert EOD_FLUSH_ET == time(15, 49, 59)
+    # v9.1.23: see engine/timing.py header.
+    assert EOD_FLUSH_ET == time(15, 59, 59)
 
     before = datetime(2026, 4, 28, 15, 49, 58, tzinfo=ET)
     at_eod = datetime(2026, 4, 28, 15, 49, 59, tzinfo=ET)

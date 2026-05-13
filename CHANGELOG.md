@@ -4,6 +4,103 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.23 (2026-05-13) — Legacy paper-book EOD flush moved from 15:49:59 → 15:59:59 (no longer preempts EOD reversal positions)
+
+Operator caught this immediately after the v9.1.22 EOD-entry fix landed: "make sure we don't close EOD positions at 15:55". Audit confirmed a real conflict that would have killed every future EOD-reversal Main LONG position 10 minutes early.
+
+**Conflict path** (Main LONG side of EOD reversal):
+
+```
+scan._eod_reversal_pass  → _eod_fire_broker(pid="main", side="long")
+                         → callbacks.execute_entry(ticker, price)
+                         → broker/lifecycle.py:execute_entry
+                         → broker/orders.py:execute_breakout
+                         → paper_state.positions[ticker] = {...}
+```
+
+`paper_state.positions` is what `broker/lifecycle.py:eod_close` iterates at `EOD_FLUSH_ET`. Pre-v9.1.23 that ran at **15:49:59 ET** — meaning any EOD reversal LONG entered between 15:00 and 15:49 ET would be flushed 10 min before its intended 15:59 ET flatten.
+
+The 15:49:59 timing was set in v5.13.0 per Tiger Sovereign §3 (now retired). The pre-Tiger value was `15:59:50 ET`.
+
+**Fix:** moved `EOD_FLUSH_ET` from `time(15, 49, 59)` to `time(15, 59, 59)` in `engine/timing.py:26`. The new daily-close ordering:
+
+| Time ET | Layer | What closes |
+|---|---|---|
+| 15:55:00 | `orb/engine.py:eod_cutoff_minutes=15*60+55` | Morning ORB positions via `exits.py:EXIT_EOD` |
+| 15:59:00 | `orb/eod_reversal.py:exit_et_minutes=959` | v9.1 EOD reversal positions via scan_loop's `_eod_reversal_pass` flatten path |
+| 15:59:59 | `broker/lifecycle.py:eod_close` (legacy paper-book backstop) | Any stragglers still in `paper_state.positions` |
+| 16:00:00 | Market close (Alpaca-enforced) | All remaining (broker auto-flatten) |
+
+Each layer is now AFTER the previous engine layer's close window, so no engine preempts another.
+
+**Tests updated** — three retired-Tiger-strategy spec tests pinned the old 15:49:59 value:
+
+* `tests/test_tiger_sovereign_vAA_spec.py`
+* `tests/test_eye_of_tiger.py`
+* `tests/test_tiger_sovereign_spec.py`
+
+All updated to expect 15:59:59 with a comment pointing back to this CHANGELOG entry. The strategy itself is retired (hidden via `body.v10-live` since v7.27.0); these tests check infrastructure constants only.
+
+### Why this wasn't a SEV-1 today
+
+Today's EOD reversal never admitted (v9.1.20+v9.1.21+v9.1.22 compound bugs), so the 15:49:59 conflict was a latent trap that would have manifested tomorrow's first successful EOD admit. Catching it before tomorrow's session is good.
+
+### Risk + rollback
+
+Single-line change to a constant + 3 test pins. The new ordering is strictly safer:
+* Morning ORB closes BEFORE EOD reversal entry window (15:55 < 15:59)
+* EOD reversal closes BEFORE legacy backstop (15:59 < 15:59:59)
+* Legacy backstop closes BEFORE market close (15:59:59 < 16:00:00)
+
+Rollback = revert the single commit. Pre-v9.1.23 behavior would re-introduce the EOD-reversal-preemption bug.
+
+957 strategy tests pass.
+
+---
+
+## v9.1.22 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 3): EOD entry window widened from single minute to [entry, exit) range
+
+Today's EOD entry never fired despite v9.1.20 + v9.1.21 hotfixes. Root cause: a third bug in the same code path. **Three compound silent failures in one strategy** — that's why "no trades" persisted even after we shipped the two earlier hotfixes.
+
+**Root cause:** `orb/eod_reversal.py:220`:
+```python
+def is_entry_window(self, current_et_minutes: int) -> bool:
+    return current_et_minutes == self.cfg.entry_et_minutes
+```
+
+The entry window was a **single 60-second minute** (only `cur_min == 900` for the default 15:00 ET entry). Any delay — deploy, cron miss, engine restart, prior-scan-cycle crash — that pushed `cur_min` past 900 meant the entry never fires for the day. v9.1.20 deployed at ~15:25 ET → `cur_min=925 ≠ 900` → False. v9.1.21 at ~15:53 ET → `cur_min=953 ≠ 900` → False. Same engine, same code path, three layers of brittleness.
+
+**Fix:** widened to `entry_et <= cur_min < exit_et` (half-open range). Idempotency for re-entry is unchanged — it lives on the per-portfolio `entry_attempted` flag at `scan.py:1390`, which already gates re-fires. The wider window just means "any tick inside the EOD window can land the first admission" rather than "only the entry minute can".
+
+**Trade-off:** late entries (e.g. 15:25 ET instead of 15:00 ET) are off the backtest's anchor. Hold shortens correspondingly (34 min vs 59 min). Net P&L impact requires a follow-up sweep; the immediate trade is "late entry > no entry at all".
+
+**Today's EOD trade is lost.** Window closes at 15:59 ET (about now). The v9.1.22 fix lands too late for today but unblocks every future trading day from this class of failure.
+
+### Sequence of today's compound failure (postmortem)
+
+| Time ET | Event | State |
+|---|---|---|
+| 15:00 | Engine reaches EOD entry minute (cur_min=900). `scan_loop` calls `_eod_reversal_pass(callbacks, cur_min)` | NameError on cur_min (v9.1.20 bug) → wrapper catches, logs, no admit |
+| 15:00–15:24 | Every scan cycle: NameError → log → swallowed | `entry_attempted=False`, dashboard shows "Waiting for 15:00 ET" |
+| 15:13 | Operator catches it | We diagnose cur_min NameError, ship v9.1.20 |
+| 15:18 | v9.1.20 merged | |
+| 15:24 | While waiting for Railway, audit surfaces equity TypeError | We ship v9.1.21 |
+| 15:25 | v9.1.20 deploys on Railway | `_eod_reversal_pass` runs but `is_entry_window(925)` returns False (single-minute bug, v9.1.22). Even if we'd had v9.1.21 ready, the entry minute had already passed |
+| 15:39 | v9.1.21 merged | |
+| 15:53 | v9.1.21 deploys on Railway | Same outcome: `is_entry_window(953)` False, engine doesn't admit |
+| 15:57 | Operator + AI confirm bug #3 (single-minute window) | Ship v9.1.22 (this PR) |
+| 15:59 | EOD flatten — window closes | Today's trade unrecoverable |
+
+### Mandatory backlog items
+
+* **Add `tests/strategy/test_eod_reversal_scan_integration.py`** — covers the full `scan._eod_reversal_pass` code path with mocked callbacks + PORTFOLIOS + bar archive. All three bugs today were in this untested path. Without integration coverage the same class of failure can recur.
+* **Audit `equity = float(getattr(...))` pattern across the codebase** — same anti-pattern could exist elsewhere; bound-method-as-attribute is a class of mistake.
+* **Consider a `[V910-EOD-WINDOW-CHECK]` heartbeat log** that fires every scan cycle inside the EOD window so operators have positive confirmation the engine is checking, not just absence of `[V910-EOD-ENTRY]`.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.21 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 2): equity TypeError in EOD admit loop
 
 While the v9.1.20 deploy was rolling out, audit of the same code block surfaced a **second SEV-1 in the same path** that v9.1.20 just unblocked. Both have been latent since v9.1.0.

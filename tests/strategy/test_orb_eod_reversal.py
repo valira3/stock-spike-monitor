@@ -269,10 +269,23 @@ class TestAdmission:
 class TestTimeWindows:
     def test_entry_window_default_15_00(self):
         # v9.1.2: entry default moved from 15:30 to 15:00.
+        # v9.1.22: widened from a single minute to [entry_et, exit_et)
+        # so a delayed scan-loop tick (deploy, cron miss, restart) can
+        # still land the entry. Idempotency is via the per-portfolio
+        # `entry_attempted` flag (scan.py:1390), not the time check.
         e = _eng()
-        assert e.is_entry_window(15 * 60) is True
+        # Boundary BELOW entry_et stays False.
         assert e.is_entry_window(14 * 60 + 59) is False
-        assert e.is_entry_window(15 * 60 + 1) is False
+        # Entry-minute open is True.
+        assert e.is_entry_window(15 * 60) is True
+        # v9.1.22: any minute IN the [entry, exit) range is now True
+        # (was False under the single-minute design).
+        assert e.is_entry_window(15 * 60 + 1) is True
+        assert e.is_entry_window(15 * 60 + 30) is True
+        assert e.is_entry_window(15 * 60 + 58) is True
+        # exit_et boundary is exclusive -- at 15:59 the exit window
+        # owns the minute, not the entry window.
+        assert e.is_entry_window(15 * 60 + 59) is False
 
     def test_exit_window_inclusive_after_15_59(self):
         e = _eng()
