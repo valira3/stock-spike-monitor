@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.11 (2026-05-13) — Combine v10 Proximity + v10 Ticker Matrix into one "v10 Matrix" section
+
+Operator asked: "Do we need v10 proximity and v10 ticker matrix separately? Can we combine those 2 concepts into one section (apply across all tabs)". Audit confirmed the v10 Ticker Matrix surfaced a strict subset of what v10 Proximity already shows — FSM phase per pid + per-(ticker, pid) trades-today count — duplicated as a parallel section above Proximity on the Main tab. Removing the duplication.
+
+Changes:
+* **Section title renamed.** "v10 Proximity" → "v10 Matrix" on Main (`index.html`) and on Val/Gene (`execSkeleton` in `app.js`). The renamed section is the single unified surface.
+* **Trade count merged into the phase chip.** `_phaseChip()` in `_renderV10ProximityCore` now reads `trades_today` from each `day_state` row and renders the chip body as "`pid n/cap`" (e.g. `main 0/5`, `val 3/5`). Tooltip still surfaces phase + block_reason. This absorbs the trade-cap utilization signal that the Ticker Matrix carried.
+* **Ticker Matrix section hidden + neutralized.** The `<section id="v10-ticker-matrix-section">` HTML is kept as a hidden stub (`display:none`) so any back-compat caller of the `window.__tgRenderV10TickerMatrix` getter finds the anchor and short-circuits cleanly. The renderer body itself is now a 4-line no-op that just `display:none`s the section; the 200+ lines of pre-v9.1.11 implementation are removed (git-blame archaeology preserved at squash commit).
+* **Val/Gene parity.** Val and Gene executor panels never had a separate Ticker Matrix card (their proximity equivalent has always been the only v10 per-ticker view), so no skeleton change beyond the title rename.
+
+Visual outcome: one v10 section per tab instead of two stacked sections. Same per-row info density, with the per-portfolio trade count visible inline in the phase chip instead of in a parallel table.
+
+957 strategy tests pass. No Python touched.
+
+---
+
 ## v9.1.10 (2026-05-13) — Restore chart zoom-out + switch candles to line graph
 
 ### Part A — Regression fix: chart zoom-out was disabled by v9.1.9

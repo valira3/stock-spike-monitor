@@ -4017,7 +4017,7 @@
     <section class="grid" data-f="v10-prox-section-pid">
       <div class="card">
         <div class="card-head">
-          <span class="card-title" title="Distance from current price to OR break levels. Click any row to expand the intraday chart.">v10 Proximity &middot; ${label}<span class="count" data-f="v10-prox-pid-count">\u2014</span></span>
+          <span class="card-title" title="v10 Matrix (v9.1.11: combined Proximity + Ticker Matrix). Distance from current price to OR break levels + per-(pid,ticker) FSM phase + trades n/cap. Click any row to expand the intraday chart.">v10 Matrix &middot; ${label}<span class="count" data-f="v10-prox-pid-count">\u2014</span></span>
           <span class="chip" data-f="v10-prox-pid-summary">\u2014</span>
         </div>
         <div class="card-body flush" data-f="v10-prox-pid-body">
@@ -6187,207 +6187,15 @@
   // Main tab only renders main rows, etc. Passing null keeps the
   // legacy cross-portfolio render (no current caller).
   function renderV10TickerMatrix(s, pidFilter) {
-    // Local HTML-escape -- v7.44.0 fix for a silent regression: this
-    // function lived in IIFE 2 but called `escapeHtml` from IIFE 1,
-    // failing every render with "escapeHtml is not defined" which was
-    // swallowed by the try/catch wrapper in renderAll. The matrix
-    // therefore never rendered in production. Local esc closes the gap.
-    function esc(v) {
-      return String(v == null ? "" : v)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-    }
-    var v10 = s && s.v10;
+    // v9.1.11 -- retired. The Ticker Matrix section was a strict
+    // subset of the v10 Proximity (now "v10 Matrix") section; its
+    // phase + trade-count signals have been absorbed into the
+    // Proximity phase chip ("pid n/cap"). This stub keeps the public
+    // window.__tgRenderV10TickerMatrix entry alive as a no-op so any
+    // back-compat caller (renderAll) finds it without breaking.
     var section = document.getElementById("v10-ticker-matrix-section");
-    if (!section) return;
-    if (!v10 || v10.available === false || !v10.bootstrapped) {
-      section.style.display = "none";
-      return;
-    }
-    section.style.display = "";
-
-    var dayStates = v10.day_states || [];
-    var orWindows = v10.or_windows || {};
-    var maxTrades = (v10.config && v10.config.max_trades_per_day) || 5;
-    var portfolios = Object.keys(v10.risk_books || {}).sort();
-    // v7.57.0 -- when scoped to a single pid, the Pid column is
-    // redundant (every row has the same pid).
-    var multiPid = !pidFilter && portfolios.length > 1;
-
-    // Build (ticker -> phases-per-portfolio) index.
-    var byTicker = {};
-    for (var i = 0; i < dayStates.length; i++) {
-      var d = dayStates[i];
-      if (pidFilter && (d.portfolio_id || "main") !== pidFilter) continue;
-      if (!byTicker[d.ticker]) byTicker[d.ticker] = {};
-      byTicker[d.ticker][d.portfolio_id || "main"] = d;
-    }
-    var tickers = Object.keys(byTicker).sort();
-    var countEl = document.getElementById("v10-tm-count");
-    if (countEl) countEl.textContent = "· " + tickers.length;
-
-    // Summary chip: count tickers in ARMED / IN_POS / BLOCKED states.
-    var nArmed = 0, nInPos = 0, nBlocked = 0;
-    for (var t = 0; t < tickers.length; t++) {
-      var perPid = byTicker[tickers[t]];
-      for (var pid in perPid) {
-        var ph = (perPid[pid].phase || "").toLowerCase();
-        if (ph === "armed") nArmed++;
-        else if (ph === "in_pos") nInPos++;
-        else if (ph.indexOf("blocked") === 0) nBlocked++;
-      }
-    }
-    var sumEl = document.getElementById("v10-tm-summary");
-    if (sumEl) {
-      sumEl.textContent = nArmed + " armed · " + nInPos + " in pos · " + nBlocked + " blocked";
-    }
-
-    var body = document.getElementById("v10-tm-body");
-    if (!body) return;
-    if (tickers.length === 0) {
-      body.innerHTML = '<div class="empty">Waiting for v10 session start...</div>';
-      return;
-    }
-
-    // v8.1.2 -- index of partial-taken positions by ticker. Source
-    // is the legacy /api/state.main_book.positions blob (where
-    // broker/orders.py:partial_close_breakout writes partial_fills).
-    // Used to render a 🔄 indicator on matrix rows whose runner is
-    // still open.
-    var _partialByTicker = {};
-    try {
-      var _mb = (s && (s.main_book || s)) || {};
-      var _posList = (_mb && _mb.positions) || (s && s.positions) || [];
-      for (var _pi = 0; _pi < _posList.length; _pi++) {
-        var _ppi = _posList[_pi];
-        if (_ppi && _ppi.ticker && Array.isArray(_ppi.partial_fills)
-            && _ppi.partial_fills.length > 0) {
-          _partialByTicker[_ppi.ticker] = _ppi.partial_fills[
-            _ppi.partial_fills.length - 1
-          ];
-        }
-      }
-    } catch (_e) { /* defensive: never block the matrix render */ }
-
-    var rows = [];
-    rows.push('<table id="v10-tm-table"><thead><tr>'
-      + '<th>Ticker</th>'
-      + (multiPid ? '<th>Pid</th>' : '')
-      + '<th>Phase</th>'
-      + '<th class="v10-tm-col-or">OR (lo / hi / width%)</th>'
-      + '<th>Trades</th>'
-      + '<th>Reason</th>'
-      + '</tr></thead><tbody>');
-
-    for (var k = 0; k < tickers.length; k++) {
-      var tk = tickers[k];
-      var w = orWindows[tk] || {};
-      var orCell = (w.or_low != null && w.or_high != null)
-        ? (w.or_low.toFixed(2) + ' / ' + w.or_high.toFixed(2)
-            + ' / ' + ((w.or_width_pct || 0) * 100).toFixed(2) + '%')
-        : '—';
-      var perPid = byTicker[tk];
-      var pids = Object.keys(perPid).sort();
-      for (var p = 0; p < pids.length; p++) {
-        var pid2 = pids[p];
-        var d = perPid[pid2];
-        var phase = (d.phase || "").toLowerCase();
-        var rowCls = '';
-        if (phase === "in_pos") rowCls = 'v10-tm-in-pos';
-        else if (phase.indexOf("blocked") === 0) rowCls = 'v10-tm-blocked';
-        var phaseCls = phase.indexOf("blocked") === 0 ? "blocked" : phase;
-        var phaseTxt = phase.replace(/_/g, " ").toUpperCase();
-        var reason = d.block_reason || (d.in_position ? 'open ticket' : '');
-        var tradesCell = (d.trades_today || 0) + ' / ' + maxTrades;
-        // v8.1.2 -- partial-fill indicator on the ticker cell when
-        // the runner half is still open.
-        var _tkLabel = esc(tk);
-        if (phase === "in_pos" && _partialByTicker[tk]) {
-          var _pft = _partialByTicker[tk];
-          var _pftPrice = Number(_pft && _pft.price) || 0;
-          var _pftPnl = Number(_pft && _pft.pnl_dollars) || 0;
-          var _pftTitle = "Partial taken at 1R: $"
-            + _pftPrice.toFixed(2) + " (booked $"
-            + _pftPnl.toFixed(2) + "). Runner half open.";
-          _tkLabel += ' <span class="partial-badge" title="'
-            + esc(_pftTitle) + '">½</span>';
-        }
-        rows.push('<tr class="' + rowCls + '">'
-          + (p === 0 ? '<td rowspan="' + pids.length + '">' + _tkLabel + '</td>' : '')
-          + (multiPid ? '<td><span class="v10-tm-pid">' + esc(pid2) + '</span></td>' : '')
-          + '<td><span class="v10-tm-phase ' + phaseCls + '">' + esc(phaseTxt) + '</span></td>'
-          + (p === 0
-              ? '<td class="v10-tm-col-or" rowspan="' + pids.length + '">' + esc(orCell) + '</td>'
-              : '')
-          + '<td>' + esc(tradesCell) + '</td>'
-          + '<td>' + esc(reason) + '</td>'
-          + '</tr>');
-      }
-    }
-    rows.push('</tbody></table>');
-
-    // v7.44.0 -- mobile card-stack twin. The table forces horizontal
-    // scroll under 720 px because of the 5-6 column shape; cards stack
-    // cleanly. Both are emitted into the same body; CSS @media swaps
-    // visibility so neither is mounted twice in the same viewport.
-    var cards = ['<div id="v10-tm-cards">'];
-    for (var k2 = 0; k2 < tickers.length; k2++) {
-      var tk2 = tickers[k2];
-      var w2 = orWindows[tk2] || {};
-      var orTxt2 = (w2.or_low != null && w2.or_high != null)
-        ? (w2.or_low.toFixed(2) + '–' + w2.or_high.toFixed(2)
-            + ' · ' + ((w2.or_width_pct || 0) * 100).toFixed(2) + '%')
-        : '—';
-      var perPid2 = byTicker[tk2];
-      var pids2 = Object.keys(perPid2).sort();
-      // One sub-row per pid; if multi-pid, group under the ticker
-      // header. If single-pid, render flat.
-      cards.push('<div class="v10-tm-card">');
-      cards.push('<div class="v10-tm-card-head">'
-                  + '<span class="v10-tm-card-ticker">' + esc(tk2) + '</span>');
-      // Show the FIRST pid's phase as the headline; per-pid details
-      // are listed below if multiPid.
-      var firstPidPh = (perPid2[pids2[0]].phase || "").toLowerCase();
-      var firstPidPhCls = firstPidPh.indexOf("blocked") === 0 ? "blocked" : firstPidPh;
-      var firstPidPhTxt = firstPidPh.replace(/_/g, " ").toUpperCase();
-      cards.push('<span class="v10-tm-phase ' + firstPidPhCls + '">'
-                  + esc(firstPidPhTxt) + '</span>');
-      cards.push('</div>');
-      cards.push('<div class="v10-tm-card-line">OR <b>'
-                  + esc(orTxt2) + '</b></div>');
-      if (multiPid) {
-        for (var pp = 0; pp < pids2.length; pp++) {
-          var pidX = pids2[pp];
-          var dX = perPid2[pidX];
-          var phX = (dX.phase || "").toLowerCase();
-          var phXCls = phX.indexOf("blocked") === 0 ? "blocked" : phX;
-          var phXTxt = phX.replace(/_/g, " ").toUpperCase();
-          var reasonX = dX.block_reason || (dX.in_position ? 'open ticket' : '');
-          cards.push('<div class="v10-tm-card-line v10-tm-card-pidline">'
-                      + '<span class="v10-tm-pid">' + esc(pidX) + '</span>'
-                      + '<span class="v10-tm-phase ' + phXCls + '" style="margin:0 6px">'
-                      + esc(phXTxt) + '</span>'
-                      + 'trades <b>' + (dX.trades_today || 0) + ' / ' + maxTrades + '</b>'
-                      + (reasonX ? ' · <span class="v10-tm-card-reason">'
-                                    + esc(reasonX) + '</span>' : '')
-                      + '</div>');
-        }
-      } else {
-        // Single-pid: collapse to one line
-        var d0 = perPid2[pids2[0]];
-        var reason0 = d0.block_reason || (d0.in_position ? 'open ticket' : '');
-        cards.push('<div class="v10-tm-card-line">trades <b>'
-                    + (d0.trades_today || 0) + ' / ' + maxTrades + '</b>'
-                    + (reason0 ? ' · <span class="v10-tm-card-reason">'
-                                  + esc(reason0) + '</span>' : '')
-                    + '</div>');
-      }
-      cards.push('</div>');
-    }
-    cards.push('</div>');
-
-    body.innerHTML = rows.join("") + cards.join("");
+    if (section) section.style.display = "none";
+    return;
   }
 
   // v7.52.0 -- v10 Proximity Matrix renderer. For each ticker with
@@ -6459,7 +6267,15 @@
     var dayStatusBlock = (v10.day_status && v10.day_status.block_day)
       ? (v10.day_status.block_reason || "day_block") : null;
 
-    // Index FSM phases + block_reason by ticker -> { pid -> {phase, block_reason} }
+    // Index FSM phases + block_reason + per-ticker trade count by
+    // ticker -> { pid -> {phase, block_reason, trades_today} }
+    // v9.1.11 -- trades_today carried through so the phase chip can
+    // surface the per-(ticker,pid) trade-cap usage. Pre-v9.1.11 that
+    // info lived in a separate "v10 Ticker Matrix" section that
+    // showed the exact same FSM phases as Proximity does -- a
+    // strict subset duplicated as a parallel section. Removing the
+    // ticker matrix and merging the trade-count signal into the
+    // phase chip keeps the data without the duplication.
     var phaseByTk = {};
     for (var i = 0; i < dayStates.length; i++) {
       var d = dayStates[i];
@@ -6468,8 +6284,10 @@
       phaseByTk[d.ticker][d.portfolio_id || "?"] = {
         phase: d.phase || "?",
         block_reason: d.block_reason || "",
+        trades_today: (typeof d.trades_today === "number") ? d.trades_today : 0,
       };
     }
+    var maxTrades = (cfg && cfg.max_trades_per_day) || 5;
 
     // Universe: union of (a) tickers in or_windows, (b) tickers in
     // day_states, and (c) s.tickers (the configured universe). Order
@@ -6573,15 +6391,22 @@
     }
 
     function _phaseChip(pid, phaseInfo) {
-      // v7.59.0 -- phaseInfo is now {phase, block_reason}. The chip
-      // shows the pid label; the tooltip surfaces the block_reason
-      // when the FSM is in a BLOCKED_* phase.
+      // v7.59.0 -- phaseInfo carries {phase, block_reason}.
+      // v9.1.11 -- now also {trades_today}. Chip body shows pid + the
+      // per-ticker trade count "pid n/cap" so the operator gets the
+      // trade-cap utilization at a glance (replaces the separate v10
+      // Ticker Matrix section). Tooltip still surfaces phase + reason.
       var phase = (phaseInfo && phaseInfo.phase) || "?";
       var reason = (phaseInfo && phaseInfo.block_reason) || "";
+      var trades = (phaseInfo && typeof phaseInfo.trades_today === "number")
+                     ? phaseInfo.trades_today : 0;
       var cls = "v10-prox-phase v10-prox-phase-" + phase.toLowerCase();
-      var titleTxt = pid + ": " + phase + (reason ? " (" + reason + ")" : "");
+      var titleTxt = pid + ": " + phase
+                       + " (" + trades + "/" + maxTrades + " trades today)"
+                       + (reason ? " — " + reason : "");
+      var label = pid + " " + trades + "/" + maxTrades;
       return '<span class="' + cls + '" title="' + esc(titleTxt) + '">'
-           + esc(pid) + '</span>';
+           + esc(label) + '</span>';
     }
 
     // v7.59.0 -- compact ✓/✕ cell for the Range column.
