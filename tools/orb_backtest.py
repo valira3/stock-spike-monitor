@@ -356,6 +356,26 @@ class ORBConfig:
                                           #     chase-failure is sharper
                                           #     than short).
     max_vwap_dev_bps_short: float = 0.0   # if >0, overrides for SHORT.
+    # v21 more fenced filters for mega-caps (2026-05-13).
+    confirm_bars_n_tickers: tuple = ()    # fence list for confirm_bars_n.
+                                          #     Empty = global (existing
+                                          #     behavior). When non-empty,
+                                          #     N-bar confirmation only
+                                          #     applies to those tickers.
+    min_break_bps_tickers: tuple = ()     # fence list for min_break_bps.
+                                          #     Empty = global.
+    fenced_or_min_pct: float = 0.0        # >0: skip the fenced tickers
+                                          #     when OR width is below
+                                          #     this threshold.
+    fenced_or_max_pct: float = 0.0        # >0: skip the fenced tickers
+                                          #     when OR width is above
+                                          #     this threshold.
+    fenced_or_tickers: tuple = ()         # fence list for the OR-width
+                                          #     gate. Empty = no gate.
+    fenced_gap_pct: float = 0.0           # >0: tighter gap-skip threshold
+                                          #     applied only to
+                                          #     fenced_gap_tickers.
+    fenced_gap_tickers: tuple = ()        # fence list for tighter gap.
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -446,6 +466,29 @@ class ORBConfig:
             ),
             max_vwap_dev_bps_long=_envf("ORB_MAX_VWAP_DEV_BPS_LONG", 0.0),
             max_vwap_dev_bps_short=_envf("ORB_MAX_VWAP_DEV_BPS_SHORT", 0.0),
+            confirm_bars_n_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_CONFIRM_BARS_N_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            min_break_bps_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_MIN_BREAK_BPS_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            fenced_or_min_pct=_envf("ORB_FENCED_OR_MIN_PCT", 0.0),
+            fenced_or_max_pct=_envf("ORB_FENCED_OR_MAX_PCT", 0.0),
+            fenced_or_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_FENCED_OR_TICKERS", "").split(",")
+                if t.strip()
+            ),
+            fenced_gap_pct=_envf("ORB_FENCED_GAP_PCT", 0.0),
+            fenced_gap_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_FENCED_GAP_TICKERS", "").split(",")
+                if t.strip()
+            ),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -651,6 +694,16 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
     if not (cfg.range_min_pct <= or_range_pct <= cfg.range_max_pct):
         return []
 
+    # v21 fenced OR-width gate. When the ticker is in fenced_or_tickers,
+    # also enforce a tighter range. 0 thresholds = uncapped on that side.
+    if cfg.fenced_or_tickers and ticker in cfg.fenced_or_tickers:
+        if (cfg.fenced_or_min_pct > 0
+                and or_range_pct < cfg.fenced_or_min_pct):
+            return []
+        if (cfg.fenced_or_max_pct > 0
+                and or_range_pct > cfg.fenced_or_max_pct):
+            return []
+
     # Aggregate post-OR bars to 5-min candles for breakout signals.
     post_or_1m = [b for b in rth if b.bucket >= or_end]
     candles_5m = aggregate_5m(post_or_1m)
@@ -697,7 +750,12 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # v19: minimum break magnitude in bps. Suppresses marginal first-bar
         # breaks that production tends to miss due to scan-loop cadence
         # latency (forensic: AMZN -4.5bps was skipped, -23bps fired).
-        if cfg.min_break_bps > 0:
+        # v21 fence: when min_break_bps_tickers non-empty, only apply to
+        # those tickers.
+        if cfg.min_break_bps > 0 and (
+            not cfg.min_break_bps_tickers
+            or ticker in cfg.min_break_bps_tickers
+        ):
             if side == "long" and or_high > 0:
                 break_bps = (sig.close - or_high) / or_high * 10000.0
             elif side == "short" and or_low > 0:
@@ -709,7 +767,12 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
 
         # v19: N-bar confirmation. Require the prior N 5m closes including
         # this bar to all be on the same side of the OR boundary.
-        if cfg.confirm_bars_n > 1:
+        # v21 fence: when confirm_bars_n_tickers non-empty, only apply to
+        # those tickers.
+        if cfg.confirm_bars_n > 1 and (
+            not cfg.confirm_bars_n_tickers
+            or ticker in cfg.confirm_bars_n_tickers
+        ):
             start = i - cfg.confirm_bars_n + 1
             if start < 0:
                 continue
