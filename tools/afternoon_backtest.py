@@ -94,6 +94,11 @@ class AfternoonConfig:
 
     # EOD-reversal-specific
     eod_top_n: int = 2                    # top-N winners + top-N losers
+    # Per-(ticker, side) fence. If non-empty, only the listed pairs are
+    # eligible. e.g. "ORCL:long,ORCL:short,AAPL:long,MSFT:long,NFLX:short".
+    # Empty = use eod_universe for both sides.
+    eod_long_tickers: tuple = ()
+    eod_short_tickers: tuple = ()
 
     # Time anchors (ET minutes-from-midnight). The literature
     # (Gao 2015) uses signal=09:30-10:00 -> trade=15:30-16:00. We
@@ -142,6 +147,8 @@ class AfternoonConfig:
             account=_f("AFT_ACCOUNT", 100_000.0),
             compound_daily=_b("AFT_COMPOUND_DAILY", True),
             eod_top_n=_i("AFT_EOD_TOP_N", 2),
+            eod_long_tickers=_t("AFT_EOD_LONG_TICKERS", ()),
+            eod_short_tickers=_t("AFT_EOD_SHORT_TICKERS", ()),
             entry_slippage_bps=_f("AFT_ENTRY_SLIP_BPS", 1.5),
             exit_slippage_bps=_f("AFT_EXIT_SLIP_BPS", 1.5),
             short_pen_bps=_f("AFT_SHORT_PEN_BPS", 0.5),
@@ -357,8 +364,17 @@ def simulate_eod_reversal_day(
 
     # 2. Rank: lowest ROD3 = top loser (-> LONG); highest = top winner (-> SHORT)
     rod_signals.sort(key=lambda x: x[1])
-    longs = rod_signals[: cfg.eod_top_n]
-    shorts = rod_signals[-cfg.eod_top_n:]
+    # Per-side fence: optionally restrict eligible tickers for each side.
+    if cfg.eod_long_tickers:
+        eligible_long = [r for r in rod_signals if r[0] in cfg.eod_long_tickers]
+    else:
+        eligible_long = list(rod_signals)
+    if cfg.eod_short_tickers:
+        eligible_short = [r for r in rod_signals if r[0] in cfg.eod_short_tickers]
+    else:
+        eligible_short = list(rod_signals)
+    longs = eligible_long[: cfg.eod_top_n]
+    shorts = eligible_short[-cfg.eod_top_n:]
 
     # 3. Enter each leg at 15:31 open, exit at 15:55 close.
     pairs: list[dict] = []
