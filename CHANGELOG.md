@@ -4,6 +4,49 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.20 (2026-05-13) — SEV-1 HOTFIX: EOD reversal never admitted (scan_loop NameError on `cur_min`)
+
+Operator caught this when 15:00 ET (the v9.1.2 EOD entry window) passed at 19:00 UTC and `entry_attempted` stayed `False` across all three portfolios. We're at 19:13 UTC = 15:13 ET; the EOD window closes at 15:59 ET. ~45 minutes left to recover the day's reversal trade.
+
+**Root cause:** `engine/scan.py:530` calls `_eod_reversal_pass(callbacks, cur_min)` but `cur_min` is **never defined in `scan_loop`'s scope** — only `now_et` is. The function call raised `NameError: name 'cur_min' is not defined` every scan cycle. The wrapper `try/except` at 531-532 caught it and logged `[V910-EOD] pass failed`, but those log lines had already rolled off the recent Railway window by the time we checked (~150 V917 cutoff-reject lines per scan cycle overwrote them within 5 minutes).
+
+The bug has existed since v9.1.0 (the EOD addon's initial ship). **EOD reversal has never actually fired in production.** The dashboard's `eod.per_portfolio.entry_attempted: False` was correct — the admission code path just never ran.
+
+**Fix:** one line in `engine/scan.py:529`. Computed identically to the other two `cur_min` sites in the same file (`scan.py:581` and `scan.py:705`):
+
+```python
+cur_min = now_et.hour * 60 + now_et.minute
+try:
+    _eod_reversal_pass(callbacks, cur_min)
+except Exception:
+    logger.exception("[V910-EOD] pass failed; engine state unchanged")
+```
+
+**Why the engine wrapper's silence wasn't caught earlier:** the wrapper logs `[V910-EOD] pass failed` AT INFO level via `logger.exception`. That log line was being emitted on every scan cycle (every ~60s). But our forensic filter pattern (`\[V9\d{2}-`) matched it, and the v9.1.17 unified monitor would have surfaced it — except the Railway log fetch limit is 500 lines and the V917 cutoff-reject spam (5 tickers × 3 portfolios × 2 sides per cycle = ~30 lines/cycle) crowds the older V910 lines out within 5-10 minutes. We saw the Traceback's first line (`Traceback (most recent call last):`) in the fetch but the preceding `[V910-EOD] pass failed` line had already rotated.
+
+**Lessons for the next monitor improvement:**
+* The forensic matches cap (200 in v9.1.18) is too aggressive when one tag (`[V917-`) dominates the line count. Should either (a) sample per-tag with a quota or (b) raise the cap.
+* Stack-trace continuation lines (`  File "...", line ..., in ...`) don't match the filter regex. Tracebacks land in logs as fragments. Worth adding `^\s*File "` to the pattern.
+
+957 strategy tests pass. The engine itself isn't covered by a unit test for this code path (scan_loop is integration-only), so the NameError went unnoticed in CI. Added a regression test in `tests/strategy/test_eod_reversal_scan_integration.py` is in the backlog.
+
+### Sequence to recover today's EOD trade
+
+1. Merge this PR (immediate)
+2. Railway deploys v9.1.20 (~3-5 min)
+3. Engine's next scan cycle (~15:25 ET) calls `_eod_reversal_pass` with valid `cur_min`
+4. `is_entry_window(cur_min)` returns True for `900 <= cur_min < 959` — 15:25 = 925 → True
+5. Selection runs, top-1 long + top-1 short admitted, broker orders fire
+6. Hold until 15:59 ET (~34 min), then flatten
+
+Late entry into the window but still inside it. Backtest math assumes 15:00-15:59 ET; a 15:25 entry truncates the hold to 34 min vs the design's 59 min. P&L impact unknown; better than zero entries.
+
+### v9.1.19 callout
+
+The other 2 invariant failures we flagged this morning (`val_gene_trades_match_main` + `position_count_three_way`) are still in the backlog and unrelated. The unified monitor itself is working as designed — it CORRECTLY surfaced this EOD bug; the failure was in older code that escaped notice.
+
+---
+
 ## v9.1.19 (2026-05-13) — HOTFIX: unified monitor InvariantContext signature + 2 more orphan archives
 
 v9.1.18's first `workflow_dispatch` run failed at the `_run_invariants` step with `TypeError: InvariantContext.__init__() got an unexpected keyword argument 'state'`. I'd guessed the constructor signature when writing `tools/unified_monitor.py` instead of reading `tools/dashboard_monitor_invariants.py`. The actual signature is `InvariantContext(payloads, base_url)` where `payloads` is a dict keyed by short names (`state`, `exec_val`, `exec_gene`) — same shape `tools/dashboard_monitor.py` builds. The invariant result dicts also use `{name, ok, summary, detail}` not the `{name, status: pass/fail}` I assumed.
