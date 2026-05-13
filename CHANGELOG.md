@@ -4,6 +4,28 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.24 (2026-05-13) — External-platform backtest playbook (Perplexity Comet + web + curl)
+
+Doc-only. Operator asked for instructions on running backtests from another platform (Perplexity Comet specifically, but the doc generalizes to any browser-based agent or HTTP-capable surface).
+
+Created `docs/BACKTEST_PLAYBOOK_EXTERNAL.md`. Covers:
+
+* **Architecture in one screen** — the GHA → branch → MCP relay pattern as it applies to backtests (`tools/orb_backtest.py` + `lever-sweep.yml` + `sweep-results` branch). No Railway, no Alpaca, no local compute required.
+* **Two execution paths**:
+  * **Path A** — `lever-sweep.yml` workflow_dispatch via GitHub web UI. Best for one-off sweeps. Paste a JSON variant array, click Run workflow.
+  * **Path B** — commit a `.github/sweep-trigger/<name>.json` file to `main`. Auto-fires `lever-sweep-auto.yml`. Best for iterative research because the JSON becomes part of the research history.
+* **Anatomy of a variant** — the env-var configuration surface with a reference table of the 13 most commonly-tuned levers (ORB_TIME_CUTOFF_ET, ORB_MIN_BREAK_BPS, ORB_MAX_VWAP_DEV_BPS, ORB_RR, etc.).
+* **Reading results** — three equivalent paths (GitHub web UI / GitHub API raw download / git clone `--branch sweep-results`) with the `summary.json` schema documented.
+* **Perplexity Comet-specific notes** — sign-in flow, dispatch via web UI, reading from the sweep-results branch. Includes Comet-specific gotchas (Actions page lag, error-reporting expectations).
+* **Anti-patterns** — don't build parallel infrastructure, don't re-run falsified hypotheses, don't ship a variant that fails the R3 0/4-neg-quarter rule.
+* **Where else to look** — pointers to `.claude/skills/gha-backtest-lever-sweep/SKILL.md` (the Claude-Code-internal version of the same flow), the 12 research rules, and the source-of-truth `pl_optimization_final_report_v13.md`.
+
+Companion to the existing skill — the skill is for Claude Code running INSIDE this repo's sandbox (no internet); the playbook is for everyone else. Same workflow at the bottom; different framing at the top.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.23 (2026-05-13) — Legacy paper-book EOD flush moved from 15:49:59 → 15:59:59 (no longer preempts EOD reversal positions)
 
 Operator caught this immediately after the v9.1.22 EOD-entry fix landed: "make sure we don't close EOD positions at 15:55". Audit confirmed a real conflict that would have killed every future EOD-reversal Main LONG position 10 minutes early.
