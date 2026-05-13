@@ -2445,6 +2445,11 @@ body.v10-live .legacy-v10-hidden {
 }
 .pos-progress-tick.end { background: #22c55e; }
 .pos-progress-tick.end::after { color: #22c55e; }
+/* v9.1.5 -- trail tick = where the chandelier has moved the live
+   stop. Amber so it's distinct from entry/1R/target ticks but doesn't
+   fight the green/red zones. */
+.pos-progress-tick.trail { background: #f59e0b; }
+.pos-progress-tick.trail::after { color: #f59e0b; }
 .pos-progress-needle {
   position: absolute;
   top: -4px;
