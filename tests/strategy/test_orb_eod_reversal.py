@@ -31,7 +31,8 @@ class TestConfigDefaults:
         assert cfg.notional_pct == 35.0
         assert cfg.entry_et_minutes == 15 * 60 + 30
         assert cfg.exit_et_minutes == 15 * 60 + 59
-        assert cfg.fire_broker is False   # paper-fire-observation default
+        # v9.1.1: live broker firing is the default (was False in v9.1.0).
+        assert cfg.fire_broker is True
 
 
 class TestConfigFromEnv:
@@ -66,8 +67,15 @@ class TestConfigFromEnv:
             monkeypatch.delenv(k, raising=False)
         cfg = EodReversalConfig.from_env()
         assert cfg.enabled is True
-        assert cfg.fire_broker is False
+        assert cfg.fire_broker is True   # v9.1.1: live by default
         assert cfg.top_n == 1
+
+    def test_env_can_disable_broker_fire(self, monkeypatch):
+        """Operator escape hatch: setting ORB_EOD_FIRE_BROKER=0 reverts
+        to paper-tracking mode without a deploy."""
+        monkeypatch.setenv("ORB_EOD_FIRE_BROKER", "0")
+        cfg = EodReversalConfig.from_env()
+        assert cfg.fire_broker is False
 
     def test_malformed_et_falls_back(self, monkeypatch):
         monkeypatch.setenv("ORB_EOD_ENTRY_ET", "garbage")
@@ -307,7 +315,8 @@ class TestSnapshot:
         snap = e.snapshot()
         assert snap["config"]["entry_et"] == "15:30"
         assert snap["config"]["exit_et"] == "15:59"
-        assert snap["config"]["fire_broker"] is False
+        # v9.1.1: live broker firing is the default
+        assert snap["config"]["fire_broker"] is True
         assert isinstance(snap["config"]["universe"], list)
 
 
