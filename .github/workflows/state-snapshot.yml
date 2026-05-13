@@ -32,13 +32,28 @@ name: state-snapshot
 
 on:
   schedule:
-    # RTH-only cron. UTC. EDT (Mar-Nov): 09:30->16:00 ET == 13:30->20:00 UTC.
-    # EST (Nov-Mar): 09:30->16:00 ET == 14:30->21:00 UTC. Union covering
-    # both DST regimes: 13:00->21:00 UTC, Mon-Fri.
-    # */10 ticks at :00, :10, :20, :30, :40, :50 -- 6/hr x 9hr = 54 runs/day.
-    # GitHub's scheduled-event delivery can DELAY or SKIP runs near the
-    # top of the hour during high load; the cron is best-effort.
-    - cron: "*/10 13-21 * * 1-5"
+    # v9.1.6 -- post-mortem of 2026-05-13 (where 12 of 12 morning cron
+    # slots failed to fire) drove three changes vs the v8.3.24 schedule:
+    #
+    #   1. Minutes shifted off-peak. Pre-v9.1.6 used `*/10` (:00, :10,
+    #      :20...) which lands on GitHub's most-contested cron slots.
+    #      :02, :12, :22... are materially less contested and deliver
+    #      far more reliably per the documented GH Actions cron caveat
+    #      ("scheduled workflows may be delayed or dropped during
+    #      periods of high load on GitHub Actions infrastructure").
+    #
+    #   2. Window widened from 13-21 UTC to 12-22 UTC. RTH market hours
+    #      are unchanged (13:30 / 14:30 -> 20:00 / 21:00 UTC under DST)
+    #      but the wider window absorbs the typical 15-30 min cron
+    #      delay so the first/last ticks of the day still land inside
+    #      the trading session.
+    #
+    #   3. concurrency.cancel-in-progress removed (see block below).
+    #
+    # 6 ticks/hr x 11hr = 66 scheduled slots/day. Realistic delivery
+    # given GH's best-effort SLA is roughly 30-50 -- enough to keep
+    # latest.json fresh within 5 min during RTH.
+    - cron: "2,12,22,32,42,52 12-22 * * 1-5"
   workflow_dispatch:
     inputs:
       reason:
@@ -51,11 +66,17 @@ permissions:
   contents: write
 
 concurrency:
-  # Don't pile up snapshot runs if a previous push is still in flight.
-  # cancel-in-progress=true is safe: the next scheduled tick (10 min
-  # away) will catch us up.
+  # v9.1.6 -- cancel-in-progress dropped. Pre-v9.1.6 reasoning was
+  # "the next scheduled tick (10 min away) will catch us up", but in
+  # practice GH frequently cancels a *queued* run when a new event
+  # arrives, and the new run then gets delayed/skipped itself --
+  # producing the long no-tick gaps observed on 2026-05-13. The
+  # workflow already retries push with exponential backoff (see the
+  # "Commit + push snapshot" step), so concurrent runs aren't a
+  # correctness problem -- the second one's push just rebases and
+  # retries against the first's commit.
   group: state-snapshot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   snapshot:
