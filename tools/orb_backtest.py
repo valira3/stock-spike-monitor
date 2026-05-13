@@ -344,6 +344,10 @@ class ORBConfig:
                                           #     above VWAP and short
                                           #     entries below VWAP count
                                           #     as positive deviation.
+    max_vwap_dev_tickers: tuple = ()      # if non-empty, apply
+                                          #     max_vwap_dev_bps ONLY to
+                                          #     these tickers (per-list
+                                          #     fence). Empty = global.
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -427,6 +431,11 @@ class ORBConfig:
             confirm_bars_n=_envi("ORB_CONFIRM_BARS_N", 0),
             # v20 chase-prevention filters
             max_vwap_dev_bps=_envf("ORB_MAX_VWAP_DEV_BPS", 0.0),
+            max_vwap_dev_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_MAX_VWAP_DEV_TICKERS", "").split(",")
+                if t.strip()
+            ),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -771,7 +780,12 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # than max_vwap_dev_bps past session VWAP in the breakout
         # direction. session VWAP computed through the signal bar's last
         # 1m (sig.bucket + 4 = signal bar's closing 1m bucket).
-        if cfg.max_vwap_dev_bps > 0:
+        # When max_vwap_dev_tickers is non-empty the filter only applies
+        # to those tickers (per-list fence).
+        if cfg.max_vwap_dev_bps > 0 and (
+            not cfg.max_vwap_dev_tickers
+            or ticker in cfg.max_vwap_dev_tickers
+        ):
             vwap_at = session_vwap_at(rth, sig.bucket + 4)
             if vwap_at > 0:
                 if side == "long":
