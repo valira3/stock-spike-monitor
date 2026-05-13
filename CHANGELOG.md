@@ -4,6 +4,45 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.32 (2026-05-13) -- Tick fetch pagination: actual fix (remove `limit` so alpaca-py auto-paginates)
+
+v8.3.31 attempted to fix pagination by wrapping `client.get_stock_trades` in a manual `next_page_token` loop. The first validation run AFTER that fix still showed `n_ticks=10000` per ticker — the wrapper was a no-op.
+
+### Root cause (inspecting alpaca-py source)
+
+The SDK's `_get_marketdata` (`alpaca/data/historical/stock.py`) **already paginates internally**:
+
+```python
+while True:
+    if limit:
+        actual_limit = min(int(limit) - total_items, page_limit)
+        if actual_limit < 1:
+            break  # ← stops early when caller's `limit` is hit
+    response = self.get(...)
+    ...
+    page_token = response.get("next_page_token", None)
+    if page_token is None:
+        break
+```
+
+Two compounding bugs in v8.3.31's wrapper:
+1. **`response.next_page_token` isn't surfaced** on the `TradeSet` object the SDK returns — it's consumed during internal pagination. So my outer `hasattr(resp, "next_page_token")` check always returned False, and my "pagination loop" exited after one iteration.
+2. **Passing `limit=10000`** told the SDK's internal pagination to STOP at 10000 items — defeating exactly the mechanism that was supposed to fetch more.
+
+### Fix
+
+`tools/fetch_alpaca_ticks.py:_fetch_trades_one_day` -- removed the `limit` parameter from `StockTradesRequest` (and the outer manual pagination loop). The SDK now paginates to exhaustion (`page_size=10000` per request internally, follows `next_page_token` until None).
+
+### What this unlocks
+
+After this PR merges + a new tick-trigger JSON fires the workflow, `n_ticks` per ticker will be in the 100K-500K range for liquid mega-caps (not 10K). The tick-atr-validation auto-fires after, and we finally see a real ratio of `atr_5m_14_from_ticks / atr_5m_14_from_1m`.
+
+### Tests unchanged
+
+The 13 tests in `test_fetch_alpaca_ticks.py` continue to pass — they exercise pure-Python helpers, not the SDK pagination contract (which is what was broken).
+
+---
+
 ## v8.3.31 (2026-05-13) -- Fix tick fetch pagination + ATR anchor placement
 
 The first validation run from v8.3.30 surfaced two bugs:

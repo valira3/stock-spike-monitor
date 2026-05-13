@@ -106,44 +106,35 @@ def _et_window(d: date, premarket: bool) -> tuple[datetime, datetime]:
 
 def _fetch_trades_one_day(client, ticker: str, day: date,
                           feed: str, premarket: bool):
-    """Paginated fetch of trade ticks for one ticker-day.
+    """Fetch ALL trades for one ticker-day. Returns a list.
 
-    v8.3.31 -- fixed pagination. Alpaca returns up to 10000 trades
-    per page; on liquid mega-caps a single day can have 100K+ trades.
-    We iterate ``next_page_token`` until exhausted.
+    v8.3.32 -- the alpaca-py SDK's ``StockHistoricalDataClient.get_stock_trades``
+    calls ``_get_marketdata`` which auto-paginates internally on
+    ``next_page_token`` AS LONG AS NO ``limit`` IS PROVIDED. v8.3.31's
+    "pagination wrapper" was a no-op because:
+      1. The SDK already paginates; my outer loop never iterated
+         because ``response.next_page_token`` isn't surfaced on the
+         ``TradeSet`` object (the SDK strips it during internal paging).
+      2. By passing ``limit=10000``, I told the SDK to STOP at 10000
+         items, defeating its own pagination.
+
+    Fix: no ``limit`` argument -> SDK paginates to exhaustion.
     """
     from alpaca.data.requests import StockTradesRequest
     start_utc, end_utc = _et_window(day, premarket)
-    all_trades: list = []
-    page_token = None
-    while True:
-        kwargs = dict(
-            symbol_or_symbols=ticker,
-            start=start_utc,
-            end=end_utc,
-            feed=feed,
-            limit=10000,
-        )
-        if page_token is not None:
-            kwargs["page_token"] = page_token
-        req = StockTradesRequest(**kwargs)
-        resp = client.get_stock_trades(req)
-        # Page trades for this symbol
-        page_trades: list = []
-        if hasattr(resp, "data"):
-            page_trades = resp.data.get(ticker, []) or []
-        all_trades.extend(page_trades)
-        # Continue if there's a next page token. Different alpaca-py
-        # versions surface it differently; check common shapes.
-        next_token = None
-        if hasattr(resp, "next_page_token") and resp.next_page_token:
-            next_token = resp.next_page_token
-        elif hasattr(resp, "raw") and isinstance(resp.raw, dict):
-            next_token = resp.raw.get("next_page_token")
-        if not next_token:
-            break
-        page_token = next_token
-    return all_trades
+    req = StockTradesRequest(
+        symbol_or_symbols=ticker,
+        start=start_utc,
+        end=end_utc,
+        feed=feed,
+        # No limit -- let the SDK paginate to exhaustion. The SDK uses
+        # page_size=10000 internally per request and follows
+        # next_page_token until None.
+    )
+    resp = client.get_stock_trades(req)
+    if hasattr(resp, "data"):
+        return resp.data.get(ticker, []) or []
+    return []
 
 
 def _trade_to_dict(t, feed: str) -> dict | None:
