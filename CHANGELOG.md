@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.5 (2026-05-13) — Position progress bar uses immutable admission stop
+
+Operator spotted that an open TSLA long (entry $444.08, mark $448.08, +$676 unrealized) was rendering the progress bar with the stop above entry, the "1R" tick below entry, the "target" below entry, and a `−1.21R` red marker. Despite being in profit, the chart said red. Cross-tab — both Main and the Val/Gene executor tables.
+
+Root cause: client-side math used `p.stop` (the *current* stop) to derive the 1R / target axis ticks via `entry ± (entry - stop)`. The Phase-C chandelier trail had moved the live stop from its admission level ($440.77) up through entry to $447.39, locking in $3.31/share profit. That made `(entry - stop) = -3.31`, which flipped every downstream axis calc. The graph wasn't lying about R-distance — it was correctly computing it against an axis that had been silently inverted.
+
+**Fix:** anchor the axis on the immutable admission stop and overlay the live trail as a separate marker. Across both renderers.
+
+Backend (`dashboard_server.py`):
+
+* `_serialize_positions()`: both long and short branches now read `pos["initial_stop"]` (an immutable value written by `broker.orders` at entry time, never mutated by Alarm-F / exits.maybe_arm_be / chandelier ratchet) and surface it as a new `entry_stop` field on each row. Falls back to `hard_stop` for legacy positions opened before `initial_stop` was a thing.
+
+Main renderer (`dashboard_static/app.js:401` — `renderPositions`):
+
+* Axis math now uses `p.entry_stop` (with `p.stop` as the legacy fallback). Target and 1R ticks are derived from the immutable admission risk and stop drifting once the trail tightens.
+* New "trail" tick overlays the live `effective_stop` on the same axis when it's diverged from the admission stop, so the operator can see where the live stop has moved without losing the original axis frame.
+* "stop" label in the meta row now shows `effective_stop` (the actual live stop guarding the position) rather than the now-immutable axis value.
+
+Val/Gene renderer (`dashboard_static/app.js:4735` — executor table cross-reference loop):
+
+* `_stopBySym` map now carries `entry_stop` alongside `eff` so the progress bar in `renderExecPositions` (IIFE-2) has the same immutable axis source as Main.
+* Same trail-tick overlay and meta-row stop label change. Identical visual shape across all three tabs.
+
+CSS (`dashboard_static/app.css:2447`):
+
+* `.pos-progress-tick.trail` styled amber (#f59e0b) — distinct from entry/1R/target ticks but doesn't fight the red/green zone backgrounds.
+
+Verification against the TSLA case from the screenshot:
+* `entry=444.08`, `entry_stop=440.77`, `effective_stop=447.39`, `mark=448.08`, long.
+* Axis: stop $440.77 (left), entry $444.08 (33%), 1R $447.39 (43%), target $452.36 (100%).
+* Trail amber tick lands at the 43% mark (current stop has trailed up to the 1R level, locking in profit).
+* Needle: `r = (448.08 - 444.08) / (444.08 - 440.77) = +1.21R` — green up-arrow well into the green zone. Matches the operator's expected mental model.
+
+940 strategy tests pass. No engine code changed; pure UI + payload addition.
+
+---
+
 ## v9.1.4 (2026-05-13) — Daily-kill gauge cross-tab parity fix
 
 Operator noticed Val's tab shows a Daily-kill gauge in the v10 ORB header but Main's tab doesn't, despite all three portfolios having `daily_kill_threshold` configured. Root cause: two different render conditionals.

@@ -398,15 +398,28 @@
         }
         // v7.42.0 -- progress bar geometry: single axis from stop to target
         // with entry / 1R / current-mark needle. RR=2.5 (v10 keystone).
-        const _stopNum = Number(p.stop);
+        // v9.1.5 -- axis is anchored on the IMMUTABLE admission stop
+        // (p.entry_stop) so the 1R / target ticks don't drift once the
+        // chandelier trail moves the current stop past entry into
+        // profit territory. p.effective_stop is overlaid as a separate
+        // trail marker so the operator can see where the live stop has
+        // moved. Pre-v9.1.5 this used p.stop (the post-trail mutated
+        // value) and the formula inverted the axis whenever
+        // (entry - stop) flipped sign.
         const _markNum = Number(p.mark);
+        var _axisStopNum = Number(p.entry_stop);
+        if (!Number.isFinite(_axisStopNum) || _axisStopNum <= 0) {
+          _axisStopNum = Number(p.stop);  // legacy fallback
+        }
+        const _effStopNum = (typeof p.effective_stop === "number")
+                              ? p.effective_stop : Number(p.stop);
         var progressRow = "";
-        if (Number.isFinite(_stopNum) && _stopNum > 0
+        if (Number.isFinite(_axisStopNum) && _axisStopNum > 0
             && Number.isFinite(_entryNum) && _entryNum > 0
             && Number.isFinite(_markNum) && _markNum > 0
-            && Math.abs(_entryNum - _stopNum) > 1e-4) {
+            && Math.abs(_entryNum - _axisStopNum) > 1e-4) {
           var isLong = p.side !== "SHORT";
-          var stopPx = _stopNum;
+          var stopPx = _axisStopNum;          // immutable axis anchor
           var entryPx = _entryNum;
           var markPx = _markNum;
           var targetPx = isLong
@@ -428,6 +441,19 @@
             ? (markPx - entryPx) / (entryPx - stopPx)
             : (entryPx - markPx) / (stopPx - entryPx);
           var rTxt = (r >= 0 ? "+" : "") + r.toFixed(2) + "R";
+          // v9.1.5 -- effective-stop indicator. When the trail has
+          // tightened past the admission stop (toward entry or beyond),
+          // draw a second tick at its current axis position so the
+          // operator can see locked-in profit at a glance.
+          var trailTick = "";
+          if (Number.isFinite(_effStopNum) && _effStopNum > 0
+              && Math.abs(_effStopNum - _axisStopNum) > 1e-4) {
+            var trailAt = _toPct(_effStopNum);
+            trailTick = '<span class="pos-progress-tick trail" '
+              + 'style="left:' + trailAt.toFixed(2) + '%" '
+              + 'data-label="trail" '
+              + 'title="effective stop (trail): ' + fmtPx(_effStopNum) + '"></span>';
+          }
           progressRow =
             '<tr class="pos-progress-row" data-pos-ticker="' + escapeHtml(p.ticker) + '">' +
               '<td colspan="9" class="pos-progress-cell">' +
@@ -439,12 +465,13 @@
                     '<span class="pos-progress-tick" style="left:' + entryAt.toFixed(2) + '%" data-label="entry"></span>' +
                     '<span class="pos-progress-tick" style="left:' + oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
                     '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                    trailTick +
                     '<span class="pos-progress-needle ' + (r >= 0 ? 'up' : 'down') + '" style="left:' + markAt.toFixed(2) + '%">' +
                       '<span class="needle-label">' + escapeHtml(rTxt) + '</span>' +
                     '</span>' +
                   '</div>' +
                   '<div class="pos-progress-meta">' +
-                    '<span class="pp-meta-left">stop ' + fmtPx(stopPx) + '</span>' +
+                    '<span class="pp-meta-left">stop ' + fmtPx(_effStopNum) + '</span>' +
                     '<span class="pp-meta-center">1R ' + fmtPx(oneRPx) + '</span>' +
                     '<span class="pp-meta-right">target ' + fmtPx(targetPx) + '</span>' +
                   '</div>' +
@@ -4716,7 +4743,14 @@
           // the stop tighter than entry; if trail_pill is null,
           // don't render TRAIL on this fallback table either.
           const _trailArmed = !!(_mp.trail_pill && _mp.trail_pill.status);
-          _stopBySym[_mp.ticker] = { eff: _eff, trail: _trailArmed };
+          // v9.1.5 -- entry_stop is the immutable admission stop used
+          // for the progress-bar axis math so the graph doesn't invert
+          // when the trail moves the live stop past entry into profit.
+          var _entryStop = (typeof _mp.entry_stop === "number" && _mp.entry_stop > 0)
+                             ? _mp.entry_stop : _mp.stop;
+          _stopBySym[_mp.ticker] = {
+            eff: _eff, trail: _trailArmed, entry_stop: _entryStop,
+          };
         }
         // v7.0.3 \u2014 match Main's positions <table> shape exactly: no
         // inline styles, semantic classes (.ticker .mark .side-* etc.),
@@ -4740,16 +4774,26 @@
           // v7.42.0 -- progress bar uses stop from Main state (cross-
           // referenced above), entry from broker (avg_entry), mark from
           // broker (current_price). Target derived via RR=2.5.
+          // v9.1.5 -- axis anchored on the IMMUTABLE admission stop
+          // (_stopInfo.entry_stop) so the 1R / target ticks don't drift
+          // when the chandelier trail moves the live stop past entry.
+          // _stopInfo.eff is overlaid as a separate "trail" tick.
           var _progressRow = "";
-          var _stopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
-                              ? _stopInfo.eff : null;
+          var _axisStopForBar = _stopInfo
+              && Number.isFinite(_stopInfo.entry_stop)
+              && _stopInfo.entry_stop > 0
+                ? _stopInfo.entry_stop
+                : (_stopInfo && Number.isFinite(_stopInfo.eff) ? _stopInfo.eff : null);
+          var _effStopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
+                                 ? _stopInfo.eff : null;
           var _entryForBar = Number(p.avg_entry);
           var _markForBar  = Number(p.current_price);
-          if (_stopForBar != null
+          if (_axisStopForBar != null
               && Number.isFinite(_entryForBar) && _entryForBar > 0
               && Number.isFinite(_markForBar)  && _markForBar  > 0
-              && Math.abs(_entryForBar - _stopForBar) > 1e-4) {
+              && Math.abs(_entryForBar - _axisStopForBar) > 1e-4) {
             var _isLong = p.side !== "SHORT";
+            var _stopForBar = _axisStopForBar;  // axis anchor (immutable)
             var _targetForBar = _isLong
               ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
               : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
@@ -4769,6 +4813,18 @@
               ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
               : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
             var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
+            // v9.1.5 -- effective-stop indicator (trail). Same shape as
+            // Main's renderer. Renders when the trail has moved away
+            // from the admission stop.
+            var _trailTick = "";
+            if (_effStopForBar != null
+                && Math.abs(_effStopForBar - _axisStopForBar) > 1e-4) {
+              var _trailAt = _exPct(_effStopForBar);
+              _trailTick = '<span class="pos-progress-tick trail" '
+                + 'style="left:' + _trailAt.toFixed(2) + '%" '
+                + 'data-label="trail" '
+                + 'title="effective stop (trail): ' + fmtNum(_effStopForBar, 2) + '"></span>';
+            }
             _progressRow =
               '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
                 '<td colspan="9" class="pos-progress-cell">' +
@@ -4780,12 +4836,13 @@
                       '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
                       '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
                       '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                      _trailTick +
                       '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
                         '<span class="needle-label">' + esc(_rTxt) + '</span>' +
                       '</span>' +
                     '</div>' +
                     '<div class="pos-progress-meta">' +
-                      '<span class="pp-meta-left">stop ' + fmtNum(_stopForBar, 2) + '</span>' +
+                      '<span class="pp-meta-left">stop ' + fmtNum((_effStopForBar != null ? _effStopForBar : _stopForBar), 2) + '</span>' +
                       '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
                       '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
                     '</div>' +

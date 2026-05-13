@@ -608,6 +608,17 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         # numeric read so a malformed on-disk value only drops that
         # one position's trail info instead of the whole snapshot.
         hard_stop = _safe_float(p.get("stop")) or 0.0
+        # v9.1.5 -- entry_stop is the IMMUTABLE admission stop. Per
+        # v7.107.0 audit, broker.orders writes pos["initial_stop"] at
+        # entry time and nothing mutates it thereafter (Alarm-F /
+        # exits.maybe_arm_be both mutate pos["stop"] in place). The UI
+        # progress bar uses entry_stop for the immutable axis math so
+        # the graph doesn't invert once the chandelier trail has moved
+        # stop past entry into profit territory. Fall back to hard_stop
+        # for legacy positions opened pre-initial_stop.
+        entry_stop = _safe_float(p.get("initial_stop"))
+        if entry_stop is None or entry_stop <= 0:
+            entry_stop = hard_stop
         trail_active = bool(p.get("trail_active", False))
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_high"))
@@ -644,6 +655,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "entry": entry,
                 "mark": _long_mark,
                 "stop": hard_stop,
+                "entry_stop": entry_stop,
                 "trail_active": trail_active,
                 "trail_stop": trail_stop,
                 "trail_anchor": trail_anchor,
@@ -676,6 +688,11 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
         px_f = _safe_float(px)
         unreal = (entry - px_f) * shares if px_f is not None else 0.0
         hard_stop = _safe_float(p.get("stop")) or 0.0
+        # v9.1.5 -- entry_stop is the IMMUTABLE admission stop (see
+        # long-side comment above). Same fallback for legacy shorts.
+        entry_stop = _safe_float(p.get("initial_stop"))
+        if entry_stop is None or entry_stop <= 0:
+            entry_stop = hard_stop
         trail_active = bool(p.get("trail_active", False))
         trail_stop = _safe_float(p.get("trail_stop"))
         trail_anchor = _safe_float(p.get("trail_low"))
@@ -704,6 +721,7 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
                 "entry": entry,
                 "mark": _short_mark,
                 "stop": hard_stop,
+                "entry_stop": entry_stop,
                 "trail_active": trail_active,
                 "trail_stop": trail_stop,
                 "trail_anchor": trail_anchor,
