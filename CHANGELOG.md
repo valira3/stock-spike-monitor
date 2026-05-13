@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.6 (2026-05-13) — state-snapshot cron reliability fix
+
+Today's session exposed the snapshot cron's reliability problem: of the 12 scheduled `*/10` slots between 13:00 and 14:50 UTC, **zero fired**. The dashboard's `snapshots-live` branch hadn't auto-ticked in over an hour during active trading. We had to manually `workflow_dispatch` to confirm each v9.1.x deploy.
+
+Looking at the historical record:
+* 2026-05-12 21:50 cron → ran at 22:35:21Z (45 min late)
+* 2026-05-12 21:00 cron → ran at 21:06:39Z (6 min late)
+* Most other slots: skipped entirely
+
+This is a textbook hit of GitHub Actions' documented cron-reliability caveat: scheduled workflows can be delayed or dropped during high load, and `*/10` patterns concentrate runs on the most-contested top-of-hour slots.
+
+Three changes to `.github/workflows/state-snapshot.yml`:
+
+1. **Minutes shifted off-peak.** `*/10` (`:00`, `:10`, `:20`...) → explicit `2,12,22,32,42,52`. Same 6/hr cadence but on materially less-contested slots.
+2. **Window widened.** `13-21 UTC` → `12-22 UTC`. RTH itself is unchanged (13:30 → 20:00 UTC EDT, 14:30 → 21:00 UTC EST) but the extra hour on each side absorbs the typical 15-30 min cron delay so the first/last ticks of the day still land inside the session.
+3. **`concurrency.cancel-in-progress` flipped to `false`.** Previously the workflow cancelled queued runs on the assumption that the next 10-min tick would catch up — but in practice that "catch-up" tick was often delayed/skipped itself, producing the long no-tick gaps. The workflow already retries `git push` with exponential backoff, so two concurrent runs aren't a correctness problem; the second just rebases against the first's commit.
+
+Expected outcome: 66 scheduled slots/day with realistic GH delivery of ~30-50 ticks, keeping `latest.json` fresh within ~5 min during RTH. Still best-effort (no cron is contractual on GH Actions), but materially better than today's 0-of-12.
+
+No behavior change to the trading engine.
+
+---
+
 ## v9.1.5 (2026-05-13) — Position progress bar uses immutable admission stop
 
 Operator spotted that an open TSLA long (entry $444.08, mark $448.08, +$676 unrealized) was rendering the progress bar with the stop above entry, the "1R" tick below entry, the "target" below entry, and a `−1.21R` red marker. Despite being in profit, the chart said red. Cross-tab — both Main and the Val/Gene executor tables.
