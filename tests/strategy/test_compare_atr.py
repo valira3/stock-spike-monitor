@@ -20,8 +20,69 @@ from tools.compare_atr import (
     aggregate_1m_to_5m,
     aggregate_ticks_to_5m,
     compute_atr,
+    is_tape_eligible,
     verdict_for,
 )
+
+
+class TestTapeEligibilityFilter:
+
+    def test_empty_conditions_is_eligible(self):
+        assert is_tape_eligible([]) is True
+        assert is_tape_eligible(None) is True
+
+    def test_regular_sale_at_is_eligible(self):
+        assert is_tape_eligible(["@"]) is True
+
+    def test_intermarket_sweep_is_eligible(self):
+        # "F" is not in the non-last-sale-eligible list
+        assert is_tape_eligible(["F"]) is True
+
+    def test_odd_lot_excluded(self):
+        # "I" -- Odd Lot Trade. The big one for ATR inflation.
+        assert is_tape_eligible(["I"]) is False
+
+    def test_form_t_extended_hours_excluded(self):
+        assert is_tape_eligible(["T"]) is False
+
+    def test_sold_out_of_sequence_excluded(self):
+        # "Z" -- Sold (Out of Sequence) -- late print
+        assert is_tape_eligible(["Z"]) is False
+
+    def test_mixed_conditions_excluded_if_any_bad(self):
+        # If any condition flags it, exclude
+        assert is_tape_eligible(["@", "I"]) is False
+
+    def test_cross_trade_excluded(self):
+        assert is_tape_eligible(["9"]) is False
+
+
+class TestAggregationWithFilter:
+
+    def test_filtered_aggregation_drops_outliers(self):
+        # A normal price + an odd-lot outlier in the same minute
+        ts = "2026-05-12T13:30:00+00:00"
+        ticks = [
+            {"ts": ts, "price": 100.0, "conditions": ["@"]},
+            {"ts": ts, "price": 999.0, "conditions": ["I"]},  # outlier odd-lot
+            {"ts": ts, "price": 100.1, "conditions": []},
+        ]
+        bars = aggregate_ticks_to_5m(ticks)
+        assert len(bars) == 1
+        bucket, hi, lo, close = bars[0]
+        # The 999 outlier should be FILTERED OUT
+        assert hi == 100.1
+        assert lo == 100.0
+        # Without filtering, hi would have been 999
+
+    def test_all_filtered_returns_no_bars(self):
+        ts = "2026-05-12T13:30:00+00:00"
+        ticks = [
+            {"ts": ts, "price": 999.0, "conditions": ["I"]},
+            {"ts": ts, "price": 998.0, "conditions": ["T"]},
+        ]
+        bars = aggregate_ticks_to_5m(ticks)
+        assert len(bars) == 0
 
 
 def _utc(h, m, s=0):
