@@ -1,5 +1,5 @@
 ---
-name: gha-backtest-lever-sweep
+name: sweep
 description: Run a multi-day or full-year backtest of a new theory via the existing lever-sweep GHA workflow + tools/orb_backtest.py + docs/research/r{N}_*.py chain. Do NOT build parallel infrastructure — this skill documents the production research path.
 ---
 
@@ -42,5 +42,5 @@ Building a new `tools/corpus_backtest.py` or new `corpus-backtest.yml` workflow.
 ## Common deviations and when they're appropriate
 
 - **Single-day quick check**: run `tools/orb_backtest.py` locally on `data-extensions/rth-expand`. No sweep needed.
-- **Live-engine-replay-specific rule** (e.g. rules that depend on multi-fire same-side re-entries): the classical `orb_backtest.py` will show 0 effect. Switch to `tools/orb_replay_day.py`-based custom replay — see the `replay-fidelity-investigation` skill.
+- **Live-engine-replay-specific rule** (e.g. rules that depend on multi-fire same-side re-entries): the classical `orb_backtest.py` will show 0 effect. Switch to `tools/orb_replay_day.py`-based custom replay — see the `replay` skill.
 - **Per-portfolio (Val/Gene) analysis**: the lever-sweep harness runs Main-only. For per-portfolio differences, use the live-replay skill.

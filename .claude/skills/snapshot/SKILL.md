@@ -1,5 +1,5 @@
 ---
-name: state-snapshot-retrieval
+name: snapshot
 description: Pull live dashboard state (positions, OR boundaries, RiskBook, day_states, trade_log) without DASHBOARD_PASSWORD. Uses the snapshots-live branch updated by .github/workflows/state-snapshot.yml every 10 min during US RTH.
 ---
 

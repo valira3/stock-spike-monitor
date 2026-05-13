@@ -1,5 +1,5 @@
 ---
-name: replay-fidelity-investigation
+name: replay
 description: When live trading produces different PnL than the orb_replay backtest, follow this end-to-end recipe to diagnose. Distills the v8.3.28-v8.3.33 investigation (tick-data pull, ATR comparison, signal-timing forensics, multi-hypothesis testing) into a reproducible workflow.
 ---
 
