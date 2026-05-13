@@ -518,6 +518,19 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
 
+    # v9.1.0 -- EOD reversal pass. Single hook per cycle that:
+    #   - at 15:30 ET ranks the EOD universe + admits top-1/top-1
+    #     long/short legs per portfolio (idempotent: only fires once
+    #     per session via entry_attempted flag)
+    #   - at 15:59 ET flattens all open EOD positions
+    # The engine TRACKS the positions for the dashboard regardless;
+    # actual broker fire is gated by ORB_EOD_FIRE_BROKER (default OFF
+    # for v9.1.0 paper-fire-observation per the v8.3.23 pattern).
+    try:
+        _eod_reversal_pass(callbacks, cur_min)
+    except Exception:
+        logger.exception("[V910-EOD] pass failed; engine state unchanged")
+
     logger.info(
         "SCAN CYCLE done in %.2fs, %d tickers (session=%s)",
         time.time() - cycle_start,
@@ -1244,6 +1257,238 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
             except Exception:
                 logger.exception("[V79-ORB-FIRE] report_error failed")
         return False
+
+
+def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
+    """v9.1.0 -- per-cycle hook for the EOD reversal addon strategy.
+
+    No-op outside the [entry_et, exit_et] window. Inside the entry
+    minute (default 15:30 ET) ranks the EOD universe and admits the
+    top-1 long + top-1 short per portfolio. At/after the exit minute
+    (default 15:59) flattens any open EOD positions.
+
+    Idempotent within a session via per-portfolio `entry_attempted`
+    flag (admission) and per-portfolio open_positions dict (exits).
+
+    Tracks positions for dashboard regardless of broker mode. When
+    cfg.fire_broker is True, also dispatches real broker orders via
+    callbacks.execute_entry (Main) and _v10_dispatch_executor_fire
+    (Val/Gene). Paper-fire-observation default: fire_broker=False.
+    """
+    eod = _orb_runtime.get_eod_engine()
+    if eod is None:
+        return
+    # Outside the trading window (RTH).
+    if cur_min < eod.cfg.entry_et_minutes - 1:
+        return
+    # Ensure session reset has fired for today's date.
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        date_iso = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
+        eod.reset_for_session(date_iso)
+    except Exception:
+        date_iso = ""
+
+    # --- entry window ---
+    if eod.is_entry_window(cur_min):
+        # Gather current prices via callbacks for the EOD universe.
+        current_prices: dict[str, float] = {}
+        for tk in eod.cfg.universe:
+            try:
+                bars = callbacks.fetch_1min_bars(tk)
+            except Exception:
+                bars = None
+            if not bars:
+                continue
+            px = (bars.get("current_price")
+                  or (bars.get("closes") or [None])[-1])
+            if isinstance(px, (int, float)) and px > 0:
+                current_prices[tk] = float(px)
+        # Prior-session closes from the production bar archive. We walk
+        # the per-ticker JSONL backward up to 10 calendar days to handle
+        # weekends/holidays. Fail-open: missing data -> ticker excluded
+        # from rod_signals -> select_signals will skip it cleanly.
+        prior_closes: dict[str, float] = {}
+        if date_iso:
+            try:
+                from pathlib import Path as _Path
+                import json as _json
+                from datetime import timedelta as _td
+                from datetime import datetime as _dt
+                root = _Path("/data/bars")
+                for tk in eod.cfg.universe:
+                    if tk in prior_closes:
+                        continue
+                    # Walk back up to 10 days for the most recent RTH close.
+                    found = None
+                    dt = _dt.strptime(date_iso, "%Y-%m-%d")
+                    for off in range(1, 11):
+                        cand = (dt - _td(days=off)).strftime("%Y-%m-%d")
+                        fp = root / cand / f"{tk}.jsonl"
+                        if not fp.is_file():
+                            continue
+                        last_close = None
+                        for line in fp.read_text().splitlines():
+                            if not line.strip():
+                                continue
+                            try:
+                                b = _json.loads(line)
+                            except Exception:
+                                continue
+                            bucket = b.get("et_bucket", "")
+                            try:
+                                bi = int(str(bucket))
+                            except (ValueError, TypeError):
+                                continue
+                            if 930 <= bi <= 1559:
+                                c = b.get("close")
+                                if isinstance(c, (int, float)) and c > 0:
+                                    last_close = float(c)
+                        if last_close is not None:
+                            found = last_close
+                            break
+                    if found is not None:
+                        prior_closes[tk] = found
+            except Exception:
+                logger.exception("[V910-EOD] prior-close lookup failed")
+
+        long_picks, short_picks = eod.select_signals(
+            current_prices=current_prices, prior_closes=prior_closes,
+        )
+        if not long_picks and not short_picks:
+            logger.info(
+                "[V910-EOD-NO-SIGNAL] date=%s cur_prices=%d prior_closes=%d "
+                "long_picks=0 short_picks=0",
+                date_iso, len(current_prices), len(prior_closes),
+            )
+            return
+
+        from datetime import datetime as _dt2, timezone as _tz
+        entry_iso = _dt2.now(_tz.utc).isoformat()
+
+        # Fire per-portfolio. Each portfolio admits independently with
+        # its own equity for sizing.
+        try:
+            from engine.portfolio_book import ALL_PORTFOLIO_IDS, PORTFOLIOS
+        except Exception:
+            ALL_PORTFOLIO_IDS = ["main"]
+            PORTFOLIOS = {"main": None}
+        for pid in ALL_PORTFOLIO_IDS:
+            if eod.has_attempted(pid):
+                continue
+            book = PORTFOLIOS.get(pid)
+            equity = float(getattr(book, "current_equity", 100_000.0) or 100_000.0)
+            for ticker, rod3 in long_picks:
+                price = current_prices.get(ticker)
+                if price is None or price <= 0:
+                    continue
+                pos = eod.admit(
+                    portfolio_id=pid, ticker=ticker, side="long",
+                    entry_price=price, equity=equity,
+                    rod3_bps=rod3, entry_iso=entry_iso,
+                )
+                if pos is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker(callbacks, pid, ticker, "long",
+                                     price, pos.shares)
+            for ticker, rod3 in short_picks:
+                price = current_prices.get(ticker)
+                if price is None or price <= 0:
+                    continue
+                pos = eod.admit(
+                    portfolio_id=pid, ticker=ticker, side="short",
+                    entry_price=price, equity=equity,
+                    rod3_bps=rod3, entry_iso=entry_iso,
+                )
+                if pos is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker(callbacks, pid, ticker, "short",
+                                     price, pos.shares)
+            eod.mark_attempted(pid)
+
+    # --- exit window ---
+    if eod.is_exit_window(cur_min):
+        from datetime import datetime as _dt3, timezone as _tz3
+        exit_iso = _dt3.now(_tz3.utc).isoformat()
+        for pid, st in list(eod._states.items()):
+            if not st.open_positions:
+                continue
+            for ticker, pos in list(st.open_positions.items()):
+                try:
+                    bars = callbacks.fetch_1min_bars(ticker)
+                except Exception:
+                    bars = None
+                if not bars:
+                    continue
+                px = (bars.get("current_price")
+                      or (bars.get("closes") or [None])[-1])
+                if not isinstance(px, (int, float)) or px <= 0:
+                    continue
+                leg = eod.close(
+                    portfolio_id=pid, ticker=ticker, exit_price=float(px),
+                    exit_iso=exit_iso, exit_reason="eod_window",
+                )
+                if leg is not None and eod.cfg.fire_broker:
+                    _eod_fire_broker_close(callbacks, pid, ticker, pos.side,
+                                           float(px), pos.shares)
+
+
+def _eod_fire_broker(callbacks: EngineCallbacks, pid: str, ticker: str,
+                     side: str, price: float, shares: int) -> None:
+    """v9.1.0 -- dispatch a real broker fire for an EOD entry.
+
+    Reuses the existing v10 fanout: Main goes through
+    callbacks.execute_entry (legacy path), Val/Gene via
+    _v10_dispatch_executor_fire. Failures are logged but do not
+    propagate -- tracking continues even if broker rejects.
+    """
+    try:
+        if pid == "main":
+            # The legacy callback fires LONG by default. For short side
+            # we rely on _v10_dispatch_executor_fire which is side-aware.
+            if side == "long":
+                callbacks.execute_entry(ticker, float(price))
+            else:
+                _v10_dispatch_executor_fire(
+                    pid=pid, side=side, ticker=ticker,
+                    price=float(price), shares=int(shares),
+                )
+        else:
+            _v10_dispatch_executor_fire(
+                pid=pid, side=side, ticker=ticker,
+                price=float(price), shares=int(shares),
+            )
+        logger.info(
+            "[V910-EOD-FIRE] %s/%s %s %d shares @ %.4f",
+            pid, ticker, side, shares, price,
+        )
+    except Exception:
+        logger.exception(
+            "[V910-EOD-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
+            pid, ticker, side, shares, price,
+        )
+
+
+def _eod_fire_broker_close(callbacks: EngineCallbacks, pid: str,
+                           ticker: str, side: str, price: float,
+                           shares: int) -> None:
+    """v9.1.0 -- broker close for an EOD position. Uses the inverse
+    side on the same executor surface (long -> sell, short -> cover).
+    """
+    try:
+        close_side = "short" if side == "long" else "long"
+        _v10_dispatch_executor_fire(
+            pid=pid, side=close_side, ticker=ticker,
+            price=float(price), shares=int(shares),
+        )
+        logger.info(
+            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f",
+            pid, ticker, side, shares, price,
+        )
+    except Exception:
+        logger.exception(
+            "[V910-EOD-CLOSE-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
+            pid, ticker, side, shares, price,
+        )
 
 
 def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:

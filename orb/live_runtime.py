@@ -42,6 +42,7 @@ import threading
 from typing import Mapping, Optional
 
 from orb.engine import OrbConfig, OrbEngine
+from orb.eod_reversal import EodReversalConfig, EodReversalEngine
 from orb.live_adapter import LiveAdapter, LiveAdapterRegistry, EntryResult, ExitResult
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,10 @@ _engine: Optional[OrbEngine] = None
 _adapters: Optional[LiveAdapterRegistry] = None
 _session_date: str = ""  # iso date when the current session was started; "" if not yet
 _bootstrapped: bool = False
+# v9.1.0 -- EOD reversal addon engine. Runs alongside the morning ORB
+# engine; fires a single cross-sectional reversal trade at 15:30 ET
+# and flattens at 15:59 ET. Independent state.
+_eod_engine: Optional[EodReversalEngine] = None
 _bootstrap_lock = threading.RLock()
 _sizes_lock = threading.RLock()
 
@@ -264,24 +269,33 @@ def bootstrap(*, force: bool = False) -> None:
         state -- _engine and _adapters are only assigned once BOTH
         constructors return successfully.
     """
-    global _engine, _adapters, _bootstrapped
+    global _engine, _adapters, _eod_engine, _bootstrapped
     with _bootstrap_lock:
         if _bootstrapped and not force:
             return
         cfg = _build_config_from_env()
         portfolio_ids = _resolve_portfolio_ids()
         earnings_fn = _resolve_earnings_fn()
-        # Local-then-swap: build both, then publish atomically.
+        # Local-then-swap: build all, then publish atomically.
         try:
             _new_engine = OrbEngine(cfg, portfolio_ids=portfolio_ids,
                                     is_earnings_window_fn=earnings_fn)
             _new_adapters = LiveAdapterRegistry(_new_engine)
+            # v9.1.0 -- EOD reversal addon engine. Lives alongside the
+            # morning ORB. Its config is read from env (defaults all ON
+            # per the r17 backtest winning spec); operator can disable
+            # via ORB_EOD_REVERSAL_ENABLED=0.
+            _new_eod_cfg = EodReversalConfig.from_env()
+            _new_eod_engine = EodReversalEngine(
+                _new_eod_cfg, portfolio_ids=portfolio_ids,
+            )
         except Exception:
             logger.exception("[V79-ORB-BOOT] construction failed; "
                              "module state unchanged")
             raise
         _engine = _new_engine
         _adapters = _new_adapters
+        _eod_engine = _new_eod_engine
         _bootstrapped = True
         logger.info("[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
                     portfolio_ids, cfg.rr, cfg.or_minutes, cfg.skip_vix_above)
@@ -908,9 +922,12 @@ def snapshot() -> dict:
     bootstrapped.
 
     v7.32.0: snapshot _engine under the bootstrap lock to avoid a
-    partial-init read race."""
+    partial-init read race.
+    v9.1.0: includes EOD reversal addon engine snapshot under "eod"
+    when bootstrapped."""
     with _bootstrap_lock:
         engine = _engine
+        eod = _eod_engine
         session_date = _session_date
     if engine is None:
         return {
@@ -924,7 +941,31 @@ def snapshot() -> dict:
     snap["session_date"] = session_date
     # v7.45.0: recent activity feed for the dashboard
     snap["activity"] = get_recent_activity(limit=25)
+    # v9.1.0: EOD reversal addon state
+    if eod is not None:
+        snap["eod"] = eod.snapshot()
     return snap
+
+
+# v9.1.0 -- EOD reversal hooks. Called by engine/scan.py at 15:30 ET
+# (entry attempt) and 15:59 ET (flatten). Each hook is idempotent
+# and safe to call repeatedly within its time window.
+
+
+def get_eod_engine() -> Optional[EodReversalEngine]:
+    """Return the EOD engine (None if not bootstrapped or disabled)."""
+    with _bootstrap_lock:
+        eod = _eod_engine
+    if eod is None or not eod.cfg.enabled:
+        return None
+    return eod
+
+
+def eod_reset_session_if_needed(date_iso: str) -> None:
+    """Reset the EOD engine state for a new trading day. Idempotent."""
+    eod = get_eod_engine()
+    if eod is not None:
+        eod.reset_for_session(date_iso)
 
 
 # --- diagnostic helpers (for tests + manual ops) ---

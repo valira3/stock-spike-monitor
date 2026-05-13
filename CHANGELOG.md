@@ -4,6 +4,96 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.0 (2026-05-13) — End-of-Day Reversal addon strategy
+
+Adds a second strategy class alongside the v9.0.0 morning ORB: a cross-sectional reversal trade fired once per session at 15:30 ET, flattened at 15:59 ET. Backtest-validated: combined v9 morning + v9.1 EOD = **$+29,386/yr (+18.6% over v9 alone) / 0/5 negative quarters / Sharpe boost retained**. See `docs/r17_afternoon_backtest_report.md` for the full forensic journey.
+
+### Strategy
+
+R17 backtest research found the Baltussen 2024 EOD-reversal effect concentrates on "institutionally-dominated" mega-caps (ORCL, AAPL, MSFT, AVGO, NFLX) and FAILS on "retail-attention" names (META, GOOG, TSLA, AMZN, NVDA — those continue momentum instead of reversing). The fence + per-(ticker, side) selection is the operational lever that captures the alpha.
+
+```
+Universe:           ORCL, AAPL, MSFT, AVGO, NFLX
+Long eligible:      ORCL, AAPL, MSFT, AVGO  (top-1 daily loser)
+Short eligible:     ORCL, NFLX, AAPL, MSFT  (top-1 daily winner)
+Entry:              15:30 ET (signal at this minute's start)
+Exit:               15:59 ET (close print)
+Sizing:             35% notional per leg
+Selection:          top-1 of each side (extreme intraday mover)
+Sharpe boost:       +5.7% over v9 alone at realistic 1.5bps slippage
+```
+
+### New env levers (defaults ON; broker fire gated)
+
+```bash
+ORB_EOD_REVERSAL_ENABLED=1                   # engine tracks signals
+ORB_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX
+ORB_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO
+ORB_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT
+ORB_EOD_TOP_N=1
+ORB_EOD_NOTIONAL_PCT=35
+ORB_EOD_ENTRY_ET=15:30
+ORB_EOD_EXIT_ET=15:59
+ORB_EOD_FIRE_BROKER=0                        # paper-fire-observation default
+```
+
+Per the v8.3.23 fire-flag pattern, the engine TRACKS signals + positions + P&L from day 1 (so the dashboard shows real activity), but real broker orders are gated by `ORB_EOD_FIRE_BROKER=1`. Operator flips to `1` after 5+ days of clean paper-observation.
+
+### Code changes
+
+- `orb/eod_reversal.py` (NEW, 437 lines): `EodReversalConfig` + `EodReversalEngine` with per-portfolio state, signal selection (ROD3 ranking + per-side fence), idempotent admit / close, snapshot for dashboard
+- `orb/live_runtime.py`: bootstrap constructs the EOD engine alongside the morning ORB engine; `snapshot()` exposes `eod` block; new public helpers `get_eod_engine()` + `eod_reset_session_if_needed()`
+- `engine/scan.py`: new `_eod_reversal_pass()` hook invoked once per cycle after the per-ticker tick loop. Time-gated single-fire at 15:30 ET, flatten at 15:59 ET. Idempotent via per-portfolio `entry_attempted` flag. Inline prior-close lookup from the production bar archive `/data/bars/<DATE>/<TICKER>.jsonl`. Real broker fire dispatched via the existing `callbacks.execute_entry` (Main) and `_v10_dispatch_executor_fire` (Val/Gene) surfaces when `fire_broker=True`.
+
+### UI updates (cross-tab parity)
+
+Per CLAUDE.md "UI changes propagate across all tabs":
+
+- `dashboard_static/index.html`: new `v10-eod-section` card below the v10 baseline banner. Shows entry/exit window, open count, closed count, realized P&L, paper/LIVE indicator pill.
+- `dashboard_static/app.js`: new `renderV10EodReversal(s, pidFilter, panel)` renderer. Called from `renderV10DayStatus` for Main and from `renderV10PerPortfolio` for Val/Gene. Per-portfolio state filtered by pid.
+- `execSkeleton` updated to include the matching Val/Gene EOD section.
+
+### Tests (33 new)
+
+- `tests/strategy/test_orb_eod_reversal.py` (25 tests): config from-env, engine lifecycle, signal selection, per-side fence, admission idempotency, close P&L, time windows, snapshot shape
+- `tests/strategy/test_orb_eod_integration.py` (8 tests): bootstrap integration, full one-day flow, multi-portfolio independence, ship-spec defaults
+
+Full strategy suite: 923 tests pass (was 898 pre-v9.1).
+
+### Forensic tags
+
+- `[V910-EOD-RESET]` — session reset
+- `[V910-EOD-ENTRY]` — position admitted (tracked)
+- `[V910-EOD-EXIT]` — position closed (with P&L)
+- `[V910-EOD-FIRE]` — real broker fire (only when ORB_EOD_FIRE_BROKER=1)
+- `[V910-EOD-CLOSE-FIRE]` — broker flatten at 15:59 ET
+- `[V910-EOD-NO-SIGNAL]` — insufficient cross-section data on the day
+
+### Baseline backtest tools (consolidation)
+
+Per the operator's "save as baseline" directive:
+
+- `tools/orb_backtest.py` now carries the full R7-R12 lever set (`min_break_bps`, `max_vwap_dev_bps` + ticker fence, `skip_prior_spy_ret_lt_bps`, etc) that previously lived only on a research branch. This makes the v9 morning ORB backtest reproducible on main.
+- `tools/afternoon_backtest.py` (added in r17 branch) is the canonical afternoon-strategy backtest with both intraday-momentum and EOD-reversal implementations.
+- `docs/research/r2_*` through `r6_*` scripts moved to `docs/research/_archive/` (historical; v12/v13 reports reference them).
+- `docs/pl_optimization_final_report_v3..v11.md` moved to `docs/_archive/`. Source-of-truth reports are v12 + v13 only.
+
+### v9.0.0 features carried forward
+
+All v9.0.0 levers (`min_break_bps`, `max_vwap_dev_bps`, ticker fence, SPY regime gate, daily-loss-kill 1.0%, etc) remain active. The EOD addon is fully independent — it runs on a separate engine with its own state and uses different tickers than the v9 chase fence (the EOD universe is a subset of v9's universe, chosen for institutional-flow exposure).
+
+### Rollback
+
+Set `ORB_EOD_REVERSAL_ENABLED=0` in Railway env to disable the EOD engine entirely (no scan-loop overhead, no UI section). Other levers can be turned off individually:
+```
+ORB_EOD_FIRE_BROKER=0       # disable broker fire (default; tracking continues)
+ORB_EOD_NOTIONAL_PCT=0      # admits compute zero shares -> effectively skipped
+```
+
+No code revert needed; pure env-level rollback.
+
+---
+
 ## v9.0.0 (2026-05-13) — Chase-prevention + SPY regime gate (major release)
 
 The first major-version bump since v8 (Oct 2025). Backtest-validated configuration (docs/pl_optimization_final_report_v13.md) is now the production default: **+$24,784/yr · 24.78% CAGR · 0/4 negative quarters · WR 61.8% · 3.64% max DD · Sharpe 2.80** on the 251-day full-year corpus. Cumulative lift vs current production: **+$54,074/yr**.

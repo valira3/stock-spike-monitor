@@ -219,6 +219,25 @@
       </span>
     </section>
 
+    <!-- v9.1.0 -- EOD Reversal addon card. One-shot afternoon cross-
+         sectional reversal trade on the 5-mega-cap fence (default
+         ORCL,AAPL,MSFT,AVGO,NFLX). Populated by renderV10EodReversal
+         from /api/state.v10.eod. Hidden when eod.enabled is false or
+         when there are no positions and no closed legs yet today. -->
+    <section id="v10-eod-section" class="v10-card" style="padding:12px 16px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:none;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:8px">
+        <span style="font-weight:700;color:#a78bfa;letter-spacing:0.5px" title="v9.1.0 End-of-Day Reversal addon (R17 backtest validated). Fires at 15:30 ET, flattens at 15:59 ET.">EOD Reversal</span>
+        <span style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#9ca3af">
+          <span id="v10-eod-status" style="color:#9ca3af">—</span>
+          <span style="color:#374151">·</span>
+          <span id="v10-eod-fire-pill" style="padding:2px 7px;border-radius:999px;background:rgba(245,158,11,0.18);color:#f59e0b;font-weight:600">paper</span>
+        </span>
+      </div>
+      <div id="v10-eod-body" style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#e5e7eb;font-family:'JetBrains Mono',monospace">
+        <div class="empty" style="color:#6b7280">No EOD activity yet today.</div>
+      </div>
+    </section>
+
     <!-- v7.27.0 -- v10 ORB Ticker Matrix. Per-ticker FSM state pulled
          from orb.live_runtime.snapshot().day_states + or_windows.
          Replaces the legacy Permit Matrix card on the v10 path; the

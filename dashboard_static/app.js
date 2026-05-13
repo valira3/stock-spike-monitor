@@ -3921,6 +3921,23 @@
       </div>
     </section>
 
+    <!-- v9.1.0 -- EOD Reversal addon card on Val/Gene tabs (mirrors
+         the Main panel v10-eod-section). Populated by
+         renderV10EodReversal with pidFilter=${exec}. Per CLAUDE.md
+         cross-tab parity rule. -->
+    <section class="grid" data-f="v10-eod-section">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title" title="v9.1.0 EOD Reversal addon. Fires 15:30 ET, flattens 15:59 ET. R17 backtest validated.">EOD Reversal &middot; ${label}</span>
+          <span class="chip" data-f="v10-eod-pid-status">&mdash;</span>
+          <span class="chip" data-f="v10-eod-pid-fire" style="background:rgba(245,158,11,0.18);color:#f59e0b">paper</span>
+        </div>
+        <div class="card-body flush" data-f="v10-eod-pid-body" style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#e5e7eb">
+          <div style="color:#6b7280">No EOD activity yet today.</div>
+        </div>
+      </div>
+    </section>
+
     <!-- v8.3.21 -- Proximity moved ABOVE Recent activity so Val/Gene
          section order matches Main (Day Status -> Ticker Matrix ->
          Baseline -> Proximity -> Activity -> Trades). New CLAUDE.md
@@ -4039,6 +4056,9 @@
     // can still surface the universe + current prices pre-bootstrap.
     if (s && s.v10) {
       try { renderV10ProximityForPanel(s, panel, pid); }
+      catch (e) { /* never break exec render */ }
+      // v9.1.0 -- EOD reversal addon card.
+      try { renderV10EodReversal(s, pid, panel); }
       catch (e) { /* never break exec render */ }
     } else if (proxSection) {
       proxSection.style.display = "none";
@@ -5377,10 +5397,109 @@
   // not show Val or Gene information"). Pass null to keep the legacy
   // cross-portfolio aggregation (no current caller; reserved for a
   // future cross-book overview view if we add one).
+  // v9.1.0 -- EOD reversal addon renderer. Shared between Main banner
+  // (DOM id v10-eod-section) and Val/Gene per-pid bodies (data-f
+  // v10-eod-pid-body). When pidFilter is null/undefined, renders the
+  // Main DOM. When pidFilter is set ("val" | "gene"), expects the
+  // panel arg and renders into v10-eod-pid-body within that panel.
+  function renderV10EodReversal(s, pidFilter, panel) {
+    var v10 = s && s.v10;
+    var eod = v10 && v10.eod;
+    if (pidFilter && panel) {
+      var hostBody = panel.querySelector('[data-f="v10-eod-pid-body"]');
+      var hostStatus = panel.querySelector('[data-f="v10-eod-pid-status"]');
+      var hostFire = panel.querySelector('[data-f="v10-eod-pid-fire"]');
+      if (!hostBody) return;
+      _v10EodFillBody(eod, pidFilter, hostBody, hostStatus, hostFire);
+      return;
+    }
+    var section = document.getElementById("v10-eod-section");
+    var body = document.getElementById("v10-eod-body");
+    var statusEl = document.getElementById("v10-eod-status");
+    var fireEl = document.getElementById("v10-eod-fire-pill");
+    if (!section || !body) return;
+    if (!eod || !eod.enabled) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    _v10EodFillBody(eod, "main", body, statusEl, fireEl);
+  }
+
+  function _v10EodFillBody(eod, pid, bodyEl, statusEl, fireEl) {
+    if (!eod) { bodyEl.innerHTML = '<div style="color:#6b7280">No EOD data.</div>'; return; }
+    var perPid = (eod.per_portfolio || {})[pid] || {open_count:0, open_positions:[], closed_legs:[], realized_pnl_today:0, entry_attempted:false, rejected_count:0};
+    var cfg = eod.config || {};
+    var entryEt = cfg.entry_et || "15:30";
+    var exitEt = cfg.exit_et || "15:59";
+    var realized = parseFloat(perPid.realized_pnl_today || 0) || 0;
+    var openCount = perPid.open_count || 0;
+    var closedCount = (perPid.closed_legs || []).length;
+    if (statusEl) {
+      var parts = [];
+      parts.push("window " + entryEt + "-" + exitEt);
+      parts.push("open " + openCount);
+      parts.push("closed " + closedCount);
+      var realStr = (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2);
+      var realCol = realized >= 0 ? "#86efac" : "#fca5a5";
+      parts.push('PnL <span style="color:' + realCol + '">' + realStr + '</span>');
+      statusEl.innerHTML = parts.join(' <span style="color:#374151">·</span> ');
+    }
+    if (fireEl) {
+      var firing = !!cfg.fire_broker;
+      fireEl.textContent = firing ? "LIVE" : "paper";
+      fireEl.style.background = firing ? "rgba(22,163,74,0.18)" : "rgba(245,158,11,0.18)";
+      fireEl.style.color = firing ? "#86efac" : "#f59e0b";
+      fireEl.title = firing
+        ? "ORB_EOD_FIRE_BROKER=1 -- real broker orders firing."
+        : "Paper-fire-observation mode: signals are tracked but broker orders are not placed. Set ORB_EOD_FIRE_BROKER=1 in Railway env to enable live firing.";
+    }
+    // Body: list open positions + closed legs.
+    var rows = [];
+    (perPid.open_positions || []).forEach(function (p) {
+      var sideCol = p.side === "long" ? "#86efac" : "#fca5a5";
+      rows.push(
+        '<div style="display:flex;gap:10px;align-items:center">'
+        + '<span style="color:' + sideCol + ';font-weight:700;min-width:46px">' + p.side.toUpperCase() + '</span>'
+        + '<span style="color:#e5e7eb;font-weight:700;min-width:46px">' + p.ticker + '</span>'
+        + '<span style="color:#9ca3af">' + p.shares + ' sh @ $' + (parseFloat(p.entry_price)||0).toFixed(2) + '</span>'
+        + '<span style="color:#a78bfa">rod3=' + (parseFloat(p.rod3_bps)||0).toFixed(1) + 'bps</span>'
+        + '<span style="color:#374151">·</span>'
+        + '<span style="color:#9ca3af">$' + Math.round(p.notional || 0).toLocaleString() + ' notional</span>'
+        + '</div>'
+      );
+    });
+    (perPid.closed_legs || []).forEach(function (leg) {
+      var pnl = parseFloat(leg.pnl) || 0;
+      var col = pnl >= 0 ? "#86efac" : "#fca5a5";
+      var sideCol = leg.side === "long" ? "#86efac" : "#fca5a5";
+      rows.push(
+        '<div style="display:flex;gap:10px;align-items:center;opacity:0.75">'
+        + '<span style="color:' + sideCol + ';min-width:46px">' + leg.side.toUpperCase() + '</span>'
+        + '<span style="color:#e5e7eb;min-width:46px">' + leg.ticker + '</span>'
+        + '<span style="color:#9ca3af">' + leg.shares + ' sh $' + (parseFloat(leg.entry_price)||0).toFixed(2) + ' -> $' + (parseFloat(leg.exit_price)||0).toFixed(2) + '</span>'
+        + '<span style="color:' + col + ';font-weight:700">' + (pnl >= 0 ? "+" : "") + '$' + pnl.toFixed(2) + '</span>'
+        + '<span style="color:#6b7280">' + (leg.exit_reason || 'eod') + '</span>'
+        + '</div>'
+      );
+    });
+    if (!rows.length) {
+      var msg = perPid.entry_attempted
+        ? "No EOD signal admitted today (insufficient cross-section)."
+        : "Waiting for " + entryEt + " ET entry window.";
+      bodyEl.innerHTML = '<div style="color:#6b7280">' + msg + '</div>';
+    } else {
+      bodyEl.innerHTML = rows.join('');
+    }
+  }
+
   function renderV10DayStatus(s, pidFilter) {
     var v10 = s && s.v10;
     var banner = document.getElementById("v10-day-status");
     if (!banner) return;
+    // v9.1.0 -- render the EOD reversal card alongside the morning
+    // v10 banner. Both feed off s.v10.* fields.
+    try { renderV10EodReversal(s, null, null); } catch (_e) {}
     // Fail open: if v10 block is missing, hide the banner.
     if (!v10 || v10.available === false) {
       banner.style.display = "none";
