@@ -376,6 +376,20 @@ class ORBConfig:
                                           #     applied only to
                                           #     fenced_gap_tickers.
     fenced_gap_tickers: tuple = ()        # fence list for tighter gap.
+    # v22 regime-conditional day-skip (2026-05-13). Skip the entire
+    # trading day when the prior session's SPY close-to-close return is
+    # in the [lo, hi] bps band. R12 forensic showed the strategy bleeds
+    # most on days after a moderate SPY drop (-1.0% to -0.5%): 24 days
+    # in the FY corpus, -$4,988 net.
+    skip_prior_spy_ret_lt_bps: float = 0.0  # >0 (or <0): skip if prior
+                                            # SPY return is BELOW this
+                                            # (in bps). e.g. -50 = skip
+                                            # days where prior SPY < -0.5%.
+    skip_prior_spy_ret_gt_bps: float = 0.0  # paired upper bound: when
+                                            # both _lt and _gt set, skip
+                                            # only days IN [lt, gt] band.
+                                            # When only _lt set, skip
+                                            # everything below _lt.
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -489,6 +503,8 @@ class ORBConfig:
                 for t in _envs("ORB_FENCED_GAP_TICKERS", "").split(",")
                 if t.strip()
             ),
+            skip_prior_spy_ret_lt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", 0.0),
+            skip_prior_spy_ret_gt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_GT_BPS", 0.0),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -1357,7 +1373,55 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     if cfg.skip_vix_above > 0:
         vix_closes = load_vix_closes(cfg.vix_csv_path)
 
+    # v22: pre-compute prior-day SPY close-to-close return per date.
+    # Uses SPY's last RTH bar (or last bar) as the daily close. The
+    # value stored at `date` is the return FROM the day-before-prior
+    # close TO the prior-day close (i.e. the regime indicator for
+    # entering `date`'s session).
+    prior_spy_ret_bps: dict[str, float] = {}
+    if cfg.skip_prior_spy_ret_lt_bps != 0.0 or cfg.skip_prior_spy_ret_gt_bps != 0.0:
+        spy_closes_per_date: dict[str, float] = {}
+        for d in dates:
+            try:
+                bars = load_day_bars(corpus_dir, d, "SPY")
+            except Exception:
+                bars = []
+            if not bars:
+                continue
+            rth = [b for b in bars
+                   if SESSION_START_ET <= b.bucket < _et_to_minutes("16:00")]
+            if rth:
+                spy_closes_per_date[d] = rth[-1].close
+        sorted_d = sorted(spy_closes_per_date.keys())
+        for i, d in enumerate(sorted_d):
+            if i < 2:
+                continue
+            pd = sorted_d[i-1]
+            pp = sorted_d[i-2]
+            base = spy_closes_per_date.get(pp, 0.0)
+            close = spy_closes_per_date.get(pd, 0.0)
+            if base > 0:
+                prior_spy_ret_bps[d] = (close - base) / base * 10000.0
+
+    spy_regime_days_skipped = 0
     for date in dates:
+        # v22 prior-day SPY regime skip. Apply BEFORE per-ticker work to
+        # short-circuit days entirely. Two modes:
+        #   - only _lt_bps set:   skip if prior_spy_ret < _lt_bps
+        #   - both set:           skip if prior_spy_ret in [_lt_bps, _gt_bps]
+        if cfg.skip_prior_spy_ret_lt_bps != 0.0 or cfg.skip_prior_spy_ret_gt_bps != 0.0:
+            prior = prior_spy_ret_bps.get(date)
+            if prior is not None:
+                lt = cfg.skip_prior_spy_ret_lt_bps
+                gt = cfg.skip_prior_spy_ret_gt_bps
+                if gt != 0.0 and lt != 0.0:
+                    if lt <= prior <= gt:
+                        spy_regime_days_skipped += 1
+                        continue
+                elif lt != 0.0 and prior < lt:
+                    spy_regime_days_skipped += 1
+                    continue
+
         # v11 compounding: at the start of each day, snapshot the running
         # balance into `current_account` so position sizes (and risk caps)
         # scale with the latest balance. After the day's P&L is finalized,
