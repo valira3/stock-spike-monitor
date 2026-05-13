@@ -1399,7 +1399,20 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
             if eod.has_attempted(pid):
                 continue
             book = PORTFOLIOS.get(pid)
-            equity = float(getattr(book, "current_equity", 100_000.0) or 100_000.0)
+            # v9.1.21 SEV-1 HOTFIX -- current_equity is a METHOD on
+            # PortfolioBook (def current_equity(self, prices=None) -> float),
+            # not an attribute. Pre-v9.1.21 used
+            # `getattr(book, "current_equity", 100_000.0)` which returned
+            # the bound method (truthy), then `float(<bound_method>)`
+            # raised TypeError. Same crash class as the v9.1.20 cur_min
+            # NameError: silently caught by the outer wrapper, never
+            # admitted. Call it as a method.
+            try:
+                equity = float(book.current_equity()) if book else 100_000.0
+            except Exception:
+                equity = 100_000.0
+            if equity <= 0:
+                equity = 100_000.0
             for ticker, rod3 in long_picks:
                 price = current_prices.get(ticker)
                 if price is None or price <= 0:

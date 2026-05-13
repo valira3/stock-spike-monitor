@@ -4,6 +4,46 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.21 (2026-05-13) — SEV-1 HOTFIX (compound bug, layer 2): equity TypeError in EOD admit loop
+
+While the v9.1.20 deploy was rolling out, audit of the same code block surfaced a **second SEV-1 in the same path** that v9.1.20 just unblocked. Both have been latent since v9.1.0.
+
+**Root cause:** `engine/scan.py:1393`:
+```python
+equity = float(getattr(book, "current_equity", 100_000.0) or 100_000.0)
+```
+
+`PortfolioBook.current_equity` is a **method** (`def current_equity(self, prices=None) -> float`, defined at `engine/portfolio_book.py:542`), not an attribute. `getattr(book, "current_equity")` returns the bound method object — truthy, so the `or 100_000.0` is skipped — and then `float(<bound_method>)` raises `TypeError: float() argument must be a string or a real number, not 'method'`.
+
+The outer wrapper at `scan.py:531` catches it and logs `[V910-EOD] pass failed`, same silent-failure pattern as the v9.1.20 NameError. So even with v9.1.20 alone, EOD admit would crash one statement deeper than where the cur_min bug used to crash.
+
+**Fix:** call it as a method.
+```python
+try:
+    equity = float(book.current_equity()) if book else 100_000.0
+except Exception:
+    equity = 100_000.0
+if equity <= 0:
+    equity = 100_000.0
+```
+
+Belt-and-braces: try/except in case the method itself raises (some books are paper-only and may not have broker hookups), and a floor at $100k to avoid downstream sizing failures from zero-equity.
+
+**Why these two bugs hid for 13 days:** the EOD addon shipped in v9.1.0 (today, earlier). It was tested via the `test_orb_eod_integration.py` unit tests, which use `EodReversalEngine` directly (`tests/strategy/test_orb_eod_integration.py:TestOneDayFlow`) but **never go through `scan._eod_reversal_pass`**. The integration code path in `scan.py` is uncovered by the strategy test suite. Both `cur_min` (NameError) and `current_equity` (TypeError) crashed at the integration layer, not in the engine itself. The wrapper try/except + 60s scan-cycle spam covered both.
+
+**Recovery sequence (now ~15:24 ET, EOD flatten at 15:59 ET = 35 min left):**
+
+1. Merge this PR
+2. Railway deploys v9.1.21 (~3-5 min)
+3. Engine's first post-deploy scan cycle (~15:28 ET) calls `_eod_reversal_pass` with valid `cur_min` AND valid `equity`
+4. Admission succeeds → broker fires → ~31 min hold to 15:59 ET flatten
+
+**Backlog item filed (mandatory):** the integration-layer test for `scan._eod_reversal_pass` needs to land in v9.2.0 with mocked `callbacks` + `PORTFOLIOS` + bar archive so this class of bug can't sneak through again.
+
+957 strategy tests pass (the bug is in an untested code path).
+
+---
+
 ## v9.1.20 (2026-05-13) — SEV-1 HOTFIX: EOD reversal never admitted (scan_loop NameError on `cur_min`)
 
 Operator caught this when 15:00 ET (the v9.1.2 EOD entry window) passed at 19:00 UTC and `entry_attempted` stayed `False` across all three portfolios. We're at 19:13 UTC = 15:13 ET; the EOD window closes at 15:59 ET. ~45 minutes left to recover the day's reversal trade.
