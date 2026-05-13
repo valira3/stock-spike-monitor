@@ -1258,6 +1258,25 @@ class TradeGeniusBase:
                 "[%s] [V10-FIRE] _record_position raised (non-fatal)",
                 self.NAME,
             )
+        # v9.1.7 -- mirror exit-side pattern: notify per-executor
+        # Telegram channel on entry. Prior to v9.1.7 only exits fired
+        # _send_own_telegram, so the operator's tg.val / tg.gene
+        # channels showed closes but never opens. Format mirrors
+        # _close_position_idempotent's "OK" string so they read as a
+        # matched pair on the operator's phone.
+        try:
+            notional = float(price or 0.0) * int(shares)
+            entry_msg = (
+                f"\u2705 {self.NAME}: {ticker} {side} OPEN {shares}sh "
+                f"@ ${float(price or 0.0):.2f} "
+                f"(${notional:,.0f} notional) order_id={oid}"
+            )
+            self._send_own_telegram(entry_msg)
+        except Exception:
+            logger.exception(
+                "[%s] [V10-FIRE] entry telegram raised (non-fatal)",
+                self.NAME,
+            )
         return True
 
     def _record_position(self, ticker: str, side: str, qty: int, entry_price: float) -> None:

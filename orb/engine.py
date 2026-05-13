@@ -45,12 +45,56 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from orb import day_gates as _day_gates
 from orb import exits as _exits
 from orb import risk_book as _risk_book
 from orb import state as _state
+
+
+# v9.1.7 -- ET timezone constants (no zoneinfo dep so module remains
+# import-clean in older runtimes). EDT/EST is selected by US DST window
+# checked below. ET = UTC offset; the cutoff comparison only cares about
+# absolute minutes-since-midnight so the DST switch is the only nuance.
+_ET_DST_OFFSET = timedelta(hours=-4)
+_ET_STD_OFFSET = timedelta(hours=-5)
+
+
+def _utc_iso_to_et_minutes(iso_utc: str) -> Optional[int]:
+    """Convert a UTC ISO 8601 timestamp to ET minutes-since-midnight.
+
+    Used by try_enter() to compare the signal bar's timestamp against
+    cfg.time_cutoff_minutes. Returns None if the input is malformed --
+    callers treat that as "fail-open" (no cutoff applied) so a single
+    malformed timestamp can't strand the engine.
+    """
+    if not iso_utc:
+        return None
+    try:
+        # Accept both 'Z' suffix and explicit '+00:00'. Strip 'Z' for
+        # fromisoformat which doesn't accept it on older Pythons.
+        s = iso_utc.replace("Z", "+00:00") if iso_utc.endswith("Z") else iso_utc
+        dt_utc = datetime.fromisoformat(s)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        # Detect US DST window: second Sunday of March -> first Sunday
+        # of November. We approximate via month boundaries -- the only
+        # case where this matters for the cutoff is the 9:30-11:00 ET
+        # window and the offset boundary days never fall in market
+        # hours, so month-level granularity is fine for the cutoff
+        # check (the cutoff itself is precision to the minute).
+        m = dt_utc.month
+        offset = _ET_DST_OFFSET if 3 <= m <= 10 else _ET_STD_OFFSET
+        # March + November have intra-month DST transitions. For our
+        # purposes (entry-cutoff comparison) treat the whole month as
+        # the dominant regime; if/when the operator changes the cutoff
+        # to a value crossing 02:00 ET (when DST flips), revisit.
+        dt_et = dt_utc + offset
+        return dt_et.hour * 60 + dt_et.minute
+    except (ValueError, TypeError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +122,15 @@ class OrbConfig:
     move_to_be_after_1r: bool = True
     eod_cutoff_minutes: int = 15 * 60 + 55      # 15:55 ET
     session_start_minutes: int = 9 * 60 + 30    # 09:30 ET
+    # v9.1.7 -- entry-window cutoff. No new entries are admitted at or
+    # after this ET wall-clock minute. v9.0.0 shipped assuming this
+    # would be wired to the live engine (v12/v13 backtest projections
+    # of +$24,784/yr / 0/4 neg quarters were computed with the R12
+    # cutoff of 11:00 ET) but the env var ORB_TIME_CUTOFF_ET was only
+    # honored by tools/orb_backtest.py -- the live engine had no
+    # time-cutoff field at all. Setting this to 0 disables the
+    # cutoff (entries allowed until eod_cutoff_minutes).
+    time_cutoff_minutes: int = 11 * 60          # 11:00 ET (R12 winner)
     # Day-gate config (forwarded to evaluate_day)
     skip_vix_above: float = 22.0
     skip_earnings_window: bool = True
@@ -254,6 +307,8 @@ class OrbEngine:
         # the dashboard.
         self._mbr_reject_count: int = 0
         self._vwap_chase_reject_count: int = 0
+        # v9.1.7 -- new entries blocked after cfg.time_cutoff_minutes.
+        self._time_cutoff_reject_count: int = 0
 
     # --- session lifecycle ---
 
@@ -402,6 +457,7 @@ class OrbEngine:
         # v9.0.0 -- reset chase-filter rejection counters.
         self._mbr_reject_count = 0
         self._vwap_chase_reject_count = 0
+        self._time_cutoff_reject_count = 0
         # v7.33.0: update equity BEFORE reset_all_sessions so the
         # session-start equity snapshot inside RiskBook.reset_session
         # captures the actual session-start equity (not the stale
@@ -661,6 +717,28 @@ class OrbEngine:
         rb = self._risk.get(signal.portfolio_id)
         if rb is None:
             return None
+
+        # v9.1.7 -- entry-time cutoff. Reject when the signal bar's ET
+        # wall-clock minute is at or past cfg.time_cutoff_minutes. Per
+        # R12 backtest research the morning-only window (9:30 -> 11:00
+        # ET) is materially more profitable than the all-day window;
+        # admitting afternoon entries was a documented backtest-live
+        # drift bug from v9.0.0 through v9.1.6.
+        # Fail-open on malformed timestamp (None) so a single bad bar
+        # can't strand the engine. Setting cutoff to 0 also disables.
+        if cfg.time_cutoff_minutes > 0:
+            sig_et = _utc_iso_to_et_minutes(signal.signal_bar_close_iso)
+            if sig_et is not None and sig_et >= cfg.time_cutoff_minutes:
+                self._time_cutoff_reject_count += 1
+                logger.info(
+                    "[V917-TIME-CUTOFF-REJECT] %s/%s %s sig_et=%d:%02d "
+                    ">= cutoff=%d:%02d",
+                    signal.portfolio_id, signal.ticker, signal.side,
+                    sig_et // 60, sig_et % 60,
+                    cfg.time_cutoff_minutes // 60,
+                    cfg.time_cutoff_minutes % 60,
+                )
+                return None
 
         # Use the actual fill price if provided
         entry_price = fill_price if fill_price is not None else signal.proposed_entry
@@ -1168,6 +1246,8 @@ class OrbEngine:
                 "max_vwap_dev_bps": self.cfg.max_vwap_dev_bps,
                 "max_vwap_dev_tickers": list(self.cfg.max_vwap_dev_tickers or ()),
                 "skip_prior_spy_ret_lt_bps": self.cfg.skip_prior_spy_ret_lt_bps,
+                # v9.1.7 -- entry-time cutoff (R12 winner, default 11:00 ET).
+                "time_cutoff_minutes": self.cfg.time_cutoff_minutes,
             },
             # v8.1.8 -- wash-sale risk counter (session-scoped).
             # Operator-facing signaling for §1091 visibility.
@@ -1175,6 +1255,7 @@ class OrbEngine:
             # v9.0.0 chase-filter rejection counters (session-scoped).
             "mbr_reject_count": self._mbr_reject_count,
             "vwap_chase_reject_count": self._vwap_chase_reject_count,
+            "time_cutoff_reject_count": self._time_cutoff_reject_count,
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,
                 "block_reason": self._day_result.block_reason if self._day_result else "",

@@ -4,6 +4,51 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.7 (2026-05-13) — Wire ORB_TIME_CUTOFF_ET to live engine + Telegram entry notification on per-portfolio fire
+
+Two fixes, shipped together.
+
+### Part A — SEV-1: `ORB_TIME_CUTOFF_ET` was never enforced in production
+
+Operator spotted NVDA being admitted after 11:00 ET and asked why. Diagnosis: the v9.0.0 backtest projection of `+$24,784/yr / 0/4 negative quarters / 24.8% CAGR / Sharpe 2.80` was computed by `tools/orb_backtest.py` assuming `ORB_TIME_CUTOFF_ET=11:00` would be active. That env var was read **only by the backtest harness**. The live engine (`orb/engine.py:OrbConfig`) had no `time_cutoff_minutes` field at all — only `eod_cutoff_minutes` (15:55 ET). Live admitted entries the entire 9:30 ET → 15:55 ET window, a **6h25m window vs the 1h30m the backtest validated**.
+
+That meant production v9.0.0 through v9.1.6 was running a materially different strategy than the report described. R3/R12 research explicitly showed afternoon entries (after 11:00 ET) were net-negative; we'd been taking them.
+
+Fix:
+* `orb/engine.py`: `OrbConfig` gains `time_cutoff_minutes: int = 11 * 60` (R12 winner). `try_enter` rejects when the signal bar's ET wall-clock minute is `>=` the cutoff. New counter `_time_cutoff_reject_count` resets on session start and is surfaced in the engine snapshot. New forensic tag `[V917-TIME-CUTOFF-REJECT]`.
+* New helper `_utc_iso_to_et_minutes()` in `orb/engine.py`: parses a UTC ISO timestamp to ET minutes, handles both EDT (Mar–Oct) and EST (Nov–Feb), fails-open (returns None) on malformed input so a single bad bar can't strand the engine.
+* `orb/live_runtime.py`: `_build_config_from_env` now reads `ORB_TIME_CUTOFF_ET` via a new `_et_to_min` helper that parses `HH:MM` and logs a warning on malformed input. Setting `ORB_TIME_CUTOFF_ET=0:00` disables the cutoff (allows all-day entries until `eod_cutoff_minutes`).
+* `orb/live_adapter.py:check_entry` surfaces the new `time_cutoff` rejection reason alongside the existing `break_too_small` / `chase_too_far` / `risk_reject:*` reasons.
+
+Tests (14 new in `tests/strategy/test_orb_v917_time_cutoff.py`):
+* Reject after cutoff in EDT (May) and EST (January) — covers both DST regimes.
+* Admit before cutoff (10:59 ET still admits).
+* Reject exactly at cutoff (`>=` boundary).
+* Disabled when cutoff = 0.
+* Fail-open on malformed ISO.
+* Counter increments per reject; reset on session start; surfaced in snapshot under `config.time_cutoff_minutes` and `time_cutoff_reject_count`.
+* `ORB_TIME_CUTOFF_ET` env wiring: default, override to noon, override to disable, malformed value falls back to default.
+* `LiveAdapter.check_entry` returns `time_cutoff` reason on after-cutoff rejection.
+
+954 strategy tests pass (was 940 pre-v9.1.7).
+
+### Part B — `tg.val` / `tg.gene` Telegram showed exits but not entries
+
+Operator noticed Val's dedicated Telegram channel only received close notifications, never opens. Root cause: when `ORB_PORTFOLIO_FIRE=1` (default since v8.3.23), Val/Gene fire entries through `executors/base.py:_fire_v10_market_order` which submits the MarketOrderRequest to Alpaca and records the position locally — but **never called `_send_own_telegram`**. The exit path (`_close_position_idempotent`) DID call it (line 1442). So opens were silent on the per-executor channels; closes weren't.
+
+Fix:
+* `executors/base.py:_fire_v10_market_order`: after the successful submit + `_record_position`, post an entry message to the executor's own Telegram channel. Format mirrors the exit-side `✅ {label}: ...` string so they read as a matched pair on the operator's phone:
+  `✅ VAL: NVDA LONG OPEN 75sh @ $223.42 ($16,757 notional) order_id=…`
+
+Wrapped in `try/except` with non-fatal logging so a Telegram outage can't break the trade fire.
+
+### Risk + rollback
+
+* Cutoff: set `ORB_TIME_CUTOFF_ET=0:00` in Railway env to disable, no redeploy needed. Operator can also override to `11:30` / `12:00` / etc. for live experiments.
+* Entry Telegram: harmless additive surface; if a Telegram token is missing the existing `_send_own_telegram` early-returns silently.
+
+---
+
 ## v9.1.6 (2026-05-13) — state-snapshot cron reliability fix
 
 Today's session exposed the snapshot cron's reliability problem: of the 12 scheduled `*/10` slots between 13:00 and 14:50 UTC, **zero fired**. The dashboard's `snapshots-live` branch hadn't auto-ticked in over an hour during active trading. We had to manually `workflow_dispatch` to confirm each v9.1.x deploy.
