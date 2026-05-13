@@ -29,7 +29,8 @@ class TestConfigDefaults:
         assert cfg.short_tickers == ("ORCL", "NFLX", "AAPL", "MSFT")
         assert cfg.top_n == 1
         assert cfg.notional_pct == 35.0
-        assert cfg.entry_et_minutes == 15 * 60 + 30
+        # v9.1.2: entry moved 15:30 -> 15:00 per the R18c sweep.
+        assert cfg.entry_et_minutes == 15 * 60
         assert cfg.exit_et_minutes == 15 * 60 + 59
         # v9.1.1: live broker firing is the default (was False in v9.1.0).
         assert cfg.fire_broker is True
@@ -80,7 +81,7 @@ class TestConfigFromEnv:
     def test_malformed_et_falls_back(self, monkeypatch):
         monkeypatch.setenv("ORB_EOD_ENTRY_ET", "garbage")
         cfg = EodReversalConfig.from_env()
-        assert cfg.entry_et_minutes == 15 * 60 + 30
+        assert cfg.entry_et_minutes == 15 * 60
 
 
 # ----- 2. Engine lifecycle --------------------------------------------
@@ -266,11 +267,12 @@ class TestAdmission:
 
 
 class TestTimeWindows:
-    def test_entry_window_default_15_30(self):
+    def test_entry_window_default_15_00(self):
+        # v9.1.2: entry default moved from 15:30 to 15:00.
         e = _eng()
-        assert e.is_entry_window(15 * 60 + 30) is True
-        assert e.is_entry_window(15 * 60 + 29) is False
-        assert e.is_entry_window(15 * 60 + 31) is False
+        assert e.is_entry_window(15 * 60) is True
+        assert e.is_entry_window(14 * 60 + 59) is False
+        assert e.is_entry_window(15 * 60 + 1) is False
 
     def test_exit_window_inclusive_after_15_59(self):
         e = _eng()
@@ -313,7 +315,8 @@ class TestSnapshot:
     def test_snapshot_config_format(self):
         e = _eng()
         snap = e.snapshot()
-        assert snap["config"]["entry_et"] == "15:30"
+        # v9.1.2: entry default moved from 15:30 to 15:00.
+        assert snap["config"]["entry_et"] == "15:00"
         assert snap["config"]["exit_et"] == "15:59"
         # v9.1.1: live broker firing is the default
         assert snap["config"]["fire_broker"] is True

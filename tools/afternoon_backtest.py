@@ -149,6 +149,8 @@ class AfternoonConfig:
             eod_top_n=_i("AFT_EOD_TOP_N", 2),
             eod_long_tickers=_t("AFT_EOD_LONG_TICKERS", ()),
             eod_short_tickers=_t("AFT_EOD_SHORT_TICKERS", ()),
+            entry_bucket=_i("AFT_ENTRY_BUCKET", 15 * 60 + 30),
+            exit_bucket=_i("AFT_EXIT_BUCKET", 15 * 60 + 59),
             entry_slippage_bps=_f("AFT_ENTRY_SLIP_BPS", 1.5),
             exit_slippage_bps=_f("AFT_EXIT_SLIP_BPS", 1.5),
             short_pen_bps=_f("AFT_SHORT_PEN_BPS", 0.5),
