@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.31 (2026-05-13) -- Fix tick fetch pagination + ATR anchor placement
+
+The first validation run from v8.3.30 surfaced two bugs:
+
+```
+{
+  "n_ticks": 10000,                         <- exactly Alpaca's per-page cap
+  "n_bars_5m_from_ticks": 1,                <- all 10K ticks fell into one bucket
+  "atr_5m_14_from_ticks": null,             <- not enough 5m bars for ATR(14)
+  "atr_5m_14_from_1m": null,                <- same, anchor too early
+  "verdict": "no_data"
+}
+```
+
+### Bug 1: tick fetch wasn't paginating
+
+`tools/fetch_alpaca_ticks.py:_fetch_trades_one_day` called `client.get_stock_trades(req)` with `limit=10000` and returned the first page only. On liquid mega-caps a single day has 100K+ trades; we were getting ~3 minutes of trading data per ticker.
+
+Fix: loop on `next_page_token` (checking both `resp.next_page_token` and `resp.raw["next_page_token"]` for cross-version compatibility) until the API returns no token.
+
+### Bug 2: ATR anchor was too early in the session
+
+`tools/compare_atr.py` anchored ATR(5m, 14) at **10:00 ET** (OR-end, where production fires its first entries). But the 1-min bar archive starts at **09:30 ET** — only ~6 5-min bars exist from the same day by 10:00 ET. ATR(14) needs ≥14 prior bars.
+
+Production handles this via prior-day 5m-bar accumulation (the `recent_5m_*` lists are maintained across day boundaries by `engine/scan.py`). We don't carry that across days in the validation tool.
+
+Fix: anchor at **12:30 ET** (bucket 750). By that time ~36 5m bars exist from the same session, plenty for ATR(14). Note this isn't the exact moment production fires entries, but the ATR-comparison question (bar-source vs tick-source) is invariant to the anchor as long as both methods see the same prior history.
+
+### What this unlocks
+
+After this PR merges, the operator re-dispatches `pull-tick-data` (full pagination this time → significantly longer runtime, maybe 30-45 min for 12 liquid tickers vs the prior 5 min). Then `tick-atr-validation` auto-fires (still via `workflow_run` chain from v8.3.30) and produces a real ATR comparison. The verdict drives the Phase 2 decision.
+
+### Tests unchanged
+
+The existing 28 tests in `test_compare_atr.py` + `test_fetch_alpaca_ticks.py` still pass — the bug fixes operate on parameters the tests don't exercise (pagination behavior of real Alpaca responses; anchor constants).
+
+---
+
 ## v8.3.30 (2026-05-13) -- Tick-vs-Bar ATR validation pipeline (auto-fires after tick pulls)
 
 v8.3.28-29 shipped the tick-data pull + fixed the R2 upload path. This release closes the loop: once tick data lands in R2, a SECOND workflow auto-fires that compares `ATR(5m, 14)` computed from raw ticks vs the same metric from 1-min OHLC bars, and commits the comparison to a `tick-validation-results` branch. Zero manual intervention after this PR merges — drop a tick-trigger JSON → data pull → validation → MCP-readable result.
