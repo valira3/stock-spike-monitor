@@ -172,6 +172,27 @@ class TestTimeCutoff:
         assert adm is not None
         assert eng._time_cutoff_reject_count == 0
 
+    def test_empty_iso_fails_open_documents_v918_hotfix(self):
+        # v9.1.8 HOTFIX regression guard. Pre-v9.1.8 scan.py defaulted
+        # signal_iso to "" when calling check_entry. _utc_iso_to_et_minutes
+        # returns None for "" -> cutoff fails-open -> v9.1.7 was a no-op
+        # in production. This test pins the fail-open contract for empty
+        # ISO. The scan.py call site is now wired with datetime.now(UTC).
+        # If you ever consider tightening this to "fail-closed on empty",
+        # also update scan.py:_orb_long_entry / _orb_short_entry and the
+        # live_adapter check_entry signal_iso default.
+        cfg = _config(time_cutoff_minutes=11 * 60)
+        eng = _eng_with_locked_or(cfg)
+        sig = eng.detect_breakout(
+            portfolio_id="main", ticker="AAPL",
+            five_min_close=100.6, next_open=100.7,
+            five_min_close_iso="",
+        )
+        assert sig is not None
+        adm = eng.try_enter(sig, equity=100_000.0)
+        assert adm is not None
+        assert eng._time_cutoff_reject_count == 0
+
 
 # ----- 2. Counter + snapshot ------------------------------------------
 
@@ -234,6 +255,32 @@ class TestEnvWiring:
 
 
 # ----- 4. live_adapter reject-reason disambiguation -------------------
+
+
+class TestScanPyWiring:
+    """v9.1.8 HOTFIX regression guard: scan.py must compute and pass
+    a real signal_iso to check_entry. Pre-v9.1.8 it defaulted to "",
+    which silently disabled the v9.1.7 cutoff in production.
+    """
+
+    def test_scan_long_entry_passes_signal_iso(self):
+        import inspect
+        from engine import scan
+        src = inspect.getsource(scan._orb_long_entry)
+        assert "signal_iso=_signal_iso" in src, (
+            "scan._orb_long_entry must pass signal_iso to check_entry "
+            "or the v9.1.7 time cutoff is dead. See v9.1.8 HOTFIX."
+        )
+        assert "datetime.now(timezone.utc).isoformat()" in src, (
+            "signal_iso must come from wall-clock UTC."
+        )
+
+    def test_scan_short_entry_passes_signal_iso(self):
+        import inspect
+        from engine import scan
+        src = inspect.getsource(scan._orb_short_entry)
+        assert "signal_iso=_signal_iso" in src
+        assert "datetime.now(timezone.utc).isoformat()" in src
 
 
 class TestLiveAdapterReason:

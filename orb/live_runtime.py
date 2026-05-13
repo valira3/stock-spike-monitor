@@ -65,6 +65,13 @@ _engine: Optional[OrbEngine] = None
 _adapters: Optional[LiveAdapterRegistry] = None
 _session_date: str = ""  # iso date when the current session was started; "" if not yet
 _bootstrapped: bool = False
+# v9.1.8 -- engine-state persistence throttle. persist_engine_state()
+# is called from the scan loop every cycle, but writing a ~kB JSON
+# file every ~5s is unnecessary. The throttle ensures we dump no
+# more than once per _persist_min_interval_s. Tuneable via
+# ORB_PERSIST_INTERVAL_S env at bootstrap time.
+_persist_last_iso: str = ""
+_persist_min_interval_s: float = 30.0
 # v9.1.0 -- EOD reversal addon engine. Runs alongside the morning ORB
 # engine; fires a single cross-sectional reversal trade at 15:30 ET
 # and flattens at 15:59 ET. Independent state.
@@ -515,6 +522,51 @@ def _try_rehydrate_engine_state(date_iso: str) -> dict:
             counters.get("pending_sizes_loaded", 0),
         )
     return counters
+
+
+def persist_engine_state() -> bool:
+    """v9.1.8 -- public hook to dump the live engine state to disk.
+
+    Called by the scan loop (engine/scan.py:scan_loop) once per cycle
+    so day_states + risk_books + or_windows + recent activity survive
+    a Railway redeploy. Pre-v9.1.8 the dump function existed
+    (orb.persistence.dump_state_to_disk) but had NO production caller,
+    so 'top ticker N/5' counters etc. reset on every restart.
+
+    Throttled by _persist_min_interval_s so a fast scan loop doesn't
+    write the same payload 60x/min. Fail-soft: never raises.
+    Returns True on a successful write, False otherwise (including
+    when throttled).
+    """
+    global _persist_last_iso
+    if _engine is None or not _session_date:
+        return False
+    now_iso = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+    if _persist_last_iso:
+        try:
+            elapsed = (
+                _datetime.datetime.fromisoformat(now_iso)
+                - _datetime.datetime.fromisoformat(_persist_last_iso)
+            ).total_seconds()
+            if elapsed < _persist_min_interval_s:
+                return False
+        except Exception:
+            pass
+    try:
+        from orb.persistence import dump_state_to_disk
+        from bot_version import BOT_VERSION
+    except Exception:
+        return False
+    ok = dump_state_to_disk(
+        _engine,
+        recent_activity=list(_recent_activity),
+        pending_v10_sizes=dict(_pending_v10_sizes),
+        date_iso=_session_date,
+        bot_version=BOT_VERSION,
+    )
+    if ok:
+        _persist_last_iso = now_iso
+    return ok
 
 
 def reset_session() -> None:
