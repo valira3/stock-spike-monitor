@@ -348,6 +348,14 @@ class ORBConfig:
                                           #     max_vwap_dev_bps ONLY to
                                           #     these tickers (per-list
                                           #     fence). Empty = global.
+    max_vwap_dev_bps_long: float = 0.0    # if >0, overrides
+                                          #     max_vwap_dev_bps for the
+                                          #     LONG side. Lets us run
+                                          #     asymmetric thresholds
+                                          #     (forensic showed long
+                                          #     chase-failure is sharper
+                                          #     than short).
+    max_vwap_dev_bps_short: float = 0.0   # if >0, overrides for SHORT.
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -436,6 +444,8 @@ class ORBConfig:
                 for t in _envs("ORB_MAX_VWAP_DEV_TICKERS", "").split(",")
                 if t.strip()
             ),
+            max_vwap_dev_bps_long=_envf("ORB_MAX_VWAP_DEV_BPS_LONG", 0.0),
+            max_vwap_dev_bps_short=_envf("ORB_MAX_VWAP_DEV_BPS_SHORT", 0.0),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -781,8 +791,15 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # direction. session VWAP computed through the signal bar's last
         # 1m (sig.bucket + 4 = signal bar's closing 1m bucket).
         # When max_vwap_dev_tickers is non-empty the filter only applies
-        # to those tickers (per-list fence).
-        if cfg.max_vwap_dev_bps > 0 and (
+        # to those tickers (per-list fence). Per-side overrides
+        # (max_vwap_dev_bps_long/short) take precedence over the symmetric
+        # threshold when set.
+        side_thr = (
+            cfg.max_vwap_dev_bps_long if side == "long"
+            else cfg.max_vwap_dev_bps_short
+        )
+        effective_thr = side_thr if side_thr > 0 else cfg.max_vwap_dev_bps
+        if effective_thr > 0 and (
             not cfg.max_vwap_dev_tickers
             or ticker in cfg.max_vwap_dev_tickers
         ):
@@ -792,7 +809,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     dev_bps = (entry_price - vwap_at) / vwap_at * 10000.0
                 else:
                     dev_bps = (vwap_at - entry_price) / vwap_at * 10000.0
-                if dev_bps > cfg.max_vwap_dev_bps:
+                if dev_bps > effective_thr:
                     continue
 
         # Stop: opposite side of OR with buffer adder. v10: optional ATR
