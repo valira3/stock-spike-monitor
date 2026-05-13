@@ -108,23 +108,42 @@ def _fetch_trades_one_day(client, ticker: str, day: date,
                           feed: str, premarket: bool):
     """Paginated fetch of trade ticks for one ticker-day.
 
-    Alpaca's get_stock_trades returns up to 10000 per page; we follow
-    the next_page_token until exhausted.
+    v8.3.31 -- fixed pagination. Alpaca returns up to 10000 trades
+    per page; on liquid mega-caps a single day can have 100K+ trades.
+    We iterate ``next_page_token`` until exhausted.
     """
     from alpaca.data.requests import StockTradesRequest
     start_utc, end_utc = _et_window(day, premarket)
-    req = StockTradesRequest(
-        symbol_or_symbols=ticker,
-        start=start_utc,
-        end=end_utc,
-        feed=feed,
-        limit=10000,
-    )
-    resp = client.get_stock_trades(req)
-    trades = []
-    if hasattr(resp, "data"):
-        trades = resp.data.get(ticker, []) or []
-    return trades
+    all_trades: list = []
+    page_token = None
+    while True:
+        kwargs = dict(
+            symbol_or_symbols=ticker,
+            start=start_utc,
+            end=end_utc,
+            feed=feed,
+            limit=10000,
+        )
+        if page_token is not None:
+            kwargs["page_token"] = page_token
+        req = StockTradesRequest(**kwargs)
+        resp = client.get_stock_trades(req)
+        # Page trades for this symbol
+        page_trades: list = []
+        if hasattr(resp, "data"):
+            page_trades = resp.data.get(ticker, []) or []
+        all_trades.extend(page_trades)
+        # Continue if there's a next page token. Different alpaca-py
+        # versions surface it differently; check common shapes.
+        next_token = None
+        if hasattr(resp, "next_page_token") and resp.next_page_token:
+            next_token = resp.next_page_token
+        elif hasattr(resp, "raw") and isinstance(resp.raw, dict):
+            next_token = resp.raw.get("next_page_token")
+        if not next_token:
+            break
+        page_token = next_token
+    return all_trades
 
 
 def _trade_to_dict(t, feed: str) -> dict | None:

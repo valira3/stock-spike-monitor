@@ -50,7 +50,17 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 ATR_PERIOD = 14
-OR_END_BUCKET = 10 * 60   # 10:00 ET in minutes-since-midnight
+# v8.3.31 -- anchor moved from 10:00 ET (OR end, when entries first
+# fire) to 12:30 ET (midday) because the 1-min bar archive starts at
+# 09:30 ET and ATR(14) needs >=14 prior 5-min bars. At 10:00 ET only
+# ~6 5m bars exist from today; production has 14+ via prior-day
+# accumulation, but we don't carry that across days in the archive.
+# Mid-day (12:30 ET = bucket 750) gives us ~36 5m bars from the same
+# session, plenty for ATR(14). The trade-off: this isn't the exact
+# moment production fires its first entry, but the ATR-comparison
+# question is bar-source-vs-tick-source, which is invariant to the
+# anchor as long as both methods have the same prior history.
+ANCHOR_BUCKET_ET = 12 * 60 + 30   # 12:30 ET
 LOOKBACK_5M_BARS = 20
 
 
@@ -210,10 +220,10 @@ def compare_one(ticker: str, date_iso: str,
     bars_tick_5m = aggregate_ticks_to_5m(ticks)
     bars_1m_5m = aggregate_1m_to_5m(bars_1m)
 
-    # Anchor at 10:00 ET = the OR-end bucket. ATR is computed from
-    # the 14 prior 5-min bars (09:25-09:30 windows count toward
-    # warmup, plus pre-market when available).
-    anchor = OR_END_BUCKET - 1   # last bucket BEFORE OR ends
+    # Anchor at 12:30 ET (mid-session). The 1-min bar archive starts
+    # at 09:30 ET, so by 12:30 ET there are ~36 5m bars from the
+    # session -- plenty for the 14-bar ATR window.
+    anchor = ANCHOR_BUCKET_ET
     atr_tick = compute_atr(bars_tick_5m, anchor, lookback=ATR_PERIOD)
     atr_1m = compute_atr(bars_1m_5m, anchor, lookback=ATR_PERIOD)
 
