@@ -333,6 +333,24 @@ class ORBConfig:
                                           #     direction. Approximates
                                           #     production firing on the
                                           #     "3rd consecutive bar".
+    # v20 chase-prevention filters (2026-05-13). Targets the per-ticker
+    # forensic finding that losers chase too far past session VWAP and
+    # fire against pre-market drift. Universal levers; default off.
+    max_vwap_dev_bps: float = 0.0         # >0: reject if entry price is
+                                          #     more than N bps past
+                                          #     session VWAP in the
+                                          #     breakout direction.
+                                          #     Signed: long entries
+                                          #     above VWAP and short
+                                          #     entries below VWAP count
+                                          #     as positive deviation.
+    premkt_align_bps: float = 0.0         # >0: require pre-market move
+                                          #     (09:00-09:29 ET) of at
+                                          #     least N bps in the
+                                          #     breakout direction.
+                                          #     Filters reversal-style
+                                          #     breakouts that fire
+                                          #     against premkt drift.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -407,6 +425,9 @@ class ORBConfig:
             # v19 signal-magnitude / cadence-latency filter
             min_break_bps=_envf("ORB_MIN_BREAK_BPS", 0.0),
             confirm_bars_n=_envi("ORB_CONFIRM_BARS_N", 0),
+            # v20 chase-prevention filters
+            max_vwap_dev_bps=_envf("ORB_MAX_VWAP_DEV_BPS", 0.0),
+            premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
 
@@ -619,6 +640,18 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
 
     blocked_sides = {s.upper() for s in cfg.blocklist.get(ticker, [])}
 
+    # v20 premkt-alignment precompute (once per ticker-day). Uses bars in
+    # the 09:00-09:29 ET window. premkt_move_bps = (premkt_close - premkt_open)
+    # in bps. Signed so that a long entry needs positive premkt move.
+    premkt_move_bps = 0.0
+    if cfg.premkt_align_bps > 0:
+        pre_start = _et_to_minutes("09:00")
+        pre_bars = [b for b in bars_1m
+                    if pre_start <= b.bucket < SESSION_START_ET]
+        if pre_bars and pre_bars[0].open > 0:
+            premkt_move_bps = ((pre_bars[-1].close - pre_bars[0].open)
+                               / pre_bars[0].open * 10000.0)
+
     pairs: list[dict] = []
     trades_today = 0
 
@@ -668,6 +701,17 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             else:
                 if not all(c.close < or_low for c in window):
                     continue
+
+        # v20 premkt alignment: require the 09:00-09:29 move to be in the
+        # breakout direction by at least premkt_align_bps. Filters
+        # counter-premkt reversal trades that bled in the per-ticker
+        # forensic (AAPL/short, MSFT/short, META/short, GOOG/short).
+        if cfg.premkt_align_bps > 0:
+            need = cfg.premkt_align_bps
+            if side == "long" and premkt_move_bps < need:
+                continue
+            if side == "short" and premkt_move_bps > -need:
+                continue
 
         # v9 lever: volume confirmation -- require signal candle's
         # volume >= mult * mean(prior candles_5m). Skip if too quiet.
@@ -722,6 +766,20 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         slip_bps = cfg.entry_slippage_bps + (cfg.short_pen_bps if side == "short" else 0)
         slip = raw_entry * slip_bps / 10000.0
         entry_price = raw_entry + slip if side == "long" else raw_entry - slip
+
+        # v20 chase-prevention: reject if entry has already moved more
+        # than max_vwap_dev_bps past session VWAP in the breakout
+        # direction. session VWAP computed through the signal bar's last
+        # 1m (sig.bucket + 4 = signal bar's closing 1m bucket).
+        if cfg.max_vwap_dev_bps > 0:
+            vwap_at = session_vwap_at(rth, sig.bucket + 4)
+            if vwap_at > 0:
+                if side == "long":
+                    dev_bps = (entry_price - vwap_at) / vwap_at * 10000.0
+                else:
+                    dev_bps = (vwap_at - entry_price) / vwap_at * 10000.0
+                if dev_bps > cfg.max_vwap_dev_bps:
+                    continue
 
         # Stop: opposite side of OR with buffer adder. v10: optional ATR
         # override -- entry +- atr_stop_mult * ATR for volatility-adaptive
