@@ -219,37 +219,42 @@ def _pull_railway_logs() -> dict[str, Any]:
 # ----- section: invariants --------------------------------------------
 
 
-def _run_invariants(dashboard_payload: dict[str, Any]) -> dict[str, Any]:
+def _run_invariants(dashboard_payload: dict[str, Any],
+                    base_url: str) -> dict[str, Any]:
     """Run the production invariant battery against the freshly-pulled
     dashboard data. Reuses INVARIANTS + InvariantContext from the
     pre-v9.1.18 dashboard_monitor_invariants module so behavior matches
     the retired dashboard-monitor workflow exactly.
+
+    The InvariantContext expects a `payloads` dict keyed by short names
+    (`state`, `exec_val`, `exec_gene`, `v10_proj`) -- same convention as
+    dashboard_monitor.py:main builds. Invariants return
+    {name, ok, summary, detail} dicts.
     """
     from tools.dashboard_monitor_invariants import INVARIANTS, InvariantContext
 
-    state = dashboard_payload.get("/api/state")
-    val = dashboard_payload.get("/api/executor/val")
-    gene = dashboard_payload.get("/api/executor/gene")
-    trade_log = dashboard_payload.get("/api/trade_log?limit=5000")
-    ctx = InvariantContext(
-        state=state if isinstance(state, dict) else None,
-        executors={
-            "val": val if isinstance(val, dict) else None,
-            "gene": gene if isinstance(gene, dict) else None,
-        },
-        trade_log=trade_log if isinstance(trade_log, dict) else None,
-    )
+    payloads: dict[str, Any] = {
+        "state": dashboard_payload.get("/api/state") or {"_fetch_error": "missing"},
+        "exec_val": dashboard_payload.get("/api/executor/val") or {"_fetch_error": "missing"},
+        "exec_gene": dashboard_payload.get("/api/executor/gene") or {"_fetch_error": "missing"},
+        # trade_log isn't read by any current invariant but we surface it for forensics.
+        "trade_log": dashboard_payload.get("/api/trade_log?limit=5000") or {},
+    }
+    ctx = InvariantContext(payloads=payloads, base_url=base_url)
     results: list[dict[str, Any]] = []
     failed = 0
     for fn in INVARIANTS:
         try:
             r = fn(ctx)
         except Exception as e:
-            r = {"name": getattr(fn, "__name__", str(fn)),
-                 "status": "error",
-                 "summary": f"raised: {type(e).__name__}: {str(e)[:200]}"}
+            r = {
+                "name": getattr(fn, "__name__", str(fn)),
+                "ok": False,
+                "summary": f"raised: {type(e).__name__}: {str(e)[:200]}",
+                "detail": "",
+            }
         results.append(r)
-        if r.get("status") == "fail":
+        if not r.get("ok", True):
             failed += 1
     _log(f"  invariants: {len(results) - failed}/{len(results)} pass, {failed} fail")
     return {"results": results, "failed_count": failed}
@@ -262,9 +267,12 @@ def _maybe_alert_telegram(invariants: dict[str, Any]) -> None:
     """Mirror dashboard-monitor's alert path: if any invariants failed,
     post a single Telegram message to TELEGRAM_TP_CHAT_ID. No-op if
     creds aren't set or MONITOR_DRY_RUN=1.
+
+    Invariant results carry `{name, ok, summary, detail}` -- ok=False
+    is the violation signal.
     """
     failed = [r for r in invariants.get("results", [])
-              if r.get("status") == "fail"]
+              if not r.get("ok", True)]
     if not failed:
         return
     token = (os.environ.get("TELEGRAM_TP_TOKEN") or "").strip()
@@ -329,7 +337,7 @@ def main() -> int:
     railway = _pull_railway_logs()
 
     _log("=== invariants ===")
-    invariants = _run_invariants(dashboard_endpoints)
+    invariants = _run_invariants(dashboard_endpoints, base)
 
     snapshot = {
         "schema_version": 1,
