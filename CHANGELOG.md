@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.25 (2026-05-13) — Allowlist *.railway.app for sandbox network
+
+Tooling-only. Adds `.claude/settings.json` with `sandbox.network.allowedDomains: ["*.railway.app"]` so Claude Code sessions running under sandboxed network mode can reach `tradegenius.up.railway.app` (live dashboard / `/api/state`, `/api/version`, `/api/executor/{val,gene}`) and `backboard.railway.com` (Railway GraphQL API). Previously the firewall blocked all `*.railway.app` hosts and live-state retrieval had to round-trip through the `snapshots-live` branch (see CLAUDE.md "Retrieving live state from sandbox" section).
+
+* **Scope**: team-wide committed setting (`.claude/settings.json`, not `settings.local.json`) so every contributor gets the same allowlist.
+* **Effect**: takes effect on next Claude Code session start. Sandbox/network settings are read at startup, not hot-reloaded.
+* **Preconditions**: only applies when `sandbox.enabled: true`. No-op on unsandboxed sessions. If managed settings set `sandbox.network.allowManagedDomainsOnly`, this entry is ignored.
+* **No code touched** — settings file only. The `snapshots-live` branch retrieval path remains available as a fallback.
+
+---
+
 ## v9.1.24 (2026-05-13) — External-platform backtest playbook (Perplexity Comet + web + curl)
 
 Doc-only. Operator asked for instructions on running backtests from another platform (Perplexity Comet specifically, but the doc generalizes to any browser-based agent or HTTP-capable surface).
