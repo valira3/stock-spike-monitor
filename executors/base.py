@@ -1005,6 +1005,14 @@ class TradeGeniusBase:
 
         Idempotent: if the FSM is not IN_POS and the synthetic
         ticket isn't present, no-op.
+
+        v9.1.26 -- ALSO drive `engine.on_exit` for the REAL engine
+        ticket (uuid-style from `try_admit`) when present. Pre-v9.1.26
+        the bus-exit path released only the synthetic `recover-*`
+        ticket, so real `try_admit` tickets leaked. This silently
+        capped Val/Gene admits because their FSM stayed IN_POS until
+        the next phantom-sweep cycle. Today's audit on 2026-05-13
+        showed Val admit_count=3 vs Main 17 on the same bar data.
         """
         try:
             import orb.live_runtime as _orb_runtime
@@ -1015,16 +1023,59 @@ class TradeGeniusBase:
             pid = self.NAME.lower()
             if pid not in engine.portfolio_ids:
                 return
-            # --- 1. FSM: flip in_position off, transition to CLOSED ---
-            # Only if the row was actually marked in_position by an
-            # earlier mirror; don't touch blocked rows or rows that
-            # never opened.
+            # --- 1. v9.1.26: release the REAL engine ticket via on_exit ---
+            # This must run BEFORE the FSM transition below; on_exit
+            # owns the FSM transition + trades_today increment + real
+            # ticket release. If a real ticket isn't tracked (only a
+            # synthetic recover-* ticket exists, e.g. on a phantom-
+            # sweep clear before any try_enter), fall through to the
+            # legacy FSM path.
+            try:
+                from orb.exits import ExitDecision
+                adapter = _orb_runtime._adapters.get(pid) if _orb_runtime._adapters else None
+                if adapter is not None:
+                    real_ticket_id = adapter._ticker_to_ticket.get(ticker)
+                    if real_ticket_id and not real_ticket_id.startswith("recover-"):
+                        pos = adapter._open_positions.get(real_ticket_id)
+                        if pos is not None:
+                            # Synthesize ExitDecision: price defaults
+                            # to entry_price (zero P&L on engine side);
+                            # the real exit P&L was already booked by
+                            # Alpaca + executor.todays_trades. Engine
+                            # accounting just needs the ticket released
+                            # and FSM cleaned up.
+                            decision = ExitDecision(
+                                reason="bus_exit_mirror",
+                                price=float(pos.entry_price),
+                            )
+                            engine.on_exit(pos, decision)
+                            # Match adapter.check_exit cleanup at
+                            # live_adapter.py:272-277.
+                            adapter._open_positions.pop(real_ticket_id, None)
+                            if adapter._ticker_to_ticket.get(ticker) == real_ticket_id:
+                                del adapter._ticker_to_ticket[ticker]
+                            logger.info(
+                                "[V9126-ENGINE-EXIT] %s/%s real ticket "
+                                "released via on_exit (bus mirror path)",
+                                self.NAME, ticker,
+                            )
+                            # engine.on_exit already transitioned FSM
+                            # and bumped trades_today. Skip the legacy
+                            # FSM block below.
+                            return
+            except Exception:
+                logger.exception(
+                    "[V9126-ENGINE-EXIT] %s real-ticket release raised "
+                    "(falling through to legacy unmirror) ticker=%s",
+                    self.NAME, ticker,
+                )
+            # --- 2. Legacy FSM transition (no real ticket, e.g. phantom) ---
             ds = engine._state.get_day_state(pid, ticker)
             if ds.in_position:
                 ds.in_position = False
                 if ds.phase == _orb_state.PHASE_IN_POS:
                     ds.transition(_orb_state.PHASE_CLOSED)
-            # --- 2. RiskBook: release the synthetic ticket if present ---
+            # --- 3. RiskBook: release the synthetic ticket if present ---
             rb = engine._risk.get(pid)
             if rb is None:
                 return

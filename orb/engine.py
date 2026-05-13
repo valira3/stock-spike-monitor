@@ -1072,8 +1072,44 @@ class OrbEngine:
         instance -- it's the trade_genius module itself).
 
         Returns True if any state was actually cleared.
+
+        v9.1.26 -- ALSO route through on_exit for the REAL engine
+        ticket (uuid-style from try_admit) when an adapter exposes it.
+        Pre-v9.1.26 this helper only handled the synthetic recover-*
+        ticket + FSM transition, skipping trades_today and leaving
+        uuid tickets to leak. Symmetric with the executor-side fix
+        in executors/base.py:_unmirror_position_from_engine.
         """
         cleared = False
+        # v9.1.26 -- prefer on_exit path if a real engine ticket exists.
+        try:
+            import orb.live_runtime as _orb_runtime
+            from orb.exits import ExitDecision
+            adapter = (
+                _orb_runtime._adapters.get(portfolio_id)
+                if _orb_runtime._adapters else None
+            )
+            if adapter is not None:
+                real_ticket_id = adapter._ticker_to_ticket.get(ticker)
+                if real_ticket_id and not real_ticket_id.startswith("recover-"):
+                    pos = adapter._open_positions.get(real_ticket_id)
+                    if pos is not None:
+                        decision = ExitDecision(
+                            reason="phantom_sweep",
+                            price=float(pos.entry_price),
+                        )
+                        self.on_exit(pos, decision)
+                        adapter._open_positions.pop(real_ticket_id, None)
+                        if adapter._ticker_to_ticket.get(ticker) == real_ticket_id:
+                            del adapter._ticker_to_ticket[ticker]
+                        # on_exit handled FSM + trades_today + ticket
+                        # release. Still attempt synthetic ticket cleanup
+                        # below for paranoia (in case both were tracked).
+                        cleared = True
+        except Exception:
+            # Fall through to legacy path. Don't raise into the sweep.
+            pass
+        # Legacy FSM transition (when no real adapter ticket).
         ds = self._state.get_day_state(portfolio_id, ticker)
         if ds.in_position:
             ds.in_position = False
