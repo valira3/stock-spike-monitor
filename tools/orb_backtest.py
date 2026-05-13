@@ -390,6 +390,16 @@ class ORBConfig:
                                             # only days IN [lt, gt] band.
                                             # When only _lt set, skip
                                             # everything below _lt.
+    regime_low_skip_tickers: tuple = ()     # if non-empty, on regime-low
+                                            # days (per skip_prior_spy_ret_*
+                                            # thresholds) skip ONLY these
+                                            # tickers instead of the whole
+                                            # day. Empty = whole-day skip.
+                                            # R12c+ feature: keep
+                                            # profitable non-T5 trading on
+                                            # bad-regime days while
+                                            # blocking the specific
+                                            # bleeders (TSLA, NFLX, ORCL).
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -505,6 +515,11 @@ class ORBConfig:
             ),
             skip_prior_spy_ret_lt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_LT_BPS", 0.0),
             skip_prior_spy_ret_gt_bps=_envf("ORB_SKIP_PRIOR_SPY_RET_GT_BPS", 0.0),
+            regime_low_skip_tickers=tuple(
+                t.strip().upper()
+                for t in _envs("ORB_REGIME_LOW_SKIP_TICKERS", "").split(",")
+                if t.strip()
+            ),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -1409,6 +1424,9 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         # short-circuit days entirely. Two modes:
         #   - only _lt_bps set:   skip if prior_spy_ret < _lt_bps
         #   - both set:           skip if prior_spy_ret in [_lt_bps, _gt_bps]
+        # v22b: when regime_low_skip_tickers is set, skip only those
+        # tickers on regime-low days instead of the whole day.
+        is_regime_low_today = False
         if cfg.skip_prior_spy_ret_lt_bps != 0.0 or cfg.skip_prior_spy_ret_gt_bps != 0.0:
             prior = prior_spy_ret_bps.get(date)
             if prior is not None:
@@ -1416,11 +1434,12 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 gt = cfg.skip_prior_spy_ret_gt_bps
                 if gt != 0.0 and lt != 0.0:
                     if lt <= prior <= gt:
-                        spy_regime_days_skipped += 1
-                        continue
+                        is_regime_low_today = True
                 elif lt != 0.0 and prior < lt:
-                    spy_regime_days_skipped += 1
-                    continue
+                    is_regime_low_today = True
+        if is_regime_low_today and not cfg.regime_low_skip_tickers:
+            spy_regime_days_skipped += 1
+            continue
 
         # v11 compounding: at the start of each day, snapshot the running
         # balance into `current_account` so position sizes (and risk caps)
@@ -1463,6 +1482,11 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
             for tk in tickers:
+                # v22b: regime-low conditional per-ticker skip.
+                if (is_regime_low_today
+                        and cfg.regime_low_skip_tickers
+                        and tk in cfg.regime_low_skip_tickers):
+                    continue
                 try:
                     bars = load_day_bars(corpus_dir, date, tk)
                     if not bars:
