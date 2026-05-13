@@ -408,6 +408,14 @@ class ORBConfig:
     regime_low_max_trades_per_day: int = 0      # cap entries on bad days
     regime_low_max_vwap_dev_bps: float = 0.0    # tighter chase fence on bad days
     regime_low_min_break_bps: float = 0.0       # require bigger break on bad days
+    # R14 afternoon fade mode (2026-05-13). The 11:00 cutoff exists
+    # because afternoon breakouts have negative expected value (R14
+    # forensic: 11:30-15:30 buckets all net negative, -$17K over the
+    # 12 buckets). Hypothesis: in the chop/mean-revert afternoon,
+    # FADE the breakout instead of trading it -- close > OR_high means
+    # SHORT (price extended too far), close < OR_low means LONG.
+    afternoon_fade_enabled: bool = False
+    afternoon_fade_end_et: int = 15 * 60 + 30  # default 15:30 (avoid EOD)
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -533,6 +541,8 @@ class ORBConfig:
             regime_low_max_trades_per_day=_envi("ORB_REGIME_LOW_MAX_TRADES_PER_DAY", 0),
             regime_low_max_vwap_dev_bps=_envf("ORB_REGIME_LOW_MAX_VWAP_DEV_BPS", 0.0),
             regime_low_min_break_bps=_envf("ORB_REGIME_LOW_MIN_BREAK_BPS", 0.0),
+            afternoon_fade_enabled=_envs("ORB_AFTERNOON_FADE_ENABLED", "0") == "1",
+            afternoon_fade_end_et=_et_to_minutes(_envs("ORB_AFTERNOON_FADE_END_ET", "15:30")),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -778,35 +788,48 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         if trades_today >= cfg.max_trades_per_day:
             break
         sig = candles_5m[i]
+        # R14 afternoon-fade: when past the cutoff and fade mode is on,
+        # keep scanning until afternoon_fade_end_et and FLIP the signal
+        # side. The breakout direction has negative EV in chop hours;
+        # the inverse (mean-revert) may extract some P&L.
+        is_fade_mode = False
         if sig.bucket >= cfg.time_cutoff_et:
-            break
+            if (cfg.afternoon_fade_enabled
+                    and sig.bucket < cfg.afternoon_fade_end_et):
+                is_fade_mode = True
+            else:
+                break
         # Signal: close above OR_high (long) or below OR_low (short).
-        side = None
+        # Compute break magnitude in the ORIGINAL direction before any
+        # fade-mode flip; the break_bps reflects how strongly price has
+        # extended past OR (this is independent of whether we're trading
+        # with or against the move).
+        original_side = None
+        break_bps_orig = 0.0
         if sig.close > or_high:
-            side = "long"
+            original_side = "long"
+            if or_high > 0:
+                break_bps_orig = (sig.close - or_high) / or_high * 10000.0
         elif sig.close < or_low:
-            side = "short"
-        if side is None:
+            original_side = "short"
+            if or_low > 0:
+                break_bps_orig = (or_low - sig.close) / or_low * 10000.0
+        if original_side is None:
             continue
+        side = original_side
+        if is_fade_mode:
+            side = "short" if side == "long" else "long"
         if side.upper() in blocked_sides:
             continue
 
-        # v19: minimum break magnitude in bps. Suppresses marginal first-bar
-        # breaks that production tends to miss due to scan-loop cadence
-        # latency (forensic: AMZN -4.5bps was skipped, -23bps fired).
-        # v21 fence: when min_break_bps_tickers non-empty, only apply to
-        # those tickers.
+        # v19: minimum break magnitude in bps. Uses break_bps_orig so the
+        # filter is symmetric for breakout and fade entries: both need
+        # the underlying move to be strong enough.
         if cfg.min_break_bps > 0 and (
             not cfg.min_break_bps_tickers
             or ticker in cfg.min_break_bps_tickers
         ):
-            if side == "long" and or_high > 0:
-                break_bps = (sig.close - or_high) / or_high * 10000.0
-            elif side == "short" and or_low > 0:
-                break_bps = (or_low - sig.close) / or_low * 10000.0
-            else:
-                break_bps = 0.0
-            if break_bps < cfg.min_break_bps:
+            if break_bps_orig < cfg.min_break_bps:
                 continue
 
         # v19: N-bar confirmation. Require the prior N 5m closes including
