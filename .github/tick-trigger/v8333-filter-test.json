@@ -1,0 +1,7 @@
+{
+  "start_date": "2026-05-12",
+  "end_date": "2026-05-12",
+  "tickers": "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ",
+  "premarket": "false",
+  "_note": "v8.3.33 re-fire to test tape-eligibility filter on tick aggregation. The v8.3.32 chain already pulled real tick data (700K-2.3M trades/ticker). This trigger re-pulls the same date (idempotent on R2 -- same key path overwrites), then tick-atr-validation auto-fires with the new filter (drops odd-lot I, late-print Z, form-T T, etc.). Expected: SPY 9.06x ratio drops to ~1.1-1.5x; median lands near 1.0."
+}
