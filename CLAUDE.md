@@ -44,6 +44,8 @@ Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE /
 
 - **Major-version releases (added v9.0.0).** When the operator requests a major release (vN.0.0 from vN-1.x.x) or "build and deploy in a loop", follow the 7-step checklist in `.claude/skills/major-build/SKILL.md`: (1) UI parity across Main+Val+Gene, (2) all levers ON by default, (3) code-quality + algorithm correctness audit, (4) smoke tests work locally + post-deploy, (5) data fully filled with fail-open + auto-rebuild on missing, (6) state persists across restart/redeploy (or naturally re-derivable), (7) iterate on PR until CI + post-deploy-smoke both green. The skill codifies the v9.0.0 template; subsequent major releases extend it as new patterns emerge.
 
+- **Strategy-rule development (added v9.0.0).** Before adding a new admission filter, exit rule, or day-gate, read `.claude/rules/strategy-rule-development.md`. The 12 rules in that doc are hard-won lessons from the v8.3.x → v9.0.0 arc: reproduce-baseline-first, defaults-ON-must-not-break-legacy-tests, quarterly CV mandatory, plateau-test before declaring a winner, fence universal filters when bleed is concentrated, `break` vs `continue` in multi-window scan loops, bootstrap zero-days inclusion, regime-conditional activation must enumerate every override, falsified-theory documentation, v8.3.34 R6 defenses conflict with v9 chase-prevention, afternoon strategies don't work for this universe. Pair with `.claude/skills/backtest-research-methodology/SKILL.md` for the 7-phase research loop.
+
 ## GHA-driven backtest via lever-sweep (added v8.3.26)
 
 When the operator asks for a multi-day or full-year backtest of a new
