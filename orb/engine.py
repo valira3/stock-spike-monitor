@@ -1248,6 +1248,13 @@ class OrbEngine:
                 "skip_prior_spy_ret_lt_bps": self.cfg.skip_prior_spy_ret_lt_bps,
                 # v9.1.7 -- entry-time cutoff (R12 winner, default 11:00 ET).
                 "time_cutoff_minutes": self.cfg.time_cutoff_minutes,
+                # v9.1.12 -- OR-width admissibility bounds. Dashboard
+                # reads these to colour the "Range" column on the v10
+                # Matrix; pre-v9.1.12 the column rendered as "-" for
+                # every row because the config block didn't surface
+                # range_min_pct / range_max_pct.
+                "range_min_pct": self.cfg.range_min_pct,
+                "range_max_pct": self.cfg.range_max_pct,
             },
             # v8.1.8 -- wash-sale risk counter (session-scoped).
             # Operator-facing signaling for §1091 visibility.
