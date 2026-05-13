@@ -50,6 +50,59 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 ATR_PERIOD = 14
+
+# v8.3.33 -- trade-condition filter so tick aggregation matches the
+# SIP-consolidated 1-min bar high/low semantics.
+#
+# The first real validation (v8.3.32 chain) found tick ATR was 6-9x
+# the 1m bar ATR on liquid mega-caps (SPY 9.06x, AAPL 6.00x, MSFT
+# 4.66x). The cause is that raw trade ticks include conditions that
+# the consolidated tape EXCLUDES from last-sale / high / low
+# calculation (dark-pool prints, odd-lot trades, late prints, etc.).
+# Filtering to tape-eligible conditions only should bring the tick
+# aggregation in line with the 1m bar source.
+#
+# Sources: NYSE Trade Conditions, Nasdaq Plan SIP rules, CTA Plan.
+# This is the canonical "exclude from consolidated last sale" list:
+NON_LAST_SALE_ELIGIBLE_CONDITIONS = frozenset([
+    "B",  # Average Price Trade
+    "C",  # Cash Sale
+    "G",  # Bunched Sold
+    "H",  # Price Variation Trade
+    "I",  # Odd Lot Trade -- the big one for ATR inflation on liquid names
+    "K",  # Rule 127 Trade (NYSE)
+    "L",  # Sold Last
+    "M",  # Market Center Close Price
+    "N",  # Next Day Trade
+    "P",  # Prior Reference Price
+    "Q",  # Market Center Official Open
+    "R",  # Seller
+    "T",  # Form T (extended-hours trade)
+    "U",  # Extended Hours Sold
+    "V",  # Contingent Trade
+    "W",  # Average Price Trade
+    "Z",  # Sold (Out of Sequence) -- late print
+    "4",  # Derivatively Priced
+    "5",  # Re-Opening Prints (sometimes)
+    "6",  # Market Center Closing Price
+    "7",  # Qualified Contingent Trade
+    "9",  # Cross/Cross Trade
+])
+
+
+def is_tape_eligible(conditions) -> bool:
+    """Return True if this trade contributes to the consolidated
+    tape's last-sale / high / low.
+
+    Empty conditions = regular trade = include.
+    Any blacklisted condition present = exclude.
+    """
+    if not conditions:
+        return True
+    for c in conditions:
+        if c in NON_LAST_SALE_ELIGIBLE_CONDITIONS:
+            return False
+    return True
 # v8.3.31 -- anchor moved from 10:00 ET (OR end, when entries first
 # fire) to 12:30 ET (midday) because the 1-min bar archive starts at
 # 09:30 ET and ATR(14) needs >=14 prior 5-min bars. At 10:00 ET only
@@ -99,15 +152,25 @@ def _load_ticks_from_r2(ticker: str, date_iso: str) -> list[dict]:
 
 
 def aggregate_ticks_to_5m(ticks: list[dict]) -> list[tuple[int, float, float, float]]:
-    """Bucket ticks into 5-min OHLC. Returns [(et_bucket_end, hi, lo, close), ...]
-    ordered chronologically. Each 5-min bar's `et_bucket_end` is the last minute
-    of that 5-min window (matches `bucket % 5 == 4` semantics elsewhere).
+    """Bucket tape-eligible ticks into 5-min OHLC. Returns
+    [(et_bucket_end, hi, lo, close), ...] ordered chronologically.
+    Each 5-min bar's `et_bucket_end` is the last minute of that 5-min
+    window (matches `bucket % 5 == 4` semantics elsewhere).
+
+    v8.3.33 -- skips trades whose ``conditions`` field flags them as
+    non-last-sale-eligible (dark-pool, odd-lot, late prints, etc.).
+    Without this filter the tick-derived high/low is dominated by
+    outlier prints that the SIP-consolidated 1-min bars correctly
+    exclude.
     """
     per_5m: dict[int, dict] = {}
     for t in ticks:
         ts_str = t.get("ts")
         price = t.get("price")
         if not ts_str or price is None:
+            continue
+        # v8.3.33 -- filter to tape-eligible conditions only
+        if not is_tape_eligible(t.get("conditions")):
             continue
         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         minute = _et_bucket(ts)
@@ -220,6 +283,13 @@ def compare_one(ticker: str, date_iso: str,
     bars_tick_5m = aggregate_ticks_to_5m(ticks)
     bars_1m_5m = aggregate_1m_to_5m(bars_1m)
 
+    # v8.3.33 -- count how many ticks survived the tape-eligibility filter
+    n_ticks_eligible = sum(
+        1 for t in ticks
+        if t.get("price") is not None and t.get("ts")
+        and is_tape_eligible(t.get("conditions"))
+    )
+
     # Anchor at 12:30 ET (mid-session). The 1-min bar archive starts
     # at 09:30 ET, so by 12:30 ET there are ~36 5m bars from the
     # session -- plenty for the 14-bar ATR window.
@@ -237,6 +307,8 @@ def compare_one(ticker: str, date_iso: str,
         "ticker": ticker,
         "date": date_iso,
         "n_ticks": len(ticks),
+        "n_ticks_eligible": n_ticks_eligible,
+        "n_ticks_filtered_out": len(ticks) - n_ticks_eligible,
         "n_bars_1m": len(bars_1m),
         "n_bars_5m_from_ticks": len(bars_tick_5m),
         "n_bars_5m_from_1m": len(bars_1m_5m),

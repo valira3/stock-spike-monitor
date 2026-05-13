@@ -4,6 +4,58 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.33 (2026-05-13) -- Tape-eligibility filter on tick aggregation
+
+v8.3.32's first real validation produced this surprising result:
+
+| Ticker | n_ticks | atr_1m | atr_tick | ratio |
+|---|---:|---:|---:|---:|
+| SPY | 745K | 0.72 | 6.56 | **9.06x** |
+| AAPL | 700K | 0.51 | 3.04 | **6.00x** |
+| MSFT | 619K | 0.73 | 3.39 | **4.66x** |
+| NVDA | 2.3M | 1.00 | 1.22 | 1.22x |
+| TSLA | 1.4M | 1.72 | 2.02 | 1.17x |
+
+Tick ATR was **wider** than 1-min bar ATR on liquid mega-caps, with the worst inflation on the most-arbitraged names (SPY, AAPL). Verdict: `tick_atr_wider (unexpected)`.
+
+### Root cause
+
+Raw trade ticks include conditions that the consolidated SIP/CTA tape EXCLUDES from last-sale / high / low computation:
+- **Odd lot trades (`I`)** — sub-100-share prints, especially common on high-priced names like SPY/AAPL, often at outlier prices
+- **Late prints (`Z` Sold Out of Sequence)** — corrections, reported minutes after actual execution
+- **Form T (`T`) and Extended Hours (`U`)** — pre/post-market trades that shouldn't appear in RTH OHLC
+- **Cross trades (`9`)**, **Contingent (`V`)**, **Price Variation (`H`)**, **Average Price (`B`/`W`)** — non-standard executions
+- **Cash Sale (`C`)**, **Next Day (`N`)**, **Seller (`R`)**, **Prior Reference Price (`P`)** — settlement-deferred or off-market
+
+The SIP/CTA-consolidated 1-min bars filter these. Our raw tick aggregation didn't, so a single odd-lot at $1000 on SPY would set the 5-min "high" to $1000.
+
+### Fix
+
+`tools/compare_atr.py`:
+- New constant `NON_LAST_SALE_ELIGIBLE_CONDITIONS` listing 20 standard SIP/CTA exclusions
+- New helper `is_tape_eligible(conditions)` -- True if conditions is empty OR contains zero blacklisted codes
+- `aggregate_ticks_to_5m` now calls `is_tape_eligible` per trade; non-eligible trades are dropped before the high/low aggregation
+- `compare_one` output gains `n_ticks_eligible` and `n_ticks_filtered_out` diagnostic fields
+
+Tests: `test_compare_atr.py` gains 10 new tests in `TestTapeEligibilityFilter` and `TestAggregationWithFilter` covering empty/regular/excluded conditions plus a synthetic outlier-filtering case.
+
+### Expected behavior
+
+After dispatching `tick-atr-validation` again against the same R2 tick data:
+- SPY 9.06x ratio should drop substantially (likely to ~1.1-1.5x)
+- AAPL/MSFT/META same direction
+- NVDA/TSLA/AMZN/NFLX (already 1.1-1.3x) should stay close to where they were
+- Median ratio across 12 tickers likely lands in **0.95-1.05** (no meaningful difference) OR **0.80-0.95** (modestly tighter)
+
+If the median lands at `no_meaningful_difference`, the ATR-fidelity hypothesis is falsified definitively → ship `combo_150_500` from v8.3.30 without tick integration.
+If it lands at `modestly_tighter` or `meaningfully_tighter`, Phase 2 (integrate ticks into `orb_replay_day`) becomes worth shipping.
+
+### How to re-test (data already in R2)
+
+Actions tab → "Tick-vs-Bar ATR validation" → Run workflow → date=2026-05-12 → Run. ~3 min later the summary is on `tick-validation-results`.
+
+---
+
 ## v8.3.32 (2026-05-13) -- Tick fetch pagination: actual fix (remove `limit` so alpaca-py auto-paginates)
 
 v8.3.31 attempted to fix pagination by wrapping `client.get_stock_trades` in a manual `next_page_token` loop. The first validation run AFTER that fix still showed `n_ticks=10000` per ticker — the wrapper was a no-op.
