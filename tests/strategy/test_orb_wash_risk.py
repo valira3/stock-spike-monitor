@@ -31,6 +31,12 @@ def _eng() -> OrbEngine:
         max_concurrent_risk_dollars=2000.0,
         max_concurrent_notional_mult=2.0,
         ticker_side_blocklist={},
+        # v9.0.0 -- this test verifies wash-risk semantics, not chase
+        # filters; disable the v9 filters so try_enter reaches the
+        # wash-risk bookkeeping unconditionally.
+        min_break_bps=0.0,
+        max_vwap_dev_bps=0.0,
+        skip_prior_spy_ret_lt_bps=0.0,
     )
     eng = OrbEngine(cfg, portfolio_ids=["main"])
     eng.start_new_session(

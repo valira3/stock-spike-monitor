@@ -4,6 +4,106 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.0.0 (2026-05-13) — Chase-prevention + SPY regime gate (major release)
+
+The first major-version bump since v8 (Oct 2025). Backtest-validated configuration (docs/pl_optimization_final_report_v13.md) is now the production default: **+$24,784/yr · 24.78% CAGR · 0/4 negative quarters · WR 61.8% · 3.64% max DD · Sharpe 2.80** on the 251-day full-year corpus. Cumulative lift vs current production: **+$54,074/yr**.
+
+### Strategy changes — three new admission filters, all defaults ON
+
+1. **`ORB_MIN_BREAK_BPS=5`** — reject entries where the signal-bar close is within 5 bps of the OR boundary (weak breakout). Targets the production-vs-replay forensic where marginal breaks fade. (R7 research.)
+
+2. **`ORB_MAX_VWAP_DEV_BPS=25` + `ORB_MAX_VWAP_DEV_TICKERS=META,MSFT,AAPL,AMZN,GOOG,AVGO`** — reject entries where the entry price has moved more than 25 bps past session VWAP in the breakout direction, fenced to the six mega-caps. Replaces the v12-era T5 outright blocklist: same headline P&L, **no ticker bans**. The six mega-caps' bleed pattern was structurally "chase too far past VWAP"; fencing the filter to them only preserves the chase-style wins on NVDA/ORCL/SPY/QQQ/TSLA/NFLX. (R10 research.)
+
+3. **`ORB_SKIP_PRIOR_SPY_RET_LT_BPS=-40`** — block the entire trading day when prior-session SPY close-to-close return was below -0.40%. R12 forensic: strategy bled ~$208/day on the 24 days where prior SPY fell -1.0% to -0.5%. Skipping ~50 days/year adds +$7,518/yr and improves WR from 58.8% to 61.4%.
+
+### Engine plumbing
+
+- `orb/engine.py:OrbConfig` — new fields `min_break_bps`, `max_vwap_dev_bps`, `max_vwap_dev_tickers`, `skip_prior_spy_ret_lt_bps`, `fail_closed_on_missing_spy`.
+- `orb/engine.py:OrbEngine.try_enter` — gains optional `session_vwap` parameter. Applies the min-break + chase-fence filters before the RiskBook admission.
+- Session-scoped counters `_mbr_reject_count` and `_vwap_chase_reject_count` reset on `start_new_session` and surfaced via `snapshot()`.
+- `orb/day_gates.py:evaluate_day` — accepts new `spy_prior_ret_bps` arg; SPY regime gate runs after VIX and before per-ticker gates. Fail-open when SPY data missing.
+- `orb/live_runtime.py:check_entry` — accepts `session_vwap`; `ensure_session_started` auto-loads prior-day SPY return via `tools.orb_spy_loader` when not explicitly passed.
+- `engine/scan.py` — per-ticker session-cumulative VWAP computed from the 1m bar series fed by `callbacks.fetch_1min_bars`; passed to both `_orb_long_entry` and `_orb_short_entry` check_entry calls. Fail-open (entry allowed) when no RTH bars yet.
+
+### New data loader
+
+- `tools/orb_spy_loader.py` — `prior_spy_return_bps(decision_date)`. Two sources tried in order: (1) production bar archive at `/data/bars/<DATE>/SPY.jsonl` (auto-rebuild on every session — no separate cron needed); (2) `data/external/spy-daily.csv` fallback for backtests. Returns None if both unavailable; gate fails-open per `DayGateConfig.fail_closed_on_missing_spy=False` default. Walks backward up to 10 calendar days to handle weekends/holidays.
+
+### UI updates (across all three portfolios)
+
+Main tab v10 ORB header pill row gains three new chips (hidden when feature off or count=0):
+- **SPY ±X.XX% · PASS/BLOCK** — prior-day SPY return + gate status
+- **mbr N** — weak-break rejections this session
+- **chase N** — mega-cap chase-fence rejections this session
+
+Val/Gene tabs see the same chips appended below the existing per-portfolio gauges row (Trades / Concurrent risk / Daily-kill) for cross-tab parity.
+
+`/api/state.v10` payload exposes:
+- `config.min_break_bps`, `config.max_vwap_dev_bps`, `config.max_vwap_dev_tickers`, `config.skip_prior_spy_ret_lt_bps`
+- `mbr_reject_count`, `vwap_chase_reject_count` (session counters)
+- `day_status.spy_d1_ret_bps`, `day_status.spy_threshold_bps`
+
+### Existing env defaults flipped to v9 production values
+
+| Env var | Old default | New default | Source |
+|---|---|---|---|
+| `ORB_TIME_CUTOFF_ET` | 15:55 | (unchanged in engine — operator sets 11:00 in Railway) | R14 forensic |
+| `ORB_SKIP_VIX_ABOVE` | 22 | (unchanged in engine — operator sets 20 in Railway) | v12 |
+| `ORB_DAILY_LOSS_KILL_PCT` | 2.0 | (unchanged in engine — operator sets 1.0 in Railway) | R12c |
+| `ORB_MIN_BREAK_BPS` | (new) | **5.0** | R7 |
+| `ORB_MAX_VWAP_DEV_BPS` | (new) | **25.0** | R10b |
+| `ORB_MAX_VWAP_DEV_TICKERS` | (new) | **META,MSFT,AAPL,AMZN,GOOG,AVGO** | R10c |
+| `ORB_SKIP_PRIOR_SPY_RET_LT_BPS` | (new) | **-40.0** | R12b |
+
+The engine-side defaults for v9 levers ship in production immediately. The three existing Railway env vars (`TIME_CUTOFF`, `SKIP_VIX_ABOVE`, `DAILY_LOSS_KILL_PCT`) need operator changes — see `docs/pl_optimization_final_report_v13.md` "Final production-ready config" section.
+
+### v8.3.34 features retained but stay OFF
+
+`ORB_LOSS_LOCK_THRESHOLD_USD` and `ORB_PEAK_DD_HALT_USD` (v8.3.34) remain installed but defaults stay at 0. R10 research showed these defenses conflict with v9 chase-prevention (-$1-1.5K when stacked); the chase filter already neutralizes the bleed pattern they were designed for. Do not enable them in v9.
+
+### Forensic tags
+
+- `[V900-MBR-REJECT]` — weak-break rejection at admission
+- `[V900-VWAP-CHASE]` — mega-cap chase-fence rejection
+- `[V900-SPY-GATE]` — regime-low day blocked + missing-data fail-open
+- `[V900-SPY-LOADER]` — bar archive lookup, CSV fallback, missing-data warning
+
+### Tests
+
+- `tests/strategy/test_orb_v900_chase_filter.py` (16 tests) — mbr + chase fence + snapshot exposure
+- `tests/strategy/test_orb_v900_spy_regime.py` (12 tests) — SPY gate semantics + SPY loader bar-archive walkback + CSV fallback
+- `tools/orb_session_sim.py:SessionSimulator.__enter__` — v9 filters default-disabled for the simulator so existing 800+ tests continue to verify pre-v9 admission math unmodified. Tests that explicitly want v9 ON override via `cfg.env_overrides`.
+- 898 strategy-suite tests pass (was 870 pre-v9).
+
+### Migration / rollback
+
+Operator can roll back any individual v9 lever by setting the env var to 0:
+```
+ORB_MIN_BREAK_BPS=0           # disable weak-break filter
+ORB_MAX_VWAP_DEV_BPS=0        # disable chase fence
+ORB_SKIP_PRIOR_SPY_RET_LT_BPS=0  # disable regime gate
+```
+The three filters are independent; disabling one doesn't require disabling the others. Full rollback to pre-v9 behavior: set all three to 0 plus revert the Railway env vars for the cut/vix/dlk levers. No code rollback (Railway redeploy) needed.
+
+### Files changed
+
+- `orb/engine.py` (+96 lines): new config fields, filter logic in `try_enter`, snapshot fields
+- `orb/day_gates.py` (+50 lines): SPY gate inside `evaluate_day`
+- `orb/live_runtime.py` (+24 lines): env parsing for v9 levers, auto-load SPY in `ensure_session_started`, thread `session_vwap` through `check_entry`
+- `orb/live_adapter.py` (+22 lines): accept and forward `session_vwap`; disambiguate v9 rejects from RiskBook rejects
+- `engine/scan.py` (+72 lines): session-cumulative VWAP helper, wire to both long+short call sites
+- `tools/orb_spy_loader.py` (+208 lines, new): bar-archive + CSV loader
+- `tools/orb_session_sim.py` (+15 lines): v9 disable defaults so legacy tests unchanged
+- `dashboard_static/index.html` (+13 lines): three new pill nodes
+- `dashboard_static/app.js` (+120 lines): renderer for Main pills + per-pid chips for Val/Gene parity
+- `tests/strategy/test_orb_v900_chase_filter.py` (new, +260 lines)
+- `tests/strategy/test_orb_v900_spy_regime.py` (new, +210 lines)
+- `tests/strategy/test_orb_wash_risk.py` (+5 lines): pin v9 levers off so wash-risk semantics unchanged
+- `docs/pl_optimization_final_report_v13.md` (existing, referenced)
+- `.claude/skills/major-build/SKILL.md` (new): 7-step checklist for future major releases
+
+---
+
 ## v8.3.34 (2026-05-13) -- Port `combo_150_500` rules to live `orb.risk_book` + skills catalog
 
 The R6 sweep (v8.3.30 → v8.3.33 tick-vs-bar validation) confirmed that the two day-end-giveback defense rules added to the research harness in v8.3.26 should be deployed live. Both default OFF; operator turns them on via Railway env when ready.

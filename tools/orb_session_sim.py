@@ -132,8 +132,17 @@ class SimulatorConfig:
     ticker_prev_close: dict[str, float] = field(default_factory=dict)
     equity_per_portfolio: dict[str, float] = field(
         default_factory=lambda: {"main": 100_000.0})
-    # OrbConfig overrides via env (set on enter, cleared on exit)
-    env_overrides: dict[str, str] = field(default_factory=dict)
+    # OrbConfig overrides via env (set on enter, cleared on exit).
+    # v9.0.0 -- by default the simulator disables the new chase-prevention
+    # and regime-skip filters because the existing test suite is calibrated
+    # for the unfiltered admission math. Tests that DO want v9 filters
+    # active override via SimulatorConfig(env_overrides={...}).
+    env_overrides: dict[str, str] = field(default_factory=lambda: {
+        "ORB_MIN_BREAK_BPS": "0",
+        "ORB_MAX_VWAP_DEV_BPS": "0",
+        "ORB_MAX_VWAP_DEV_TICKERS": "",
+        "ORB_SKIP_PRIOR_SPY_RET_LT_BPS": "0",
+    })
 
 
 class SessionSimulator:
@@ -171,6 +180,18 @@ class SessionSimulator:
 
     def __enter__(self):
         import os
+        # v9.0.0 -- ensure the new chase-prevention and regime-skip
+        # filters are off by default for the simulator. The existing
+        # test suite is calibrated for unfiltered admission math; tests
+        # that DO want v9 filters active provide an explicit override
+        # via cfg.env_overrides. setdefault() respects caller intent.
+        for k, v in {
+            "ORB_MIN_BREAK_BPS": "0",
+            "ORB_MAX_VWAP_DEV_BPS": "0",
+            "ORB_MAX_VWAP_DEV_TICKERS": "",
+            "ORB_SKIP_PRIOR_SPY_RET_LT_BPS": "0",
+        }.items():
+            self.cfg.env_overrides.setdefault(k, v)
         # Apply env overrides
         for k, v in self.cfg.env_overrides.items():
             self._prev_env[k] = os.environ.get(k)

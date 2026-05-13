@@ -176,6 +176,18 @@
            the banner stays uncluttered on clean-trading days. -->
       <span id="v10-wash-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
       <span id="v10-wash-pill" class="v10-pill" title="Wash-sale risk entries this session (v8.1.8+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(245,158,11,0.18);color:#f59e0b">Wash 0</span>
+      <!-- v9.0.0 -- chase-prevention + regime-skip indicators.
+           Populated by renderV10DayStatus from
+           /api/state.v10.day_status.{spy_d1_ret_bps, spy_threshold_bps}
+           and /api/state.v10.{mbr_reject_count, vwap_chase_reject_count}.
+           Hidden when off (threshold=0) or count=0 so the banner stays
+           clean. -->
+      <span id="v10-spy-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-spy-pill" class="v10-pill" title="Prior-day SPY return regime gate (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600">SPY —</span>
+      <span id="v10-mbr-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-mbr-pill" class="v10-pill" title="Weak-break entries rejected this session (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(59,130,246,0.18);color:#60a5fa">mbr 0</span>
+      <span id="v10-chase-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-chase-pill" class="v10-pill" title="Mega-cap chase-fence rejections this session (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(168,85,247,0.18);color:#c4b5fd">chase 0</span>
     </section>
 
     <!-- v7.58.0 -- renamed from "v10 Projection" and collapsed to one

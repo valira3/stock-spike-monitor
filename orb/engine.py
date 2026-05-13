@@ -99,11 +99,31 @@ class OrbConfig:
     # the operator flips ORB_PARTIAL_PROFIT_AT_1R=1 in Railway env.
     partial_profit_at_1r: bool = False
     # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
-    # Both default 0.0 = off. Operator turns on via Railway:
-    #   ORB_LOSS_LOCK_THRESHOLD_USD=150  (Rule #1)
-    #   ORB_PEAK_DD_HALT_USD=500         (Rule #2)
+    # Both default 0.0 = off (R10/R12 research showed they hurt
+    # when stacked with chase-prevention, so stay off in v9).
     loss_lock_threshold_usd: float = 0.0
     peak_dd_halt_usd: float = 0.0
+    # v9.0.0 -- chase-prevention filters (R10 + R10b research).
+    # Defaults ON: per the v13 report, this filter set + the env
+    # vars (cut=11, VIX<=20, daily_loss_kill=1.0) produce a
+    # backtested +$24,784/yr / 0/4 neg quarters / 24.8% CAGR /
+    # Sharpe 2.80.
+    min_break_bps: float = 5.0
+    max_vwap_dev_bps: float = 25.0
+    # Mega-cap chase-fence: filter only applies to these tickers.
+    # Empty tuple = filter applies globally (do not change in v9).
+    max_vwap_dev_tickers: tuple = (
+        "META", "MSFT", "AAPL", "AMZN", "GOOG", "AVGO",
+    )
+    # v9.0.0 -- prior-day SPY regime gate (R12 research). Default
+    # threshold -40 bps; skip the whole day if prior session SPY
+    # close-to-close return was below this. Set to 0.0 to disable.
+    skip_prior_spy_ret_lt_bps: float = -40.0
+    fail_closed_on_missing_spy: bool = False  # fail-open: trade if
+                                              # SPY daily feed
+                                              # missing (data feed
+                                              # outage shouldn't
+                                              # strand the system)
 
     @property
     def or_end_minutes(self) -> int:
@@ -229,6 +249,11 @@ class OrbEngine:
         self._recent_losses: dict = _dd(list)
         # Session-scoped counter -- resets to 0 each new session.
         self.wash_risk_count: int = 0
+        # v9.0.0 -- session-scoped rejection counters for chase filters.
+        # Reset in start_new_session() and exposed via snapshot() for
+        # the dashboard.
+        self._mbr_reject_count: int = 0
+        self._vwap_chase_reject_count: int = 0
 
     # --- session lifecycle ---
 
@@ -360,6 +385,7 @@ class OrbEngine:
                           ticker_open_today: dict[str, Optional[float]],
                           ticker_prev_close: dict[str, Optional[float]],
                           equity_per_portfolio: dict[str, float],
+                          spy_prior_ret_bps: Optional[float] = None,
                           ) -> _day_gates.DayGateResult:
         """Reset all state for a new trading day.
 
@@ -373,6 +399,9 @@ class OrbEngine:
         # a losing close on Monday + new entry Tuesday still hits
         # the 30-day window and should fire the flag.
         self.wash_risk_count = 0
+        # v9.0.0 -- reset chase-filter rejection counters.
+        self._mbr_reject_count = 0
+        self._vwap_chase_reject_count = 0
         # v7.33.0: update equity BEFORE reset_all_sessions so the
         # session-start equity snapshot inside RiskBook.reset_session
         # captures the actual session-start equity (not the stale
@@ -393,6 +422,8 @@ class OrbEngine:
             earnings_days_after=self.cfg.earnings_days_after,
             skip_gap_above_pct=self.cfg.skip_gap_above_pct,
             ticker_side_blocklist=self.cfg.ticker_side_blocklist,
+            skip_prior_spy_ret_lt_bps=self.cfg.skip_prior_spy_ret_lt_bps,
+            fail_closed_on_missing_spy=self.cfg.fail_closed_on_missing_spy,
         )
         self._day_result = _day_gates.evaluate_day(
             gate_cfg,
@@ -402,6 +433,7 @@ class OrbEngine:
             ticker_open_today=ticker_open_today,
             ticker_prev_close=ticker_prev_close,
             is_earnings_window_fn=self._earnings_fn,
+            spy_prior_ret_bps=spy_prior_ret_bps,
         )
         self._day_result_date = date_iso
 
@@ -594,12 +626,21 @@ class OrbEngine:
 
     def try_enter(self, signal: BreakoutSignal,
                   *, equity: float, fill_price: Optional[float] = None,
+                  session_vwap: Optional[float] = None,
                   ) -> Optional[Admission]:
         """Attempt admission for a breakout signal. Returns Admission on
         success, None if RiskBook rejected.
 
         If `fill_price` is provided, it OVERRIDES `signal.proposed_entry`
         (use this when the broker reported a different fill).
+
+        v9.0.0 -- two new pre-admission filters:
+          * min_break_bps: reject if the signal-bar close is too close
+            to OR boundary (weak breakout)
+          * max_vwap_dev_bps: reject if entry price has chased too far
+            past session VWAP in the breakout direction (apply only to
+            fenced tickers if max_vwap_dev_tickers is non-empty)
+        Both are short-circuited when their threshold is 0.
 
         Position is constructed but NOT recorded on any external book;
         caller must call on_exit() with the same position when it closes
@@ -626,6 +667,49 @@ class OrbEngine:
         risk_per_share = abs(entry_price - signal.proposed_stop)
         if risk_per_share <= 0.001:
             return None
+
+        # v9.0.0 -- min_break_bps: reject weak breakouts. Measured on
+        # the signal-bar close vs the OR boundary in the breakout's
+        # natural direction; independent of any fenced-ticker logic.
+        if cfg.min_break_bps > 0:
+            if signal.side == "long" and signal.or_high > 0:
+                break_bps = (signal.signal_bar_close - signal.or_high) / signal.or_high * 10000.0
+            elif signal.side == "short" and signal.or_low > 0:
+                break_bps = (signal.or_low - signal.signal_bar_close) / signal.or_low * 10000.0
+            else:
+                break_bps = 0.0
+            if break_bps < cfg.min_break_bps:
+                self._mbr_reject_count += 1
+                logger.info(
+                    "[V900-MBR-REJECT] %s/%s %s break=%.1fbps < threshold=%.1fbps",
+                    signal.portfolio_id, signal.ticker, signal.side,
+                    break_bps, cfg.min_break_bps,
+                )
+                return None
+
+        # v9.0.0 -- max_vwap_dev_bps: chase-prevention. Reject when
+        # entry has extended too far past session VWAP in the breakout
+        # direction. Applies globally if max_vwap_dev_tickers is empty;
+        # otherwise only to the fenced ticker set (R10 winning config:
+        # fence applied to META/MSFT/AAPL/AMZN/GOOG/AVGO only).
+        # When session_vwap is missing or zero we fail OPEN (allow the
+        # entry); the caller's scan loop is responsible for supplying it.
+        if cfg.max_vwap_dev_bps > 0 and session_vwap is not None and session_vwap > 0:
+            fence = cfg.max_vwap_dev_tickers or ()
+            if not fence or signal.ticker in fence:
+                if signal.side == "long":
+                    dev_bps = (entry_price - session_vwap) / session_vwap * 10000.0
+                else:
+                    dev_bps = (session_vwap - entry_price) / session_vwap * 10000.0
+                if dev_bps > cfg.max_vwap_dev_bps:
+                    self._vwap_chase_reject_count += 1
+                    logger.info(
+                        "[V900-VWAP-CHASE] %s/%s %s entry=%.2f vwap=%.2f dev=%.1fbps "
+                        "> threshold=%.1fbps",
+                        signal.portfolio_id, signal.ticker, signal.side,
+                        entry_price, session_vwap, dev_bps, cfg.max_vwap_dev_bps,
+                    )
+                    return None
         risk_dollars_target = equity * cfg.risk_per_trade_pct / 100.0
         shares = max(1, int(risk_dollars_target / risk_per_share))
         # Notional cap (per-trade)
@@ -1079,15 +1163,26 @@ class OrbEngine:
                 "atr_stop_mult": self.cfg.atr_stop_mult,
                 "atr_lookback_5m": self.cfg.atr_lookback_5m,
                 "partial_profit_at_1r": self.cfg.partial_profit_at_1r,
+                # v9.0.0 chase-prevention + regime-skip config
+                "min_break_bps": self.cfg.min_break_bps,
+                "max_vwap_dev_bps": self.cfg.max_vwap_dev_bps,
+                "max_vwap_dev_tickers": list(self.cfg.max_vwap_dev_tickers or ()),
+                "skip_prior_spy_ret_lt_bps": self.cfg.skip_prior_spy_ret_lt_bps,
             },
             # v8.1.8 -- wash-sale risk counter (session-scoped).
             # Operator-facing signaling for §1091 visibility.
             "wash_risk_count": self.wash_risk_count,
+            # v9.0.0 chase-filter rejection counters (session-scoped).
+            "mbr_reject_count": self._mbr_reject_count,
+            "vwap_chase_reject_count": self._vwap_chase_reject_count,
             "day_status": {
                 "block_day": self._day_result.block_day if self._day_result else False,
                 "block_reason": self._day_result.block_reason if self._day_result else "",
                 "vix_d1_close": self._day_result.vix_d1_close if self._day_result else None,
                 "vix_threshold": self._day_result.vix_threshold if self._day_result else 0.0,
+                # v9.0.0 SPY regime fields surfaced for the dashboard.
+                "spy_d1_ret_bps": self._day_result.spy_d1_ret_bps if self._day_result else None,
+                "spy_threshold_bps": self._day_result.spy_threshold_bps if self._day_result else 0.0,
                 "session_date": self._day_result_date,
             },
             "or_windows": self._state.snapshot_or_windows(),
