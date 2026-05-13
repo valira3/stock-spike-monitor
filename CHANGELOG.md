@@ -4,6 +4,35 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.10 (2026-05-13) — Restore chart zoom-out + switch candles to line graph
+
+### Part A — Regression fix: chart zoom-out was disabled by v9.1.9
+
+v9.1.9 narrowed `_CHART_FULL_X_MIN/MAX` to `570/960` (RTH only) for the default view. But the wheel/drag clamps in `_wireIntradayChartInteraction` use the *same* `_CHART_FULL_*` constants — so panning and zooming were also clamped to RTH. The user couldn't reach pre/post-market candles at all, even though the v9.1.9 changelog claimed manual zoom-out was preserved. That was a documentation lie.
+
+Fix: split the constants in two —
+* `_CHART_RTH_X_MIN / MAX = 570 / 960` — the default view on first paint (operator preference: RTH only).
+* `_CHART_FULL_X_MIN / MAX = 240 / 1200` — the max extent the user can pan / zoom to (04:00 – 20:00 ET).
+
+`_chartGetState` uses the RTH constants for the initial xMin/xMax; persisted per-ticker view state (`_chartViewByTkr`) overrides. The drawing-time clamps in `_drawIntradayChart` use the FULL envelope so persisted pan-out positions render correctly. The wheel/drag clamps already referenced `_CHART_FULL_*` so they automatically pick up the wider envelope.
+
+### Part B — Line graph instead of OHLC candles
+
+Operator request: clearer intraday trajectory than dense candles. Replaced the per-bar candle loop with a single stroked path through closes. Color is driven by the cumulative direction of the visible window (first-close vs last-close) — green up / red down. Bar-level OHLC data is still cached on the canvas (`canvas._lastPayload`) so a future hover-tooltip refactor can surface per-bar detail without re-fetching.
+
+The volume sub-pane below the price plot retains its bar-width histogram (the `bw` local was moved into that block, was previously shared with the now-removed candle loop).
+
+### Cross-tab + cross-feature reach
+
+`_drawIntradayChart` is the single source of chart rendering for every chart in the dashboard:
+- v10 Proximity expansion (Main + Val + Gene)
+- v9.1.9 inline position-row chart (Main + Val + Gene)
+- Any future caller of `window.__tgRenderTickerChart`
+
+So this one change propagates everywhere. 957 strategy tests pass (no Python touched).
+
+---
+
 ## v9.1.9 (2026-05-13) — Expandable position rows with inline charts + RTH-only chart window
 
 Two operator-requested feature additions, both cross-tab.

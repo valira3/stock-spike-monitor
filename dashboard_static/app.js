@@ -1545,17 +1545,19 @@
   // window per ticker in a plain dict that survives canvas destruction,
   // and seed each freshly-mounted canvas from it. Hover/wired stay
   // per-canvas (transient UI state).
-  // v9.1.9 -- chart session window narrowed to RTH only: 09:30 ET
-  // (et_min=570) to 16:00 ET (et_min=960). Operator preference -- the
-  // strategy is RTH-only and the pre-market / post-market candles
-  // were just visual noise. The 480/1200 (8am ET / 8pm ET) envelope
-  // used pre-v9.1.9 is preserved as a wider zoom-out ceiling so the
-  // user CAN still pan to those bars on demand, but the default view
-  // and the page-load default state are both RTH-only now. Downstream
-  // pan/zoom clamps in _drawIntradayChart use the wider 240/1200
-  // ceiling so manual zoom-out remains available.
-  const _CHART_FULL_X_MIN = 570;
-  const _CHART_FULL_X_MAX = 960;
+  // v9.1.10 -- separate "RTH default" from "full max-extent" so the
+  // default view stays RTH-only (operator request) while pan/zoom
+  // out to pre/post-market is still possible. The v9.1.9 single
+  // _CHART_FULL_X_MIN/MAX = 570/960 was a regression because the
+  // wheel/drag clamps used the same constants -- so zoom-out was
+  // effectively disabled.
+  //
+  //   _CHART_RTH_X_MIN/MAX   -> default view on first load
+  //   _CHART_FULL_X_MIN/MAX  -> max extent the user can pan/zoom to
+  const _CHART_RTH_X_MIN = 570;   // 09:30 ET
+  const _CHART_RTH_X_MAX = 960;   // 16:00 ET
+  const _CHART_FULL_X_MIN = 240;  // 04:00 ET
+  const _CHART_FULL_X_MAX = 1200; // 20:00 ET
   const _chartViewState = new WeakMap();
   const _chartViewByTkr = {};
   function _chartTkrKey(canvas) {
@@ -1567,8 +1569,10 @@
       const tkr = _chartTkrKey(canvas);
       const persisted = tkr && _chartViewByTkr[tkr];
       st = {
-        xMin: persisted ? persisted.xMin : _CHART_FULL_X_MIN,
-        xMax: persisted ? persisted.xMax : _CHART_FULL_X_MAX,
+        // v9.1.10 -- default to RTH view; persisted state (set by the
+        // user's pan/zoom) overrides.
+        xMin: persisted ? persisted.xMin : _CHART_RTH_X_MIN,
+        xMax: persisted ? persisted.xMax : _CHART_RTH_X_MAX,
         hoverEtMin: null,
         hoverPx: null,
         hoverPy: null,
@@ -1646,15 +1650,15 @@
     // (v5.23.3 used 480/1080 = 8am ET / 18:00 ET = late-premarket only.)
     // v6.0.0 — X window is per-canvas state so wheel/drag pan-zoom works.
     const _vs = _chartGetState(canvas);
-    // v9.1.9 -- default to RTH-only (570/960) when no persisted view
-    // exists for this canvas. The 240/1200 envelope is preserved as
-    // the manual-zoom-out ceiling so pan/wheel can still expose the
-    // pre/post-market bars on demand.
-    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : _CHART_FULL_X_MIN;
-    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : _CHART_FULL_X_MAX;
+    // v9.1.10 -- default to RTH-only (570/960) on first paint; the
+    // _vs persisted-by-user values can extend out to the full
+    // 240/1200 envelope via wheel/drag. The downstream clamps below
+    // floor at 240/1200 so the user can't pan past the full window.
+    let X_MIN = (typeof _vs.xMin === "number") ? _vs.xMin : _CHART_RTH_X_MIN;
+    let X_MAX = (typeof _vs.xMax === "number") ? _vs.xMax : _CHART_RTH_X_MAX;
     if (X_MAX - X_MIN < 30) X_MAX = X_MIN + 30; // floor at 30 min
-    if (X_MIN < 240) X_MIN = 240;
-    if (X_MAX > 1200) X_MAX = 1200;
+    if (X_MIN < _CHART_FULL_X_MIN) X_MIN = _CHART_FULL_X_MIN;
+    if (X_MAX > _CHART_FULL_X_MAX) X_MAX = _CHART_FULL_X_MAX;
     _vs.xMin = X_MIN; _vs.xMax = X_MAX;
     // Y axis: tight envelope around prices + OR levels (visible window).
     // v6.0.0 — Y is now scoped to bars within [X_MIN, X_MAX] so zoomed
@@ -1777,27 +1781,45 @@
     // intraday endpoint still returns the fields; the chart just
     // doesn't render them anymore.
 
-    // Candles (thin OHLC sticks). Body width scales with bar count.
-    const bw = Math.max(1, Math.min(6, plotW / Math.max(bars.length, 1) - 1));
+    // v9.1.10 -- line chart through closes (operator request: clearer
+    // intraday trajectory than the OHLC candles, which were dense and
+    // visually noisy especially zoomed-out). The line is colored by
+    // the cumulative direction (first-close vs last-close) so an
+    // operator gets a quick green/red read without parsing candles.
+    // Bar-level OHLC is still in the payload (via _intradayCache) for
+    // any future hover-tooltip detail.
+    var _firstVisibleClose = null, _lastVisibleClose = null;
     for (const b of bars) {
       if (typeof b.et_min !== "number") continue;
-      const x = xOf(b.et_min);
-      const yH = yOf(b.h);
-      const yL = yOf(b.l);
-      const yO = yOf(b.o);
-      const yC = yOf(b.c);
-      const up = b.c >= b.o;
-      ctx.strokeStyle = up ? "#3ec28f" : "#e26a6a";
-      ctx.fillStyle = up ? "#3ec28f" : "#e26a6a";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, yH); ctx.lineTo(x, yL);
-      ctx.stroke();
-      ctx.fillRect(x - bw / 2, Math.min(yO, yC), bw, Math.max(1, Math.abs(yC - yO)));
+      if (b.et_min < X_MIN || b.et_min > X_MAX) continue;
+      if (typeof b.c !== "number") continue;
+      if (_firstVisibleClose === null) _firstVisibleClose = b.c;
+      _lastVisibleClose = b.c;
     }
+    const _lineUp = (_lastVisibleClose != null && _firstVisibleClose != null)
+                      ? (_lastVisibleClose >= _firstVisibleClose) : true;
+    ctx.strokeStyle = _lineUp ? "#3ec28f" : "#e26a6a";
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    let _pathStarted = false;
+    for (const b of bars) {
+      if (typeof b.et_min !== "number") continue;
+      if (typeof b.c !== "number") continue;
+      const x = xOf(b.et_min);
+      const yC = yOf(b.c);
+      if (!_pathStarted) { ctx.moveTo(x, yC); _pathStarted = true; }
+      else { ctx.lineTo(x, yC); }
+    }
+    if (_pathStarted) ctx.stroke();
 
     // v5.31.0 \u2014 Volume sub-pane histogram (slate bars, scaled to max v).
+    // v9.1.10 -- bar width is now computed locally (was shared with the
+    // candle loop pre-line-chart switch).
     {
+      const bw = Math.max(1, Math.min(6, plotW / Math.max(bars.length, 1) - 1));
       let vMax = 0;
       for (const b of bars) {
         if (typeof b.v === "number" && b.v > vMax) vMax = b.v;
