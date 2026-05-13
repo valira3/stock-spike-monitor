@@ -526,6 +526,15 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     # The engine TRACKS the positions for the dashboard regardless;
     # actual broker fire is gated by ORB_EOD_FIRE_BROKER (default OFF
     # for v9.1.0 paper-fire-observation per the v8.3.23 pattern).
+    #
+    # v9.1.20 HOTFIX -- cur_min was never defined in scan_loop's
+    # scope. The pre-v9.1.20 call below raised NameError every cycle;
+    # the wrapper try/except caught + logged but the engine never
+    # admitted EOD signals because the function bailed before any
+    # work. Today's operator caught this when the EOD window opened
+    # at 15:00 ET and entry_attempted stayed False across all books.
+    # Computed identically to scan.py:581 + 705's other cur_min sites.
+    cur_min = now_et.hour * 60 + now_et.minute
     try:
         _eod_reversal_pass(callbacks, cur_min)
     except Exception:
