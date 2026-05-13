@@ -4,6 +4,55 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.17 (2026-05-13) — Alpaca account snapshot relay (broker view alongside dashboard view)
+
+Extends the GHA → branch → MCP relay pattern that powers `state-snapshot.yml` to a second source: per-portfolio Alpaca paper account state.
+
+### What lands
+
+* **`tools/alpaca_snapshot.py`** — pulls per-portfolio (main, val, gene) `{account, positions, orders_today}` via `alpaca-py`'s `TradingClient`. Uses the standard `<PID>_ALPACA_PAPER_KEY/_SECRET` env pool (same as `engine.portfolio_equity.alpaca_account_for_book`). `main` falls back to `VAL_` / `GENE_` credentials if no dedicated `MAIN_` key is configured — safe because the live bot's main book is paper-only and we're doing a read-only data fetch.
+* **`.github/workflows/alpaca-snapshot.yml`** — sister workflow to `state-snapshot.yml`. Same v9.1.6-style off-peak schedule (`5,15,25,35,45,55 12-22 UTC, Mon-Fri`) but offset by ~5 min so a single GH-cron contention slot can't take out both relays. Commits to a dedicated `alpaca-live` branch at `data/alpaca/latest.json` + per-day JSONL history.
+* **Skill update** — `state-snapshot-retrieval/SKILL.md` now documents both relays side-by-side with shape, retrieval recipe, and the typical-use rationale.
+
+### Why this is worth shipping
+
+Today's live observation exposed a specific gap: the v9.1.8 `dump_state_to_disk` cycle left `risk_book.realized_pnl_today` stale at `$0.00` across all three portfolios despite `trades_today` carrying $+203 of closes. The Alpaca relay gives the broker-side truth (equity, cash, BP, position cost-basis, today's fills) directly — sidesteps the engine-internal-counter sync gap. Also surfaces order rejections and partial fills that don't appear in `trades_today` at all.
+
+Future debugging scenarios this enables:
+* "Did the v9.1.7 cutoff actually block X's signal, or did broker reject it?" — `orders_today` has the answer.
+* "What was the actual fill slippage vs. signal price on TSLA at 11:58?" — `filled_avg_price` vs. the bar close.
+* "What's Val's true daytrade_count vs. 4-trade PDT limit?" — broker counter.
+
+### Retrieval recipe (same shape as the dashboard relay)
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/alpaca/latest.json", ref="alpaca-live"
+)
+```
+
+### Setup note
+
+The workflow expects `VAL_ALPACA_PAPER_KEY` + `_SECRET` and `GENE_ALPACA_PAPER_KEY` + `_SECRET` GHA secrets — already configured for the live bot. `MAIN_ALPACA_PAPER_KEY/_SECRET` are optional; if missing the tool falls back to VAL or GENE credentials for the main-book data pull. First successful cron tick or `workflow_dispatch` after this PR merges will create the `alpaca-live` branch.
+
+No engine or runtime change. 957 strategy tests pass.
+
+---
+
+## v9.1.16 (2026-05-13) — Create `docs/BACKLOG.md` for research + engineering followups
+
+Doc-only. Today's live-state observation surfaced three items worth tracking but not actioning yet:
+
+* **Research:** chase-fence expansion to TSLA + NVDA. Live counter-factual analysis on 2026-05-13 showed $+203 actual vs $+552 if today's full cutoff window had been live; the chase-prevention fence (currently `META, MSFT, AAPL, AMZN, GOOG, AVGO`) didn't catch the −$647 TSLA give-back at 11:58. Sample is one day; needs a year-long lever sweep to validate.
+* **Engineering:** chart canvas surviving parent-table re-renders. v9.1.13's `appendChild`-transplant approach broke ALL interactivity; reverted in v9.1.14. The fundamental fix needs either a diff-render of the proximity/positions tables or moving the chart canvas outside the table tree.
+* **Engineering:** `risk_book.realized_pnl_today` not staying in sync with `trades_today`. All three portfolios reported `$0.00` while $+203 was actually realized — either the v9.1.8 persistence cycle isn't covering this or one of today's redeploys reset state.
+* **Engineering:** `spy_d1_ret_bps` still `None` even after v9.1.3's Alpaca-fallback ship. Likely the Alpaca path errors out silently; needs an `[V913-SPY-LOADER]` info log to confirm which branch ran at session-start.
+
+Format mirrors `CHANGELOG.md`'s "newest at top" rule with explicit ownership and falsification criteria so items either ship or get explicitly archived rather than rotting.
+
+---
+
 ## v9.1.15 (2026-05-13) — Document live-state probing patterns in the snapshot-retrieval skill
 
 Doc-only. Today's session used the `snapshots-live` branch heavily for live-state analysis during a 15-release iteration sprint. The pre-existing `state-snapshot-retrieval` skill covered the basic `mcp__github__get_file_contents` path but missed three patterns we landed on today:

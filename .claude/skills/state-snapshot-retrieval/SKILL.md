@@ -1,22 +1,36 @@
 ---
 name: state-snapshot-retrieval
-description: Pull live dashboard state (positions, OR boundaries, RiskBook, day_states, trade_log) without DASHBOARD_PASSWORD. Uses the snapshots-live branch updated by .github/workflows/state-snapshot.yml every 10 min during US RTH.
+description: Pull live dashboard state (positions, OR boundaries, RiskBook, day_states, trade_log) + Alpaca broker state (account equity, open positions, today's orders) without secrets in the sandbox. Uses the snapshots-live + alpaca-live branches updated by GHA cron every 10 min during US RTH.
 ---
 
 # Retrieving live state from sandbox
 
-The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `snapshots-live` branch via the GitHub MCP:
+The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist) and from Alpaca's API. To analyze live trading state without the operator pasting JSON, pull the snapshots committed by dedicated GHA workflows. Two relays live today:
+
+| Relay | Branch | Path | Source | Workflow |
+|---|---|---|---|---|
+| Dashboard (`/api/state` + executors + trade_log) | `snapshots-live` | `data/snapshots/latest.json` | `tradegenius.up.railway.app` | `.github/workflows/state-snapshot.yml` |
+| Alpaca broker state (per-portfolio equity, positions, orders) | `alpaca-live` | `data/alpaca/latest.json` | `paper-api.alpaca.markets` | `.github/workflows/alpaca-snapshot.yml` |
 
 ```
 mcp__github__get_file_contents(
     owner="valira3", repo="stock-spike-monitor",
     path="data/snapshots/latest.json", ref="snapshots-live"
 )
+# or
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/alpaca/latest.json", ref="alpaca-live"
+)
 ```
 
-The cron workflow `.github/workflows/state-snapshot.yml` updates `latest.json` every 10 min during US RTH (Mon-Fri, 13:00-21:00 UTC) by running `python -m tools.state_snapshot` against `/api/state` + `/api/executor/val` + `/api/executor/gene` + `/api/trade_log?limit=5000`. Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl`.
+Both cron schedules use the v9.1.6 off-peak slot pattern (`*,12-22 UTC, Mon-Fri`):
+* dashboard relay: `2,12,22,32,42,52 12-22 * * 1-5`
+* alpaca relay:   `5,15,25,35,45,55 12-22 * * 1-5` (offset by ~5 min so a single GH-cron contention slot doesn't take out both)
 
-For an immediate refresh outside the cron window: Actions tab → state-snapshot → Run workflow (`workflow_dispatch`).
+Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl` and `data/alpaca/YYYY-MM-DD.jsonl`.
+
+For an immediate refresh outside the cron window: Actions tab → `state-snapshot` / `alpaca-snapshot` → Run workflow (`workflow_dispatch`).
 
 ## Snapshot shape
 
@@ -33,6 +47,26 @@ For an immediate refresh outside the cron window: Actions tab → state-snapshot
   }
 }
 ```
+
+## Alpaca snapshot shape (`alpaca-live` branch, `data/alpaca/latest.json`)
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-05-13T17:26:32Z",
+  "portfolios": {
+    "main": { "account": {...}, "positions": [...], "orders_today": [...] },
+    "val":  { "account": {...}, "positions": [...], "orders_today": [...] },
+    "gene": { "account": {...}, "positions": [...], "orders_today": [...] }
+  }
+}
+```
+
+Per-portfolio fields:
+* `account.equity / cash / last_equity / buying_power / long_market_value / short_market_value` — broker-side numerics. Sidesteps the v9.1.8 risk_book persistence gap (where engine-internal `realized_pnl_today` can fall out of sync).
+* `account.account_blocked / status / pattern_day_trader` — gate checks.
+* `positions[]` — broker view of open positions: `{symbol, side, qty, avg_entry_price, current_price, market_value, cost_basis, unrealized_pl, unrealized_plpc, change_today}`.
+* `orders_today[]` — every order submitted today, all statuses: `{symbol, side, qty, filled_qty, filled_avg_price, status in (filled|canceled|partially_filled|accepted|rejected), submitted_at, filled_at}`. Critical for diagnosing fills, slippage, and rejections that don't appear in `trades_today`.
 
 ## Common reads
 
