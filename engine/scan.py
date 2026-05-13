@@ -531,6 +531,18 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     except Exception:
         logger.exception("[V910-EOD] pass failed; engine state unchanged")
 
+    # v9.1.8 -- per-cycle engine state dump (throttled to 30s by default
+    # via orb.live_runtime._persist_min_interval_s) so day_states +
+    # risk_books + or_windows + recent_activity survive a Railway
+    # redeploy. Pre-v9.1.8 the dump function existed but had no
+    # production caller; every deploy reset the per-ticker trade
+    # counter to 0 even when the broker had real trades that day.
+    try:
+        from orb import live_runtime as _lr_persist
+        _lr_persist.persist_engine_state()
+    except Exception:
+        logger.debug("[V834-PERSIST] cycle dump raised (non-fatal)")
+
     logger.info(
         "SCAN CYCLE done in %.2fs, %d tickers (session=%s)",
         time.time() - cycle_start,
@@ -1596,6 +1608,17 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
             return
         portfolio_ids = list(engine.portfolio_ids)
 
+        # v9.1.8 HOTFIX -- compute signal_iso from current UTC so the
+        # v9.1.7 time_cutoff check (which parses signal_bar_close_iso
+        # to ET minutes) actually fires. Pre-v9.1.8 scan.py defaulted
+        # signal_iso to "" -> _utc_iso_to_et_minutes returns None ->
+        # cutoff fails-open -> v9.1.7 was effectively dead in
+        # production. The signal bar is by definition the bar that
+        # just closed within the past few seconds of this scan cycle,
+        # so wall-clock UTC is a tight approximation of the bar's
+        # close time and good to the minute (which is the cutoff
+        # comparison's granularity).
+        _signal_iso = datetime.now(timezone.utc).isoformat()
         for pid in portfolio_ids:
             equity = _resolve_portfolio_equity(tg, pid)
             result = _orb_runtime.check_entry(
@@ -1603,6 +1626,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                signal_iso=_signal_iso,
                 recent_5m_highs=_h5,
                 recent_5m_lows=_l5,
                 recent_5m_closes=_c5,
@@ -1700,6 +1724,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
         if engine is None:
             return
         portfolio_ids = list(engine.portfolio_ids)
+        # v9.1.8 HOTFIX -- same signal_iso wiring as the long path; see
+        # _orb_long_entry comment.
+        _signal_iso = datetime.now(timezone.utc).isoformat()
         for pid in portfolio_ids:
             equity = _resolve_portfolio_equity(tg, pid)
             result = _orb_runtime.check_entry(
@@ -1707,6 +1734,7 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
+                signal_iso=_signal_iso,
                 recent_5m_highs=_h5,
                 recent_5m_lows=_l5,
                 recent_5m_closes=_c5,

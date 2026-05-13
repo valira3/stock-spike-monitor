@@ -456,7 +456,7 @@
           }
           progressRow =
             '<tr class="pos-progress-row" data-pos-ticker="' + escapeHtml(p.ticker) + '">' +
-              '<td colspan="9" class="pos-progress-cell">' +
+              '<td colspan="11" class="pos-progress-cell">' +
                 '<div class="pos-progress">' +
                   '<div class="pos-progress-track">' +
                     '<div class="pos-progress-zone red"     style="left:0%; width:' + entryAt.toFixed(2) + '%"></div>' +

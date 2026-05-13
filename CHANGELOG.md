@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.8 (2026-05-13) — HOTFIX: signal_iso wiring + progress bar fix + state persistence
+
+### Part A — HOTFIX: v9.1.7 time cutoff was a no-op in production
+
+v9.1.7 added `time_cutoff_minutes` to `OrbConfig` and a `try_enter` reject path that parses `signal.signal_bar_close_iso` to ET minutes. **It worked in tests but not in production**, because `engine/scan.py:_orb_long_entry` / `_orb_short_entry` call `_orb_runtime.check_entry(...)` without passing `signal_iso`. That kwarg defaulted to `""`, which `_utc_iso_to_et_minutes` returns `None` for, which fails-open by design — and the cutoff silently let every after-11 entry through. Operator caught it when a fresh TSLA OPEN fired after 11:00 ET despite v9.1.7 being live.
+
+Fix:
+* `engine/scan.py:_orb_long_entry` and `_orb_short_entry`: compute `_signal_iso = datetime.now(timezone.utc).isoformat()` once per portfolio fanout and pass it as the `signal_iso=` kwarg to `check_entry`. The signal bar is by definition the bar that closed within the past few seconds of the scan cycle, so wall-clock UTC is a tight approximation that's good to the minute (which is the cutoff comparison's granularity).
+* 3 new regression tests in `tests/strategy/test_orb_v917_time_cutoff.py`:
+  * `test_empty_iso_fails_open_documents_v918_hotfix` — pins the fail-open contract for the empty string + documents the v9.1.8 fix for future readers.
+  * `TestScanPyWiring.test_scan_long_entry_passes_signal_iso` — uses `inspect.getsource` to verify the scan module passes `signal_iso=_signal_iso` and computes it via `datetime.now(timezone.utc).isoformat()`. Same for short. Static guard so anyone refactoring scan.py can't accidentally re-break this.
+
+### Part B — Position progress bar didn't fill the full row
+
+Operator screenshot showed the colored progress bar visually ending around 80% of the table-cell width. Two compounding causes:
+
+1. **`<td colspan="9">`** on the `pos-progress-row` while the positions table has **11** columns. The bar's containing cell was clipped to 9 columns of width. Fixed to `colspan="11"`. Same fix mirrored on the Val/Gene `renderExecPositions` path.
+2. **Gradient alphas too low** at the inner edges (red faded to `0.15` heading into the neutral zone, green started at `0.15`). The middle of the bar looked nearly transparent, making the bar read as "two faded blobs with empty middle". Floored the green/neutral alphas higher (`0.40` neutral floor, `0.40`→`0.75` green) and dropped the red end float so the gradients meet cleanly across the entry tick. Continuous-gauge look.
+
+### Part C — Engine state didn't survive Railway redeploys
+
+Operator noticed the dashboard's "top ticker N/5" counter reset to 0 after every redeploy, even when the broker had real trades from earlier in the session. Diagnosis: `orb/persistence.py:dump_state_to_disk` exists and is fail-soft, but **had no production caller** (`grep -r "dump_state_to_disk\(" /` returned zero hits outside tests). The load path (`_try_rehydrate_engine_state`) was running on every bootstrap, but there was nothing actively saving fresh state. Every deploy wiped `day_states` (per-(portfolio, ticker) trade counts), `risk_books.realized_pnl_today`, and reject counters.
+
+Fix:
+* New `orb/live_runtime.persist_engine_state()` helper. Wraps `dump_state_to_disk` with throttling (default 30s minimum between writes via `_persist_min_interval_s`) so a fast scan loop doesn't write the same payload 60×/min. Fail-soft.
+* `engine/scan.py:scan_loop` calls `persist_engine_state()` once per cycle (after the per-ticker tick loop and the EOD reversal pass). Wrapped in try/except with debug-level log so a write failure can never fail a scan.
+* Real positions on the Alpaca broker were always surviving; the paper book has its own persistence (`paper_state.py`); bar archive feeds continuously. v9.1.8 closes the remaining gap on engine in-memory state.
+
+### Out of scope (deferred to v9.1.9)
+
+The operator also asked for: (3) expandable position rows with an inline chart cloned from the v10 Proximity expansion, and (4) all charts constrained to RTH hours only. Both are feature work, ~2 hours combined. Deferred so v9.1.8 ships the cutoff hotfix immediately. v9.1.9 will land #3 + #4 with cross-tab parity.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.7 (2026-05-13) — Wire ORB_TIME_CUTOFF_ET to live engine + Telegram entry notification on per-portfolio fire
 
 Two fixes, shipped together.
