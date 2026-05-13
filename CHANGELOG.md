@@ -4,6 +4,90 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v8.3.34 (2026-05-13) -- Port `combo_150_500` rules to live `orb.risk_book` + skills catalog
+
+The R6 sweep (v8.3.30 → v8.3.33 tick-vs-bar validation) confirmed that the two day-end-giveback defense rules added to the research harness in v8.3.26 should be deployed live. Both default OFF; operator turns them on via Railway env when ready.
+
+### Two new env vars (default 0 = off)
+
+```
+ORB_LOSS_LOCK_THRESHOLD_USD=150   # Rule #1: lock (ticker, side) for the rest
+                                  # of the day after a closed leg with pnl < -$150
+ORB_PEAK_DD_HALT_USD=500          # Rule #2: halt new entries when intraday realized
+                                  # PnL drops $500 below the day's running peak
+```
+
+### `orb/risk_book.py` -- 3 new fields, 1 new state, new try_admit gates
+
+- `RiskBook.__init__` gains `loss_lock_threshold_usd=0.0`, `peak_dd_halt_usd=0.0`
+- New state: `_locked_pairs: dict[(ticker, side), ts]`, `_peak_pnl_today: float`
+- `try_admit(*, ticker=None, side=None, ...)` now checks:
+  1. (existing) daily_kill
+  2. **NEW** Rule #1: if `(ticker, side) in _locked_pairs` → reject `pair_locked`
+  3. **NEW** Rule #2: if `peak_pnl_today - realized_pnl_today >= peak_dd_halt_usd` → reject `peak_dd_halt`
+  4. (existing) risk_cap
+  5. (existing) notional_cap
+- `record_realized_pnl(pnl, *, ticker=None, side=None)`:
+  - Updates `_peak_pnl_today` monotonically
+  - Adds `(ticker, side)` to `_locked_pairs` when `pnl < -loss_lock_threshold_usd`
+  - All ticker/side params are optional for backwards compat (legacy callers without them get no-op rule behavior)
+- `reset_session` clears `_locked_pairs` and resets `_peak_pnl_today = 0.0` (daily-scoped)
+- `snapshot()` surfaces `loss_lock_threshold_usd`, `peak_dd_halt_usd`, `locked_pairs`, `peak_pnl_today`, `current_dd_from_peak` for the dashboard + watchdog
+
+### Plumbing through engine + live_runtime
+
+- `orb/engine.py:OrbConfig` gains `loss_lock_threshold_usd` and `peak_dd_halt_usd` (both default 0.0)
+- `OrbEngine.__init__` passes both to each `RiskBook.register(...)`
+- `try_enter` passes `ticker=signal.ticker, side=signal.side` to `rb.try_admit(...)`
+- Exit path passes `ticker=pos.ticker, side=pos.side` to `rb.record_realized_pnl(...)`
+- `orb/live_runtime.py:bootstrap` reads `ORB_LOSS_LOCK_THRESHOLD_USD` and `ORB_PEAK_DD_HALT_USD` from env, passes to OrbConfig
+
+### Tests
+
+`tests/strategy/test_orb_risk_book_v8334.py` — **16 new tests**:
+- Defaults off → behavior identical to v8.3.33 (2 tests)
+- Loss-lock: triggers above threshold, ignores below, doesn't block other pairs, doesn't lock on winners, legacy-caller no-op, session reset clears (6 tests)
+- Peak-DD halt: triggers at/above threshold, doesn't trigger below, session reset clears, peak ratchets monotonically (4 tests)
+- Combined: both rules active interacts correctly (1 test)
+- Snapshot exposure: new fields present + format (2 tests)
+- Pre-existing daily-kill behavior unchanged (1 test - implicit)
+
+**870 strategy tests pass** (854 + 16 new).
+
+### Expected impact (per R6 sweep on the FY corpus)
+
+- **+$3,900 / year** delta vs baseline on $100K starting equity
+- Annualized FY return improves from -6.31% to -2.41% (**+62% relative improvement**)
+- Worst day: -$3,200 → -$2,101 (-34% on worst-day damage)
+- Rule #2 catches ~70 days/year of peak-DD events; Rule #1 locks ~5 (ticker, side) pairs/year
+
+### Rollback
+
+Set both env vars back to `0` in Railway → instant disable, no redeploy needed. The default code path is functionally identical to v8.3.33.
+
+### Recommended rollout
+
+1. Merge this PR. Defaults are OFF so live behavior is unchanged.
+2. Verify in next watchdog tick that `/api/state.v10.risk_books.<pid>` shows the new fields (all 0).
+3. Set `ORB_LOSS_LOCK_THRESHOLD_USD=150` and `ORB_PEAK_DD_HALT_USD=500` in Railway env. Save → automatic restart picks up the new config.
+4. Monitor for 1-2 weeks; expect rejection counts on `pair_locked` and `peak_dd_halt` to be visible in the dashboard.
+
+---
+
+## v8.3.34b -- Project skills catalog (`.claude/skills/` + `/skills` command)
+
+Companion to v8.3.34's code change (same PR). Captures the methodology from the v8.3.28-v8.3.33 investigation as reusable agent skills so future sessions don't re-tread the same hypothesis-testing path.
+
+New files:
+- `.claude/skills/replay-fidelity-investigation/SKILL.md` — the full multi-layer diagnostic recipe (classical sweep → live-engine replay → tick-data → signal-timing → state telemetry). **Documents the 4 falsified hypotheses from today's session** so they're not re-tested.
+- `.claude/skills/gha-backtest-lever-sweep/SKILL.md` — extracted from CLAUDE.md's "GHA-driven backtest" section
+- `.claude/skills/state-snapshot-retrieval/SKILL.md` — how to read live state from `snapshots-live` branch when the sandbox can't reach Railway
+- `.claude/commands/skills.md` — `/skills` slash command that lists the catalog
+
+To add a new skill: create `.claude/skills/<name>/SKILL.md` with YAML frontmatter (`name` and `description`). The `/skills` command auto-discovers.
+
+---
+
 ## v8.3.33 (2026-05-13) -- Tape-eligibility filter on tick aggregation
 
 v8.3.32's first real validation produced this surprising result:

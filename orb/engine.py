@@ -98,6 +98,12 @@ class OrbConfig:
     # sell half. Defaults False so v8.1.0 is strictly additive until
     # the operator flips ORB_PARTIAL_PROFIT_AT_1R=1 in Railway env.
     partial_profit_at_1r: bool = False
+    # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
+    # Both default 0.0 = off. Operator turns on via Railway:
+    #   ORB_LOSS_LOCK_THRESHOLD_USD=150  (Rule #1)
+    #   ORB_PEAK_DD_HALT_USD=500         (Rule #2)
+    loss_lock_threshold_usd: float = 0.0
+    peak_dd_halt_usd: float = 0.0
 
     @property
     def or_end_minutes(self) -> int:
@@ -195,6 +201,9 @@ class OrbEngine:
                 max_concurrent_notional_mult=cfg.max_concurrent_notional_mult,
                 equity=100_000.0,  # caller refresh via update_equity
                 daily_loss_kill_pct=cfg.daily_loss_kill_pct,
+                # v8.3.34 -- day-end-giveback defenses
+                loss_lock_threshold_usd=cfg.loss_lock_threshold_usd,
+                peak_dd_halt_usd=cfg.peak_dd_halt_usd,
             )
 
         # Cached day-gate result (computed once per session)
@@ -630,6 +639,8 @@ class OrbEngine:
         ticket = rb.try_admit(
             risk_dollars=risk_dollars_actual,
             notional=notional,
+            ticker=signal.ticker,    # v8.3.34 -- Rule #1 lookup
+            side=signal.side,        # v8.3.34 -- Rule #1 lookup
         )
         if ticket is None:
             return None
@@ -793,7 +804,11 @@ class OrbEngine:
                     # backtest semantics where pnl = (exit-entry) *
                     # remaining + partial_pnl_dollars.
                     pnl += float(getattr(pos, "partial_pnl_dollars", 0.0) or 0.0)
-                    kill_just_triggered = rb.record_realized_pnl(pnl)
+                    # v8.3.34 -- pass ticker+side so the risk_book can
+                    # apply Rule #1 (loss-lock) on this exit's pnl.
+                    kill_just_triggered = rb.record_realized_pnl(
+                        pnl, ticker=pos.ticker, side=pos.side,
+                    )
                     # v8.1.8 -- record losing closes for the wash-sale
                     # tracker. The threshold is a couple cents (not
                     # strictly zero) to avoid recording rounding noise

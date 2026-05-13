@@ -194,6 +194,12 @@ def _build_config_from_env() -> OrbConfig:
         # auto-activates partial-profit-at-1R. Operator can revert by
         # setting ORB_PARTIAL_PROFIT_AT_1R=0 in Railway env (no redeploy).
         partial_profit_at_1r=_b("ORB_PARTIAL_PROFIT_AT_1R", True),
+        # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
+        # Both default 0.0 = off. Operator turns on via Railway env:
+        #   ORB_LOSS_LOCK_THRESHOLD_USD=150
+        #   ORB_PEAK_DD_HALT_USD=500
+        loss_lock_threshold_usd=_f("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
+        peak_dd_halt_usd=_f("ORB_PEAK_DD_HALT_USD", 0.0),
     )
 
 
