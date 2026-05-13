@@ -4204,22 +4204,39 @@ def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
         if isinstance(pos_dict, dict):
             p = pos_dict.get(tu) or pos_dict.get(ticker)
             if isinstance(p, dict) and p.get("entry_price") is not None:
-                # Filter to today only via entry_ts_utc.
+                # v9.1.14 -- the date filter (was: ets.startswith(day))
+                # was suppressing markers for v10 ORB fires whose
+                # entry_ts_utc was either empty or in a non-ISO format,
+                # which was the operator-observed "TSLA entry marker
+                # missing" bug. Drop the date filter for the OPEN-
+                # position branch entirely: an OPEN position by
+                # definition was entered TODAY (the eod_close path
+                # flushes everything at 15:55 ET), so we can emit the
+                # marker unconditionally and let the JS drawMark() drop
+                # it if the timestamp is unparseable. Closed-trade
+                # branches below keep the filter -- those iterate
+                # full-history trade logs.
                 ets = str(p.get("entry_ts_utc") or "")
-                if ets.startswith(day):
-                    out.append(
-                        {
-                            "side": "LONG",
-                            "qty": p.get("shares"),
-                            "entry_ts": p.get("entry_ts_utc"),
-                            "entry_price": float(p.get("entry_price")),
-                            "exit_ts": None,
-                            "exit_price": None,
-                            "realized_pnl": None,
-                            "exit_reason": None,
-                            "open": True,
-                        }
+                if not ets.startswith(day):
+                    logger.info(
+                        "[V914-INTRADAY-MARK] %s LONG open without "
+                        "matching entry_ts_utc=%r vs day=%s -- "
+                        "emitting marker anyway (v9.1.14)",
+                        tu, ets, day,
                     )
+                out.append(
+                    {
+                        "side": "LONG",
+                        "qty": p.get("shares"),
+                        "entry_ts": p.get("entry_ts_utc"),
+                        "entry_price": float(p.get("entry_price")),
+                        "exit_ts": None,
+                        "exit_price": None,
+                        "realized_pnl": None,
+                        "exit_reason": None,
+                        "open": True,
+                    }
+                )
     except Exception:
         pass
     try:
@@ -4227,21 +4244,28 @@ def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
         if isinstance(spos_dict, dict):
             p = spos_dict.get(tu) or spos_dict.get(ticker)
             if isinstance(p, dict) and p.get("entry_price") is not None:
+                # v9.1.14 -- same date-filter relaxation as long branch.
                 ets = str(p.get("entry_ts_utc") or "")
-                if ets.startswith(day):
-                    out.append(
-                        {
-                            "side": "SHORT",
-                            "qty": p.get("shares"),
-                            "entry_ts": p.get("entry_ts_utc"),
-                            "entry_price": float(p.get("entry_price")),
-                            "exit_ts": None,
-                            "exit_price": None,
-                            "realized_pnl": None,
-                            "exit_reason": None,
-                            "open": True,
-                        }
+                if not ets.startswith(day):
+                    logger.info(
+                        "[V914-INTRADAY-MARK] %s SHORT open without "
+                        "matching entry_ts_utc=%r vs day=%s -- "
+                        "emitting marker anyway (v9.1.14)",
+                        tu, ets, day,
                     )
+                out.append(
+                    {
+                        "side": "SHORT",
+                        "qty": p.get("shares"),
+                        "entry_ts": p.get("entry_ts_utc"),
+                        "entry_price": float(p.get("entry_price")),
+                        "exit_ts": None,
+                        "exit_price": None,
+                        "realized_pnl": None,
+                        "exit_reason": None,
+                        "open": True,
+                    }
+                )
     except Exception:
         pass
 

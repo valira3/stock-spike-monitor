@@ -2325,44 +2325,28 @@
   // can drop an intraday chart into an expanded row without
   // duplicating the canvas / hydration / interaction code. Single
   // entry point so callers don't depend on the internal helpers.
-  // v9.1.13 -- per-ticker chart panel cache. The proximity table +
-  // position table parents rebuild their innerHTML on every state
-  // poll, which destroys any chart canvas inside them. Caching the
-  // panel DOM at module scope and transplanting it into each fresh
-  // mount preserves the canvas + its registered pointer handlers +
-  // its WeakMap-keyed view state across re-renders. v9.1.12's
-  // querySelector-based idempotency check did NOT survive a parent
-  // re-render because containerEl itself was a fresh DOM node each
-  // poll -- the new check is "do we have a cached panel ANYWHERE,
-  // even detached?", and the answer is yes once the first render
-  // ran.
-  var _chartPanelCache = {};
+  // v9.1.14 -- revert v9.1.13's panel cache + transplant. That
+  // approach was intended to preserve canvas handlers across parent
+  // re-renders, but in practice broke ALL chart interactivity. The
+  // exact failure mode was unclear from outside the live browser --
+  // possible culprits: pointer-capture being lost during the
+  // appendChild move, a layout race after transplant making the
+  // canvas have a zero-size getBoundingClientRect at the moment a
+  // pointer event arrived, or some interaction with the chart's
+  // own state-poll-driven re-hydration. Falling back to the
+  // pre-v9.1.13 (and pre-v9.1.12 idempotency) plain rebuild path:
+  // every state poll rebuilds the chart fresh. The user's pan/zoom
+  // VIEW state is still preserved across rebuilds via the
+  // _chartViewByTkr per-ticker dict (set in _chartGetState and
+  // updated by _chartPersistView). What's lost is mid-drag
+  // continuity -- a drag that straddles a state-poll boundary gets
+  // interrupted -- but every fresh interaction starts cleanly and
+  // works. Better than v9.1.13's "nothing is interactive".
   if (typeof window !== "undefined") {
     window.__tgRenderTickerChart = function (tkr, containerEl) {
       if (!tkr || !containerEl) return;
       try {
-        var cached = _chartPanelCache[tkr];
-        var inThisMount = cached
-          ? containerEl.contains(cached)
-          : false;
-        if (!cached) {
-          // First time we've ever rendered this ticker's chart. Build
-          // the panel into the container, then snapshot the resulting
-          // DOM node for future re-use.
-          containerEl.innerHTML = _pmtxIntradayChartPanel(tkr);
-          _chartPanelCache[tkr] = containerEl.querySelector(
-            '[data-intraday-chart="' + tkr + '"]'
-          );
-        } else if (!inThisMount) {
-          // Parent re-rendered; the cached panel was detached. Move
-          // it back into the new mount. The canvas + handlers come
-          // along intact.
-          containerEl.innerHTML = "";
-          containerEl.appendChild(cached);
-        }
-        // Hydration: redraw with the latest payload + (re-)wire
-        // interaction. Wiring is sentinel-gated on _vs.wired so it's
-        // idempotent against the cached canvas.
+        containerEl.innerHTML = _pmtxIntradayChartPanel(tkr);
         _pmtxHydrateIntradayCharts(containerEl);
       } catch (e) { /* never break the v10 renderer */ }
     };
