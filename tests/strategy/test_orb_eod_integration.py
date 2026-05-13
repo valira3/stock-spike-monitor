@@ -183,5 +183,5 @@ class TestShipSpec:
         assert cfg.notional_pct == 35.0
         assert cfg.entry_et_minutes == 15 * 60 + 30
         assert cfg.exit_et_minutes == 15 * 60 + 59
-        # fire_broker defaults OFF for paper-fire-observation
-        assert cfg.fire_broker is False
+        # v9.1.1: live broker firing is the default (was False in v9.1.0).
+        assert cfg.fire_broker is True

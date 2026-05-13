@@ -4,6 +4,34 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.1 (2026-05-13) — EOD reversal flipped to live broker firing
+
+Single-line behavioral change: the EOD reversal addon (shipped in v9.1.0 with `fire_broker=False` paper-default) is flipped to live broker firing by default in v9.1.1 per operator authorization. The engine was already tracking signals + positions + P&L from v9.1.0 ship; the only change is that real broker orders now dispatch via the existing executor surface.
+
+### What changed
+
+- `orb/eod_reversal.py:EodReversalConfig.fire_broker` default: `False` → `True`
+- `orb/eod_reversal.py:from_env` default for `ORB_EOD_FIRE_BROKER`: `False` → `True`
+- Tests updated: `test_v9_1_0_defaults_match_r17_winner` and snapshot/config-format tests now expect `fire_broker=True`. New test `test_env_can_disable_broker_fire` documents the operator escape hatch.
+- 932 strategy tests pass (was 931).
+
+### Operator rollback path (no redeploy)
+
+Set `ORB_EOD_FIRE_BROKER=0` in Railway env to revert to paper-tracking mode. Tracking continues (dashboard still shows signals); only the real broker fire is suppressed.
+
+### Risk
+
+- Capital at stake: 35% notional per leg × 2 legs (long + short) = ~70% gross exposure intraday for ~25 minutes per session
+- Per the r17 backtest: realized 1.5bps round-trip slippage, 51.2% WR, +$4.62 avg per trade × 502 entries/yr ≈ +$2,300-$4,600/yr expected
+- Combined v9 + v9.1 backtest 0/5 negative quarters maintained
+- Forensic tag `[V910-EOD-FIRE]` will fire on each broker order (vs the previously-silent paper-mode)
+
+### No other changes
+
+This is the only deliberate change in v9.1.1. UI, engine code paths, tests, scan integration, snapshot shape, and all v9.0.0 + v9.1.0 features carry forward unchanged.
+
+---
+
 ## v9.1.0 (2026-05-13) — End-of-Day Reversal addon strategy
 
 Adds a second strategy class alongside the v9.0.0 morning ORB: a cross-sectional reversal trade fired once per session at 15:30 ET, flattened at 15:59 ET. Backtest-validated: combined v9 morning + v9.1 EOD = **$+29,386/yr (+18.6% over v9 alone) / 0/5 negative quarters / Sharpe boost retained**. See `docs/r17_afternoon_backtest_report.md` for the full forensic journey.

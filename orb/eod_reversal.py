@@ -71,11 +71,14 @@ class EodReversalConfig:
     entry_et_minutes: int = 15 * 60 + 30   # 15:30 ET
     exit_et_minutes: int = 15 * 60 + 59    # 15:59 ET
 
-    # v9.1.0 paper-fire-observation gate. When False (default), the
-    # engine TRACKS entries + exits + P&L for the dashboard but does
-    # not place real broker orders. Operator flips to True after 5+
-    # clean paper-observation days. Mirrors the v8.3.23 fire flag.
-    fire_broker: bool = False
+    # v9.1.1 -- live broker firing is now the default. v9.1.0 shipped
+    # with fire_broker=False (paper-fire-observation) per the v8.3.23
+    # pattern; the operator authorized flipping to live in v9.1.1.
+    # Engine still tracks positions + P&L for the dashboard; the only
+    # difference is that real broker orders now go out via the
+    # existing executor surface. Operator can revert by setting
+    # ORB_EOD_FIRE_BROKER=0 in Railway env (no redeploy required).
+    fire_broker: bool = True
 
     @classmethod
     def from_env(cls) -> "EodReversalConfig":
@@ -137,7 +140,7 @@ class EodReversalConfig:
             notional_pct=_f("ORB_EOD_NOTIONAL_PCT", 35.0),
             entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60 + 30),
             exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 59),
-            fire_broker=_b("ORB_EOD_FIRE_BROKER", False),
+            fire_broker=_b("ORB_EOD_FIRE_BROKER", True),
         )
 
 
