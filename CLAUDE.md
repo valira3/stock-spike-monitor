@@ -1,14 +1,24 @@
 # stock-spike-monitor — agent guide
 
-## Current strategy: v10 ORB anchor (as of v7.27.0)
+## Current strategy: v10 ORB anchor + v9.1.0 EOD reversal addon
 
-Production runs the **v10 ORB anchor** strategy. Tiger Sovereign / V570-STRIKE / V560-GATE are retired. The live decision path is:
+Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 ET) and the **v9.1.0 EOD reversal addon** for a single afternoon trade (15:30-15:59 ET). Tiger Sovereign / V570-STRIKE / V560-GATE are retired.
 
-- **Entry**: `orb/live_runtime.py` → `orb/engine.py` → `orb/state.py` (per-portfolio FSM) → `orb/risk_book.py` (concurrent risk + notional caps) → `orb/day_gates.py` (VIX / earnings / gap / blocklist) → `orb/exits.py` (RR=2.5 + move-to-BE-after-1R).
+**Morning ORB path** (decision flow):
+- **Entry**: `orb/live_runtime.py` → `orb/engine.py` → `orb/state.py` (per-portfolio FSM) → `orb/risk_book.py` (concurrent risk + notional caps) → `orb/day_gates.py` (VIX / earnings / gap / blocklist / SPY-regime) → `orb/exits.py` (RR=2.5 + move-to-BE-after-1R).
 - **Per-portfolio fanout**: Main / Val / Gene each run their own RiskBook + FSM. `engine/scan.py:_orb_long_entry`/`_orb_short_entry` iterates portfolios and calls `live_runtime.check_entry(...)` per portfolio.
-- **Broker fire**: Main goes through `callbacks.execute_entry` (legacy path). Val/Gene route through `executors/base.py:fire_long`/`fire_short` when `ORB_PORTFOLIO_FIRE=1` (default `0` until 5-day paper-fire observation completes).
+- **Broker fire**: Main goes through `callbacks.execute_entry` (legacy path). Val/Gene route through `executors/base.py:fire_long`/`fire_short` when `ORB_PORTFOLIO_FIRE=1` (default `1` since v8.3.23).
 - **Kill switch**: `ORB_LIVE_MODE=0` falls back to legacy strategy (rollback path).
-- **Forensic**: `[V79-ORB-BOOT/RESET/OR-LOCK/GATE/RISK-OK/RISK-NO/ENTRY/REJECT/EXIT/ADMIT/FIRE]` + `[V10-FIRE]` + `[V79-ORB-EQUITY]`.
+- **Forensic**: `[V79-ORB-BOOT/RESET/OR-LOCK/GATE/RISK-OK/RISK-NO/ENTRY/REJECT/EXIT/ADMIT/FIRE]` + `[V10-FIRE]` + `[V79-ORB-EQUITY]` + `[V900-MBR-REJECT]` + `[V900-VWAP-CHASE]` + `[V900-SPY-GATE]`.
+
+**EOD reversal addon path** (v9.1.0+):
+- **Module**: `orb/eod_reversal.py` (`EodReversalEngine`, independent from `OrbEngine`)
+- **Entry**: `engine/scan.py:_eod_reversal_pass` invoked once per scan cycle. At 15:30 ET fires top-1/top-1 long/short selection on `ORB_EOD_UNIVERSE` (default `ORCL,AAPL,MSFT,AVGO,NFLX`). At 15:59 ET flattens.
+- **Selection**: per-side fence via `ORB_EOD_LONG_TICKERS` + `ORB_EOD_SHORT_TICKERS`. Drops "retail-momentum" mega-caps (META, GOOG, TSLA, AMZN, NVDA) which fail the reversal pattern per R17 forensic.
+- **Sizing**: 35% notional per leg (fixed, not stop-based).
+- **Broker fire gate**: `ORB_EOD_FIRE_BROKER=0` (default) keeps it in paper-fire-observation mode — engine tracks positions + P&L for the dashboard but doesn't place real orders. Flip to `1` after 5+ clean paper days.
+- **Forensic**: `[V910-EOD-RESET/ENTRY/EXIT/FIRE/CLOSE-FIRE/NO-SIGNAL]`.
+- **Backtest backing**: docs/r17_afternoon_backtest_report.md (combined v9 morning + v9.1 EOD = $+29,386/yr / +18.6% over v9 alone / 0/5 neg quarters).
 
 ## Where things live
 - v10 strategy core: `orb/` package (`live_runtime.py`, `engine.py`, `state.py`, `risk_book.py`, `exits.py`, `day_gates.py`, `live_adapter.py`)
