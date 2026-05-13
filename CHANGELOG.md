@@ -4,6 +4,72 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.18 (2026-05-13) — Unified monitor workflow + archive orphans (Phase 1 + 2 of GHA consolidation)
+
+Workflow audit found three scheduled monitor workflows hitting the same backend services every ~10 min with three separate GH cron contention slots and three independent Python setups + dep installs:
+
+* `state-snapshot.yml` — dashboard endpoints → `snapshots-live` branch
+* `alpaca-snapshot.yml` — Alpaca per-portfolio → `alpaca-live` branch
+* `dashboard-monitor.yml` — dashboard polling + invariant evaluation + Telegram alerts
+
+All three retired in this PR. Replaced by one consolidated workflow.
+
+### Phase 1 — Unified monitor
+
+New artifacts:
+
+* `tools/unified_monitor.py` — sequential pull of:
+  1. Dashboard `/api/state` + `/api/executor/{val,gene}` + `/api/trade_log?limit=5000` (reuses `tools.dashboard_monitor.DashboardClient` for auth)
+  2. Alpaca per-portfolio account + positions + orders_today (reuses `tools.alpaca_snapshot._pull_portfolio` for shape parity)
+  3. Railway forensic logs — last 2000 lines filtered to the `[V9*-*]` / `[V79-ORB-*]` / `[V10-FIRE]` / `Traceback` / `ERROR` patterns (reuses `tools.railway_log_tail.fetch_recent_logs` + `grep_logs`). Skipped cleanly when `RAILWAY_API_TOKEN` / `RAILWAY_SERVICE_ID` aren't set.
+  4. Dashboard invariant battery (`tools.dashboard_monitor_invariants.INVARIANTS`) — same checks the retired `dashboard-monitor` ran.
+  5. Telegram alert to `TELEGRAM_TP_CHAT_ID` on any invariant failure (same format/path as the retired `dashboard-monitor.send_telegram` → `_format_violation_telegram`).
+  
+  Exit codes: `0` = full success, `1` = config error, `2` = dashboard unreachable, `3` = serialization error, `4` = invariants failed (data still written + Telegrammed). The workflow maps `4 → 0` so the data commit always succeeds.
+
+* `.github/workflows/monitor.yml` — single cron, `3,8,13,...,58 12-22 UTC, Mon-Fri` (every 5 min). Off-peak minutes to dodge `:00 / */10` GH contention. Output: `data/monitor/latest.json` on `monitor-live` branch + daily JSONL history.
+
+Single retrieval path for sandbox-side Claude:
+
+```
+mcp__github__get_file_contents(
+    owner="valira3", repo="stock-spike-monitor",
+    path="data/monitor/latest.json", ref="monitor-live"
+)
+```
+
+Schema: `{ schema_version, captured_at_utc, dashboard_base_url, dashboard: {endpoints}, alpaca: {portfolios, _any_ok}, railway_logs: {total_fetched, forensic_matches, filter_summary, probe}, invariants: {results, failed_count} }`.
+
+### Phase 2 — Archive orphans
+
+Moved to `.github/workflows/_archive/` (GH Actions only honors `.github/workflows/*.yml` at the top level, not subdirectories — so archived workflows are inert):
+
+* `t2-smoke.yml` — one-off R2 credentials check, last useful when R2 was being provisioned.
+* `tick-atr-validation.yml` — v8.3.30 ATR-from-ticks hypothesis investigation; conclusion is in `pl_optimization_final_report_v12.md` ("falsified"), workflow has no remaining purpose.
+
+### Deferred (in BACKLOG.md)
+
+* **Phase 3:** merge `lever-sweep.yml` + `lever-sweep-auto.yml` into one workflow that takes both `workflow_dispatch` and `push: paths` triggers.
+* **Phase 4:** consolidate `pull-rth-bars` + `pull-premarket` + `pull-tick-data` into one parameterized `pull-bars.yml`.
+
+### Cost analysis
+
+Per-day GHA-minute cost stays roughly flat: pre-v9.1.18 the three retired workflows used ~75 min/day combined; the unified monitor uses ~72 min/day at 5-min cadence. Slight saving from a single checkout/dep-install per tick.
+
+### Snapshot freshness
+
+Cadence improvement: every 5 min vs the prior ~10 min for state-snapshot + alpaca-snapshot. Plus three cron slots collapse to one — fewer GH contention drops. Realistic delivery ~70-90% of scheduled ticks during RTH (vs ~50% pre-v9.1.6).
+
+957 strategy tests pass. No engine code touched.
+
+### Operator notes
+
+* First `workflow_dispatch` of `monitor` after merge bootstraps the `monitor-live` branch. Recommend clicking it once post-merge to validate.
+* The retired branches `snapshots-live` and `alpaca-live` will stop receiving updates after this merge but their historical content remains accessible. New code should read `monitor-live`.
+* Telegram alerts continue to land in `TELEGRAM_TP_CHAT_ID` — same alert text format, just from the new workflow.
+
+---
+
 ## v9.1.17 (2026-05-13) — Alpaca account snapshot relay (broker view alongside dashboard view)
 
 Extends the GHA → branch → MCP relay pattern that powers `state-snapshot.yml` to a second source: per-portfolio Alpaca paper account state.

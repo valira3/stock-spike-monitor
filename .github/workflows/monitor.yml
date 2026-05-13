@@ -1,0 +1,178 @@
+name: monitor
+
+# v9.1.18 -- UNIFIED monitor. Replaces three pre-v9.1.18 workflows:
+#   state-snapshot.yml    (dashboard endpoints -> snapshots-live branch)
+#   alpaca-snapshot.yml   (alpaca account -> alpaca-live branch)
+#   dashboard-monitor.yml (dashboard polling + invariants + Telegram alerts)
+#
+# Single 5-min cron + single Python entrypoint. All four
+# data-collection roles + the alerting role roll up here.
+#
+# Output:
+#   data/monitor/latest.json    on the monitor-live branch
+#                               Single source of truth for "what is
+#                               the bot doing right now?" -- dashboard,
+#                               Alpaca, Railway logs, invariants.
+#   data/monitor/<DATE>.jsonl   per-day append-only history.
+#
+# Retrieval (sandbox-side):
+#   mcp__github__get_file_contents(
+#     owner=valira3, repo=stock-spike-monitor,
+#     path=data/monitor/latest.json, ref=monitor-live
+#   )
+#
+# Alerting: on any invariant failure the workflow posts a single
+# Telegram message to TELEGRAM_TP_CHAT_ID with the failure summary.
+# Same alert format as the retired dashboard-monitor for continuity.
+#
+# Required GHA secrets:
+#   DASHBOARD_URL                  dashboard
+#   DASHBOARD_PASSWORD             dashboard
+#   VAL_ALPACA_PAPER_KEY/_SECRET   alpaca per-portfolio
+#   GENE_ALPACA_PAPER_KEY/_SECRET  alpaca per-portfolio
+#   MAIN_ALPACA_PAPER_KEY/_SECRET  optional; fallback to VAL/GENE
+#   RAILWAY_API_TOKEN              railway logs (optional; skipped if
+#   RAILWAY_SERVICE_ID             absent)
+#   TELEGRAM_TP_TOKEN              alerts
+#   TELEGRAM_TP_CHAT_ID            alerts
+#
+# Cron schedule:
+#   Every 5 min during the union RTH+pre-market window (12-22 UTC,
+#   Mon-Fri). Off-peak minutes (3,8,13,...) to dodge GH's :00 / */10
+#   contention slots.
+
+on:
+  schedule:
+    - cron: "3,8,13,18,23,28,33,38,43,48,53,58 12-22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why are you running this manually? (logged)"
+        required: false
+        default: "ad-hoc dispatch"
+        type: string
+      dry_run:
+        description: "Dry run (skip Telegram side-effects)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout monitor-live branch (or create orphan)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init -b monitor-live
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code origin monitor-live >/dev/null 2>&1; then
+            git fetch --depth 1 origin monitor-live
+            git reset --hard origin/monitor-live
+          fi
+
+      - name: Fetch monitor tool from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tg-main
+          git clone --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            /tmp/tg-main
+          test -f /tmp/tg-main/tools/unified_monitor.py
+          test -f /tmp/tg-main/tools/dashboard_monitor.py
+          test -f /tmp/tg-main/tools/alpaca_snapshot.py
+          test -f /tmp/tg-main/tools/railway_log_tail.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r /tmp/tg-main/requirements.txt
+
+      - name: Run unified monitor
+        id: run
+        env:
+          DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_URL }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          VAL_ALPACA_PAPER_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          VAL_ALPACA_PAPER_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          GENE_ALPACA_PAPER_KEY: ${{ secrets.GENE_ALPACA_PAPER_KEY }}
+          GENE_ALPACA_PAPER_SECRET: ${{ secrets.GENE_ALPACA_PAPER_SECRET }}
+          MAIN_ALPACA_PAPER_KEY: ${{ secrets.MAIN_ALPACA_PAPER_KEY }}
+          MAIN_ALPACA_PAPER_SECRET: ${{ secrets.MAIN_ALPACA_PAPER_SECRET }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+          TELEGRAM_TP_TOKEN: ${{ secrets.TELEGRAM_TP_TOKEN }}
+          TELEGRAM_TP_CHAT_ID: ${{ secrets.TELEGRAM_TP_CHAT_ID }}
+          MONITOR_DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '0' }}
+          UNIFIED_MONITOR_DIR: ${{ github.workspace }}/data/monitor
+        # Exit 4 = "data committed + invariant failed". The workflow
+        # step should NOT mark itself failed for invariant violations;
+        # the Telegram alert is the operator-facing signal and the
+        # data write must still commit. Map exit 4 -> 0 here.
+        run: |
+          set +e
+          cd /tmp/tg-main
+          python -m tools.unified_monitor
+          rc=$?
+          echo "monitor_rc=$rc" >> "$GITHUB_OUTPUT"
+          # 0 = full success; 4 = invariants failed (data still good)
+          # Anything else (1/2/3) = real failure -> propagate.
+          if [ $rc -eq 0 ] || [ $rc -eq 4 ]; then
+            exit 0
+          else
+            exit $rc
+          fi
+
+      - name: Commit + push snapshot
+        env:
+          REASON: ${{ inputs.reason }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          git config user.email "valira3@gmail.com"
+          git config user.name "valira3"
+          mkdir -p data/monitor
+          git add data/monitor/
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          MSG="monitor: ${EVENT} tick"
+          if [ -n "${REASON:-}" ] && [ "${REASON}" != "ad-hoc dispatch" ]; then
+            MSG="${MSG} -- ${REASON}"
+          fi
+          # Append invariant-fail count to the commit message when rc=4.
+          if [ "${{ steps.run.outputs.monitor_rc }}" = "4" ]; then
+            MSG="${MSG} [INVARIANTS FAILED]"
+          fi
+          git commit -m "$MSG"
+          for attempt in 1 2 3 4; do
+            if git push -u origin monitor-live; then
+              echo "push OK on attempt $attempt"
+              exit 0
+            fi
+            git fetch origin monitor-live || true
+            git rebase origin/monitor-live || git rebase --abort
+            sleep $((2 ** attempt))
+          done
+          echo "::error::push failed after 4 retries"
+          exit 1
