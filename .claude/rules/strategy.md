@@ -2,7 +2,7 @@
 
 Hard-won lessons from the v8.3.x → v9.0.0 development arc. Read this before adding a new admission filter, exit rule, day-gate, or any other strategy lever to `orb/`. Each item is a rule because skipping it caused a real bug or false-win during recent work.
 
-## R1. Always reproduce the baseline before iterating
+## R1. Reproduce baseline
 
 **Mistake**: Initially used `r6_drawdown_rules.py:BASE` as the v12 baseline, getting -$28,519 FY. Spent significant time debugging "why doesn't v12 reproduce" before realizing `r5_per_ticker_cap.py:BASE` was the actual v12 baseline (different slippage + had the T5 blocklist + cut=11:00).
 
@@ -10,7 +10,7 @@ Hard-won lessons from the v8.3.x → v9.0.0 development arc. Read this before ad
 
 **Concrete check**: `diff <(python -c "from docs.research import r5_per_ticker_cap as r; print(r.BASE)") <(python -c "from docs.research import r6_drawdown_rules as r; print(r.BASE)")` — flag every difference.
 
-## R2. Defaults-ON levers must not break legacy tests
+## R2. Defaults-ON keep tests passing
 
 **Mistake**: Shipped `min_break_bps=5` as default in `OrbConfig` in v9.0.0. Existing tests (`test_orb_accuracy.py::test_admission_math`, `test_orb_session_sim.py::test_shares_clamped_to_75pct_equity`) used `push_pct=0.0001` (1bp past OR), which the new mbr filter rejected. 15+ legacy tests broke until I added v9 disables to `SessionSimulator.__enter__`.
 
@@ -31,7 +31,7 @@ for k, v in {"ORB_<NEW_LEVER>": "0"}.items():
 
 **Concrete check**: `python3 -m pytest tests/strategy/ -q` must show identical pass count before and after the new field is added to `OrbConfig` (no test changes other than the simulator helper). If existing tests break, the helper change is the canonical fix — not modifying the tests.
 
-## R3. Quarterly cross-validation is non-negotiable
+## R3. Quarterly CV mandatory
 
 **Mistake**: Several v8.3.x rounds shipped on FY-only numbers and silently introduced quarterly negs. R6's "combo_150_500" was the example: $+9.9k FY headline that hid a Q2-25 problem when combined with ATR stops.
 
@@ -39,7 +39,7 @@ for k, v in {"ORB_<NEW_LEVER>": "0"}.items():
 
 **Concrete check**: every `r<N>_*.py` sweep script must run `evaluate()` against all 5 corpus slices (fy + 4 quarters). The output JSON must include `neg_q` count.
 
-## R4. Plateau-test before declaring a winner
+## R4. Plateau-test the winner
 
 **Mistake**: R10's initial best was `vwap_dev<=30` at $+15,632. Without micro-sweeping the threshold, we would have shipped at 30. R10b showed 25 was actually $+1,634 better, and the plateau ran 15-27bps. Generalizable: a single-point optimum can be an overfit artifact.
 
@@ -47,7 +47,7 @@ for k, v in {"ORB_<NEW_LEVER>": "0"}.items():
 
 **Concrete check**: a plateau table in the round's report markdown showing the contiguous range and FY net at each point.
 
-## R5. Fence universal filters when forensic shows concentrated bleed
+## R5. Fence, don't globalize
 
 **Mistake**: R9 initially tested `ORB_MAX_VWAP_DEV_BPS=30` applied **globally**. Result: $+3,872 FY on no-T5 control (much better than -$14K control), but $-12K worse than the T5-block winner. The filter was catching legit chase-style winners on NVDA/ORCL/SPY/QQQ that didn't have the mega-cap bleed pattern.
 
@@ -55,7 +55,7 @@ for k, v in {"ORB_<NEW_LEVER>": "0"}.items():
 
 **Concrete check**: when adding a new universal filter, also add a ticker-fence env var even if you ship with empty default. Future rounds will need it.
 
-## R6. `break` inside a multi-window scan loop is a control-flow trap
+## R6. `break` vs `continue` in multi-window loops
 
 **Mistake**: R15/R16 afternoon strategies (fade mode + mid-day OR) initially used `break` to exit the loop at the time_cutoff. This prevented the loop from EVER reaching the PM-OR window or the fade window. The fade variants silently returned the same result as morning-only for all sweeps.
 
@@ -63,7 +63,7 @@ for k, v in {"ORB_<NEW_LEVER>": "0"}.items():
 
 **Concrete check**: write a unit test that has a signal bar in window 2 (e.g., PM-OR at bucket 750) and ensure it fires. If the test passes only when window 1's logic is also met, you have a `break` bug.
 
-## R7. Bootstrap projections must include regime-skip zero days
+## R7. Bootstrap includes zero days
 
 **Mistake**: Initial v9 bootstrap sampled from 201 active days only, producing CAGR 31.99% — clearly too optimistic. The correct calculation includes the 50 regime-skip days as 0% return, dropping CAGR to 24.78% (the actual FY return).
 
@@ -76,7 +76,7 @@ random.shuffle(returns_daily)
 
 **Concrete check**: realized FY CAGR (start equity → end equity) should match the bootstrap median P50 within ±0.5%. If P50 is materially higher than realized, the sample pool is missing zero days.
 
-## R8. Conservative trading on bad-regime days rarely beats full skip
+## R8. Conservative ≠ full skip
 
 **Mistake**: R13/R13b assumed that on regime-low days (prior SPY -0.4%+ drop), trading at HALF risk would extract +$1-3K vs full skip. Tested 12+ conservative-mode variants (half risk, tighter ATR, max=1, tighter mbr, fenced ticker skip, all-stacked). **All underperform full skip.** Best variant (half-risk + skip TSLA/NFLX) came within $1,150 of full-skip but added 25 more trades for zero net gain.
 
@@ -84,7 +84,7 @@ random.shuffle(returns_daily)
 
 **Concrete check**: implement `regime_low_*` overrides if helpful for operator psychology, but ship them off-by-default. Document the test results as "no conservative variant beat full-skip on this corpus" in the v<N+1> P&L report.
 
-## R9. Regime-conditional overrides activate independently — audit each lever
+## R9. Audit every override
 
 **Mistake**: In R13b initially, conservative-mode overrides (`ORB_REGIME_LOW_RISK_PER_TRADE_PCT=0.5` etc.) silently did nothing because the activation logic was `if regime_low_today and not regime_low_skip_tickers`. Setting half-risk but no skip-tickers meant the day was still fully skipped. All conservative variants returned identical results to the full-skip baseline until I fixed the activation logic to check ANY override field.
 
@@ -102,7 +102,7 @@ has_partial_mode = bool(
 
 **Concrete check**: write a unit test for each override field that confirms setting ONLY that field (with all others zero) changes the result vs baseline. If even one override fails this test, the activation logic is broken.
 
-## R10. Falsified theories MUST be documented before next round
+## R10. Document falsified theories
 
 **Mistake**: Several v8.3.x rounds re-tested falsified theories because earlier rounds didn't log them clearly. The most expensive case: re-attempting universal `vwap_dev` filter in R9b after R9 had already shown it kills non-T5 winners.
 
@@ -115,7 +115,7 @@ The v13 report's falsified list has 16+ entries from R8 through R16. Future roun
 
 **Concrete check**: when starting a new research round, grep all `docs/pl_optimization_final_report_v*.md` for "falsified" and review what's already known-dead. Update the new report with the inherited list plus this round's additions.
 
-## R11. v8.3.34 R6 defenses conflict with v9 chase-prevention
+## R11. R6 defenses conflict with v9 chase
 
 **Mistake**: R6 (`combo_150_500` — `loss_lock_threshold_usd=150` + `peak_dd_halt_usd=500`) was shipped in v8.3.34 as defaults-OFF. After v9 shipped chase-prevention, layering R6 on top is tempting because both target "intraday giveback". But R10 testing showed: stacked, R6 + ATR + chase costs $1-1.5K vs chase alone. The mechanisms target the same bleeders; double-counting hurts.
 
@@ -123,7 +123,7 @@ The v13 report's falsified list has 16+ entries from R8 through R16. Future roun
 
 **Concrete check**: a backtest that sets all of `ORB_LOSS_LOCK_THRESHOLD_USD=150`, `ORB_PEAK_DD_HALT_USD=500`, `ORB_MAX_VWAP_DEV_BPS=25` should produce LOWER FY net than just the chase filter alone. If it doesn't, the test corpus or BASE has drifted.
 
-## R12. Universal afternoon strategies don't work for this universe
+## R12. Afternoon doesn't work
 
 **Mistake**: R15 (afternoon fade) and R16 (mid-day OR / power-hour) tested across 9 variants. None come within $7K of morning-only. The afternoon has no directional edge AND no reversion edge — it's structural chop.
 
@@ -135,4 +135,4 @@ The v13 report's falsified list has 16+ entries from R8 through R16. Future roun
 
 ## Format note
 
-This document lives at `.claude/rules/strategy-rule-development.md` and is meant as a constraint set for future strategy work. New rules are appended here as they're discovered. Cross-reference from CLAUDE.md "Mandatory PR rules" section when a rule is universal enough to apply at PR-level.
+This document lives at `.claude/rules/strategy.md` and is meant as a constraint set for future strategy work. New rules are appended here as they're discovered. Cross-reference from CLAUDE.md "Mandatory PR rules" section when a rule is universal enough to apply at PR-level.
