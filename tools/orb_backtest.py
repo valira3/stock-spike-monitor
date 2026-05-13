@@ -1450,7 +1450,19 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                         is_regime_low_today = True
                 elif lt != 0.0 and prior < lt:
                     is_regime_low_today = True
-        if is_regime_low_today and not cfg.regime_low_skip_tickers:
+        # Full-day skip only when no partial-trade mechanism is active.
+        # Partial-trade modes (any non-zero regime-low override or skip
+        # list) take precedence -- they signal the operator wants to
+        # trade these days under modified config.
+        has_partial_mode = bool(
+            cfg.regime_low_skip_tickers
+            or cfg.regime_low_risk_per_trade_pct > 0
+            or cfg.regime_low_atr_stop_mult > 0
+            or cfg.regime_low_max_trades_per_day > 0
+            or cfg.regime_low_max_vwap_dev_bps > 0
+            or cfg.regime_low_min_break_bps > 0
+        )
+        if is_regime_low_today and not has_partial_mode:
             spy_regime_days_skipped += 1
             continue
 
