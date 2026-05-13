@@ -245,15 +245,15 @@
          renderV10DayStatus when bootstrapped && live_mode. Physical
          removal of the legacy _pmtx* JS/CSS is scheduled for v7.28.0
          per docs/v10_retirement_plan.md. -->
-    <section class="grid" id="v10-ticker-matrix-section">
+    <!-- v9.1.11 -- v10 Ticker Matrix section retired. Its content (FSM
+         phase per pid + per-ticker trade count) was a strict subset of
+         what the v10 Proximity section already shows. The trade count
+         is now merged into the Proximity phase chip ("pid n/cap"). The
+         section stub is kept hidden so any back-compat caller of
+         renderV10TickerMatrix() finds the anchor and no-ops cleanly. -->
+    <section class="grid hide" id="v10-ticker-matrix-section" style="display:none">
       <div class="card">
-        <div class="card-head">
-          <span class="card-title" title="v10 ORB per-ticker matrix. Phase = FSM state; OR = opening range high/low/width; T = trades used today.">v10 Ticker Matrix<span class="count" id="v10-tm-count" title="Number of tickers in the v10 universe">· —</span></span>
-          <span class="chip" id="v10-tm-summary" title="Tickers armed / tickers blocked / tickers in position">—</span>
-        </div>
-        <div class="card-body flush" id="v10-tm-body">
-          <div class="empty">Waiting for v10 session start...</div>
-        </div>
+        <div class="card-body flush" id="v10-tm-body"></div>
       </div>
     </section>
 
@@ -261,11 +261,13 @@
          Permit-Matrix proximity column with a v10-aware view:
          per-ticker distance from current price to OR-high (long
          break) and OR-low (short break), with FSM-phase chips per
-         pid. Hidden when v10 isn't bootstrapped (legacy fallback). -->
+         pid. Hidden when v10 isn't bootstrapped (legacy fallback).
+         v9.1.11 -- now also surfaces per-ticker trade counts inside
+         the phase chip, absorbing the retired Ticker Matrix section. -->
     <section class="grid" id="v10-proximity-section">
       <div class="card">
         <div class="card-head">
-          <span class="card-title" title="Distance from current price to the v10 opening-range break levels (OR_high for long admits, OR_low for short admits). Locked OR windows only.">v10 Proximity<span class="count" id="v10-prox-count" title="Tickers with a locked OR window">· —</span></span>
+          <span class="card-title" title="Distance from current price to the v10 opening-range break levels (OR_high for long admits, OR_low for short admits). Phase chips show per-portfolio FSM phase + n/cap trades used today (v9.1.11: absorbed the v10 Ticker Matrix section).">v10 Matrix<span class="count" id="v10-prox-count" title="Tickers with a locked OR window">· —</span></span>
           <span class="chip" id="v10-prox-summary" title="Closest-to-break ticker right now">—</span>
         </div>
         <div class="card-body flush" id="v10-prox-body">
