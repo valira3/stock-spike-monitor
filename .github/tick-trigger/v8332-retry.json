@@ -1,0 +1,7 @@
+{
+  "start_date": "2026-05-12",
+  "end_date": "2026-05-12",
+  "tickers": "AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL,SPY,QQQ",
+  "premarket": "false",
+  "_note": "v8.3.32 re-fire -- alpaca-py SDK auto-paginates internally when limit is not passed. v8.3.32 removes the limit=10000 that defeated the SDK's internal pagination. This trigger re-pulls 2026-05-12 ticks; n_ticks per liquid mega-cap should now be 100K-500K (not 10K). Expected runtime: ~15-30 min for paginated SIP fetch + R2 upload. On completion, tick-atr-validation auto-fires."
+}
