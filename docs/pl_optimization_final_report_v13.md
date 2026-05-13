@@ -240,9 +240,74 @@ Expected lift vs current production: **+$54,074/yr** (−$29,290 → +$24,784).
 
 ---
 
+## R14-R16 — Can the afternoon be traded at all?
+
+R12c skips entries after 11:00 ET via `ORB_TIME_CUTOFF_ET`. That leaves ~5 hours/day × 251 days idle. Three classes of afternoon strategy were tested.
+
+### R14: per-bucket forensic (no cutoff)
+
+| Bucket | n | Net | WR | $/trade |
+|---|---:|---:|---:|---:|
+| 10:00 | 117 | +$18,216 | 63% | +$156 |
+| 10:30 | 39 | +$4,591 | 59% | +$118 |
+| 11:00 | 19 | +$240 | 42% | +$13 |
+| **11:30** | 11 | **−$1,810** | 36% | −$165 |
+| 12:00 | 17 | −$3,359 | 35% | −$198 |
+| 12:30 | 14 | −$334 | 43% | −$24 |
+| 13:00-15:00 | 67 | −$6,980 | ~33% | −$104 |
+| **15:30 (EOD bracket)** | 39 | **−$3,231** | 26% | −$83 |
+
+Every bucket from 11:30 onward is net negative. Cumulative cost of no cutoff: **−$17,450** (71% of morning edge gone).
+
+### R15: afternoon-FADE mode
+
+Hypothesis: if breakouts lose in afternoon, the inverse (mean-revert) should win.
+
+| Variant | FY net | vs winner |
+|---|---:|---:|
+| **R12c morning-only** | **+$24,784** | — |
+| fade 11:00-12:30 only | +$22,847 | −$1,937 |
+| fade 11:00-15:30 (full) | +$13,305 | −$11,479 |
+| fade + mbr=15 | +$1,756 | −$23,028 |
+| fade + RR=1.5 | +$15 | −$24,769 |
+
+Fading also fails. Afternoon isn't mean-reverting — it's noise.
+
+### R16: mid-day OR (different anchor)
+
+Different measurement metric: build a fresh opening range from 12:00-12:30 ET (or other PM windows) and trade breakouts of THAT.
+
+| Variant | FY net | vs winner |
+|---|---:|---:|
+| **R12c morning-only** | **+$24,784** | — |
+| PM-OR 12:00 trade-14:00 (best PM) | +$17,572 | −$7,212 |
+| PM-OR 14:30 trade-15:30 | +$12,063 | −$12,721 |
+| PM-OR 12:00 trade-15:00 | +$10,903 | −$13,881 |
+| PM-OR 14:00 trade-15:30 | +$9,440 | −$15,344 |
+| PM-OR 13:00 trade-15:00 | +$4,272 | −$20,512 |
+| Power-hour 15:00-15:55 | −$905 | −$25,689 |
+
+Fresh anchor doesn't help. Across 6 different PM-OR windows, none come within $7K of morning-only.
+
+### What we learned
+
+1. **No directional edge** in afternoon — both breakouts (R14, R16) and fades (R15) fail.
+2. **Power-hour is the worst** — 15:00-15:55 entries WR 38%, net −$905.
+3. **Different RR / mbr / anchor doesn't fix it**.
+
+Untested (require different strategy framework, not parameter tuning):
+- Different asset class (FX, crypto, options)
+- Discretionary catalyst trades (FOMC, earnings)
+- Overnight gap-fill strategies
+- Market-making / liquidity provision
+
+For the current ORB framework on this universe and corpus, **morning-only is structural** — no afternoon strategy beats simply not trading. The levers are shipped (`ORB_AFTERNOON_FADE_ENABLED`, `ORB_PM_OR_ENABLED`) but should remain off in production.
+
+---
+
 ## Artifacts
 
-- `tools/orb_backtest.py` — R7 + R9 + R9c + R10 + R10b + R11 + R12 levers (branch `claude/r7-min-break-bps-lever`)
+- `tools/orb_backtest.py` — R7 + R9 + R9c + R10 + R10b + R11 + R12 + R13 + R15 + R16 levers (branch `claude/r7-min-break-bps-lever`)
 - `/tmp/r7_v12/` — initial v12 reproduction (matched R5 within rounding)
 - `/tmp/r7_prod/` — production-realistic baseline + ATR sweep
 - `/tmp/r9_annotated.json` — 132 T5-ticker trades with rich indicators (gap, vwap_dev, premkt_dir, OR-shape, signal-bar volume)
@@ -250,5 +315,8 @@ Expected lift vs current production: **+$54,074/yr** (−$29,290 → +$24,784).
 - `/tmp/r11/` — fenced OR-width + fenced N-bar + fenced mbr (all fail to improve R10)
 - `/tmp/r12/`, `/tmp/r12b/`, `/tmp/r12c/` — prior-day SPY regime-skip sweeps
 - `/tmp/r13/`, `/tmp/r13b/` — partial-trade + conservative-mode variants on regime-low days (all underperform full skip)
+- `/tmp/r14/` — entry-cutoff sweep showing afternoon's negative-EV cliff
+- `/tmp/r15/` — afternoon-fade mode (FLIP side post-cutoff) — fails
+- `/tmp/r16/` — mid-day OR (fresh PM anchor) — fails across 6 windows
 - This report supersedes `docs/pl_optimization_final_report_v12.md` (v12 numbers were under-baselined for ATR ON).
 

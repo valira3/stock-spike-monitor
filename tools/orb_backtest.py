@@ -416,6 +416,15 @@ class ORBConfig:
     # SHORT (price extended too far), close < OR_low means LONG.
     afternoon_fade_enabled: bool = False
     afternoon_fade_end_et: int = 15 * 60 + 30  # default 15:30 (avoid EOD)
+    # R15b mid-day OR: when enabled, build a second opening range
+    # in the afternoon (default 12:00-12:30 ET) and trade breakouts
+    # of THAT range during pm_or_end..pm_trade_end. Tests if
+    # directional breakout edge exists when measured against an
+    # afternoon anchor instead of morning OR.
+    pm_or_enabled: bool = False
+    pm_or_start_et: int = 12 * 60       # default 12:00 ET
+    pm_or_minutes: int = 30             # default 30-min PM OR
+    pm_trade_end_et: int = 15 * 60      # default 15:00 ET stop entries
     premkt_align_bps: float = 0.0         # >0: require pre-market move
                                           #     (09:00-09:29 ET) of at
                                           #     least N bps in the
@@ -543,6 +552,10 @@ class ORBConfig:
             regime_low_min_break_bps=_envf("ORB_REGIME_LOW_MIN_BREAK_BPS", 0.0),
             afternoon_fade_enabled=_envs("ORB_AFTERNOON_FADE_ENABLED", "0") == "1",
             afternoon_fade_end_et=_et_to_minutes(_envs("ORB_AFTERNOON_FADE_END_ET", "15:30")),
+            pm_or_enabled=_envs("ORB_PM_OR_ENABLED", "0") == "1",
+            pm_or_start_et=_et_to_minutes(_envs("ORB_PM_OR_START_ET", "12:00")),
+            pm_or_minutes=_envi("ORB_PM_OR_MINUTES", 30),
+            pm_trade_end_et=_et_to_minutes(_envs("ORB_PM_TRADE_END_ET", "15:00")),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
         )
 
@@ -778,6 +791,20 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             premkt_move_bps = ((pre_bars[-1].close - pre_bars[0].open)
                                / pre_bars[0].open * 10000.0)
 
+    # R15b: pm OR precompute. Build a second opening range from
+    # bars in [pm_or_start_et, pm_or_start_et + pm_or_minutes). When
+    # set, breakouts of the pm range are traded during
+    # [pm_or_end, pm_trade_end_et].
+    pm_or_high = pm_or_low = 0.0
+    pm_or_end = 0
+    if cfg.pm_or_enabled:
+        pm_or_end = cfg.pm_or_start_et + cfg.pm_or_minutes
+        pm_bars = [b for b in rth
+                   if cfg.pm_or_start_et <= b.bucket < pm_or_end]
+        if pm_bars:
+            pm_or_high = max(b.high for b in pm_bars)
+            pm_or_low = min(b.low for b in pm_bars)
+
     pairs: list[dict] = []
     trades_today = 0
 
@@ -790,15 +817,30 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         sig = candles_5m[i]
         # R14 afternoon-fade: when past the cutoff and fade mode is on,
         # keep scanning until afternoon_fade_end_et and FLIP the signal
-        # side. The breakout direction has negative EV in chop hours;
-        # the inverse (mean-revert) may extract some P&L.
+        # side.
+        # R15b pm-OR: when enabled, after pm_or_end use pm_or_high/low
+        # as the reference range; admit until pm_trade_end_et.
         is_fade_mode = False
-        if sig.bucket >= cfg.time_cutoff_et:
+        use_pm_or = False
+        if (cfg.pm_or_enabled
+                and pm_or_high > pm_or_low
+                and sig.bucket >= pm_or_end
+                and sig.bucket < cfg.pm_trade_end_et):
+            use_pm_or = True
+        if sig.bucket >= cfg.time_cutoff_et and not use_pm_or:
             if (cfg.afternoon_fade_enabled
                     and sig.bucket < cfg.afternoon_fade_end_et):
                 is_fade_mode = True
+            elif cfg.pm_or_enabled:
+                # PM window comes later; skip this bar but keep scanning.
+                continue
             else:
                 break
+
+        # Choose reference range (morning OR or pm OR)
+        ref_high = pm_or_high if use_pm_or else or_high
+        ref_low = pm_or_low if use_pm_or else or_low
+
         # Signal: close above OR_high (long) or below OR_low (short).
         # Compute break magnitude in the ORIGINAL direction before any
         # fade-mode flip; the break_bps reflects how strongly price has
@@ -806,14 +848,14 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # with or against the move).
         original_side = None
         break_bps_orig = 0.0
-        if sig.close > or_high:
+        if sig.close > ref_high:
             original_side = "long"
-            if or_high > 0:
-                break_bps_orig = (sig.close - or_high) / or_high * 10000.0
-        elif sig.close < or_low:
+            if ref_high > 0:
+                break_bps_orig = (sig.close - ref_high) / ref_high * 10000.0
+        elif sig.close < ref_low:
             original_side = "short"
-            if or_low > 0:
-                break_bps_orig = (or_low - sig.close) / or_low * 10000.0
+            if ref_low > 0:
+                break_bps_orig = (ref_low - sig.close) / ref_low * 10000.0
         if original_side is None:
             continue
         side = original_side
@@ -954,16 +996,17 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                 else:
                     stop = entry_price + cfg.atr_stop_mult * atr
             else:
-                # fallback to OR stop if ATR not yet warm
+                # fallback to OR stop if ATR not yet warm. Use active
+                # reference range (pm OR when in pm window).
                 if side == "long":
-                    stop = or_low - stop_buf
+                    stop = ref_low - stop_buf
                 else:
-                    stop = or_high + stop_buf
+                    stop = ref_high + stop_buf
         else:
             if side == "long":
-                stop = or_low - stop_buf
+                stop = ref_low - stop_buf
             else:
-                stop = or_high + stop_buf
+                stop = ref_high + stop_buf
 
         risk = abs(entry_price - stop)
         if risk <= 0.001:
