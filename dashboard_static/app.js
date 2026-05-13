@@ -2329,7 +2329,17 @@
     window.__tgRenderTickerChart = function (tkr, containerEl) {
       if (!tkr || !containerEl) return;
       try {
-        containerEl.innerHTML = _pmtxIntradayChartPanel(tkr);
+        // v9.1.12 -- idempotent mount. Pre-v9.1.12 every state poll
+        // replaced containerEl.innerHTML, which tore down the canvas
+        // and killed any mid-pan/zoom interaction (~5s window of
+        // usable interactivity, then reset). We now only rebuild the
+        // panel HTML the FIRST time -- subsequent calls just re-run
+        // hydration, which uses _intradayCache to update the payload
+        // without destroying the canvas DOM.
+        var alreadyMounted = containerEl.querySelector('[data-intraday-chart="' + tkr + '"]');
+        if (!alreadyMounted) {
+          containerEl.innerHTML = _pmtxIntradayChartPanel(tkr);
+        }
         _pmtxHydrateIntradayCharts(containerEl);
       } catch (e) { /* never break the v10 renderer */ }
     };

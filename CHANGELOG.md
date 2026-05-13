@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.12 (2026-05-13) — Fix empty Range column + chart-interactivity teardown
+
+Two operator-reported bugs, both pre-existing but surfaced by the v9 dashboard cleanup work.
+
+### Part A — "Range" column was always empty
+
+The v10 Matrix's Range column reads `cfg.range_min_pct` and `cfg.range_max_pct` from `s.v10.config` to decide whether each ticker's OR width is admissible. Both fields exist on `OrbConfig` (defaults `0.008` / `0.025`) but the engine `snapshot()` method's `config` dict never surfaced them — the dashboard always saw `undefined → null` and rendered "—" for every row. Has been broken since the proximity matrix shipped.
+
+Fix: add `range_min_pct` / `range_max_pct` to `OrbEngine.snapshot().config` (`orb/engine.py`). Now the column renders `✓` for admissible widths and `✕` for too-tight/too-wide bands with a tooltip explaining the failure.
+
+### Part B — Chart interactivity reset every ~5 seconds
+
+`window.__tgRenderTickerChart(tkr, containerEl)` rebuilt `containerEl.innerHTML` on every call. The position-row chart hydration (v9.1.9) and the proximity expansion both call it on every state poll (~5 s cadence). So every five seconds the chart's canvas DOM element was torn down and recreated. The user's pan/zoom view state survived via `_chartViewByTkr` but any **mid-drag interaction** died — the new canvas had no `_drag` state, and the user's mouse-down was orphaned on a now-detached element.
+
+Fix: idempotent mount. The function now checks whether the `containerEl` already has a `[data-intraday-chart="<tkr>"]` mount inside it. If so, skip the `innerHTML` rebuild and only re-run hydration. Hydration's existing path (`_pmtxHydrateIntradayCharts`) does an in-place redraw via `_drawIntradayChart` against the persistent canvas, and `_wireIntradayChartInteraction` early-returns on the `_vs.wired` sentinel — so the user's drag handlers stay live across state polls.
+
+957 strategy tests pass.
+
+---
+
 ## v9.1.11 (2026-05-13) — Combine v10 Proximity + v10 Ticker Matrix into one "v10 Matrix" section
 
 Operator asked: "Do we need v10 proximity and v10 ticker matrix separately? Can we combine those 2 concepts into one section (apply across all tabs)". Audit confirmed the v10 Ticker Matrix surfaced a strict subset of what v10 Proximity already shows — FSM phase per pid + per-(ticker, pid) trades-today count — duplicated as a parallel section above Proximity on the Main tab. Removing the duplication.
