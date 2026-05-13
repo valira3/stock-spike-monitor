@@ -13,11 +13,13 @@ Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 
 
 **EOD reversal addon path** (v9.1.0+):
 - **Module**: `orb/eod_reversal.py` (`EodReversalEngine`, independent from `OrbEngine`)
-- **Entry**: `engine/scan.py:_eod_reversal_pass` invoked once per scan cycle. At 15:30 ET fires top-1/top-1 long/short selection on `ORB_EOD_UNIVERSE` (default `ORCL,AAPL,MSFT,AVGO,NFLX`). At 15:59 ET flattens.
+- **Entry**: `engine/scan.py:_eod_reversal_pass` invoked once per scan cycle. After `ORB_EOD_ENTRY_ET` (default `15:00`) and before `ORB_EOD_EXIT_ET` (default `15:59`) fires top-1/top-1 long/short selection on `ORB_EOD_UNIVERSE` (default `ORCL,AAPL,MSFT,AVGO,NFLX`). At exit minute flattens.
+- **Entry-window semantics (v9.1.22+)**: `is_entry_window` returns True for the entire range `[entry_et, exit_et)`, NOT a single minute. Pre-v9.1.22 was a single-minute trap that lost a trade when any deploy / cron miss / restart pushed `cur_min` past the entry tick.
 - **Selection**: per-side fence via `ORB_EOD_LONG_TICKERS` + `ORB_EOD_SHORT_TICKERS`. Drops "retail-momentum" mega-caps (META, GOOG, TSLA, AMZN, NVDA) which fail the reversal pattern per R17 forensic.
 - **Sizing**: 35% notional per leg (fixed, not stop-based).
-- **Broker fire gate**: `ORB_EOD_FIRE_BROKER=0` (default) keeps it in paper-fire-observation mode — engine tracks positions + P&L for the dashboard but doesn't place real orders. Flip to `1` after 5+ clean paper days.
-- **Forensic**: `[V910-EOD-RESET/ENTRY/EXIT/FIRE/CLOSE-FIRE/NO-SIGNAL]`.
+- **Broker fire gate**: `ORB_EOD_FIRE_BROKER` defaults to **True since v9.1.1** — engine fires real broker orders through the standard executor surface. Operator can flip to `0` in Railway env (no redeploy required) to revert to paper-fire-observation.
+- **Legacy paper-book EOD flush (v9.1.23)**: `broker/lifecycle.py:eod_close` now runs at `15:59:59 ET` (was `15:49:59`). The earlier timing would have preempted EOD-reversal LONGs entered between 15:00 and 15:49 — caught before the first successful admit so no real loss.
+- **Forensic**: `[V910-EOD-RESET/ENTRY/EXIT/FIRE/CLOSE-FIRE/NO-SIGNAL]` + `[V910-EOD] pass failed` wrapper (silent-failure pattern that hid three compound bugs through v9.1.20-22 — audit this tag explicitly).
 - **Backtest backing**: docs/r17_afternoon_backtest_report.md (combined v9 morning + v9.1 EOD = $+29,386/yr / +18.6% over v9 alone / 0/5 neg quarters).
 
 ## Where things live
@@ -38,8 +40,8 @@ Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 
 - Tiger Sovereign Phase 1–4 weather check + Permit Matrix UI — hidden v7.27.0 via `body.v10-live`; physical deletion pending
 
 ## Mandatory PR rules
-- Bump `BOT_VERSION` in `bot_version.py` AND mirror in `trade_genius.py`
-- Add new heading `## v7.x.y — <date>` at TOP of `CHANGELOG.md`
+- Bump `BOT_VERSION` in `bot_version.py` AND mirror in `trade_genius.py` (current line: `BOT_VERSION = "9.1.24"`)
+- Add new heading `## v9.x.y — <date>` at TOP of `CHANGELOG.md`
 - Update `ARCHITECTURE.md` if behavior changes
 - Update `trade_genius_algo.pdf` ONLY when algo text changes (most PRs do not)
 - Git author: `git -c user.email=valira3@gmail.com -c user.name=valira3 commit -F /tmp/commit_msg.txt`
@@ -54,10 +56,15 @@ Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 
 
 - **Major-version releases (added v9.0.0).** When the operator requests a major release (vN.0.0 from vN-1.x.x) or "build and deploy in a loop", follow the 7-step checklist in `.claude/skills/major-build/SKILL.md`: (1) UI parity across Main+Val+Gene, (2) all levers ON by default, (3) code-quality + algorithm correctness audit, (4) smoke tests work locally + post-deploy, (5) data fully filled with fail-open + auto-rebuild on missing, (6) state persists across restart/redeploy (or naturally re-derivable), (7) iterate on PR until CI + post-deploy-smoke both green. The skill codifies the v9.0.0 template; subsequent major releases extend it as new patterns emerge.
 
-## GHA-driven backtest via lever-sweep (added v8.3.26)
+## GHA-driven backtest via lever-sweep (added v8.3.26, external playbook v9.1.24)
 
 When the operator asks for a multi-day or full-year backtest of a new
-theory, **do not build parallel infrastructure**. The existing path:
+theory, **do not build parallel infrastructure**. Two complementary docs:
+
+- `.claude/skills/gha-backtest-lever-sweep/SKILL.md` — for Claude Code (sandbox-side) driving the flow.
+- `docs/BACKTEST_PLAYBOOK_EXTERNAL.md` (v9.1.24) — same flow for an operator working from Perplexity Comet / generic browser / curl / mobile, with no local environment.
+
+The existing path:
 
 1. **Corpus lives on `data-extensions/rth-expand` branch.** Bar files
    at `data/<YYYY-MM-DD>/<TICKER>.jsonl`. Backfill missing dates by
@@ -99,20 +106,24 @@ top-of-file docstrings AND in `docs/pl_optimization_final_report_v12.md`
 (currently v12). v8.3.26's R6 results will land in v13 after the
 sweep runs.
 
-## Retrieving live state from sandbox (added v8.3.24)
+## Retrieving live state from sandbox (updated v9.1.18 — unified monitor)
 
-The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `snapshots-live` branch via the GitHub MCP:
+The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `monitor-live` branch via the GitHub MCP:
 
 ```
 mcp__github__get_file_contents(
     owner="valira3", repo="stock-spike-monitor",
-    path="data/snapshots/latest.json", ref="snapshots-live"
+    path="data/monitor/latest.json", ref="monitor-live"
 )
 ```
 
-The cron workflow `.github/workflows/state-snapshot.yml` updates `latest.json` every 10 min during US RTH (Mon-Fri, 13:00-21:00 UTC) by running `python -m tools.state_snapshot` against `/api/state` + `/api/executor/val` + `/api/executor/gene`. Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl`.
+The cron workflow `.github/workflows/monitor.yml` updates `latest.json` every 5 min during US RTH by running `python -m tools.unified_monitor` against dashboard endpoints + Alpaca account + Railway logs + invariants — all four data-collection roles + alerting in a single workflow. Daily JSONL history at `data/monitor/YYYY-MM-DD.jsonl`. Telegram-alerts the TP chat on invariant failure.
 
-For an immediate refresh outside the cron window: Actions tab -> state-snapshot -> Run workflow (`workflow_dispatch`).
+For an immediate refresh outside the cron window: Actions tab -> monitor -> Run workflow (`workflow_dispatch`).
+
+**Retired pre-v9.1.18 (do not reference):** `state-snapshot.yml` (→ `snapshots-live` branch), `alpaca-snapshot.yml` (→ `alpaca-live` branch), `dashboard-monitor.yml`. All three were consolidated into the unified monitor. The legacy branches still exist for historical lookup but `monitor-live` is the live source of truth.
+
+The `.claude/skills/state-snapshot-retrieval` skill codifies the full retrieval recipe (live JSON + Alpaca + Railway logs + invariants) — invoke it via the Skill tool when the operator asks for "live state" or "what is the bot doing right now".
 
 ## Operator preferences
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
@@ -149,8 +160,17 @@ v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow 
 - v10 live-mode kill switch: `ORB_LIVE_MODE=0` reverts to legacy. Leave on `1` in production.
 
 ## PR submission
-- `gh pr create --title "v7.x.y: <summary>" --body-file /tmp/pr_body.md`
+- `gh pr create --title "v9.x.y: <summary>" --body-file /tmp/pr_body.md`
 - `gh pr merge <N> --squash --admin` after CI passes
+- In this Claude Code environment, use the GitHub MCP equivalents (`mcp__github__create_pull_request`, `mcp__github__merge_pull_request`) instead of the `gh` CLI — the CLI is not on PATH.
+
+## Claude-specific skills (`.claude/skills/`)
+
+Invoke via the Skill tool when the trigger matches:
+- **`major-build`** — 7-step checklist for vN.0.0 major releases ("build and deploy in a loop"). Codifies the v9.0.0 template.
+- **`gha-backtest-lever-sweep`** — multi-day / full-year backtest via the `lever-sweep` GHA + `tools/orb_backtest.py` + `docs/research/r<N>_*.py` chain.
+- **`state-snapshot-retrieval`** — pull live dashboard / Alpaca / Railway log state from the `monitor-live` branch.
+- **`replay-fidelity-investigation`** — when live PnL diverges from `orb_replay` backtest, end-to-end diagnosis recipe distilled from the v8.3.28-v8.3.33 investigation.
 
 ## Saturday weekly report
 RETIRED in v5.14.0. `scripts/saturday_weekly_report.py` and the cron `873854a1` were both deleted with the shadow strategy. The bar archive at `/data/bars/YYYY-MM-DD/<TICKER>.jsonl` and the live-engine forensic logs (`[V79-ORB-ENTRY]`, `[V79-ORB-EXIT]`, `[V10-FIRE]`, `[ENTRY]`, `[TRADE_CLOSED]`, etc.) remain available for any future weekly-report harness. The replacement should consume `trade_log.jsonl` for actual entries.
