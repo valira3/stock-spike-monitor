@@ -5835,13 +5835,22 @@
     var killWorstRealized = 0;
     var killWorstThreshold = 0;
     var anyKillTriggered = false;
+    // v9.1.4 -- track the worst pid even when no loss has happened yet
+    // so the gauge stays visible at $0 framing. Pre-v9.1.4 Main only
+    // rendered the gauge once realized P&L went negative, while
+    // Val/Gene's renderV10PerPortfolio always rendered when the
+    // threshold was configured -- visible cross-tab parity break.
     pidsScope.forEach(function (pid) {
       var b = rb[pid] || {};
       var thr = b.daily_kill_threshold || 0;
       var realized = b.realized_pnl_today || 0;
-      if (thr > 0 && realized < 0) {
-        var pct = Math.abs(realized) / thr * 100;
-        if (pct > killWorstPct) {
+      if (thr > 0) {
+        var pct = realized < 0 ? Math.abs(realized) / thr * 100 : 0;
+        // Prefer the pid with the highest loss pct. If no losses yet,
+        // fall back to the first pid with a configured threshold so the
+        // gauge stays on screen with empty $0 / -$X framing.
+        if (pct > killWorstPct ||
+            (killWorstPid === null && pct === 0)) {
           killWorstPct = pct;
           killWorstPid = pid;
           killWorstRealized = realized;
@@ -5885,7 +5894,10 @@
        + ' (' + riskPct.toFixed(0) + '%)',
       riskPct
     );
-    if (killWorstPct > 0 || anyKillTriggered) {
+    // v9.1.4 -- render whenever ANY pid has a configured threshold,
+    // matching Val/Gene's renderV10PerPortfolio gate. Empty gauge
+    // shows $0 / -$thr (0%) until a loss actually happens.
+    if (killWorstThreshold > 0) {
       // v7.57.0 -- when scoped to one pid, the "worst pid" framing is
       // misleading; just say "Daily-kill" for the single book.
       var killLabel = pidFilter ? 'Daily-kill' : 'Daily-kill (worst pid)';
