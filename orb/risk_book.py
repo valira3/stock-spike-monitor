@@ -61,7 +61,9 @@ class RiskBook:
                  max_concurrent_risk_dollars: float = 2000.0,
                  equity: float = 100000.0,
                  max_concurrent_notional_mult: float = 2.0,
-                 daily_loss_kill_pct: float = 2.0) -> None:
+                 daily_loss_kill_pct: float = 2.0,
+                 loss_lock_threshold_usd: float = 0.0,
+                 peak_dd_halt_usd: float = 0.0) -> None:
         self.portfolio_id = portfolio_id
         self._max_risk = float(max_concurrent_risk_dollars)
         self._equity = float(equity)
@@ -73,6 +75,16 @@ class RiskBook:
         self._open_notional: float = 0.0
         self._open_tickets: dict[str, _Ticket] = {}
         self._lock = threading.RLock()
+        # v8.3.34 -- day-end-giveback defenses (R6 sweep winners).
+        # Both default 0 = off. Operator turns on via Railway env:
+        #   ORB_LOSS_LOCK_THRESHOLD_USD=150  (Rule #1 -- per-(ticker,
+        #     side) lock after a losing leg)
+        #   ORB_PEAK_DD_HALT_USD=500         (Rule #2 -- halt new
+        #     entries when realized PnL drops $500 below day's peak)
+        self._loss_lock_threshold_usd = float(loss_lock_threshold_usd)
+        self._peak_dd_halt_usd = float(peak_dd_halt_usd)
+        self._locked_pairs: dict[tuple[str, str], float] = {}
+        self._peak_pnl_today: float = 0.0
         # Telemetry:
         self.admit_count: int = 0
         self.reject_count: int = 0
@@ -142,16 +154,37 @@ class RiskBook:
         with self._lock:
             return self._session_start_equity * self._daily_loss_kill_pct / 100.0
 
-    def record_realized_pnl(self, pnl_dollars: float) -> bool:
+    def record_realized_pnl(self, pnl_dollars: float,
+                            *,
+                            ticker: Optional[str] = None,
+                            side: Optional[str] = None) -> bool:
         """Accumulate a realized P&L into today's running total.
 
         Returns True if THIS exit caused the daily-kill threshold to
         cross (was-above, is-below). Used by the engine to log the
         transition once.
+
+        v8.3.34 -- when ``ticker`` and ``side`` are supplied AND
+        ``loss_lock_threshold_usd > 0``, a leg with pnl below
+        ``-threshold`` adds (ticker, side) to ``_locked_pairs`` so
+        future ``try_admit`` calls for that pair are rejected with
+        reason ``pair_locked``. Also tracks running peak realized
+        PnL for the peak-DD halt rule.
         """
+        import time as _t
         with self._lock:
             was_killed = self.daily_kill_triggered
-            self._realized_pnl_today += float(pnl_dollars)
+            pnl = float(pnl_dollars)
+            self._realized_pnl_today += pnl
+            # v8.3.34 -- update peak for Rule #2 (peak-DD halt)
+            if self._realized_pnl_today > self._peak_pnl_today:
+                self._peak_pnl_today = self._realized_pnl_today
+            # v8.3.34 -- Rule #1 lock on big loss
+            if (self._loss_lock_threshold_usd > 0
+                    and ticker is not None and side is not None
+                    and pnl < -self._loss_lock_threshold_usd):
+                self._locked_pairs[(str(ticker), str(side))] = _t.time()
+            # Daily-loss kill transition (pre-existing logic).
             if not was_killed:
                 threshold = self._session_start_equity * self._daily_loss_kill_pct / 100.0
                 if threshold > 0 and self._realized_pnl_today <= -threshold:
@@ -170,19 +203,29 @@ class RiskBook:
     def try_admit(self,
                   risk_dollars: float,
                   notional: float,
-                  reason_hint: str = "") -> Optional[_Ticket]:
+                  reason_hint: str = "",
+                  *,
+                  ticker: Optional[str] = None,
+                  side: Optional[str] = None) -> Optional[_Ticket]:
         """Attempt to admit a new position. Returns a ticket on success,
         None on rejection.
 
         Atomically:
-          1. If open_risk + risk_dollars > max_risk: REJECT (risk_cap)
-          2. If open_notional + notional > max_notional: REJECT (notional_cap)
-          3. Else: increment counters, create ticket, return it.
+          1. If daily-kill triggered: REJECT (daily_kill)
+          2. v8.3.34: If (ticker, side) in _locked_pairs: REJECT (pair_locked)
+          3. v8.3.34: If realized PnL has dropped peak_dd_halt_usd below
+             today's peak: REJECT (peak_dd_halt)
+          4. If open_risk + risk_dollars > max_risk: REJECT (risk_cap)
+          5. If open_notional + notional > max_notional: REJECT (notional_cap)
+          6. Else: increment counters, create ticket, return it.
 
         Caller MUST call release(ticket) when the position closes. Failing
-        to release will block future admissions. Use a try/finally pattern
-        or wrap in a context manager (not provided here to keep deps
-        minimal; positions module does the bookkeeping).
+        to release will block future admissions.
+
+        v8.3.34 -- ``ticker`` and ``side`` parameters are used to check
+        the per-pair loss-lock from Rule #1. They are optional for
+        backwards compatibility; when omitted, the lock-pair check is
+        skipped (acts as it did pre-v8.3.34).
         """
         with self._lock:
             if risk_dollars < 0 or notional < 0:
@@ -198,6 +241,27 @@ class RiskBook:
                     f"<= -${self._session_start_equity * self._daily_loss_kill_pct / 100.0:.2f})"
                 )
                 return None
+            # v8.3.34 Rule #1 -- per-(ticker, side) loss-lock.
+            if (self._loss_lock_threshold_usd > 0
+                    and ticker is not None and side is not None
+                    and (str(ticker), str(side)) in self._locked_pairs):
+                self.reject_count += 1
+                self.last_reject_reason = (
+                    f"pair_locked ({ticker} {side}) -- prior leg "
+                    f"loss exceeded -${self._loss_lock_threshold_usd:.0f}"
+                )
+                return None
+            # v8.3.34 Rule #2 -- peak-drawdown halt.
+            if self._peak_dd_halt_usd > 0:
+                dd = self._peak_pnl_today - self._realized_pnl_today
+                if dd >= self._peak_dd_halt_usd:
+                    self.reject_count += 1
+                    self.last_reject_reason = (
+                        f"peak_dd_halt (realized ${self._realized_pnl_today:.2f} "
+                        f"<= peak ${self._peak_pnl_today:.2f} - "
+                        f"${self._peak_dd_halt_usd:.0f})"
+                    )
+                    return None
             new_risk = self._open_risk + risk_dollars
             new_notional = self._open_notional + notional
             if new_risk > self._max_risk + 0.005:  # tiny epsilon for fp noise
@@ -378,6 +442,9 @@ class RiskBook:
             self._realized_pnl_today = 0.0
             self.daily_kill_triggered = False
             self._session_start_equity = self._equity
+            # v8.3.34 -- clear daily-scoped rules state too.
+            self._locked_pairs.clear()
+            self._peak_pnl_today = 0.0
 
     # --- snapshot (for /api/state) ---
 
@@ -409,6 +476,14 @@ class RiskBook:
                 "daily_kill_threshold": kill_threshold,
                 "daily_kill_triggered": self.daily_kill_triggered,
                 "daily_loss_kill_pct": self._daily_loss_kill_pct,
+                # v8.3.34: day-end-giveback defense telemetry
+                "loss_lock_threshold_usd": self._loss_lock_threshold_usd,
+                "peak_dd_halt_usd": self._peak_dd_halt_usd,
+                "locked_pairs": [list(k) for k in self._locked_pairs.keys()],
+                "peak_pnl_today": self._peak_pnl_today,
+                "current_dd_from_peak": max(
+                    0.0, self._peak_pnl_today - self._realized_pnl_today,
+                ),
             }
 
 
