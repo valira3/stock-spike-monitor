@@ -390,8 +390,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     try:
         if not _orb_runtime._bootstrapped:
             _orb_runtime.bootstrap()
-            logger.info("[V79-ORB-WIRED] live=%s bootstrap=ok",
-                        _orb_runtime.is_live_mode_on())
+            logger.info("[V79-ORB-WIRED] live=%s bootstrap=ok", _orb_runtime.is_live_mode_on())
     except Exception as _e:
         logger.warning("[V79-ORB-WIRED] bootstrap failed: %s", _e)
     try:
@@ -404,22 +403,24 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
             _vix_d1 = None
             try:
                 from tools.orb_vix_loader import (
-                    load_vix_closes, vix_close_for,
+                    load_vix_closes,
+                    vix_close_for,
                 )
+
                 _vix_csv = "data/external/vix-daily.csv"
                 _vix_dict = load_vix_closes(_vix_csv)
                 _vix_d1 = vix_close_for(_vix_dict, [_date_iso], _date_iso)
             except Exception:
                 _vix_d1 = None
-            _opens = {tk: getattr(tg, "_session_open", {}).get(tk)
-                      for tk in _scan_universe}
-            _pdc = {tk: tg.pdc.get(tk) if hasattr(tg, "pdc") else None
-                    for tk in _scan_universe}
+            _opens = {tk: getattr(tg, "_session_open", {}).get(tk) for tk in _scan_universe}
+            _pdc = {tk: tg.pdc.get(tk) if hasattr(tg, "pdc") else None for tk in _scan_universe}
             try:
                 from engine.portfolio_book import (
-                    PORTFOLIOS, ALL_PORTFOLIO_IDS,
+                    PORTFOLIOS,
+                    ALL_PORTFOLIO_IDS,
                 )
                 from engine.portfolio_equity import resolve_equity
+
                 _eq = {}
                 for pid in ALL_PORTFOLIO_IDS:
                     book = PORTFOLIOS.get(pid)
@@ -548,6 +549,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     # counter to 0 even when the broker had real trades that day.
     try:
         from orb import live_runtime as _lr_persist
+
         _lr_persist.persist_engine_state()
     except Exception:
         logger.debug("[V834-PERSIST] cycle dump raised (non-fatal)")
@@ -560,9 +562,9 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     )
 
 
-def _maybe_backfill_or_window(callbacks: EngineCallbacks,
-                              now_et: datetime,
-                              scan_universe: list) -> None:
+def _maybe_backfill_or_window(
+    callbacks: EngineCallbacks, now_et: datetime, scan_universe: list
+) -> None:
     """v7.74.0 -- replay historical 09:30-09:59 ET 1m bars into the
     ORB engine for each ticker, then feed one post-OR bar so the
     window locks.
@@ -584,6 +586,7 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
     v7.73.0 post-window-bar fallback if 09:59 is missing.
     """
     from orb.engine import OrbConfig
+
     cfg = OrbConfig()  # default; or_start=570 (09:30), or_end=600 (10:00)
     or_start = cfg.session_start_minutes
     or_end = cfg.or_end_minutes
@@ -593,7 +596,10 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
         return
     logger.info(
         "[V79-ORB-BACKFILL] start cur_min=%d or_start=%d or_end=%d tickers=%d",
-        cur_min, or_start, or_end, len(scan_universe),
+        cur_min,
+        or_start,
+        or_end,
+        len(scan_universe),
     )
     backfilled = 0
     locked = 0
@@ -624,8 +630,7 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
                 continue
             if bucket < or_start or bucket >= or_end:
                 continue
-            if not (i < len(opens) and i < len(highs) and i < len(lows)
-                    and i < len(closes)):
+            if not (i < len(opens) and i < len(highs) and i < len(lows) and i < len(closes)):
                 continue
             o, h, l, c = opens[i], highs[i], lows[i], closes[i]
             if None in (o, h, l, c):
@@ -634,15 +639,16 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
             try:
                 _orb_runtime.feed_bar(
                     ticker=ticker,
-                    bar_high=float(h), bar_low=float(l),
-                    bar_open=float(o), bar_close=float(c),
+                    bar_high=float(h),
+                    bar_low=float(l),
+                    bar_open=float(o),
+                    bar_close=float(c),
                     bar_volume=float(v or 0.0),
                     bar_bucket_min=bucket,
                 )
                 fed_in_window += 1
             except Exception as _fe:
-                logger.warning("[V79-ORB-BACKFILL] feed_bar %s b=%d: %s",
-                               ticker, bucket, _fe)
+                logger.warning("[V79-ORB-BACKFILL] feed_bar %s b=%d: %s", ticker, bucket, _fe)
         if fed_in_window == 0:
             continue
         backfilled += 1
@@ -657,8 +663,7 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
                 continue
             if bucket < or_end:
                 continue
-            if not (i < len(opens) and i < len(highs) and i < len(lows)
-                    and i < len(closes)):
+            if not (i < len(opens) and i < len(highs) and i < len(lows) and i < len(closes)):
                 continue
             o, h, l, c = opens[i], highs[i], lows[i], closes[i]
             if None in (o, h, l, c):
@@ -667,25 +672,27 @@ def _maybe_backfill_or_window(callbacks: EngineCallbacks,
             try:
                 _orb_runtime.feed_bar(
                     ticker=ticker,
-                    bar_high=float(h), bar_low=float(l),
-                    bar_open=float(o), bar_close=float(c),
+                    bar_high=float(h),
+                    bar_low=float(l),
+                    bar_open=float(o),
+                    bar_close=float(c),
                     bar_volume=float(v or 0.0),
                     bar_bucket_min=bucket,
                 )
                 locked += 1
             except Exception as _fe:
-                logger.warning("[V79-ORB-BACKFILL] post-bar %s b=%d: %s",
-                               ticker, bucket, _fe)
+                logger.warning("[V79-ORB-BACKFILL] post-bar %s b=%d: %s", ticker, bucket, _fe)
             break  # one post-window bar is enough to trigger lock
     logger.info(
         "[V79-ORB-BACKFILL] done backfilled_tickers=%d locked_tickers=%d",
-        backfilled, locked,
+        backfilled,
+        locked,
     )
 
 
-def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
-                                now_et: datetime,
-                                scan_universe: list) -> None:
+def _orb_post_or_backfill_sweep(
+    callbacks: EngineCallbacks, now_et: datetime, scan_universe: list
+) -> None:
     """v8.3.0 -- per-cycle automatic OR backfill.
 
     Runs on every scan cycle (not just the first after a fresh
@@ -710,6 +717,7 @@ def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
     counts them as skipped without doing any fetch work.
     """
     from orb.engine import OrbConfig
+
     cfg = OrbConfig()
     cur_min = now_et.hour * 60 + now_et.minute
     if cur_min < cfg.or_end_minutes:
@@ -753,15 +761,13 @@ def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
                 bucket = minutes_since_et_midnight(int(ts))
             except Exception:
                 continue
-            if not (i < len(opens) and i < len(highs) and i < len(lows)
-                    and i < len(closes)):
+            if not (i < len(opens) and i < len(highs) and i < len(lows) and i < len(closes)):
                 continue
             o, h, lo, c = opens[i], highs[i], lows[i], closes[i]
             if None in (o, h, lo, c):
                 continue
             v = volumes[i] if i < len(volumes) else 0.0
-            rows.append((bucket, float(h), float(lo), float(o),
-                         float(c), float(v or 0.0)))
+            rows.append((bucket, float(h), float(lo), float(o), float(c), float(v or 0.0)))
         if rows:
             bars_by_ticker[ticker] = rows
     if not bars_by_ticker:
@@ -772,11 +778,12 @@ def _orb_post_or_backfill_sweep(callbacks: EngineCallbacks,
     )
     if result and (result.get("backfilled") or result.get("locked")):
         logger.info(
-            "[V83-OR-BACKFILL] sweep cur_min=%d backfilled=%d locked=%d "
-            "skipped=%d failed=%d",
+            "[V83-OR-BACKFILL] sweep cur_min=%d backfilled=%d locked=%d skipped=%d failed=%d",
             cur_min,
-            result.get("backfilled", 0), result.get("locked", 0),
-            result.get("skipped", 0), result.get("failed", 0),
+            result.get("backfilled", 0),
+            result.get("locked", 0),
+            result.get("skipped", 0),
+            result.get("failed", 0),
         )
 
 
@@ -815,6 +822,7 @@ def _orb_phantom_sweep(tg) -> None:
     # path mirrors long+short into the same dict per v7.0.0 design).
     try:
         from executors.bootstrap import get_executor
+
         for pid in ("val", "gene"):
             ex = get_executor(pid)
             if ex is not None:
@@ -835,6 +843,7 @@ def _orb_phantom_sweep(tg) -> None:
         else:
             try:
                 from executors.bootstrap import get_executor
+
                 ex = get_executor(pid)
                 if ex is not None:
                     ex._unmirror_position_from_engine(ticker)
@@ -842,12 +851,14 @@ def _orb_phantom_sweep(tg) -> None:
             except Exception:
                 logger.debug(
                     "[V8315-PHANTOM-SWEEP] could not unmirror %s/%s",
-                    pid, ticker,
+                    pid,
+                    ticker,
                 )
     if cleared:
         logger.warning(
             "[V8315-PHANTOM-SWEEP] cleared %d phantom IN_POS row(s): %s",
-            len(cleared), cleared,
+            len(cleared),
+            cleared,
         )
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
     # RiskBook._open_tickets where the FSM in_position is False but
@@ -870,12 +881,15 @@ def _orb_phantom_sweep(tg) -> None:
                 ticket_cleared.append((pid, ticker))
         except Exception:
             logger.debug(
-                "[V8320-TICKET-SWEEP] release failed %s/%s", pid, tid,
+                "[V8320-TICKET-SWEEP] release failed %s/%s",
+                pid,
+                tid,
             )
     if ticket_cleared:
         logger.warning(
-            "[V8320-TICKET-SWEEP] released %d phantom recover-* "
-            "ticket(s): %s", len(ticket_cleared), ticket_cleared,
+            "[V8320-TICKET-SWEEP] released %d phantom recover-* ticket(s): %s",
+            len(ticket_cleared),
+            ticket_cleared,
         )
 
 
@@ -957,9 +971,13 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         _bar_low = canon_bar["low"]
                         _bar_close = canon_bar["close"]
                         _bar_vol = canon_bar.get("iex_volume") or 0.0
-                        if (_bar_open is not None and _bar_high is not None
-                                and _bar_low is not None
-                                and _bar_close is not None and ts_val is not None):
+                        if (
+                            _bar_open is not None
+                            and _bar_high is not None
+                            and _bar_low is not None
+                            and _bar_close is not None
+                            and ts_val is not None
+                        ):
                             _bucket_min = minutes_since_et_midnight(int(ts_val))
                             _orb_runtime.feed_bar(
                                 ticker=ticker,
@@ -972,7 +990,9 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                             )
                     except Exception as _orb_e:
                         logger.warning(
-                            "[V79-ORB-FEED] %s: %s", ticker, _orb_e,
+                            "[V79-ORB-FEED] %s: %s",
+                            ticker,
+                            _orb_e,
                         )
                     # v5.26.2 \u2014 per-minute forensic indicator snapshot.
                     # Pulls the same DI/ADX/RSI streams the gate stack will
@@ -1132,6 +1152,7 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
     # Tier 1: portfolio_equity (Alpaca-first for Val/Gene)
     try:
         from engine.portfolio_equity import resolve_equity
+
         eq = float(resolve_equity(portfolio_id))
         if eq > 0:
             return eq
@@ -1140,6 +1161,7 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
     # Tier 2: PortfolioBook current_equity (correct for Main)
     try:
         from engine.portfolio_book import PORTFOLIOS
+
         book = PORTFOLIOS.get(portfolio_id)
         if book is not None:
             eq = float(book.current_equity())
@@ -1151,10 +1173,15 @@ def _resolve_portfolio_equity(tg, portfolio_id: str = "main") -> float:
     return float(getattr(tg, "paper_cash", 100_000.0))
 
 
-def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
-                                price: float, shares: int,
-                                callbacks: "EngineCallbacks | None" = None,
-                                ) -> bool:
+def _v10_dispatch_executor_fire(
+    *,
+    pid: str,
+    side: str,
+    ticker: str,
+    price: float,
+    shares: int,
+    callbacks: "EngineCallbacks | None" = None,
+) -> bool:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
     Production-safe rollout: gated on BOTH ORB_LIVE_MODE and
@@ -1179,7 +1206,9 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire suppressed "
             "(ORB_LIVE_MODE=0; kill switch active)",
-            pid, side, ticker,
+            pid,
+            side,
+            ticker,
         )
         return False
     # v8.3.23 -- env default flipped "0" -> "1". Independent mode
@@ -1191,16 +1220,22 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         logger.info(
             "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
             "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
-            pid, side, ticker,
+            pid,
+            side,
+            ticker,
         )
         return False
     try:
         from executors.bootstrap import get_executor
+
         ex = get_executor(pid)
     except Exception as e:
         logger.warning(
             "[V79-ORB-FIRE] %s %s %s get_executor raised: %s",
-            pid, side, ticker, e,
+            pid,
+            side,
+            ticker,
+            e,
         )
         if callbacks is not None:
             try:
@@ -1216,9 +1251,10 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         return False
     if ex is None:
         logger.info(
-            "[V79-ORB-FIRE] %s %s %s -- no executor instance "
-            "(keys unset); admission tracked only",
-            pid, side, ticker,
+            "[V79-ORB-FIRE] %s %s %s -- no executor instance (keys unset); admission tracked only",
+            pid,
+            side,
+            ticker,
         )
         return False
 
@@ -1227,32 +1263,31 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
     # pipeline so Telegram/dashboard see them.
     _err_cb = None
     if callbacks is not None:
-        def _err_cb(name: str, side2: str, ticker2: str, shares2: int,
-                    exc: Exception) -> None:
+
+        def _err_cb(name: str, side2: str, ticker2: str, shares2: int, exc: Exception) -> None:
             try:
                 callbacks.report_error(
                     executor=pid,
                     code="V10_BROKER_FIRE_FAILED",
                     severity="error",
                     summary=f"v10 broker fire failed: {name} {side2} {ticker2}",
-                    detail=(
-                        f"{type(exc).__name__}: {str(exc)[:200]} "
-                        f"(qty={shares2}, pid={pid})"
-                    ),
+                    detail=(f"{type(exc).__name__}: {str(exc)[:200]} (qty={shares2}, pid={pid})"),
                 )
             except Exception:
                 logger.exception("[V79-ORB-FIRE] report_error failed")
 
     try:
         if side == "long":
-            ok = ex.fire_long(ticker, float(price), int(shares),
-                              error_callback=_err_cb)
+            ok = ex.fire_long(ticker, float(price), int(shares), error_callback=_err_cb)
         else:
-            ok = ex.fire_short(ticker, float(price), int(shares),
-                               error_callback=_err_cb)
+            ok = ex.fire_short(ticker, float(price), int(shares), error_callback=_err_cb)
         logger.info(
             "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
-            pid, side, ticker, int(shares), ok,
+            pid,
+            side,
+            ticker,
+            int(shares),
+            ok,
         )
         return bool(ok)
     except Exception as e:
@@ -1263,7 +1298,11 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
         # log even when callbacks is None.
         logger.error(
             "[V79-ORB-FIRE] %s %s %s fire raised %s: %s",
-            pid, side, ticker, type(e).__name__, e,
+            pid,
+            side,
+            ticker,
+            type(e).__name__,
+            e,
             exc_info=True,
         )
         if callbacks is not None:
@@ -1281,7 +1320,8 @@ def _v10_dispatch_executor_fire(*, pid: str, side: str, ticker: str,
 
 
 def _load_eod_prior_closes(
-    date_iso: str, universe: tuple[str, ...] | list[str],
+    date_iso: str,
+    universe: tuple[str, ...] | list[str],
 ) -> dict[str, float]:
     """v9.1.25 -- extracted helper for the EOD reversal prior-close
     lookup. Reads the bar archive at /data/bars/<D-n>/<TICKER>.jsonl
@@ -1306,6 +1346,7 @@ def _load_eod_prior_closes(
         import json as _json
         from datetime import timedelta as _td
         from datetime import datetime as _dt
+
         root = _Path("/data/bars")
         for tk in universe:
             if tk in prior_closes:
@@ -1370,6 +1411,7 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
     try:
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         date_iso = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
         eod.reset_for_session(date_iso)
     except Exception:
@@ -1386,8 +1428,7 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                 bars = None
             if not bars:
                 continue
-            px = (bars.get("current_price")
-                  or (bars.get("closes") or [None])[-1])
+            px = bars.get("current_price") or (bars.get("closes") or [None])[-1]
             if isinstance(px, (int, float)) and px > 0:
                 current_prices[tk] = float(px)
         # Prior-session closes from the production bar archive.
@@ -1398,17 +1439,21 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
         prior_closes = _load_eod_prior_closes(date_iso, eod.cfg.universe)
 
         long_picks, short_picks = eod.select_signals(
-            current_prices=current_prices, prior_closes=prior_closes,
+            current_prices=current_prices,
+            prior_closes=prior_closes,
         )
         if not long_picks and not short_picks:
             logger.info(
                 "[V910-EOD-NO-SIGNAL] date=%s cur_prices=%d prior_closes=%d "
                 "long_picks=0 short_picks=0",
-                date_iso, len(current_prices), len(prior_closes),
+                date_iso,
+                len(current_prices),
+                len(prior_closes),
             )
             return
 
         from datetime import datetime as _dt2, timezone as _tz
+
         entry_iso = _dt2.now(_tz.utc).isoformat()
 
         # Fire per-portfolio. Each portfolio admits independently with
@@ -1441,30 +1486,37 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                 if price is None or price <= 0:
                     continue
                 pos = eod.admit(
-                    portfolio_id=pid, ticker=ticker, side="long",
-                    entry_price=price, equity=equity,
-                    rod3_bps=rod3, entry_iso=entry_iso,
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    side="long",
+                    entry_price=price,
+                    equity=equity,
+                    rod3_bps=rod3,
+                    entry_iso=entry_iso,
                 )
                 if pos is not None and eod.cfg.fire_broker:
-                    _eod_fire_broker(callbacks, pid, ticker, "long",
-                                     price, pos.shares)
+                    _eod_fire_broker(callbacks, pid, ticker, "long", price, pos.shares)
             for ticker, rod3 in short_picks:
                 price = current_prices.get(ticker)
                 if price is None or price <= 0:
                     continue
                 pos = eod.admit(
-                    portfolio_id=pid, ticker=ticker, side="short",
-                    entry_price=price, equity=equity,
-                    rod3_bps=rod3, entry_iso=entry_iso,
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    side="short",
+                    entry_price=price,
+                    equity=equity,
+                    rod3_bps=rod3,
+                    entry_iso=entry_iso,
                 )
                 if pos is not None and eod.cfg.fire_broker:
-                    _eod_fire_broker(callbacks, pid, ticker, "short",
-                                     price, pos.shares)
+                    _eod_fire_broker(callbacks, pid, ticker, "short", price, pos.shares)
             eod.mark_attempted(pid)
 
     # --- exit window ---
     if eod.is_exit_window(cur_min):
         from datetime import datetime as _dt3, timezone as _tz3
+
         exit_iso = _dt3.now(_tz3.utc).isoformat()
         for pid, st in list(eod._states.items()):
             if not st.open_positions:
@@ -1476,21 +1528,51 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                     bars = None
                 if not bars:
                     continue
-                px = (bars.get("current_price")
-                      or (bars.get("closes") or [None])[-1])
+                px = bars.get("current_price") or (bars.get("closes") or [None])[-1]
                 if not isinstance(px, (int, float)) or px <= 0:
                     continue
                 leg = eod.close(
-                    portfolio_id=pid, ticker=ticker, exit_price=float(px),
-                    exit_iso=exit_iso, exit_reason="eod_window",
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    exit_price=float(px),
+                    exit_iso=exit_iso,
+                    exit_reason="eod_window",
                 )
+                if leg is not None:
+                    # v9.1.69 -- persist to /data/eod_trade_log.jsonl so
+                    # Today's Trades survives Railway redeploys. In-memory
+                    # closed_legs is lost on each new instance boot; writing
+                    # to the persistent volume is the only durable record for
+                    # Main (Val/Gene also write here for symmetry, though
+                    # they can fall back to Alpaca order history).
+                    _eod_append_trade_log(leg)
                 if leg is not None and eod.cfg.fire_broker:
-                    _eod_fire_broker_close(callbacks, pid, ticker, pos.side,
-                                           float(px), pos.shares)
+                    _eod_fire_broker_close(callbacks, pid, ticker, pos.side, float(px), pos.shares)
 
 
-def _eod_fire_broker(callbacks: EngineCallbacks, pid: str, ticker: str,
-                     side: str, price: float, shares: int) -> None:
+def _eod_append_trade_log(leg: dict) -> None:
+    """v9.1.69 -- append a closed EOD leg to /data/eod_trade_log.jsonl.
+
+    Each line is a JSON object. The dashboard reads this file as a
+    fallback when EodReversalEngine._states has empty closed_legs (e.g.
+    after a Railway redeploy mid-session or post-15:59 ET restart).
+    Never raises -- a write failure is logged and silently ignored.
+    """
+    try:
+        import json as _json
+        import os as _os
+
+        path = _os.environ.get("EOD_TRADE_LOG_FILE", "/data/eod_trade_log.jsonl")
+        _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps(leg) + "\n")
+    except Exception:
+        logger.exception("[V910-EOD] eod_trade_log append failed")
+
+
+def _eod_fire_broker(
+    callbacks: EngineCallbacks, pid: str, ticker: str, side: str, price: float, shares: int
+) -> None:
     """v9.1.0 -- dispatch a real broker fire for an EOD entry.
 
     Reuses the existing v10 fanout: Main goes through
@@ -1506,45 +1588,70 @@ def _eod_fire_broker(callbacks: EngineCallbacks, pid: str, ticker: str,
                 callbacks.execute_entry(ticker, float(price))
             else:
                 _v10_dispatch_executor_fire(
-                    pid=pid, side=side, ticker=ticker,
-                    price=float(price), shares=int(shares),
+                    pid=pid,
+                    side=side,
+                    ticker=ticker,
+                    price=float(price),
+                    shares=int(shares),
                 )
         else:
             _v10_dispatch_executor_fire(
-                pid=pid, side=side, ticker=ticker,
-                price=float(price), shares=int(shares),
+                pid=pid,
+                side=side,
+                ticker=ticker,
+                price=float(price),
+                shares=int(shares),
             )
         logger.info(
             "[V910-EOD-FIRE] %s/%s %s %d shares @ %.4f",
-            pid, ticker, side, shares, price,
+            pid,
+            ticker,
+            side,
+            shares,
+            price,
         )
     except Exception:
         logger.exception(
             "[V910-EOD-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
-            pid, ticker, side, shares, price,
+            pid,
+            ticker,
+            side,
+            shares,
+            price,
         )
 
 
-def _eod_fire_broker_close(callbacks: EngineCallbacks, pid: str,
-                           ticker: str, side: str, price: float,
-                           shares: int) -> None:
+def _eod_fire_broker_close(
+    callbacks: EngineCallbacks, pid: str, ticker: str, side: str, price: float, shares: int
+) -> None:
     """v9.1.0 -- broker close for an EOD position. Uses the inverse
     side on the same executor surface (long -> sell, short -> cover).
     """
     try:
         close_side = "short" if side == "long" else "long"
         _v10_dispatch_executor_fire(
-            pid=pid, side=close_side, ticker=ticker,
-            price=float(price), shares=int(shares),
+            pid=pid,
+            side=close_side,
+            ticker=ticker,
+            price=float(price),
+            shares=int(shares),
         )
         logger.info(
             "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f",
-            pid, ticker, side, shares, price,
+            pid,
+            ticker,
+            side,
+            shares,
+            price,
         )
     except Exception:
         logger.exception(
             "[V910-EOD-CLOSE-FIRE-FAIL] %s/%s %s shares=%d price=%.4f",
-            pid, ticker, side, shares, price,
+            pid,
+            ticker,
+            side,
+            shares,
+            price,
         )
 
 
@@ -1584,11 +1691,13 @@ def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
         try:
             if isinstance(ts, (int, float)):
                 import datetime as _dt
+
                 bucket_min = minutes_since_et_midnight(
                     _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc)
                 )
             elif isinstance(ts, str):
                 import datetime as _dt
+
                 dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 bucket_min = minutes_since_et_midnight(dt)
             else:
@@ -1601,11 +1710,13 @@ def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
         lo = lows[i]
         c = closes[i]
         v = vols[i]
-        if not (isinstance(h, (int, float))
-                and isinstance(lo, (int, float))
-                and isinstance(c, (int, float))
-                and isinstance(v, (int, float))
-                and v > 0):
+        if not (
+            isinstance(h, (int, float))
+            and isinstance(lo, (int, float))
+            and isinstance(c, (int, float))
+            and isinstance(v, (int, float))
+            and v > 0
+        ):
             continue
         typical = (float(h) + float(lo) + float(c)) / 3.0
         cum_pv += typical * float(v)
@@ -1613,8 +1724,7 @@ def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
     return cum_pv / cum_v if cum_v > 0 else 0.0
 
 
-def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
-                    bars_for_mtm: dict | None) -> None:
+def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: dict | None) -> None:
     """v10 ORB long-entry path -- per-portfolio fanout.
 
     v7.23.0: iterates ALL enabled portfolios (Main / Val / Gene) and
@@ -1632,6 +1742,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
     """
     try:
         from engine.bars import compute_5m_ohlc_and_ema9
+
         _5m = compute_5m_ohlc_and_ema9(bars_for_mtm)
         if not _5m or not _5m.get("closes"):
             return  # no closed 5m bar yet
@@ -1667,7 +1778,9 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
         for pid in portfolio_ids:
             equity = _resolve_portfolio_equity(tg, pid)
             result = _orb_runtime.check_entry(
-                portfolio_id=pid, ticker=ticker, side="long",
+                portfolio_id=pid,
+                ticker=ticker,
+                side="long",
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
@@ -1681,8 +1794,13 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 logger.info(
                     "[V79-ORB-ENTRY] long %s portfolio=%s "
                     "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
-                    ticker, pid, result.price, result.stop, result.target,
-                    result.shares, result.ticket_id[:8],
+                    ticker,
+                    pid,
+                    result.price,
+                    result.stop,
+                    result.target,
+                    result.shares,
+                    result.ticket_id[:8],
                 )
                 # Stash size for the broker sizing handoff
                 try:
@@ -1715,15 +1833,20 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     if not _fired_main:
                         try:
                             _orb_runtime.rollback_admit(
-                                pid, ticker, result.ticket_id,
+                                pid,
+                                ticker,
+                                result.ticket_id,
                                 reason="execute_entry early-returned without populating tg.positions",
                             )
                         except Exception:
                             pass
                 else:
                     _fired_other = _v10_dispatch_executor_fire(
-                        pid=pid, side="long", ticker=ticker,
-                        price=result.price, shares=result.shares,
+                        pid=pid,
+                        side="long",
+                        ticker=ticker,
+                        price=result.price,
+                        shares=result.shares,
                         callbacks=callbacks,
                     )
                     # v7.81.0 -- if the executor's broker fire was
@@ -1733,7 +1856,9 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     if not _fired_other:
                         try:
                             _orb_runtime.rollback_admit(
-                                pid, ticker, result.ticket_id,
+                                pid,
+                                ticker,
+                                result.ticket_id,
                                 reason="executor broker-fire deferred or unavailable",
                             )
                         except Exception:
@@ -1741,18 +1866,22 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str,
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] long %s portfolio=%s reason=%s",
-                    ticker, pid, result.reason_no,
+                    ticker,
+                    pid,
+                    result.reason_no,
                 )
     except Exception as e:
         logger.warning("[V79-ORB] long entry error %s: %s", ticker, e)
 
 
-def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
-                     bars_for_mtm: dict | None) -> None:
+def _orb_short_entry(
+    callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: dict | None
+) -> None:
     """v10 ORB short-entry path -- per-portfolio fanout. Mirror of
     _orb_long_entry."""
     try:
         from engine.bars import compute_5m_ohlc_and_ema9
+
         _5m = compute_5m_ohlc_and_ema9(bars_for_mtm)
         if not _5m or not _5m.get("closes"):
             return
@@ -1775,7 +1904,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
         for pid in portfolio_ids:
             equity = _resolve_portfolio_equity(tg, pid)
             result = _orb_runtime.check_entry(
-                portfolio_id=pid, ticker=ticker, side="short",
+                portfolio_id=pid,
+                ticker=ticker,
+                side="short",
                 five_min_close=float(five_min_close),
                 next_open=float(next_open),
                 equity=equity,
@@ -1789,8 +1920,13 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                 logger.info(
                     "[V79-ORB-ENTRY] short %s portfolio=%s "
                     "price=%.4f stop=%.4f target=%.4f shares=%d ticket=%s",
-                    ticker, pid, result.price, result.stop, result.target,
-                    result.shares, result.ticket_id[:8],
+                    ticker,
+                    pid,
+                    result.price,
+                    result.stop,
+                    result.target,
+                    result.shares,
+                    result.ticket_id[:8],
                 )
                 try:
                     _orb_runtime.stash_v10_size(pid, ticker, result.shares)
@@ -1813,21 +1949,28 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
                     if not _fired_main_s:
                         try:
                             _orb_runtime.rollback_admit(
-                                pid, ticker, result.ticket_id,
+                                pid,
+                                ticker,
+                                result.ticket_id,
                                 reason="execute_short_entry early-returned without populating tg.short_positions",
                             )
                         except Exception:
                             pass
                 else:
                     _fired_other_s = _v10_dispatch_executor_fire(
-                        pid=pid, side="short", ticker=ticker,
-                        price=result.price, shares=result.shares,
+                        pid=pid,
+                        side="short",
+                        ticker=ticker,
+                        price=result.price,
+                        shares=result.shares,
                         callbacks=callbacks,
                     )
                     if not _fired_other_s:
                         try:
                             _orb_runtime.rollback_admit(
-                                pid, ticker, result.ticket_id,
+                                pid,
+                                ticker,
+                                result.ticket_id,
                                 reason="executor broker-fire deferred or unavailable",
                             )
                         except Exception:
@@ -1835,7 +1978,9 @@ def _orb_short_entry(callbacks: EngineCallbacks, tg, ticker: str,
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] short %s portfolio=%s reason=%s",
-                    ticker, pid, result.reason_no,
+                    ticker,
+                    pid,
+                    result.reason_no,
                 )
     except Exception as e:
         logger.warning("[V79-ORB] short entry error %s: %s", ticker, e)

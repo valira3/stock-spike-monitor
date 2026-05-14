@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.69 (2026-05-14) — EOD trades persist across redeploys; live Unreal/% on Main EOD positions
+
+**EOD trades not showing on Main (root cause):** `_eod_trade_rows_for_pid("main")` reads `EodReversalEngine._states["main"].closed_legs`, which is in-memory only. The v9.1.67 Railway deploy happened at ~15:56 ET; the new instance boots with a fresh EodReversalEngine (empty closed_legs). The EOD positions closed at 15:59 ET on the old instance but the new instance never saw them.
+
+**Fix A — persist EOD closed legs to `/data/eod_trade_log.jsonl`:**
+- `engine/scan.py:_eod_append_trade_log(leg)`: new helper writes each closed leg as a JSON line to `/data/eod_trade_log.jsonl` (Railway persistent volume). Path configurable via `EOD_TRADE_LOG_FILE` env var.
+- Called in `_eod_reversal_pass` immediately after `leg = eod.close(...)` — fires for all pids (main/val/gene).
+- `dashboard_server.py:_eod_trade_rows_for_pid()`: refactored to try in-memory first, then fall back to JSONL file when `closed_legs` is empty. Filters by `portfolio_id` and `today` date.
+- Factored out `_eod_leg_to_rows(leg, today, iso_fn)` helper to avoid duplication between in-memory and file paths.
+- Test: `tests/strategy/test_today_trades_log_merge.py` fixture now stubs `_eod_trade_rows_for_pid` → `[]` so tests remain isolated from real `/data/eod_trade_log.jsonl`.
+
+**Fix B — live Unreal/% for open EOD positions on Main tab:**
+- `_eod_positions_for_pid(pid, prices=None)`: accepts optional price cache dict. When a mark price is available for a ticker, adds `current_price`, `unrealized_pnl`, `unrealized_pct` to the position dict.
+- Called in `_cached_snapshot()` as `_eod_positions_for_pid("main", prices)` (prices dict already computed at that point).
+- Frontend (`app.js` IIFE-1 `renderPositions`): EOD row now uses `ep.current_price` for Mark column and `ep.unrealized_pnl`/`ep.unrealized_pct` for Unreal./% columns with correct `delta-up/down` coloring. Falls back to `—` when backend doesn't supply a mark.
+
+---
+
 ## v9.1.68 (2026-05-14) — fix two post-EOD false-positive CRITs from v9.1.67
 
 Both CRITs fired at 15:51 ET after EOD positions closed and v9.1.67 was live.

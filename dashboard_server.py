@@ -1136,101 +1136,131 @@ def _today_trades() -> list[dict]:
     return out
 
 
+def _eod_leg_to_rows(leg: dict, today: str, iso_to_et: "callable") -> list[dict]:
+    """v9.1.69 -- convert a single EOD closed leg dict to [entry_row, exit_row]."""
+    tk = (leg.get("ticker") or "").upper()
+    if not tk:
+        return []
+    _leg_date = (leg.get("entry_iso") or leg.get("exit_iso") or "")[:10]
+    if _leg_date and _leg_date != today:
+        return []
+    _side_raw = (leg.get("side") or "long").lower()
+    _side = "LONG" if _side_raw == "long" else "SHORT"
+    _entry_action = "BUY" if _side == "LONG" else "SHORT"
+    _exit_action = "SELL" if _side == "LONG" else "COVER"
+    _shares = int(leg.get("shares") or 0)
+    _entry_px = float(leg.get("entry_price") or 0.0)
+    _exit_px = float(leg.get("exit_price") or 0.0)
+    _pnl = float(leg.get("pnl") or 0.0)
+    _notional = float(leg.get("notional_at_entry") or (_entry_px * _shares))
+    _pnl_pct = round(_pnl / _notional * 100, 2) if _notional > 0 else None
+    _et_entry = iso_to_et(leg.get("entry_iso") or "")
+    _et_exit = iso_to_et(leg.get("exit_iso") or "")
+    return [
+        {
+            "action": _entry_action,
+            "ticker": tk,
+            "symbol": tk,
+            "side": _side,
+            "shares": _shares,
+            "qty": _shares,
+            "price": _entry_px,
+            "entry_price": _entry_px,
+            "avg_fill_price": _entry_px,
+            "cost": round(_shares * _entry_px, 2),
+            "time": _et_entry,
+            "entry_time": _et_entry,
+            "filled_at": leg.get("entry_iso") or "",
+            "date": today,
+            "portfolio": "eod",
+            "eod": True,
+        },
+        {
+            "action": _exit_action,
+            "ticker": tk,
+            "symbol": tk,
+            "side": _side,
+            "shares": _shares,
+            "qty": _shares,
+            "price": _exit_px,
+            "exit_price": _exit_px,
+            "entry_price": _entry_px,
+            "avg_fill_price": _exit_px,
+            "cost": round(_shares * _exit_px, 2),
+            "pnl": round(_pnl, 2),
+            "pnl_pct": _pnl_pct,
+            "time": _et_exit,
+            "exit_time": _et_exit,
+            "filled_at": leg.get("exit_iso") or "",
+            "date": today,
+            "portfolio": "eod",
+            "eod": True,
+        },
+    ]
+
+
 def _eod_trade_rows_for_pid(pid: str) -> list[dict]:
-    """v9.1.67 -- convert EodReversalEngine closed legs to trade row dicts.
+    """v9.1.67/69 -- convert EodReversalEngine closed legs to trade row dicts.
+
+    Primary source: in-memory EodReversalEngine._states[pid].closed_legs.
+    Fallback (v9.1.69): /data/eod_trade_log.jsonl written by _eod_append_trade_log
+    in engine/scan.py when legs close — survives Railway redeploys.
 
     Returns entry + exit rows for each closed EOD leg today, in the schema
-    shared by renderTrades (Main) and renderExecTrades (Val/Gene). Never
-    raises. Returns [] when the EOD engine is not running or has no closed
-    legs for this portfolio.
+    shared by renderTrades (Main) and renderExecTrades (Val/Gene). Never raises.
     """
     try:
-        import orb.live_runtime as _rt_eod
-        from datetime import datetime as _dt67
-        from zoneinfo import ZoneInfo as _tz67
+        import json as _json69
+        import os as _os69
+        from datetime import datetime as _dt69
+        from zoneinfo import ZoneInfo as _tz69
 
-        _et = _tz67("US/Eastern")
-        _eod_eng = _rt_eod.get_eod_engine()
-        if _eod_eng is None:
-            return []
-        _eod_st = _eod_eng._states.get(pid)
-        if not _eod_st or not _eod_st.closed_legs:
-            return []
-        _today = _dt67.now(_et).strftime("%Y-%m-%d")
+        _et = _tz69("US/Eastern")
+        _today = _dt69.now(_et).strftime("%Y-%m-%d")
 
         def _iso_to_et_hhmm(iso: str) -> str:
             try:
-                _d = _dt67.fromisoformat(iso.replace("Z", "+00:00"))
+                _d = _dt69.fromisoformat(iso.replace("Z", "+00:00"))
                 return _d.astimezone(_et).strftime("%H:%M ET")
             except Exception:
                 return ""
 
         rows: list[dict] = []
-        for leg in _eod_st.closed_legs:
-            tk = (leg.get("ticker") or "").upper()
-            if not tk:
-                continue
-            _side_raw = (leg.get("side") or "long").lower()
-            _side = "LONG" if _side_raw == "long" else "SHORT"
-            _entry_action = "BUY" if _side == "LONG" else "SHORT"
-            _exit_action = "SELL" if _side == "LONG" else "COVER"
-            _shares = int(leg.get("shares") or 0)
-            _entry_px = float(leg.get("entry_price") or 0.0)
-            _exit_px = float(leg.get("exit_price") or 0.0)
-            _pnl = float(leg.get("pnl") or 0.0)
-            _notional = float(leg.get("notional_at_entry") or (_entry_px * _shares))
-            _pnl_pct = round(_pnl / _notional * 100, 2) if _notional > 0 else None
-            _entry_iso = leg.get("entry_iso") or ""
-            _exit_iso = leg.get("exit_iso") or ""
-            # only include legs from today
-            _leg_date = _entry_iso[:10] if _entry_iso else _exit_iso[:10]
-            if _leg_date and _leg_date != _today:
-                continue
-            _et_entry = _iso_to_et_hhmm(_entry_iso)
-            _et_exit = _iso_to_et_hhmm(_exit_iso)
-            rows.append(
-                {
-                    "action": _entry_action,
-                    "ticker": tk,
-                    "symbol": tk,
-                    "side": _side,
-                    "shares": _shares,
-                    "qty": _shares,
-                    "price": _entry_px,
-                    "entry_price": _entry_px,
-                    "avg_fill_price": _entry_px,
-                    "cost": round(_shares * _entry_px, 2),
-                    "time": _et_entry,
-                    "entry_time": _et_entry,
-                    "filled_at": _entry_iso,
-                    "date": _today,
-                    "portfolio": "eod",
-                    "eod": True,
-                }
-            )
-            rows.append(
-                {
-                    "action": _exit_action,
-                    "ticker": tk,
-                    "symbol": tk,
-                    "side": _side,
-                    "shares": _shares,
-                    "qty": _shares,
-                    "price": _exit_px,
-                    "exit_price": _exit_px,
-                    "entry_price": _entry_px,
-                    "avg_fill_price": _exit_px,
-                    "cost": round(_shares * _exit_px, 2),
-                    "pnl": round(_pnl, 2),
-                    "pnl_pct": _pnl_pct,
-                    "time": _et_exit,
-                    "exit_time": _et_exit,
-                    "filled_at": _exit_iso,
-                    "date": _today,
-                    "portfolio": "eod",
-                    "eod": True,
-                }
-            )
+
+        # Primary: in-memory engine state (fast, no I/O, lost on redeploy).
+        try:
+            import orb.live_runtime as _rt_eod
+
+            _eod_eng = _rt_eod.get_eod_engine()
+            if _eod_eng is not None:
+                _eod_st = _eod_eng._states.get(pid)
+                if _eod_st and _eod_st.closed_legs:
+                    for leg in _eod_st.closed_legs:
+                        rows.extend(_eod_leg_to_rows(leg, _today, _iso_to_et_hhmm))
+        except Exception:
+            pass
+
+        # Fallback: persistent JSONL written by engine/scan.py on each close.
+        # Only read when in-memory gave nothing (avoids double-counting).
+        if not rows:
+            try:
+                _log_path = _os69.environ.get("EOD_TRADE_LOG_FILE", "/data/eod_trade_log.jsonl")
+                if _os69.path.exists(_log_path):
+                    with open(_log_path, encoding="utf-8") as _lf:
+                        for _line in _lf:
+                            _line = _line.strip()
+                            if not _line:
+                                continue
+                            try:
+                                leg = _json69.loads(_line)
+                            except Exception:
+                                continue
+                            if (leg.get("portfolio_id") or "").lower() != pid.lower():
+                                continue
+                            rows.extend(_eod_leg_to_rows(leg, _today, _iso_to_et_hhmm))
+            except Exception:
+                pass
+
         return rows
     except Exception:
         return []
@@ -2492,7 +2522,8 @@ def snapshot() -> dict[str, Any]:
             # Tracked in EodReversalEngine separately from paper_state so
             # Main tab can show EOD positions even when callbacks.execute_entry
             # fails (paper-fire mode) or the EOD short fires with no Main executor.
-            "eod_positions": _eod_positions_for_pid("main"),
+            # v9.1.69 -- pass prices so the frontend can show Unreal/% on Main.
+            "eod_positions": _eod_positions_for_pid("main", prices),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)
@@ -3185,13 +3216,14 @@ def _pair_executor_fills(raw_fills: list[dict]) -> list[dict]:
     return out
 
 
-def _eod_positions_for_pid(pid: str) -> dict:
-    """v9.1.65 -- EOD reversal open positions for one portfolio.
+def _eod_positions_for_pid(pid: str, prices: dict | None = None) -> dict:
+    """v9.1.65/69 -- EOD reversal open positions for one portfolio.
 
-    Returns a dict keyed by ticker (upper-case). Fields needed by the
-    frontend EOD time bar: side, entry_price, shares, entry_iso,
-    notional_at_entry. Returns {} when the EOD engine is not running
-    or has no open positions for this portfolio. Never raises.
+    Returns a dict keyed by ticker (upper-case). v9.1.69 adds live mark
+    prices (current_price, unrealized_pnl, unrealized_pct) when the
+    `prices` cache is supplied — enables Unreal/% on Main tab for open
+    EOD positions. Returns {} when the EOD engine is not running or has
+    no open positions for this portfolio. Never raises.
     """
     try:
         import orb.live_runtime as _rt_eod
@@ -3204,13 +3236,26 @@ def _eod_positions_for_pid(pid: str) -> dict:
             return {}
         out: dict = {}
         for _tk, _ep in _eod_st.open_positions.items():
-            out[_tk.upper()] = {
+            _entry = float(_ep.entry_price)
+            _shares = int(_ep.shares)
+            _notional = float(_ep.notional_at_entry)
+            _rec: dict = {
                 "side": _ep.side,
-                "entry_price": float(_ep.entry_price),
-                "shares": int(_ep.shares),
+                "entry_price": _entry,
+                "shares": _shares,
                 "entry_iso": str(_ep.entry_iso or ""),
-                "notional_at_entry": float(_ep.notional_at_entry),
+                "notional_at_entry": _notional,
             }
+            # v9.1.69 -- enrich with live mark when price cache provided.
+            _mark = (prices or {}).get(_tk.upper()) if prices else None
+            if isinstance(_mark, (int, float)) and _mark > 0:
+                _rec["current_price"] = float(_mark)
+                _unr = (
+                    (_mark - _entry) * _shares if _ep.side == "long" else (_entry - _mark) * _shares
+                )
+                _rec["unrealized_pnl"] = round(_unr, 2)
+                _rec["unrealized_pct"] = round(_unr / _notional * 100, 2) if _notional > 0 else None
+            out[_tk.upper()] = _rec
         return out
     except Exception:
         return {}

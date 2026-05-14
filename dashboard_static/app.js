@@ -639,17 +639,23 @@
                 '</div>' +
               '</td>' +
             '</tr>';
+          // v9.1.69 -- show live mark/unreal when backend supplies them.
+          var _markTxt = Number.isFinite(ep.current_price) ? fmtPx(ep.current_price) : '—';
+          var _unrNum = ep.unrealized_pnl;
+          var _unrTxt = Number.isFinite(_unrNum) ? fmtUsd(_unrNum) : '—';
+          var _pctTxt = Number.isFinite(ep.unrealized_pct) ? fmtPct(ep.unrealized_pct) : '—';
+          var _unrCls = Number.isFinite(_unrNum) ? (_unrNum >= 0 ? 'delta-up' : 'delta-down') : '';
           return '<tr data-pos-ticker="' + escapeHtml(tk) + '">' +
             '<td><span class="ticker">' + escapeHtml(tk) + '</span><span class="eod-badge">EOD</span></td>' +
             '<td><span class="' + _sc + '">' + _sl + '</span></td>' +
             '<td class="right">' + ep.shares + '</td>' +
             '<td class="right">' + fmtPx(ep.entry_price) + '</td>' +
-            '<td class="right">—</td>' +
+            '<td class="right">' + _markTxt + '</td>' +
             '<td class="right">' + _nt + '</td>' +
             '<td class="right">—</td>' +
             '<td class="right">—</td>' +
-            '<td class="right">—</td>' +
-            '<td class="right">—</td>' +
+            '<td class="right ' + _unrCls + '">' + _unrTxt + '</td>' +
+            '<td class="right ' + _unrCls + '">' + _pctTxt + '</td>' +
             '<td class="right">' + fmtHeld(ep.entry_iso) + '</td>' +
           '</tr>' + _bar;
         }).join("");
