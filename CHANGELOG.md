@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.53 (2026-05-14) — monitor: fix NFLX orphan false-positive WARNs (risk_sizing + fill_match)
+
+Two monitor false positives from the NFLX SHORT orphan trade (pre-deploy, tight OR stop, $143 risk, never sent to Alpaca):
+
+- `risk_sizing` floor $150 → $100: NFLX's $143 risk was from a $0.26/share stop on a tight OR day. $100 = 0.1% of $100k — catches genuinely broken sizing while allowing small-stop legitimate trades.
+- `fill_match`: filter `traded_tickers` to exclude trades whose `bot_version` differs from the live version. Prior-version trades are orphans from pre-deploy sessions that were never routed through Alpaca and will always be missing from Val's fills. Applies the same version-consistency logic already used in `checks_trade_log`.
+
+---
+
 ## v9.1.52 (2026-05-14) — Fix A: persist OrbPosition across Railway redeploys (category G)
 
 **Root problem (2026-05-14):** A Railway deploy during RTH at 10:45 ET restarted the process. `paper_state` persisted (legacy), but the ORB engine's `LiveAdapter._open_positions` and `RiskBook` started fresh. The new session's RiskBook had `open_count=0` while paper_state had the NFLX SHORT position — a phantom. Val and Main also diverged because Val's first post-deploy signal (NVDA LONG) was different from Main's pre-deploy orphan (NFLX SHORT).

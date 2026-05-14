@@ -874,9 +874,7 @@ def print_report(report: dict[str, Any]) -> None:
 
 # Tolerance band around expected risk per trade (1% of $100k = $1,000).
 # ATR-based stops vary by volatility so we allow 40-200% of nominal.
-_RISK_LOW_USD = (
-    150.0  # below this = stop too tight or tiny position (tight-OR days can reach $150-199)
-)
+_RISK_LOW_USD = 100.0  # below this = stop too tight or tiny position; 100 = 0.1% of $100k floor
 _RISK_HIGH_USD = 2500.0  # above this = stop too loose or oversized
 
 # Cooldown window: same (ticker, side) re-entry within this many minutes
@@ -1414,7 +1412,15 @@ def checks_market_validation(
     #   b) Alpaca day_pnl is within 30% of paper state realized P&L        #
     # --------------------------------------------------------------------- #
     if fills:
-        traded_tickers = {t.get("ticker") for t in today if t.get("ticker")}
+        # Exclude trades from prior bot versions: those are orphan positions from a
+        # pre-deploy session that were never routed through Alpaca and will always
+        # be missing from the fills set. Only check current-session trades.
+        _live_ver = (raw.get("/api/state") or {}).get("version", "")
+        traded_tickers = {
+            t.get("ticker")
+            for t in today
+            if t.get("ticker") and (not _live_ver or t.get("bot_version") == _live_ver)
+        }
         filled_tickers = {f.get("symbol") for f in fills if f.get("symbol")}
         missing_fills = traded_tickers - filled_tickers
 
