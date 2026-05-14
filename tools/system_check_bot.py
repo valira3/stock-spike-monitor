@@ -1433,7 +1433,13 @@ def checks_market_validation(
         fill_issues: list[str] = []
         if missing_fills:
             fill_issues.append(f"no Alpaca fills for: {sorted(missing_fills)}")
-        if abs(paper_pnl) > 20 and pnl_pct > 30:
+        # v9.1.76 -- skip P&L divergence check post-market. In FIRE=1
+        # independent mode, Main's paper P&L and Val's Alpaca day_pnl come
+        # from completely different trade histories and will always diverge.
+        # Post-market there's nothing actionable about this gap either way.
+        _regime_mode = (raw.get("/api/state") or {}).get("regime", {}).get("mode") or ""
+        _post_market = _regime_mode in ("AFTER", "CLOSED", "PRE")
+        if not _post_market and abs(paper_pnl) > 20 and pnl_pct > 30:
             fill_issues.append(
                 f"P&L divergence: paper=${paper_pnl:+.2f} "
                 f"Alpaca=${alpaca_pnl:+.2f} ({pnl_pct:.0f}% gap)"

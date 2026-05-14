@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.76 (2026-05-14) — suppress fill_match P&L divergence WARN post-market
+
+`fill_match` compares Main's paper realized P&L (+$1,660 from today's ORB trades) to Val's Alpaca `account.day_pnl` ($0.00 — auto-liquidated EOD positions settled flat). This produces a 100% divergence gap → WARN.
+
+Root cause: `fill_match` was designed for FIRE=0 mirror mode where Main's paper fills and Val's Alpaca fills should approximately match. In FIRE=1 independent mode they are completely different portfolios — Main runs paper ORB trades, Val runs its own real Alpaca entries. Post-16:00 ET the P&L divergence is expected and not actionable.
+
+Fix: read `raw["/api/state"].regime.mode` and skip the P&L divergence sub-check when mode is AFTER/CLOSED/PRE. Missing-fill detection (`no Alpaca fills for: [ticker]`) is unaffected and still fires during market hours.
+
+---
+
 ## v9.1.75 (2026-05-14) — Telegram dedup: suppress repeated CRIT/WARN alerts within 30 min
 
 `scripts/run_monitor.py` now tracks `(section, name) → last_alerted_ts` for each CRIT/WARN. The same check won't fire a Telegram alert again within 30 minutes (`_ALERT_DEDUP_SECS = 1800`). When all CRITs are suppressed, logs "Telegram suppressed (dedup, already alerted): [list]" at INFO level so the operator can still see it in the log without being spammed on mobile.
