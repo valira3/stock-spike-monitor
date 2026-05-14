@@ -53,6 +53,7 @@ Config env vars (all optional):
     ORB_STOP_KICK_BPS      5.0
     ORB_SHORT_PENALTY_BPS  1.0
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,8 +73,10 @@ except ImportError:
     try:
         from orb_earnings_calendar import is_earnings_window  # type: ignore
     except ImportError:
+
         def is_earnings_window(*a, **k):  # fallback no-op
             return False
+
 
 # v16 VIX gate
 try:
@@ -82,8 +85,10 @@ except ImportError:
     try:
         from orb_vix_loader import load_vix_closes, vix_close_for  # type: ignore
     except ImportError:
+
         def load_vix_closes(*a, **k):  # fallback empty
             return {}
+
         def vix_close_for(*a, **k):
             return None
 
@@ -133,6 +138,7 @@ def _ts_to_et_bucket_minutes(ts_str: str) -> int:
     try:
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         et = ts.astimezone(ZoneInfo("US/Eastern"))
         return et.hour * 60 + et.minute
@@ -143,12 +149,12 @@ def _ts_to_et_bucket_minutes(ts_str: str) -> int:
 # ---------- bar loading ----------
 @dataclass
 class Bar1m:
-    bucket: int          # minutes-from-midnight ET
+    bucket: int  # minutes-from-midnight ET
     open: float
     high: float
     low: float
     close: float
-    volume: float        # total_volume preferred, fallback iex_volume
+    volume: float  # total_volume preferred, fallback iex_volume
 
 
 # Module-level bar cache. Populated by run() before the main loop so that
@@ -182,13 +188,15 @@ def load_day_bars(corpus_dir: Path, date: str, ticker: str) -> list[Bar1m]:
                 bkt = _bucket_to_minutes(d.get("et_bucket", ""))
             if bkt < 0:
                 continue
-            o = d.get("open"); h = d.get("high"); l = d.get("low"); c = d.get("close")
+            o = d.get("open")
+            h = d.get("high")
+            l = d.get("low")
+            c = d.get("close")
             if o is None or h is None or l is None or c is None:
                 continue
             v = d.get("total_volume") or d.get("iex_volume") or 0
             try:
-                out.append(Bar1m(bkt, float(o), float(h), float(l),
-                                 float(c), float(v or 0)))
+                out.append(Bar1m(bkt, float(o), float(h), float(l), float(c), float(v or 0)))
             except (TypeError, ValueError):
                 continue
     except OSError:
@@ -209,14 +217,16 @@ def aggregate_5m(bars_1m: list[Bar1m]) -> list[Bar1m]:
         bars = by_bucket[anchor]
         if not bars:
             continue
-        out.append(Bar1m(
-            bucket=anchor,
-            open=bars[0].open,
-            high=max(b.high for b in bars),
-            low=min(b.low for b in bars),
-            close=bars[-1].close,
-            volume=sum(b.volume for b in bars),
-        ))
+        out.append(
+            Bar1m(
+                bucket=anchor,
+                open=bars[0].open,
+                high=max(b.high for b in bars),
+                low=min(b.low for b in bars),
+                close=bars[-1].close,
+                volume=sum(b.volume for b in bars),
+            )
+        )
     return out
 
 
@@ -235,13 +245,13 @@ class ORBConfig:
     risk_per_trade_pct: float = 1.0
     account: float = 100_000.0
     blocklist: dict = field(default_factory=dict)
-    entry_slippage_bps: float = 5.0   # v8 realism: was 1.5; ORB-time fills wider
-    exit_slippage_bps: float = 5.0    # v8 realism: was 1.5
+    entry_slippage_bps: float = 5.0  # v8 realism: was 1.5; ORB-time fills wider
+    exit_slippage_bps: float = 5.0  # v8 realism: was 1.5
     stop_kick_bps: float = 5.0
     short_pen_bps: float = 1.0
     # v8 realism caps -- prevent phantom leverage / unrealistic concurrent
     # notional. Audit found 25x leverage on a $100k account; these cap it.
-    max_trade_notional_pct: float = 25.0    # one trade caps at 25% account
+    max_trade_notional_pct: float = 25.0  # one trade caps at 25% account
     max_concurrent_notional_mult: float = 2.0  # all-trades concurrent <= 2x acct
     # v9 risk-budget caps -- user constraint: max daily loss = $500
     # (= 0.5% of $100k). Both caps below default to $500.
@@ -249,18 +259,20 @@ class ORBConfig:
     daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
     risk_per_trade_pct_default = 0.25  # see env override below
     # v9 levers (un-tested, hypothesis-driven)
-    move_to_be_after_1r: bool = False    # bump stop to entry after 1R reached
-    partial_profit_at_1r: bool = False   # take half off at 1R, ride rest to RR
-    require_volume_confirm: bool = False # skip signals where signal-bar vol < 1x mean
-    volume_confirm_mult: float = 1.0     # multiplier on prior-day-mean vol for confirm
-    require_ema_align: bool = False      # only long if signal close > 200-EMA on 5m
+    move_to_be_after_1r: bool = False  # bump stop to entry after 1R reached
+    partial_profit_at_1r: bool = False  # take half off at 1R, ride rest to RR
+    require_volume_confirm: bool = False  # skip signals where signal-bar vol < 1x mean
+    volume_confirm_mult: float = 1.0  # multiplier on prior-day-mean vol for confirm
+    require_ema_align: bool = False  # only long if signal close > 200-EMA on 5m
     # v10 industry-standard levers
-    atr_stop_mult: float = 0.0           # if > 0, use entry +- atr_stop_mult * atr instead of OR-low
-    require_adx_above: float = 0.0       # if > 0, skip if 14-bar ADX on 5m < this threshold
-    skip_gap_pct: float = 0.0            # if > 0, skip days where |open-prev_close|/prev_close > this
-    require_vwap_align: bool = False     # only long > session VWAP, short < session VWAP
-    skip_first_5min: bool = False        # only fire on candles 09:50+ (skip 09:45 candle)
-    trailing_stop_pct: float = 0.0       # if > 0, after BE trail by trailing_stop_pct * (entry-stop) behind extreme
+    atr_stop_mult: float = 0.0  # if > 0, use entry +- atr_stop_mult * atr instead of OR-low
+    require_adx_above: float = 0.0  # if > 0, skip if 14-bar ADX on 5m < this threshold
+    skip_gap_pct: float = 0.0  # if > 0, skip days where |open-prev_close|/prev_close > this
+    require_vwap_align: bool = False  # only long > session VWAP, short < session VWAP
+    skip_first_5min: bool = False  # only fire on candles 09:50+ (skip 09:45 candle)
+    trailing_stop_pct: float = (
+        0.0  # if > 0, after BE trail by trailing_stop_pct * (entry-stop) behind extreme
+    )
     # v11 daily compounding -- account grows with cumulative P&L day-to-day,
     # and position sizing scales with the latest balance. Risk caps + per-
     # trade notional caps also scale with account. When OFF (default for
@@ -271,9 +283,9 @@ class ORBConfig:
     # When set, the index's own 30-min OR direction + magnitude become a
     # day-level filter applied to all per-ticker candidate signals BEFORE
     # the concurrent-risk gate.
-    regime_ticker: str = ""              # "SPY" | "QQQ" | "" (off)
-    regime_dir_align: bool = False       # only allow trades aligned with index OR direction
-    regime_min_or_bps: float = 0.0       # skip day if |index 30m-OR move| < this (bps); 0 = off
+    regime_ticker: str = ""  # "SPY" | "QQQ" | "" (off)
+    regime_dir_align: bool = False  # only allow trades aligned with index OR direction
+    regime_min_or_bps: float = 0.0  # skip day if |index 30m-OR move| < this (bps); 0 = off
     # v13 RVOL gate -- Zarattini, Barbon & Aziz (SSRN 2023, "Beat the Market:
     # An Effective ORB Strategy"). Filters per-ticker per-day signals using
     # the ratio of today's OR-window volume to the same window's 20-day
@@ -281,141 +293,145 @@ class ORBConfig:
     # (09:30 to 09:30+OR_minutes) that is known by the time the first entry
     # signal can fire (after OR window closes). Baseline uses prior sessions
     # only.
-    require_rvol_above: float = 0.0      # skip ticker on day if rvol < this; 0 = off
-    rvol_lookback_days: int = 20         # baseline window in prior sessions
+    require_rvol_above: float = 0.0  # skip ticker on day if rvol < this; 0 = off
+    rvol_lookback_days: int = 20  # baseline window in prior sessions
     # v14 prior-day filters -- look-ahead clean (consume only data with
     # timestamp < session start of `date`).
-    skip_gap_above_pct: float = 0.0      # skip ticker on day if |today_open - prev_close|/prev_close > this; 0 = off
-    require_prior_nr_n: int = 0          # require prior session range = min of last N daily ranges (Crabel NR_N); 0 = off
-    skip_prior_wr_n: int = 0             # skip if prior session range = max of last N daily ranges (wide-range exhaustion); 0 = off
+    skip_gap_above_pct: float = (
+        0.0  # skip ticker on day if |today_open - prev_close|/prev_close > this; 0 = off
+    )
+    require_prior_nr_n: int = (
+        0  # require prior session range = min of last N daily ranges (Crabel NR_N); 0 = off
+    )
+    skip_prior_wr_n: int = 0  # skip if prior session range = max of last N daily ranges (wide-range exhaustion); 0 = off
     # v15 earnings-window blackout -- skip per-ticker signals when the
     # ticker is within a [-N, +M] day window of its scheduled earnings
     # announcement. CLEAN look-ahead: earnings dates are public schedules
     # known weeks in advance.
-    skip_earnings_window: bool = False   # if True, gate on EARNINGS_CALENDAR
-    earnings_days_before: int = 1        # days before announcement to skip
-    earnings_days_after: int = 0         # days after announcement to skip
+    skip_earnings_window: bool = False  # if True, gate on EARNINGS_CALENDAR
+    earnings_days_before: int = 1  # days before announcement to skip
+    earnings_days_after: int = 0  # days after announcement to skip
     # v16 VIX absolute-level gate -- skip the entire trading day if
     # VIX_close(D-1) > threshold. Source: TOS Indicators, Options.cafe;
     # high-VIX regimes break ORB continuation. CLEAN look-ahead: prior
     # session close is fully observable.
-    skip_vix_above: float = 0.0          # 0 = off; e.g. 25 to skip if VIX(D-1) > 25
+    skip_vix_above: float = 0.0  # 0 = off; e.g. 25 to skip if VIX(D-1) > 25
     vix_csv_path: str = "data/external/vix-daily.csv"
     # v17 vol-targeted sizing -- per Quantpedia: scale risk by inverse of
     # current ATR relative to a target. When ATR is HIGH (volatile), risk
     # less; when LOW (calm), risk more. Equalizes dollar-risk-per-ATR
     # across tickers and across regimes. CLEAN look-ahead: ATR is computed
     # from candles strictly prior to + including the signal bar.
-    vol_target_atr_pct: float = 0.0      # target ATR as % of price; 0 = off
-    vol_target_min_scale: float = 0.5    # cap downscale (less risk per trade)
-    vol_target_max_scale: float = 2.0    # cap upscale (more risk per trade)
+    vol_target_atr_pct: float = 0.0  # target ATR as % of price; 0 = off
+    vol_target_min_scale: float = 0.5  # cap downscale (less risk per trade)
+    vol_target_max_scale: float = 2.0  # cap upscale (more risk per trade)
     # v18 day-end-giveback defenses (2026-05-12). Two rules, configurable
     # independently. Both default off; tested in r6_drawdown_rules.py and
     # documented in docs/pl_optimization_final_report_v13.md.
     loss_lock_threshold_usd: float = 0.0  # >0: after a closed leg with
-                                          #     pnl < -threshold, lock that
-                                          #     (ticker, side) pair for the
-                                          #     rest of the trading day --
-                                          #     no further entries on that
-                                          #     pair. 0 = off.
-    peak_dd_halt_usd: float = 0.0         # >0: when intraday realized PnL
-                                          #     drops this many $ below the
-                                          #     running peak, halt all new
-                                          #     entries for the rest of the
-                                          #     day (same effect as the
-                                          #     existing daily_loss_kill).
-                                          #     0 = off.
+    #     pnl < -threshold, lock that
+    #     (ticker, side) pair for the
+    #     rest of the trading day --
+    #     no further entries on that
+    #     pair. 0 = off.
+    peak_dd_halt_usd: float = 0.0  # >0: when intraday realized PnL
+    #     drops this many $ below the
+    #     running peak, halt all new
+    #     entries for the rest of the
+    #     day (same effect as the
+    #     existing daily_loss_kill).
+    #     0 = off.
     # v19 signal-magnitude / cadence-latency filter (2026-05-13). Tests the
     # hypothesis that production fires later than the first marginal break
     # because of scan-loop cadence latency. Two independent levers:
-    min_break_bps: float = 0.0            # >0: require signal close to be
-                                          #     min_break_bps past OR_high
-                                          #     (long) or OR_low (short)
-                                          #     before admitting. Suppresses
-                                          #     marginal breaks like the
-                                          #     observed AMZN -4.5bps fire.
-    confirm_bars_n: int = 0               # >0: require the prior N 5m closes
-                                          #     (including this signal bar)
-                                          #     to ALL be past the OR
-                                          #     boundary in the same
-                                          #     direction. Approximates
-                                          #     production firing on the
-                                          #     "3rd consecutive bar".
+    min_break_bps: float = 0.0  # >0: require signal close to be
+    #     min_break_bps past OR_high
+    #     (long) or OR_low (short)
+    #     before admitting. Suppresses
+    #     marginal breaks like the
+    #     observed AMZN -4.5bps fire.
+    confirm_bars_n: int = 0  # >0: require the prior N 5m closes
+    #     (including this signal bar)
+    #     to ALL be past the OR
+    #     boundary in the same
+    #     direction. Approximates
+    #     production firing on the
+    #     "3rd consecutive bar".
     # v20 chase-prevention filters (2026-05-13). Targets the per-ticker
     # forensic finding that losers chase too far past session VWAP and
     # fire against pre-market drift. Universal levers; default off.
-    max_vwap_dev_bps: float = 0.0         # >0: reject if entry price is
-                                          #     more than N bps past
-                                          #     session VWAP in the
-                                          #     breakout direction.
-                                          #     Signed: long entries
-                                          #     above VWAP and short
-                                          #     entries below VWAP count
-                                          #     as positive deviation.
-    max_vwap_dev_tickers: tuple = ()      # if non-empty, apply
-                                          #     max_vwap_dev_bps ONLY to
-                                          #     these tickers (per-list
-                                          #     fence). Empty = global.
-    max_vwap_dev_bps_long: float = 0.0    # if >0, overrides
-                                          #     max_vwap_dev_bps for the
-                                          #     LONG side. Lets us run
-                                          #     asymmetric thresholds
-                                          #     (forensic showed long
-                                          #     chase-failure is sharper
-                                          #     than short).
-    max_vwap_dev_bps_short: float = 0.0   # if >0, overrides for SHORT.
+    max_vwap_dev_bps: float = 0.0  # >0: reject if entry price is
+    #     more than N bps past
+    #     session VWAP in the
+    #     breakout direction.
+    #     Signed: long entries
+    #     above VWAP and short
+    #     entries below VWAP count
+    #     as positive deviation.
+    max_vwap_dev_tickers: tuple = ()  # if non-empty, apply
+    #     max_vwap_dev_bps ONLY to
+    #     these tickers (per-list
+    #     fence). Empty = global.
+    max_vwap_dev_bps_long: float = 0.0  # if >0, overrides
+    #     max_vwap_dev_bps for the
+    #     LONG side. Lets us run
+    #     asymmetric thresholds
+    #     (forensic showed long
+    #     chase-failure is sharper
+    #     than short).
+    max_vwap_dev_bps_short: float = 0.0  # if >0, overrides for SHORT.
     # v21 more fenced filters for mega-caps (2026-05-13).
-    confirm_bars_n_tickers: tuple = ()    # fence list for confirm_bars_n.
-                                          #     Empty = global (existing
-                                          #     behavior). When non-empty,
-                                          #     N-bar confirmation only
-                                          #     applies to those tickers.
-    min_break_bps_tickers: tuple = ()     # fence list for min_break_bps.
-                                          #     Empty = global.
-    fenced_or_min_pct: float = 0.0        # >0: skip the fenced tickers
-                                          #     when OR width is below
-                                          #     this threshold.
-    fenced_or_max_pct: float = 0.0        # >0: skip the fenced tickers
-                                          #     when OR width is above
-                                          #     this threshold.
-    fenced_or_tickers: tuple = ()         # fence list for the OR-width
-                                          #     gate. Empty = no gate.
-    fenced_gap_pct: float = 0.0           # >0: tighter gap-skip threshold
-                                          #     applied only to
-                                          #     fenced_gap_tickers.
-    fenced_gap_tickers: tuple = ()        # fence list for tighter gap.
+    confirm_bars_n_tickers: tuple = ()  # fence list for confirm_bars_n.
+    #     Empty = global (existing
+    #     behavior). When non-empty,
+    #     N-bar confirmation only
+    #     applies to those tickers.
+    min_break_bps_tickers: tuple = ()  # fence list for min_break_bps.
+    #     Empty = global.
+    fenced_or_min_pct: float = 0.0  # >0: skip the fenced tickers
+    #     when OR width is below
+    #     this threshold.
+    fenced_or_max_pct: float = 0.0  # >0: skip the fenced tickers
+    #     when OR width is above
+    #     this threshold.
+    fenced_or_tickers: tuple = ()  # fence list for the OR-width
+    #     gate. Empty = no gate.
+    fenced_gap_pct: float = 0.0  # >0: tighter gap-skip threshold
+    #     applied only to
+    #     fenced_gap_tickers.
+    fenced_gap_tickers: tuple = ()  # fence list for tighter gap.
     # v22 regime-conditional day-skip (2026-05-13). Skip the entire
     # trading day when the prior session's SPY close-to-close return is
     # in the [lo, hi] bps band. R12 forensic showed the strategy bleeds
     # most on days after a moderate SPY drop (-1.0% to -0.5%): 24 days
     # in the FY corpus, -$4,988 net.
     skip_prior_spy_ret_lt_bps: float = 0.0  # >0 (or <0): skip if prior
-                                            # SPY return is BELOW this
-                                            # (in bps). e.g. -50 = skip
-                                            # days where prior SPY < -0.5%.
+    # SPY return is BELOW this
+    # (in bps). e.g. -50 = skip
+    # days where prior SPY < -0.5%.
     skip_prior_spy_ret_gt_bps: float = 0.0  # paired upper bound: when
-                                            # both _lt and _gt set, skip
-                                            # only days IN [lt, gt] band.
-                                            # When only _lt set, skip
-                                            # everything below _lt.
-    regime_low_skip_tickers: tuple = ()     # if non-empty, on regime-low
-                                            # days (per skip_prior_spy_ret_*
-                                            # thresholds) skip ONLY these
-                                            # tickers instead of the whole
-                                            # day. Empty = whole-day skip.
-                                            # R12c+ feature: keep
-                                            # profitable non-T5 trading on
-                                            # bad-regime days while
-                                            # blocking the specific
-                                            # bleeders (TSLA, NFLX, ORCL).
+    # both _lt and _gt set, skip
+    # only days IN [lt, gt] band.
+    # When only _lt set, skip
+    # everything below _lt.
+    regime_low_skip_tickers: tuple = ()  # if non-empty, on regime-low
+    # days (per skip_prior_spy_ret_*
+    # thresholds) skip ONLY these
+    # tickers instead of the whole
+    # day. Empty = whole-day skip.
+    # R12c+ feature: keep
+    # profitable non-T5 trading on
+    # bad-regime days while
+    # blocking the specific
+    # bleeders (TSLA, NFLX, ORCL).
     # R13b conservative-on-bad-day overrides. When set (>0), replace the
     # corresponding base config field on regime-low days only. Combines
     # with regime_low_skip_tickers (each lever independent).
     regime_low_risk_per_trade_pct: float = 0.0  # halve sizing on bad days
-    regime_low_atr_stop_mult: float = 0.0       # tighter stops on bad days
-    regime_low_max_trades_per_day: int = 0      # cap entries on bad days
-    regime_low_max_vwap_dev_bps: float = 0.0    # tighter chase fence on bad days
-    regime_low_min_break_bps: float = 0.0       # require bigger break on bad days
+    regime_low_atr_stop_mult: float = 0.0  # tighter stops on bad days
+    regime_low_max_trades_per_day: int = 0  # cap entries on bad days
+    regime_low_max_vwap_dev_bps: float = 0.0  # tighter chase fence on bad days
+    regime_low_min_break_bps: float = 0.0  # require bigger break on bad days
     # R14 afternoon fade mode (2026-05-13). The 11:00 cutoff exists
     # because afternoon breakouts have negative expected value (R14
     # forensic: 11:30-15:30 buckets all net negative, -$17K over the
@@ -430,20 +446,20 @@ class ORBConfig:
     # directional breakout edge exists when measured against an
     # afternoon anchor instead of morning OR.
     pm_or_enabled: bool = False
-    pm_or_start_et: int = 12 * 60       # default 12:00 ET
-    pm_or_minutes: int = 30             # default 30-min PM OR
-    pm_trade_end_et: int = 15 * 60      # default 15:00 ET stop entries
-    premkt_align_bps: float = 0.0         # >0: require pre-market move
-                                          #     (09:00-09:29 ET) of at
-                                          #     least N bps in the
-                                          #     breakout direction.
-                                          #     Filters reversal-style
-                                          #     breakouts that fire
-                                          #     against premkt drift.
-    post_loss_cooldown_min: int = 0       # mirrors production POST_LOSS_COOLDOWN_MIN.
-                                          # After a hard stop on (ticker, side),
-                                          # block re-entry for this many minutes.
-                                          # 0 = off. Production value: 30.
+    pm_or_start_et: int = 12 * 60  # default 12:00 ET
+    pm_or_minutes: int = 30  # default 30-min PM OR
+    pm_trade_end_et: int = 15 * 60  # default 15:00 ET stop entries
+    premkt_align_bps: float = 0.0  # >0: require pre-market move
+    #     (09:00-09:29 ET) of at
+    #     least N bps in the
+    #     breakout direction.
+    #     Filters reversal-style
+    #     breakouts that fire
+    #     against premkt drift.
+    post_loss_cooldown_min: int = 0  # mirrors production POST_LOSS_COOLDOWN_MIN.
+    # After a hard stop on (ticker, side),
+    # block re-entry for this many minutes.
+    # 0 = off. Production value: 30.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -473,13 +489,11 @@ class ORBConfig:
             stop_kick_bps=_envf("ORB_STOP_KICK_BPS", 5.0),
             short_pen_bps=_envf("ORB_SHORT_PENALTY_BPS", 1.0),
             max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
-            max_concurrent_notional_mult=_envf(
-                "ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+            max_concurrent_notional_mult=_envf("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
             # v9 risk budget: total open risk_dollars must stay <= this
             # cap. With $500 default and $250/trade risk, max 2 open
             # positions can stop simultaneously (= $500 worst case).
-            max_concurrent_risk_dollars=_envf(
-                "ORB_MAX_CONCURRENT_RISK_DOLLARS", 500.0),
+            max_concurrent_risk_dollars=_envf("ORB_MAX_CONCURRENT_RISK_DOLLARS", 500.0),
             # v9: daily loss kill tightened from 5.0% to 0.5% to match
             # user constraint of $500/day max loss.
             daily_loss_kill_pct=_envf("ORB_DAILY_LOSS_KILL_PCT", 0.5),
@@ -629,7 +643,9 @@ def dx_5m(candles: list[Bar1m], lookback: int = 14) -> float:
             abs(candles[i].high - candles[i - 1].close),
             abs(candles[i].low - candles[i - 1].close),
         )
-        pdms.append(pdm); ndms.append(ndm); trs.append(tr)
+        pdms.append(pdm)
+        ndms.append(ndm)
+        trs.append(tr)
     if len(trs) < lookback:
         return 0.0
     p = pdms[-lookback:]
@@ -742,9 +758,13 @@ def session_vwap_at(bars_1m: list[Bar1m], at_bucket: int) -> float:
 
 
 # ---------- backtest one ticker-day ----------
-def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
-                   cfg: ORBConfig, current_account: float | None = None
-                   ) -> list[dict]:
+def run_ticker_day(
+    date: str,
+    ticker: str,
+    bars_1m: list[Bar1m],
+    cfg: ORBConfig,
+    current_account: float | None = None,
+) -> list[dict]:
     """Returns a list of pnl_pair dicts (matches lever_sweep_runner schema).
 
     `current_account` is the running balance to use for sizing / notional
@@ -777,11 +797,9 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
     # v21 fenced OR-width gate. When the ticker is in fenced_or_tickers,
     # also enforce a tighter range. 0 thresholds = uncapped on that side.
     if cfg.fenced_or_tickers and ticker in cfg.fenced_or_tickers:
-        if (cfg.fenced_or_min_pct > 0
-                and or_range_pct < cfg.fenced_or_min_pct):
+        if cfg.fenced_or_min_pct > 0 and or_range_pct < cfg.fenced_or_min_pct:
             return []
-        if (cfg.fenced_or_max_pct > 0
-                and or_range_pct > cfg.fenced_or_max_pct):
+        if cfg.fenced_or_max_pct > 0 and or_range_pct > cfg.fenced_or_max_pct:
             return []
 
     # Aggregate post-OR bars to 5-min candles for breakout signals.
@@ -798,11 +816,9 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
     premkt_move_bps = 0.0
     if cfg.premkt_align_bps > 0:
         pre_start = _et_to_minutes("09:00")
-        pre_bars = [b for b in bars_1m
-                    if pre_start <= b.bucket < SESSION_START_ET]
+        pre_bars = [b for b in bars_1m if pre_start <= b.bucket < SESSION_START_ET]
         if pre_bars and pre_bars[0].open > 0:
-            premkt_move_bps = ((pre_bars[-1].close - pre_bars[0].open)
-                               / pre_bars[0].open * 10000.0)
+            premkt_move_bps = (pre_bars[-1].close - pre_bars[0].open) / pre_bars[0].open * 10000.0
 
     # R15b: pm OR precompute. Build a second opening range from
     # bars in [pm_or_start_et, pm_or_start_et + pm_or_minutes). When
@@ -812,8 +828,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
     pm_or_end = 0
     if cfg.pm_or_enabled:
         pm_or_end = cfg.pm_or_start_et + cfg.pm_or_minutes
-        pm_bars = [b for b in rth
-                   if cfg.pm_or_start_et <= b.bucket < pm_or_end]
+        pm_bars = [b for b in rth if cfg.pm_or_start_et <= b.bucket < pm_or_end]
         if pm_bars:
             pm_or_high = max(b.high for b in pm_bars)
             pm_or_low = min(b.low for b in pm_bars)
@@ -835,14 +850,15 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # as the reference range; admit until pm_trade_end_et.
         is_fade_mode = False
         use_pm_or = False
-        if (cfg.pm_or_enabled
-                and pm_or_high > pm_or_low
-                and sig.bucket >= pm_or_end
-                and sig.bucket < cfg.pm_trade_end_et):
+        if (
+            cfg.pm_or_enabled
+            and pm_or_high > pm_or_low
+            and sig.bucket >= pm_or_end
+            and sig.bucket < cfg.pm_trade_end_et
+        ):
             use_pm_or = True
         if sig.bucket >= cfg.time_cutoff_et and not use_pm_or:
-            if (cfg.afternoon_fade_enabled
-                    and sig.bucket < cfg.afternoon_fade_end_et):
+            if cfg.afternoon_fade_enabled and sig.bucket < cfg.afternoon_fade_end_et:
                 is_fade_mode = True
             elif cfg.pm_or_enabled:
                 # PM window comes later; skip this bar but keep scanning.
@@ -881,8 +897,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # filter is symmetric for breakout and fade entries: both need
         # the underlying move to be strong enough.
         if cfg.min_break_bps > 0 and (
-            not cfg.min_break_bps_tickers
-            or ticker in cfg.min_break_bps_tickers
+            not cfg.min_break_bps_tickers or ticker in cfg.min_break_bps_tickers
         ):
             if break_bps_orig < cfg.min_break_bps:
                 continue
@@ -892,8 +907,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # v21 fence: when confirm_bars_n_tickers non-empty, only apply to
         # those tickers.
         if cfg.confirm_bars_n > 1 and (
-            not cfg.confirm_bars_n_tickers
-            or ticker in cfg.confirm_bars_n_tickers
+            not cfg.confirm_bars_n_tickers or ticker in cfg.confirm_bars_n_tickers
         ):
             start = i - cfg.confirm_bars_n + 1
             if start < 0:
@@ -920,7 +934,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # v9 lever: volume confirmation -- require signal candle's
         # volume >= mult * mean(prior candles_5m). Skip if too quiet.
         if cfg.require_volume_confirm:
-            prior = candles_5m[max(0, i - 12):i]  # last hour of 5m bars
+            prior = candles_5m[max(0, i - 12) : i]  # last hour of 5m bars
             if prior:
                 avg_vol = sum(c.volume for c in prior) / len(prior)
                 if sig.volume < cfg.volume_confirm_mult * avg_vol:
@@ -979,14 +993,10 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # to those tickers (per-list fence). Per-side overrides
         # (max_vwap_dev_bps_long/short) take precedence over the symmetric
         # threshold when set.
-        side_thr = (
-            cfg.max_vwap_dev_bps_long if side == "long"
-            else cfg.max_vwap_dev_bps_short
-        )
+        side_thr = cfg.max_vwap_dev_bps_long if side == "long" else cfg.max_vwap_dev_bps_short
         effective_thr = side_thr if side_thr > 0 else cfg.max_vwap_dev_bps
         if effective_thr > 0 and (
-            not cfg.max_vwap_dev_tickers
-            or ticker in cfg.max_vwap_dev_tickers
+            not cfg.max_vwap_dev_tickers or ticker in cfg.max_vwap_dev_tickers
         ):
             vwap_at = session_vwap_at(rth, sig.bucket + 4)
             if vwap_at > 0:
@@ -1033,12 +1043,11 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         # computed from prior bars (slice [:i+1] is up to and including the
         # signal bar; entry fires on bar i+1's open).
         if cfg.vol_target_atr_pct > 0 and sig.close > 0:
-            atr_now = atr_5m(candles_5m[:i + 1], lookback=14)
+            atr_now = atr_5m(candles_5m[: i + 1], lookback=14)
             atr_pct = atr_now / sig.close * 100.0
             if atr_pct > 0:
                 scale = cfg.vol_target_atr_pct / atr_pct
-                scale = max(cfg.vol_target_min_scale,
-                            min(cfg.vol_target_max_scale, scale))
+                scale = max(cfg.vol_target_min_scale, min(cfg.vol_target_max_scale, scale))
                 risk_dollars *= scale
         shares = max(1, int(risk_dollars / risk))
 
@@ -1086,8 +1095,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     stop = entry_price  # BE
                     be_moved = True
                 # v9 lever: take partial profit at 1R (sell 50%).
-                if (cfg.partial_profit_at_1r and (not partial_taken)
-                        and fb.high >= one_r_long):
+                if cfg.partial_profit_at_1r and (not partial_taken) and fb.high >= one_r_long:
                     half = remaining_shares // 2
                     if half > 0:
                         partial_pnl_dollars = (one_r_long - entry_price) * half
@@ -1129,8 +1137,7 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
                     if new_stop < stop:
                         stop = new_stop
                 # v9 lever: partial profit at 1R (short)
-                if (cfg.partial_profit_at_1r and (not partial_taken)
-                        and fb.low <= one_r_short):
+                if cfg.partial_profit_at_1r and (not partial_taken) and fb.low <= one_r_short:
                     half = remaining_shares // 2
                     if half > 0:
                         partial_pnl_dollars = (entry_price - one_r_short) * half
@@ -1162,9 +1169,11 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
             exit_bkt = last.bucket
 
         # Apply exit slippage.
-        exit_slip_bps = cfg.exit_slippage_bps + (
-            cfg.stop_kick_bps if exit_reason == "stop" else 0
-        ) + (cfg.short_pen_bps if side == "short" else 0)
+        exit_slip_bps = (
+            cfg.exit_slippage_bps
+            + (cfg.stop_kick_bps if exit_reason == "stop" else 0)
+            + (cfg.short_pen_bps if side == "short" else 0)
+        )
         slip = exit_price * exit_slip_bps / 10000.0
         if side == "long":
             exit_price -= slip
@@ -1177,23 +1186,25 @@ def run_ticker_day(date: str, ticker: str, bars_1m: list[Bar1m],
         runner_shares = remaining_shares if cfg.partial_profit_at_1r else shares
         pnl_dollars = pnl_per_share * runner_shares + partial_pnl_dollars
 
-        pairs.append({
-            "ticker": ticker,
-            "side": side,
-            "entry_ts": _bucket_to_iso(date, entry_bkt),
-            "exit_ts": _bucket_to_iso(date, exit_bkt),
-            "entry_price": round(entry_price, 4),
-            "exit_price": round(exit_price, 4),
-            "shares": int(shares),
-            "pnl_per_share": round(pnl_per_share, 4),
-            "pnl_dollars": round(pnl_dollars, 4),
-            "exit_reason": exit_reason,
-            "or_high": round(or_high, 4),
-            "or_low": round(or_low, 4),
-            "or_range_pct": round(or_range_pct, 6),
-            "stop_price": round(stop, 4),
-            "risk_dollars": round(risk * shares, 2),
-        })
+        pairs.append(
+            {
+                "ticker": ticker,
+                "side": side,
+                "entry_ts": _bucket_to_iso(date, entry_bkt),
+                "exit_ts": _bucket_to_iso(date, exit_bkt),
+                "entry_price": round(entry_price, 4),
+                "exit_price": round(exit_price, 4),
+                "shares": int(shares),
+                "pnl_per_share": round(pnl_per_share, 4),
+                "pnl_dollars": round(pnl_dollars, 4),
+                "exit_reason": exit_reason,
+                "or_high": round(or_high, 4),
+                "or_low": round(or_low, 4),
+                "or_range_pct": round(or_range_pct, 6),
+                "stop_price": round(stop, 4),
+                "risk_dollars": round(risk * shares, 2),
+            }
+        )
         trades_today += 1
 
     return pairs
@@ -1205,8 +1216,7 @@ def _bucket_to_iso(date: str, minutes: int) -> str:
 
 
 # ---------- v14 prior-day filters: gap + NR_N (Crabel) ----------
-def compute_daily_session_stats(corpus_dir: Path, dates: list[str],
-                                tickers: list[str]) -> dict:
+def compute_daily_session_stats(corpus_dir: Path, dates: list[str], tickers: list[str]) -> dict:
     """Return {(date, ticker): (session_high, session_low, session_close)}.
 
     Session = regular-trading-hours bars (09:30-16:00 ET). Used by the
@@ -1227,8 +1237,7 @@ def compute_daily_session_stats(corpus_dir: Path, dates: list[str],
                 continue
             if not bars:
                 continue
-            rth = [b for b in bars
-                   if SESSION_START_ET <= b.bucket < SESSION_END]
+            rth = [b for b in bars if SESSION_START_ET <= b.bucket < SESSION_END]
             if not rth:
                 continue
             session_high = max(b.high for b in rth)
@@ -1238,8 +1247,9 @@ def compute_daily_session_stats(corpus_dir: Path, dates: list[str],
     return out
 
 
-def overnight_gap_pct(daily_stats: dict, dates: list[str], date: str,
-                      ticker: str, today_first_open: float) -> float | None:
+def overnight_gap_pct(
+    daily_stats: dict, dates: list[str], date: str, ticker: str, today_first_open: float
+) -> float | None:
     """Return |today_open - prev_close| / prev_close * 100, or None if missing.
 
     Look-ahead: prev_close is from the strictly prior session date.
@@ -1261,8 +1271,9 @@ def overnight_gap_pct(daily_stats: dict, dates: list[str], date: str,
     return abs(today_first_open - prev_close) / prev_close * 100.0
 
 
-def is_prior_nr_n(daily_stats: dict, dates: list[str], date: str,
-                  ticker: str, n: int) -> bool | None:
+def is_prior_nr_n(
+    daily_stats: dict, dates: list[str], date: str, ticker: str, n: int
+) -> bool | None:
     """True if the PRIOR session's range was the MIN of the last N prior
     sessions' ranges (Crabel NR_N). None if insufficient history.
 
@@ -1275,7 +1286,7 @@ def is_prior_nr_n(daily_stats: dict, dates: list[str], date: str,
     if idx < n:
         return None
     ranges = []
-    for d in dates[idx - n:idx]:
+    for d in dates[idx - n : idx]:
         s = daily_stats.get((d, ticker))
         if s is None:
             return None
@@ -1287,8 +1298,9 @@ def is_prior_nr_n(daily_stats: dict, dates: list[str], date: str,
     return prior_range == min(ranges) and prior_range > 0
 
 
-def is_prior_wr_n(daily_stats: dict, dates: list[str], date: str,
-                  ticker: str, n: int) -> bool | None:
+def is_prior_wr_n(
+    daily_stats: dict, dates: list[str], date: str, ticker: str, n: int
+) -> bool | None:
     """True if the PRIOR session's range was the MAX of last N prior
     sessions' ranges (wide-range exhaustion). None if insufficient.
     """
@@ -1299,7 +1311,7 @@ def is_prior_wr_n(daily_stats: dict, dates: list[str], date: str,
     if idx < n:
         return None
     ranges = []
-    for d in dates[idx - n:idx]:
+    for d in dates[idx - n : idx]:
         s = daily_stats.get((d, ticker))
         if s is None:
             return None
@@ -1312,8 +1324,7 @@ def is_prior_wr_n(daily_stats: dict, dates: list[str], date: str,
 
 
 # ---------- v12 SPY/QQQ regime gate ----------
-def compute_regime(corpus_dir: Path, date: str, ticker: str,
-                   or_minutes: int) -> dict | None:
+def compute_regime(corpus_dir: Path, date: str, ticker: str, or_minutes: int) -> dict | None:
     """Compute the day-level regime from an index ticker's 30-min OR.
 
     Returns dict with keys:
@@ -1333,8 +1344,7 @@ def compute_regime(corpus_dir: Path, date: str, ticker: str,
     if not bars:
         return None
     or_end = SESSION_START_ET + or_minutes
-    or_bars = [b for b in bars
-               if SESSION_START_ET <= b.bucket < or_end]
+    or_bars = [b for b in bars if SESSION_START_ET <= b.bucket < or_end]
     if not or_bars:
         return None
     or_open = or_bars[0].open
@@ -1352,8 +1362,9 @@ def compute_regime(corpus_dir: Path, date: str, ticker: str,
 
 
 # ---------- v13 RVOL gate (Zarattini SSRN 2023) ----------
-def compute_or_volumes(corpus_dir: Path, dates: list[str],
-                       tickers: list[str], or_minutes: int) -> dict:
+def compute_or_volumes(
+    corpus_dir: Path, dates: list[str], tickers: list[str], or_minutes: int
+) -> dict:
     """Return {(date, ticker): or_window_volume} for every date x ticker.
 
     The OR window is [09:30, 09:30 + or_minutes). Fully closed by the time
@@ -1374,14 +1385,14 @@ def compute_or_volumes(corpus_dir: Path, dates: list[str],
                 continue
             if not bars:
                 continue
-            v = sum(b.volume for b in bars
-                    if SESSION_START_ET <= b.bucket < or_end)
+            v = sum(b.volume for b in bars if SESSION_START_ET <= b.bucket < or_end)
             out[(date, tk)] = v
     return out
 
 
-def rvol_for(or_volumes: dict, dates: list[str], date: str, ticker: str,
-             lookback: int) -> float | None:
+def rvol_for(
+    or_volumes: dict, dates: list[str], date: str, ticker: str, lookback: int
+) -> float | None:
     """RVOL = today's OR_volume / mean(prior `lookback` sessions' OR_volume).
 
     Returns None if today's volume is missing OR fewer than half the
@@ -1397,7 +1408,7 @@ def rvol_for(or_volumes: dict, dates: list[str], date: str, ticker: str,
     except ValueError:
         return None
     prior = []
-    for d in dates[max(0, idx - lookback):idx]:
+    for d in dates[max(0, idx - lookback) : idx]:
         v = or_volumes.get((d, ticker))
         if v is not None and v > 0:
             prior.append(v)
@@ -1420,8 +1431,9 @@ def discover_dates(corpus_dir: Path, year_prefix: str, tickers: list[str]) -> li
     return out
 
 
-def run(corpus_dir: Path, out_dir: Path, dates: list[str],
-        tickers: list[str], cfg: ORBConfig, vid: str) -> dict:
+def run(
+    corpus_dir: Path, out_dir: Path, dates: list[str], tickers: list[str], cfg: ORBConfig, vid: str
+) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     per_day_dir = out_dir / "per_day"
     per_day_dir.mkdir(parents=True, exist_ok=True)
@@ -1432,20 +1444,30 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     # Slow path: read JSONL with threads and write pkl for next run.
     import concurrent.futures as _cf
     import pickle as _pickle
+
     _BAR_CACHE.clear()
     _cache_dir = corpus_dir / ".bt_cache"
     _cache_dir.mkdir(exist_ok=True)
 
     def _pkl_is_fresh(tk: str) -> bool:
-        """True if pkl exists and is newer than the newest JSONL for this ticker."""
+        """True if pkl exists and is newer than the newest JSONL for this ticker.
+
+        Checks O(tickers) instead of O(dates*tickers) by scanning only the
+        corpus_dir/<date>/ subdirs for this ticker's max mtime in one pass.
+        """
         pf = _cache_dir / f"{tk}.pkl"
         if not pf.exists():
             return False
         pkl_mtime = pf.stat().st_mtime
-        for d in dates:
-            jf = corpus_dir / d / f"{tk}.jsonl"
-            if jf.exists() and jf.stat().st_mtime > pkl_mtime:
-                return False
+        for date_dir in corpus_dir.iterdir():
+            if not date_dir.is_dir():
+                continue
+            jf = date_dir / f"{tk}.jsonl"
+            try:
+                if jf.stat().st_mtime > pkl_mtime:
+                    return False
+            except FileNotFoundError:
+                pass
         return True
 
     _all_fresh = all(_pkl_is_fresh(tk) for tk in tickers)
@@ -1457,9 +1479,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             with open(_cache_dir / f"{tk}.pkl", "rb") as _fh:
                 for _d, _tuples in _pickle.load(_fh).items():
                     if _d in _date_set:
-                        _BAR_CACHE[(_d, tk)] = [
-                            Bar1m(*t) for t in _tuples
-                        ]
+                        _BAR_CACHE[(_d, tk)] = [Bar1m(*t) for t in _tuples]
     else:
         # Slow path: read JSONL with threads, then write pkl for next run
         _all_keys = [(d, tk) for d in dates for tk in tickers]
@@ -1485,14 +1505,16 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                         bkt = _bucket_to_minutes(rec.get("et_bucket", ""))
                     if bkt < 0:
                         continue
-                    bars.append(Bar1m(
-                        bucket=bkt,
-                        open=float(rec.get("open", 0)),
-                        high=float(rec.get("high", 0)),
-                        low=float(rec.get("low", 0)),
-                        close=float(rec.get("close", 0)),
-                        volume=float(rec.get("total_volume") or rec.get("volume") or 0),
-                    ))
+                    bars.append(
+                        Bar1m(
+                            bucket=bkt,
+                            open=float(rec.get("open", 0)),
+                            high=float(rec.get("high", 0)),
+                            low=float(rec.get("low", 0)),
+                            close=float(rec.get("close", 0)),
+                            volume=float(rec.get("total_volume") or rec.get("volume") or 0),
+                        )
+                    )
                 bars.sort(key=lambda b: b.bucket)
                 return key, bars
             except Exception:
@@ -1507,9 +1529,12 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         # Store bars as plain tuples (bucket,o,h,l,c,vol) — class-agnostic.
         for tk in tickers:
             tk_data = {
-                d: [(b.bucket, b.open, b.high, b.low, b.close, b.volume)
-                    for b in _BAR_CACHE[(d, tk)]]
-                for d in dates if (d, tk) in _BAR_CACHE
+                d: [
+                    (b.bucket, b.open, b.high, b.low, b.close, b.volume)
+                    for b in _BAR_CACHE[(d, tk)]
+                ]
+                for d in dates
+                if (d, tk) in _BAR_CACHE
             }
             if tk_data:
                 with open(_cache_dir / f"{tk}.pkl", "wb") as _fh:
@@ -1548,8 +1573,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         rvol_universe = list(tickers)
         if cfg.regime_ticker and cfg.regime_ticker not in rvol_universe:
             rvol_universe.append(cfg.regime_ticker)
-        or_volumes = compute_or_volumes(
-            corpus_dir, dates, rvol_universe, cfg.or_minutes)
+        or_volumes = compute_or_volumes(corpus_dir, dates, rvol_universe, cfg.or_minutes)
     # v14 prior-day filters: pre-compute per-ticker per-day session stats
     # (high/low/close) ONCE so per-day lookups are O(1). Used by
     # overnight-gap and NR_N/WR_N filters. CLEAN look-ahead: each filter
@@ -1559,10 +1583,8 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     nr_signals_dropped = 0
     wr_signals_dropped = 0
     earnings_signals_dropped = 0
-    if (cfg.skip_gap_above_pct > 0 or cfg.require_prior_nr_n > 0
-            or cfg.skip_prior_wr_n > 0):
-        daily_stats = compute_daily_session_stats(
-            corpus_dir, dates, list(tickers))
+    if cfg.skip_gap_above_pct > 0 or cfg.require_prior_nr_n > 0 or cfg.skip_prior_wr_n > 0:
+        daily_stats = compute_daily_session_stats(corpus_dir, dates, list(tickers))
     # v16 VIX gate: load CSV once
     vix_closes: dict = {}
     vix_days_skipped = 0
@@ -1584,16 +1606,15 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 bars = []
             if not bars:
                 continue
-            rth = [b for b in bars
-                   if SESSION_START_ET <= b.bucket < _et_to_minutes("16:00")]
+            rth = [b for b in bars if SESSION_START_ET <= b.bucket < _et_to_minutes("16:00")]
             if rth:
                 spy_closes_per_date[d] = rth[-1].close
         sorted_d = sorted(spy_closes_per_date.keys())
         for i, d in enumerate(sorted_d):
             if i < 2:
                 continue
-            pd = sorted_d[i-1]
-            pp = sorted_d[i-2]
+            pd = sorted_d[i - 1]
+            pp = sorted_d[i - 2]
             base = spy_closes_per_date.get(pp, 0.0)
             close = spy_closes_per_date.get(pd, 0.0)
             if base > 0:
@@ -1648,15 +1669,13 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         regime_skip_day = False
         regime_skip_reason = ""
         if cfg.regime_ticker:
-            regime = compute_regime(corpus_dir, date, cfg.regime_ticker,
-                                    cfg.or_minutes)
+            regime = compute_regime(corpus_dir, date, cfg.regime_ticker, cfg.or_minutes)
             if regime is not None:
                 if regime["direction"] == "FLAT":
                     regime_skip_day = True
                     regime_skip_reason = "regime_flat"
                     regime_days_skipped_flat += 1
-                elif (cfg.regime_min_or_bps > 0
-                      and abs(regime["or_bps"]) < cfg.regime_min_or_bps):
+                elif cfg.regime_min_or_bps > 0 and abs(regime["or_bps"]) < cfg.regime_min_or_bps:
                     regime_skip_day = True
                     regime_skip_reason = "regime_low_or"
                     regime_days_skipped_low_or += 1
@@ -1693,9 +1712,11 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
 
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
-            _skip_set = (cfg.regime_low_skip_tickers
-                         if is_regime_low_today and cfg.regime_low_skip_tickers
-                         else set())
+            _skip_set = (
+                cfg.regime_low_skip_tickers
+                if is_regime_low_today and cfg.regime_low_skip_tickers
+                else set()
+            )
             _active = [tk for tk in tickers if tk not in _skip_set]
 
             def _run_ticker(tk):
@@ -1717,11 +1738,15 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                         if err is not None:
                             tickers_failed += 1
                             if len(failures) < 10:
-                                failures.append({"date": date, "ticker": tk,
-                                    "error_class": type(err).__name__,
-                                    "error_msg": str(err)})
-                            print(f"WARN {date} {tk}: {type(err).__name__}: {err}",
-                                  file=sys.stderr)
+                                failures.append(
+                                    {
+                                        "date": date,
+                                        "ticker": tk,
+                                        "error_class": type(err).__name__,
+                                        "error_msg": str(err),
+                                    }
+                                )
+                            print(f"WARN {date} {tk}: {type(err).__name__}: {err}", file=sys.stderr)
                         else:
                             candidate_pairs.extend(pairs)
             else:
@@ -1730,11 +1755,15 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     if err is not None:
                         tickers_failed += 1
                         if len(failures) < 10:
-                            failures.append({"date": date, "ticker": tk,
-                                "error_class": type(err).__name__,
-                                "error_msg": str(err)})
-                        print(f"WARN {date} {tk}: {type(err).__name__}: {err}",
-                              file=sys.stderr)
+                            failures.append(
+                                {
+                                    "date": date,
+                                    "ticker": tk,
+                                    "error_class": type(err).__name__,
+                                    "error_msg": str(err),
+                                }
+                            )
+                        print(f"WARN {date} {tk}: {type(err).__name__}: {err}", file=sys.stderr)
                     else:
                         candidate_pairs.extend(pairs)
 
@@ -1743,11 +1772,9 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         # accurate. When regime=None (no data) or regime_dir_align=False,
         # this is a no-op. Note: candidate_pairs use lowercase side
         # ("long"/"short") -- match case-insensitively.
-        if (cfg.regime_dir_align and regime is not None
-                and regime["direction"] in ("LONG", "SHORT")):
+        if cfg.regime_dir_align and regime is not None and regime["direction"] in ("LONG", "SHORT"):
             allowed_side = regime["direction"].lower()
-            kept = [p for p in candidate_pairs
-                    if str(p["side"]).lower() == allowed_side]
+            kept = [p for p in candidate_pairs if str(p["side"]).lower() == allowed_side]
             regime_signals_dropped += len(candidate_pairs) - len(kept)
             candidate_pairs = kept
 
@@ -1762,8 +1789,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             for p in candidate_pairs:
                 tk = p["ticker"]
                 if tk not in ticker_rvols:
-                    rv = rvol_for(or_volumes, dates, date, tk,
-                                  cfg.rvol_lookback_days)
+                    rv = rvol_for(or_volumes, dates, date, tk, cfg.rvol_lookback_days)
                     ticker_rvols[tk] = rv
                 rv = ticker_rvols[tk]
                 if rv is None:
@@ -1787,8 +1813,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                 if tk not in ticker_open:
                     # Get the 09:30 open bar from this day's bars
                     bars = load_day_bars(corpus_dir, date, tk)
-                    open_bar = next((b for b in bars
-                                     if b.bucket == SESSION_START_ET), None)
+                    open_bar = next((b for b in bars if b.bucket == SESSION_START_ET), None)
                     ticker_open[tk] = open_bar.open if open_bar else None
                 today_open = ticker_open[tk]
                 if today_open is None:
@@ -1812,8 +1837,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             for p in candidate_pairs:
                 tk = p["ticker"]
                 if tk not in ticker_ok:
-                    is_nr = is_prior_nr_n(daily_stats, dates, date, tk,
-                                          cfg.require_prior_nr_n)
+                    is_nr = is_prior_nr_n(daily_stats, dates, date, tk, cfg.require_prior_nr_n)
                     ticker_ok[tk] = is_nr if is_nr is not None else True
                 if not ticker_ok[tk]:
                     nr_signals_dropped += 1
@@ -1827,8 +1851,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             for p in candidate_pairs:
                 tk = p["ticker"]
                 if tk not in ticker_block:
-                    is_wr = is_prior_wr_n(daily_stats, dates, date, tk,
-                                          cfg.skip_prior_wr_n)
+                    is_wr = is_prior_wr_n(daily_stats, dates, date, tk, cfg.skip_prior_wr_n)
                     ticker_block[tk] = bool(is_wr)
                 if ticker_block[tk]:
                     wr_signals_dropped += 1
@@ -1842,9 +1865,12 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         if cfg.skip_earnings_window and candidate_pairs:
             kept = []
             for p in candidate_pairs:
-                if is_earnings_window(p["ticker"], date,
-                                      days_before=cfg.earnings_days_before,
-                                      days_after=cfg.earnings_days_after):
+                if is_earnings_window(
+                    p["ticker"],
+                    date,
+                    days_before=cfg.earnings_days_before,
+                    days_after=cfg.earnings_days_after,
+                ):
                     earnings_signals_dropped += 1
                 else:
                     kept.append(p)
@@ -1946,12 +1972,13 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     # v18 rule #1 lock: this leg ended with a loss large
                     # enough to lock the (ticker, side) for the rest of
                     # the day.
-                    if (cfg.loss_lock_threshold_usd > 0
-                            and p["pnl_dollars"] < -cfg.loss_lock_threshold_usd):
+                    if (
+                        cfg.loss_lock_threshold_usd > 0
+                        and p["pnl_dollars"] < -cfg.loss_lock_threshold_usd
+                    ):
                         locked_pairs[(p["ticker"], p["side"])] = ts
                     # post-loss cooldown: record block window after hard stop
-                    if (cfg.post_loss_cooldown_min > 0
-                            and p.get("exit_reason") == "stop"):
+                    if cfg.post_loss_cooldown_min > 0 and p.get("exit_reason") == "stop":
                         exit_min = _ts_to_minutes(ts)
                         until_min = exit_min + cfg.post_loss_cooldown_min
                         until_h, until_m = divmod(until_min, 60)
@@ -1960,14 +1987,14 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     # v18 rule #2 halt: realized drawdown from peak crossed
                     # the threshold. Same effect as kill_active but a
                     # different trigger.
-                    if (cfg.peak_dd_halt_usd > 0
-                            and not kill_active
-                            and cum_pnl <= peak_pnl - cfg.peak_dd_halt_usd):
+                    if (
+                        cfg.peak_dd_halt_usd > 0
+                        and not kill_active
+                        and cum_pnl <= peak_pnl - cfg.peak_dd_halt_usd
+                    ):
                         kill_active = True
 
-        day_pairs = [
-            p for i, p in enumerate(candidate_pairs) if i in accepted_idx
-        ]
+        day_pairs = [p for i, p in enumerate(candidate_pairs) if i in accepted_idx]
         rejected = len(candidate_pairs) - len(day_pairs)
 
         n_entries = len(day_pairs)
@@ -1978,44 +2005,66 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         # v11 compounding: update running balance with this day's P&L.
         if cfg.compound_daily:
             running_account += day_pnl
-            daily_account_history.append({
-                "date": date,
-                "open_balance": round(current_account, 2),
-                "day_pnl": round(day_pnl, 2),
-                "close_balance": round(running_account, 2),
-            })
+            daily_account_history.append(
+                {
+                    "date": date,
+                    "open_balance": round(current_account, 2),
+                    "day_pnl": round(day_pnl, 2),
+                    "close_balance": round(running_account, 2),
+                }
+            )
         total_entries += n_entries
         total_wins += wins
         total_losses += losses
         days_ok += 1
 
-        per_day_dir.joinpath(f"{date}.json").write_text(json.dumps({
-            "date": date,
-            "tickers": list(tickers),
-            "entries": [{"ts": p["entry_ts"], "ticker": p["ticker"],
-                         "side": p["side"], "price": p["entry_price"]}
-                        for p in day_pairs],
-            "exits": [{"ts": p["exit_ts"], "ticker": p["ticker"],
-                       "side": p["side"], "exit_price": p["exit_price"],
-                       "reason": p["exit_reason"]} for p in day_pairs],
-            "pnl_pairs": day_pairs,
-            "rejected_concurrent_cap": rejected,
-            "kill_switch_fired": kill_active,
-            # v18 diagnostics
-            "r18_lock_rejects": r18_lock_rejects,
-            "r18_locked_pairs": [list(k) for k in locked_pairs.keys()],
-            "r18_peak_pnl": round(peak_pnl, 2),
-            "regime": regime,
-            "regime_skip_day": regime_skip_day,
-            "regime_skip_reason": regime_skip_reason,
-            "summary": {
-                "entries": n_entries, "exits": n_entries,
-                "wins": wins, "losses": losses,
-                "total_pnl": round(day_pnl, 4),
-                "pairs_missing_shares": 0,
-            },
-            "_orb_strategy": True,
-        }, indent=2))
+        per_day_dir.joinpath(f"{date}.json").write_text(
+            json.dumps(
+                {
+                    "date": date,
+                    "tickers": list(tickers),
+                    "entries": [
+                        {
+                            "ts": p["entry_ts"],
+                            "ticker": p["ticker"],
+                            "side": p["side"],
+                            "price": p["entry_price"],
+                        }
+                        for p in day_pairs
+                    ],
+                    "exits": [
+                        {
+                            "ts": p["exit_ts"],
+                            "ticker": p["ticker"],
+                            "side": p["side"],
+                            "exit_price": p["exit_price"],
+                            "reason": p["exit_reason"],
+                        }
+                        for p in day_pairs
+                    ],
+                    "pnl_pairs": day_pairs,
+                    "rejected_concurrent_cap": rejected,
+                    "kill_switch_fired": kill_active,
+                    # v18 diagnostics
+                    "r18_lock_rejects": r18_lock_rejects,
+                    "r18_locked_pairs": [list(k) for k in locked_pairs.keys()],
+                    "r18_peak_pnl": round(peak_pnl, 2),
+                    "regime": regime,
+                    "regime_skip_day": regime_skip_day,
+                    "regime_skip_reason": regime_skip_reason,
+                    "summary": {
+                        "entries": n_entries,
+                        "exits": n_entries,
+                        "wins": wins,
+                        "losses": losses,
+                        "total_pnl": round(day_pnl, 4),
+                        "pairs_missing_shares": 0,
+                    },
+                    "_orb_strategy": True,
+                },
+                indent=2,
+            )
+        )
 
     closed = total_wins + total_losses
     summary = {
@@ -2042,7 +2091,9 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         "wall_min": 0,
         # v11 compounding fields
         "starting_account": round(starting_account, 2),
-        "ending_account": round(running_account, 2) if cfg.compound_daily else round(starting_account + total_pnl, 2),
+        "ending_account": round(running_account, 2)
+        if cfg.compound_daily
+        else round(starting_account + total_pnl, 2),
         "compound_daily": cfg.compound_daily,
         # v12 regime-gate diagnostics
         "regime_ticker": cfg.regime_ticker,
@@ -2084,9 +2135,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
             "blocklist": cfg.blocklist,
         },
     }
-    out_dir.joinpath("summary.json").write_text(
-        json.dumps(summary, indent=2)
-    )
+    out_dir.joinpath("summary.json").write_text(json.dumps(summary, indent=2))
     _BAR_CACHE.clear()  # free memory; restore disk-read path for subsequent calls
     return summary
 
@@ -2098,8 +2147,7 @@ def _minutes_to_et(m: int) -> str:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--corpus", default="data",
-                   help="Corpus root (e.g. 'data' or '/home/.../data')")
+    p.add_argument("--corpus", default="data", help="Corpus root (e.g. 'data' or '/home/.../data')")
     p.add_argument("--out", required=True, help="Output dir")
     p.add_argument("--vid", default="orb_classical_15min")
     p.add_argument("--tickers", default="AAPL,MSFT,NVDA,TSLA,META,GOOG,AMZN,AVGO,NFLX,ORCL")
@@ -2124,17 +2172,18 @@ def main(argv: list[str]) -> int:
     stride = max(1, int(os.environ.get("DATES_STRIDE", "1")))
     if stride > 1:
         dates = dates[::stride]
-        print(f"ORB: DATES_STRIDE={stride} -> {len(dates)} dates",
-              file=sys.stderr, flush=True)
+        print(f"ORB: DATES_STRIDE={stride} -> {len(dates)} dates", file=sys.stderr, flush=True)
     if args.max_dates > 0:
-        dates = dates[:args.max_dates]
+        dates = dates[: args.max_dates]
     if not dates:
         print("ERROR: no eligible dates found", file=sys.stderr)
         return 1
 
-    print(f"ORB: {len(dates)} dates, {len(tickers)} tickers, "
-          f"OR={cfg.or_minutes}m, RR={cfg.rr}, stride={stride}, "
-          f"range=[{cfg.range_min_pct:.3f},{cfg.range_max_pct:.3f}]")
+    print(
+        f"ORB: {len(dates)} dates, {len(tickers)} tickers, "
+        f"OR={cfg.or_minutes}m, RR={cfg.rr}, stride={stride}, "
+        f"range=[{cfg.range_min_pct:.3f},{cfg.range_max_pct:.3f}]"
+    )
 
     summary = run(corpus, Path(args.out), dates, tickers, cfg, args.vid)
     print(json.dumps(summary, indent=2))

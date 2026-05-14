@@ -1044,6 +1044,7 @@ class TradeGeniusBase:
             # legacy FSM path.
             try:
                 from orb.exits import ExitDecision
+
                 adapter = _orb_runtime._adapters.get(pid) if _orb_runtime._adapters else None
                 if adapter is not None:
                     real_ticket_id = adapter._ticker_to_ticket.get(ticker)
@@ -1069,7 +1070,8 @@ class TradeGeniusBase:
                             logger.info(
                                 "[V9126-ENGINE-EXIT] %s/%s real ticket "
                                 "released via on_exit (bus mirror path)",
-                                self.NAME, ticker,
+                                self.NAME,
+                                ticker,
                             )
                             # engine.on_exit already transitioned FSM
                             # and bumped trades_today. Skip the legacy
@@ -1079,7 +1081,8 @@ class TradeGeniusBase:
                 logger.exception(
                     "[V9126-ENGINE-EXIT] %s real-ticket release raised "
                     "(falling through to legacy unmirror) ticker=%s",
-                    self.NAME, ticker,
+                    self.NAME,
+                    ticker,
                 )
             # --- 2. Legacy FSM transition (no real ticket, e.g. phantom) ---
             ds = engine._state.get_day_state(pid, ticker)
@@ -2775,10 +2778,15 @@ class TradeGeniusBase:
                     # flushes or target exits -- those are not losses by design).
                     _stop_reasons = {
                         "stop",
-                        "sentinel_a_stop_price",
                         "be_stop",
-                        "v750_early_ditch",
+                        "sentinel_a_stop_price",
                         "sentinel_r2_hard_stop",
+                        "sentinel_v651_deep_stop",
+                        "v750_early_ditch",
+                        "forensic_stop",
+                        "per_trade_brake",
+                        "velocity_fuse",
+                        "ema_trail",
                     }
                     if reason.lower() in _stop_reasons or "stop" in reason.lower():
                         _pos_rec = self.positions.get(ticker, {})

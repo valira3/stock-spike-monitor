@@ -64,12 +64,15 @@ logger = logging.getLogger(__name__)
 
 def _railway_exe() -> str | None:
     """Return the railway CLI executable name, handling Windows .cmd wrappers."""
-    # On Windows npm installs railway as railway.cmd; shutil.which finds it.
     for candidate in ("railway", "railway.cmd"):
         found = shutil.which(candidate)
         if found:
             return found
     return None
+
+
+# Cache at module level — shutil.which walks PATH on every call.
+_RAILWAY_EXE: str | None = _railway_exe()
 
 
 def _fetch_via_cli(limit: int = 500) -> list[dict] | None:
@@ -81,7 +84,7 @@ def _fetch_via_cli(limit: int = 500) -> list[dict] | None:
     Used automatically by fetch_recent_logs() when RAILWAY_API_TOKEN is
     not set but the railway CLI is installed and linked to a project.
     """
-    exe = _railway_exe()
+    exe = _RAILWAY_EXE
     if not exe:
         logger.debug("railway CLI not found")
         return None
