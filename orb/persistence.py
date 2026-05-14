@@ -26,6 +26,7 @@ Failure-tolerant: all I/O is wrapped in try/except. A write failure
 emits a debug log; a read failure returns None. Neither blocks the
 trading path.
 """
+
 from __future__ import annotations
 
 import json
@@ -66,12 +67,15 @@ def resolve_path(date_iso: str) -> str:
 # ----- Serialize ---------------------------------------------------
 
 
-def serialize_engine_state(engine,
-                           *,
-                           recent_activity: Optional[list] = None,
-                           pending_v10_sizes: Optional[dict] = None,
-                           date_iso: str = "",
-                           bot_version: str = "") -> dict:
+def serialize_engine_state(
+    engine,
+    *,
+    recent_activity: Optional[list] = None,
+    pending_v10_sizes: Optional[dict] = None,
+    date_iso: str = "",
+    bot_version: str = "",
+    adapters=None,
+) -> dict:
     """Build the on-disk JSON for the current engine + live_runtime state.
 
     Pure (no I/O); caller passes in the live_runtime side data.
@@ -98,18 +102,20 @@ def serialize_engine_state(engine,
     # B. DayState FSM (every (pid, ticker) row)
     day_states = []
     for (pid, ticker), ds in state.day_states.items():
-        day_states.append({
-            "portfolio_id": pid,
-            "ticker": ticker,
-            "phase": ds.phase,
-            "block_reason": ds.block_reason,
-            "trades_today": ds.trades_today,
-            "in_position": ds.in_position,
-            "last_signal_bucket": ds.last_signal_bucket,
-            "last_entry_iso": ds.last_entry_iso,
-            "last_exit_iso": ds.last_exit_iso,
-            "consecutive_losses": ds.consecutive_losses,
-        })
+        day_states.append(
+            {
+                "portfolio_id": pid,
+                "ticker": ticker,
+                "phase": ds.phase,
+                "block_reason": ds.block_reason,
+                "trades_today": ds.trades_today,
+                "in_position": ds.in_position,
+                "last_signal_bucket": ds.last_signal_bucket,
+                "last_entry_iso": ds.last_entry_iso,
+                "last_exit_iso": ds.last_exit_iso,
+                "consecutive_losses": ds.consecutive_losses,
+            }
+        )
 
     # C. RiskBook per-portfolio (realized P&L + open tickets + daily-kill)
     risk_books = {}
@@ -120,9 +126,7 @@ def serialize_engine_state(engine,
         # Access open_tickets under the lock for a consistent snapshot.
         with rb._lock:
             tickets = [
-                {"ticket_id": t.ticket_id,
-                 "risk_dollars": t.risk_dollars,
-                 "notional": t.notional}
+                {"ticket_id": t.ticket_id, "risk_dollars": t.risk_dollars, "notional": t.notional}
                 for t in rb._open_tickets.values()
             ]
             risk_books[pid] = {
@@ -136,6 +140,42 @@ def serialize_engine_state(engine,
                 "admit_count": rb.admit_count,
                 "reject_count": rb.reject_count,
             }
+
+    # G. Open positions per portfolio (LiveAdapter._open_positions).
+    # Saves the full OrbPosition so the exit engine can resume managing
+    # each position after a Railway redeploy mid-session.
+    open_positions: dict = {}
+    if adapters is not None:
+        for pid in engine.portfolio_ids:
+            adapter = adapters.get(pid)
+            if adapter is None:
+                continue
+            pid_pos: dict = {}
+            for tid, pos in adapter._open_positions.items():
+                try:
+                    pid_pos[tid] = {
+                        "portfolio_id": pos.portfolio_id,
+                        "ticker": pos.ticker,
+                        "side": pos.side,
+                        "entry_price": pos.entry_price,
+                        "stop": pos.stop,
+                        "target": pos.target,
+                        "risk": pos.risk,
+                        "one_r": pos.one_r,
+                        "rr": pos.rr,
+                        "be_moved": pos.be_moved,
+                        "shares": pos.shares,
+                        "risk_dollars": pos.risk_dollars,
+                        "notional": pos.notional,
+                        "risk_ticket_id": pos.risk_ticket_id,
+                        "partial_taken": pos.partial_taken,
+                        "partial_pnl_dollars": pos.partial_pnl_dollars,
+                        "original_shares": pos.original_shares,
+                    }
+                except Exception:
+                    continue
+            if pid_pos:
+                open_positions[pid] = pid_pos
 
     # E. Wash-sale tracker (engine-level, session-scoped counter + recent)
     wash_risk = {
@@ -162,12 +202,12 @@ def serialize_engine_state(engine,
         "schema_version": PERSIST_SCHEMA_VERSION,
         "bot_version": bot_version,
         "date_iso": date_iso,
-        "saved_at_iso": datetime.now(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"),
+        "saved_at_iso": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "session_date": state.session_date,
         "or_windows": or_windows,
         "day_states": day_states,
         "risk_books": risk_books,
+        "open_positions": open_positions,
         "wash_risk": wash_risk,
         "activity": activity,
         "pending_v10_sizes": pending_sizes,
@@ -177,13 +217,16 @@ def serialize_engine_state(engine,
 # ----- Write -------------------------------------------------------
 
 
-def dump_state_to_disk(engine,
-                       *,
-                       recent_activity: Optional[list] = None,
-                       pending_v10_sizes: Optional[dict] = None,
-                       date_iso: str,
-                       bot_version: str = "",
-                       path: Optional[str] = None) -> bool:
+def dump_state_to_disk(
+    engine,
+    *,
+    recent_activity: Optional[list] = None,
+    pending_v10_sizes: Optional[dict] = None,
+    date_iso: str,
+    bot_version: str = "",
+    path: Optional[str] = None,
+    adapters=None,
+) -> bool:
     """Serialize engine state and atomically write to disk.
 
     Returns True on success, False on any failure. Never raises.
@@ -202,6 +245,7 @@ def dump_state_to_disk(engine,
             pending_v10_sizes=pending_v10_sizes,
             date_iso=date_iso,
             bot_version=bot_version,
+            adapters=adapters,
         )
     except Exception as e:
         logger.debug("[V834-PERSIST] serialize failed: %s", e)
@@ -211,8 +255,7 @@ def dump_state_to_disk(engine,
         # Write to a sibling tempfile in the same directory so the
         # final rename is on the same filesystem.
         dir_part = os.path.dirname(target) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".orb_state.", suffix=".tmp",
-                                   dir=dir_part)
+        fd, tmp = tempfile.mkstemp(prefix=".orb_state.", suffix=".tmp", dir=dir_part)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, separators=(",", ":"), default=str)
@@ -232,9 +275,11 @@ def dump_state_to_disk(engine,
 # ----- Read --------------------------------------------------------
 
 
-def load_state_from_disk(date_iso: str,
-                         *, path: Optional[str] = None,
-                         ) -> Optional[dict]:
+def load_state_from_disk(
+    date_iso: str,
+    *,
+    path: Optional[str] = None,
+) -> Optional[dict]:
     """Read the persisted state for `date_iso`. Returns the parsed dict
     if (a) the file exists, (b) loads as valid JSON, and (c) its
     ``date_iso`` matches the requested date. Otherwise returns None.
@@ -263,10 +308,9 @@ def load_state_from_disk(date_iso: str,
 # ----- Apply (overlay onto live engine state) ----------------------
 
 
-def apply_loaded_state(engine, loaded: dict,
-                       *,
-                       recent_activity=None,
-                       pending_v10_sizes=None) -> dict:
+def apply_loaded_state(
+    engine, loaded: dict, *, recent_activity=None, pending_v10_sizes=None, adapters=None
+) -> dict:
     """Overlay a previously-dumped state onto the live engine + live-
     runtime side data. Designed to be called AFTER
     ``OrbEngine.start_new_session()`` runs its reset; the loaded data
@@ -281,6 +325,7 @@ def apply_loaded_state(engine, loaded: dict,
     from orb import state as _state_mod
     from orb import risk_book as _rb_mod
     from collections import defaultdict
+
     counters = {
         "or_windows_loaded": 0,
         "day_states_loaded": 0,
@@ -315,7 +360,7 @@ def apply_loaded_state(engine, loaded: dict,
         counters["or_windows_loaded"] += 1
 
     # B. DayState FSM
-    for raw in (loaded.get("day_states") or []):
+    for raw in loaded.get("day_states") or []:
         if not isinstance(raw, dict):
             continue
         pid = str(raw.get("portfolio_id") or "")
@@ -351,18 +396,17 @@ def apply_loaded_state(engine, loaded: dict,
         try:
             with rb._lock:
                 rb._session_start_equity = float(
-                    raw.get("session_start_equity") or rb._session_start_equity)
+                    raw.get("session_start_equity") or rb._session_start_equity
+                )
                 rb._equity = float(raw.get("equity") or rb._equity)
-                rb._realized_pnl_today = float(
-                    raw.get("realized_pnl_today") or 0.0)
+                rb._realized_pnl_today = float(raw.get("realized_pnl_today") or 0.0)
                 rb._open_risk = float(raw.get("open_risk") or 0.0)
                 rb._open_notional = float(raw.get("open_notional") or 0.0)
-                rb.daily_kill_triggered = bool(
-                    raw.get("daily_kill_triggered"))
+                rb.daily_kill_triggered = bool(raw.get("daily_kill_triggered"))
                 rb.admit_count = int(raw.get("admit_count") or 0)
                 rb.reject_count = int(raw.get("reject_count") or 0)
                 rb._open_tickets.clear()
-                for t_raw in (raw.get("open_tickets") or []):
+                for t_raw in raw.get("open_tickets") or []:
                     if not isinstance(t_raw, dict):
                         continue
                     tid = str(t_raw.get("ticket_id") or "")
@@ -393,6 +437,92 @@ def apply_loaded_state(engine, loaded: dict,
         engine._recent_losses = rl
     except Exception:
         pass
+
+    # G. Open positions per portfolio (LiveAdapter._open_positions).
+    # Restores OrbPosition objects so the exit engine can resume exit
+    # management after a Railway redeploy mid-session. Tickets are
+    # registered with a "recover-" prefix so the V8322 uuid-purge sweep
+    # (which runs after apply_loaded_state) leaves them intact.
+    # The V8322 sweep zeroes out the uuid tickets from section C; the
+    # recover tickets added here remain, giving the net:
+    #   _open_risk = (C_persisted) + (G_recover) - (C_uuid_purge)
+    #             = persisted_uuid_risk + recover_risk - persisted_uuid_risk
+    #             = recover_risk  ✓
+    if adapters is not None:
+        from orb.exits import OrbPosition as _OrbPos
+
+        risk_registry = engine._risk
+        for pid, pid_raw in (loaded.get("open_positions") or {}).items():
+            if not isinstance(pid_raw, dict):
+                continue
+            adapter = adapters.get(pid)
+            rb = risk_registry.get(pid)
+            if adapter is None or rb is None:
+                continue
+            for original_tid, raw in pid_raw.items():
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    ticker = str(raw.get("ticker") or "")
+                    side = str(raw.get("side") or "long").lower()
+                    entry_price = float(raw.get("entry_price") or 0)
+                    stop = float(raw.get("stop") or 0)
+                    if not ticker or not entry_price or entry_price <= 0:
+                        continue
+                    risk = float(raw.get("risk") or abs(entry_price - stop))
+                    if risk < 0:
+                        risk = 0.0
+                    recover_tid = f"recover-{original_tid}"
+                    risk_dollars = float(
+                        raw.get("risk_dollars") or risk * max(0, int(raw.get("shares") or 0))
+                    )
+                    notional = float(raw.get("notional") or 0)
+                    pos = _OrbPos(
+                        portfolio_id=str(raw.get("portfolio_id") or pid),
+                        ticker=ticker,
+                        side=side,
+                        entry_price=entry_price,
+                        stop=stop,
+                        target=float(raw.get("target") or 0),
+                        risk=risk,
+                        one_r=float(raw.get("one_r") or 0),
+                        rr=float(raw.get("rr") or 2.5),
+                        be_moved=bool(raw.get("be_moved")),
+                        shares=int(raw.get("shares") or 0),
+                        risk_dollars=risk_dollars,
+                        notional=notional,
+                        risk_ticket_id=recover_tid,
+                        partial_taken=bool(raw.get("partial_taken")),
+                        partial_pnl_dollars=float(raw.get("partial_pnl_dollars") or 0),
+                        original_shares=int(raw.get("original_shares") or raw.get("shares") or 0),
+                    )
+                    with rb._lock:
+                        rb._open_tickets[recover_tid] = _rb_mod._Ticket(
+                            ticket_id=recover_tid,
+                            risk_dollars=risk_dollars,
+                            notional=notional,
+                        )
+                        rb._open_risk += risk_dollars
+                        rb._open_notional += notional
+                    adapter._open_positions[recover_tid] = pos
+                    counters["open_positions_loaded"] = counters.get("open_positions_loaded", 0) + 1
+                    logger.info(
+                        "[V834-PERSIST] restored position %s %s %s shares=%d stop=%.4f ticket=%s",
+                        pid,
+                        ticker,
+                        side,
+                        pos.shares,
+                        pos.stop,
+                        recover_tid[:16],
+                    )
+                except Exception as _exc:
+                    logger.debug(
+                        "[V834-PERSIST] open_positions restore failed %s/%s: %s",
+                        pid,
+                        original_tid,
+                        _exc,
+                    )
+                    continue
 
     # D. Activity feed (caller-side ring buffer)
     if recent_activity is not None:
@@ -429,9 +559,9 @@ def apply_loaded_state(engine, loaded: dict,
     return counters
 
 
-def prune_stale_state_files(today_iso: str, *,
-                            keep_days: int = 5,
-                            base_dir: Optional[str] = None) -> int:
+def prune_stale_state_files(
+    today_iso: str, *, keep_days: int = 5, base_dir: Optional[str] = None
+) -> int:
     """Delete orb_state_YYYY-MM-DD.json files older than `keep_days`
     days from `today_iso`. Returns the number of files removed.
 
@@ -457,7 +587,7 @@ def prune_stale_state_files(today_iso: str, *,
     for fname in files:
         if not fname.startswith(pre) or not fname.endswith(post):
             continue
-        date_part = fname[len(pre):len(fname) - len(post)] if post else fname[len(pre):]
+        date_part = fname[len(pre) : len(fname) - len(post)] if post else fname[len(pre) :]
         try:
             file_dt = datetime.strptime(date_part, "%Y-%m-%d")
         except ValueError:

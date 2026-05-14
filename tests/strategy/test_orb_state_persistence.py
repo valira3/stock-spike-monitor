@@ -13,6 +13,7 @@ Categories covered:
   E. Wash-sale tracker (_recent_losses, wash_risk_count)
   F. Pending v10 sizes (tuple keys -> str roundtrip)
 """
+
 from __future__ import annotations
 
 import collections
@@ -25,12 +26,18 @@ import pytest
 
 from orb.engine import OrbConfig, OrbEngine
 from orb.persistence import (
-    serialize_engine_state, dump_state_to_disk,
-    load_state_from_disk, apply_loaded_state, resolve_path,
+    serialize_engine_state,
+    dump_state_to_disk,
+    load_state_from_disk,
+    apply_loaded_state,
+    resolve_path,
     prune_stale_state_files,
 )
 from orb.state import (
-    PHASE_WARMUP, PHASE_ARMED, PHASE_IN_POS, PHASE_CLOSED,
+    PHASE_WARMUP,
+    PHASE_ARMED,
+    PHASE_IN_POS,
+    PHASE_CLOSED,
     PHASE_BLOCKED_BLOCKLIST,
 )
 
@@ -61,9 +68,12 @@ def _lock_or(eng, ticker, *, or_high=101.0, or_low=99.0):
         lo = or_low if m == 585 else or_low + 0.5
         eng.on_bar_arrival(
             ticker=ticker,
-            bar_high=h, bar_low=lo,
-            bar_open=100.0, bar_close=100.0,
-            bar_volume=10_000, bar_bucket_min=m,
+            bar_high=h,
+            bar_low=lo,
+            bar_open=100.0,
+            bar_close=100.0,
+            bar_volume=10_000,
+            bar_bucket_min=m,
         )
 
 
@@ -79,14 +89,16 @@ def tmp_state_dir(tmp_path, monkeypatch):
 
 
 class TestOrWindowRoundtrip:
-
     def test_or_window_serialized_with_full_state(self, tmp_state_dir):
         eng = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng, ["AAPL"])
         _lock_or(eng, "AAPL", or_high=150.5, or_low=148.25)
         payload = serialize_engine_state(
-            eng, recent_activity=[], pending_v10_sizes={},
-            date_iso="2026-05-12", bot_version="8.3.4",
+            eng,
+            recent_activity=[],
+            pending_v10_sizes={},
+            date_iso="2026-05-12",
+            bot_version="8.3.4",
         )
         ws = payload["or_windows"]
         assert "AAPL" in ws
@@ -100,8 +112,9 @@ class TestOrWindowRoundtrip:
         eng1 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng1, ["AAPL"])
         _lock_or(eng1, "AAPL", or_high=200.0, or_low=195.0)
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         # Fresh engine (post-redeploy simulation)
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2, ["AAPL"])
@@ -120,7 +133,6 @@ class TestOrWindowRoundtrip:
 
 
 class TestDayStateRoundtrip:
-
     def test_in_position_survives_redeploy(self, tmp_state_dir):
         """Critical safety case: if Main is IN_POS on AAPL when bot
         redeploys, the engine MUST come back IN_POS so the opposite-
@@ -132,8 +144,9 @@ class TestDayStateRoundtrip:
         ds1.phase = PHASE_IN_POS
         ds1.trades_today = 2
         ds1.last_entry_iso = "2026-05-12T14:00:00Z"
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         # Post-redeploy
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2, ["AAPL"])
@@ -153,8 +166,9 @@ class TestDayStateRoundtrip:
         _start_session(eng1, ["AAPL", "META"])
         # META is in blocklist -> session-start transitions it to BLOCKED_BLOCKLIST
         assert eng1._state.get_day_state("main", "META").phase == PHASE_BLOCKED_BLOCKLIST
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2, ["AAPL", "META"])
         apply_loaded_state(eng2, load_state_from_disk("2026-05-12"))
@@ -165,7 +179,6 @@ class TestDayStateRoundtrip:
 
 
 class TestRiskBookRoundtrip:
-
     def test_realized_pnl_survives(self, tmp_state_dir):
         """Most-dangerous-if-lost field: daily_loss_kill threshold
         is computed against realized_pnl_today. A reset would bypass
@@ -176,8 +189,9 @@ class TestRiskBookRoundtrip:
         # Simulate $1500 of realized loss
         rb1.record_realized_pnl(-1500.0)
         assert rb1.realized_pnl_today == pytest.approx(-1500.0)
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2)
         # Pre-rehydrate: fresh = 0
@@ -191,8 +205,9 @@ class TestRiskBookRoundtrip:
         _start_session(eng1)
         rb1 = eng1._risk.get("main")
         rb1.daily_kill_triggered = True
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2)
         apply_loaded_state(eng2, load_state_from_disk("2026-05-12"))
@@ -204,8 +219,9 @@ class TestRiskBookRoundtrip:
         rb1 = eng1._risk.get("main")
         t = rb1.try_admit(risk_dollars=500.0, notional=15000.0)
         assert t is not None
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2)
         apply_loaded_state(eng2, load_state_from_disk("2026-05-12"))
@@ -220,22 +236,35 @@ class TestRiskBookRoundtrip:
 
 
 class TestActivityRoundtrip:
-
     def test_activity_events_persist(self, tmp_state_dir):
         eng = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng)
         events = [
-            {"ts_iso": "2026-05-12T13:30:00Z", "kind": "session_start",
-             "ticker": "", "pid": "", "detail": "fresh session"},
-            {"ts_iso": "2026-05-12T13:35:00Z", "kind": "or_lock",
-             "ticker": "AAPL", "pid": "main", "detail": "locked at 09:35"},
+            {
+                "ts_iso": "2026-05-12T13:30:00Z",
+                "kind": "session_start",
+                "ticker": "",
+                "pid": "",
+                "detail": "fresh session",
+            },
+            {
+                "ts_iso": "2026-05-12T13:35:00Z",
+                "kind": "or_lock",
+                "ticker": "AAPL",
+                "pid": "main",
+                "detail": "locked at 09:35",
+            },
         ]
-        dump_state_to_disk(eng, recent_activity=events, pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng,
+            recent_activity=events,
+            pending_v10_sizes={},
+            date_iso="2026-05-12",
+            bot_version="x",
+        )
         # Fresh deque to hydrate
         deque_target = collections.deque(maxlen=50)
-        apply_loaded_state(eng, load_state_from_disk("2026-05-12"),
-                           recent_activity=deque_target)
+        apply_loaded_state(eng, load_state_from_disk("2026-05-12"), recent_activity=deque_target)
         assert len(deque_target) == 2
         assert deque_target[0]["kind"] == "session_start"
         assert deque_target[1]["ticker"] == "AAPL"
@@ -245,7 +274,6 @@ class TestActivityRoundtrip:
 
 
 class TestWashSaleRoundtrip:
-
     def test_wash_risk_state_persists(self, tmp_state_dir):
         eng1 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng1)
@@ -256,8 +284,9 @@ class TestWashSaleRoundtrip:
         eng1._recent_losses[("NVDA", "short")] = [
             {"ts_unix": 1747059000.0, "pnl_dollars": -75.0, "exit_iso": "2026-05-12T13:10:00Z"},
         ]
-        dump_state_to_disk(eng1, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng1, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng2)
         apply_loaded_state(eng2, load_state_from_disk("2026-05-12"))
@@ -271,18 +300,20 @@ class TestWashSaleRoundtrip:
 
 
 class TestPendingSizesRoundtrip:
-
     def test_tuple_key_roundtrip(self, tmp_state_dir):
         """JSON can't store tuple keys; persistence encodes as 'pid|ticker'."""
         eng = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng)
         sizes_src = {("main", "AAPL"): 100, ("val", "NVDA"): 50}
-        dump_state_to_disk(eng, recent_activity=[],
-                            pending_v10_sizes=sizes_src,
-                            date_iso="2026-05-12", bot_version="x")
+        dump_state_to_disk(
+            eng,
+            recent_activity=[],
+            pending_v10_sizes=sizes_src,
+            date_iso="2026-05-12",
+            bot_version="x",
+        )
         sizes_dst: dict = {}
-        apply_loaded_state(eng, load_state_from_disk("2026-05-12"),
-                           pending_v10_sizes=sizes_dst)
+        apply_loaded_state(eng, load_state_from_disk("2026-05-12"), pending_v10_sizes=sizes_dst)
         assert sizes_dst[("main", "AAPL")] == 100
         assert sizes_dst[("val", "NVDA")] == 50
 
@@ -291,18 +322,21 @@ class TestPendingSizesRoundtrip:
 
 
 class TestDiskGuards:
-
     def test_atomic_write_no_partial_files(self, tmp_state_dir):
         eng = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng)
-        ok = dump_state_to_disk(eng, recent_activity=[], pending_v10_sizes={},
-                                 date_iso="2026-05-12", bot_version="x")
+        ok = dump_state_to_disk(
+            eng, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-12", bot_version="x"
+        )
         assert ok
         target = resolve_path("2026-05-12")
         assert os.path.exists(target)
         # No leftover .tmp files in the directory
-        leftover = [f for f in os.listdir(tmp_state_dir)
-                    if f.startswith(".orb_state.") or f.endswith(".tmp")]
+        leftover = [
+            f
+            for f in os.listdir(tmp_state_dir)
+            if f.startswith(".orb_state.") or f.endswith(".tmp")
+        ]
         assert leftover == []
 
     def test_load_returns_none_when_file_missing(self, tmp_state_dir):
@@ -313,8 +347,9 @@ class TestDiskGuards:
         Date-match guard prevents stale-file pollution."""
         eng = OrbEngine(_cfg(), portfolio_ids=["main"])
         _start_session(eng)
-        dump_state_to_disk(eng, recent_activity=[], pending_v10_sizes={},
-                            date_iso="2026-05-11", bot_version="x")
+        dump_state_to_disk(
+            eng, recent_activity=[], pending_v10_sizes={}, date_iso="2026-05-11", bot_version="x"
+        )
         # File exists on disk for 2026-05-11, but we ask for 2026-05-12
         assert load_state_from_disk("2026-05-12") is None
 
@@ -363,25 +398,46 @@ class TestFullRedeploySimulation:
         t = rb_main.try_admit(risk_dollars=600.0, notional=18000.0)
         # Wash-sale: 1 prior loss on AAPL long
         eng1.wash_risk_count = 1
-        eng1._recent_losses[("AAPL", "long")] = [{
-            "ts_unix": 1747000000.0, "pnl_dollars": -200.0,
-            "exit_iso": "2026-05-12T13:00:00Z",
-        }]
+        eng1._recent_losses[("AAPL", "long")] = [
+            {
+                "ts_unix": 1747000000.0,
+                "pnl_dollars": -200.0,
+                "exit_iso": "2026-05-12T13:00:00Z",
+            }
+        ]
         # Activity: 3 events
         activity = [
-            {"ts_iso": "2026-05-12T13:30:00Z", "kind": "session_start",
-             "ticker": "", "pid": "", "detail": "fresh"},
-            {"ts_iso": "2026-05-12T13:35:00Z", "kind": "or_lock",
-             "ticker": "AAPL", "pid": "", "detail": "locked"},
-            {"ts_iso": "2026-05-12T14:05:00Z", "kind": "admit",
-             "ticker": "AAPL", "pid": "main", "detail": "LONG 100sh @ 150"},
+            {
+                "ts_iso": "2026-05-12T13:30:00Z",
+                "kind": "session_start",
+                "ticker": "",
+                "pid": "",
+                "detail": "fresh",
+            },
+            {
+                "ts_iso": "2026-05-12T13:35:00Z",
+                "kind": "or_lock",
+                "ticker": "AAPL",
+                "pid": "",
+                "detail": "locked",
+            },
+            {
+                "ts_iso": "2026-05-12T14:05:00Z",
+                "kind": "admit",
+                "ticker": "AAPL",
+                "pid": "main",
+                "detail": "LONG 100sh @ 150",
+            },
         ]
         sizes = {("main", "AAPL"): 100}
 
         # Dump
         ok = dump_state_to_disk(
-            eng1, recent_activity=activity, pending_v10_sizes=sizes,
-            date_iso="2026-05-12", bot_version="8.3.4",
+            eng1,
+            recent_activity=activity,
+            pending_v10_sizes=sizes,
+            date_iso="2026-05-12",
+            bot_version="8.3.4",
         )
         assert ok
 
@@ -397,7 +453,8 @@ class TestFullRedeploySimulation:
         deque_target = collections.deque(maxlen=50)
         sizes_target: dict = {}
         counters = apply_loaded_state(
-            eng2, loaded,
+            eng2,
+            loaded,
             recent_activity=deque_target,
             pending_v10_sizes=sizes_target,
         )
@@ -425,3 +482,107 @@ class TestFullRedeploySimulation:
         assert ("AAPL", "long") in eng2._recent_losses
         # F. Pending sizes (tuple key roundtrip)
         assert sizes_target[("main", "AAPL")] == 100
+
+
+# ------------------ G: Open positions roundtrip ------------------
+
+
+class TestOpenPositionsRoundtrip:
+    """Category G -- LiveAdapter._open_positions survive a redeploy.
+
+    Simulates the 2026-05-14 scenario: a SHORT entered at 10:43 ET,
+    a Railway deploy at 10:45 ET restarted the process; the position
+    was an orphan (paper_state had it, RiskBook and LiveAdapter did
+    not). With Fix A the position is saved to disk each scan cycle
+    and restored on boot as a recover-* ticket that the V8322 purge
+    leaves intact.
+    """
+
+    def test_position_survives_redeploy(self, tmp_state_dir):
+        from orb.live_adapter import LiveAdapterRegistry, LiveAdapter
+        from orb.exits import OrbPosition, make_position
+
+        eng1 = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _start_session(eng1, ["AAPL"])
+        _lock_or(eng1, "AAPL", or_high=190.0, or_low=188.0)
+
+        # Build a fake adapter with one open SHORT position
+        adapters1 = LiveAdapterRegistry(eng1)
+        adapter_main = adapters1.get("main")
+        ticket_id = "abc123-test-ticket"
+        pos = make_position(
+            portfolio_id="main",
+            ticker="AAPL",
+            side="short",
+            entry_price=189.0,
+            stop=190.5,
+            rr=2.5,
+            shares=100,
+            risk_ticket_id=ticket_id,
+        )
+        adapter_main._open_positions[ticket_id] = pos
+
+        # Dump with adapters
+        ok = dump_state_to_disk(
+            eng1,
+            recent_activity=[],
+            pending_v10_sizes={},
+            date_iso="2026-05-12",
+            bot_version="x",
+            adapters=adapters1,
+        )
+        assert ok
+
+        # Verify payload contains category G
+        loaded = load_state_from_disk("2026-05-12")
+        assert "open_positions" in loaded
+        assert "main" in loaded["open_positions"]
+        saved = loaded["open_positions"]["main"][ticket_id]
+        assert saved["ticker"] == "AAPL"
+        assert saved["side"] == "short"
+        assert saved["entry_price"] == pytest.approx(189.0)
+        assert saved["stop"] == pytest.approx(190.5)
+
+        # Redeploy: fresh engine + fresh adapters
+        eng2 = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _start_session(eng2, ["AAPL"])
+        adapters2 = LiveAdapterRegistry(eng2)
+        adapter2_main = adapters2.get("main")
+        assert len(adapter2_main._open_positions) == 0  # fresh
+
+        counters = apply_loaded_state(eng2, loaded, adapters=adapters2)
+        assert counters.get("open_positions_loaded", 0) == 1
+
+        recover_tid = f"recover-{ticket_id}"
+        assert recover_tid in adapter2_main._open_positions
+        restored = adapter2_main._open_positions[recover_tid]
+        assert restored.ticker == "AAPL"
+        assert restored.side == "short"
+        assert restored.entry_price == pytest.approx(189.0)
+        assert restored.stop == pytest.approx(190.5)
+        assert restored.risk_ticket_id == recover_tid
+
+        # RiskBook has recover-* ticket; V8322 uuid-purge would leave it intact
+        rb2 = eng2._risk.get("main")
+        assert recover_tid in rb2._open_tickets
+        assert rb2.open_count >= 1
+
+    def test_position_without_adapters_is_noop(self, tmp_state_dir):
+        """apply_loaded_state(adapters=None) must not raise."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _start_session(eng, ["AAPL"])
+        # Manually craft a payload with open_positions
+        loaded = {
+            "date_iso": "2026-05-12",
+            "or_windows": {},
+            "day_states": [],
+            "risk_books": {},
+            "open_positions": {
+                "main": {
+                    "tid-x": {"ticker": "AAPL", "side": "long", "entry_price": 100.0, "stop": 98.0}
+                }
+            },
+        }
+        # Should not raise; open_positions section skipped when adapters=None
+        counters = apply_loaded_state(eng, loaded, adapters=None)
+        assert counters.get("open_positions_loaded", 0) == 0

@@ -34,6 +34,7 @@ Multi-portfolio: the runtime automatically discovers all 3 portfolios
 (main / val / gene) from engine.portfolio_book.PORTFOLIOS. If only one
 is enabled, only one adapter is wired.
 """
+
 from __future__ import annotations
 
 import logging
@@ -86,14 +87,13 @@ _sizes_lock = threading.RLock()
 # Thread-safe via _activity_lock.
 import collections as _collections
 import datetime as _datetime
+
 _RECENT_ACTIVITY_MAXLEN = 50
-_recent_activity: _collections.deque = _collections.deque(
-    maxlen=_RECENT_ACTIVITY_MAXLEN)
+_recent_activity: _collections.deque = _collections.deque(maxlen=_RECENT_ACTIVITY_MAXLEN)
 _activity_lock = threading.RLock()
 
 
-def _record_activity(*, kind: str, ticker: str = "",
-                     pid: str = "", detail: str = "") -> None:
+def _record_activity(*, kind: str, ticker: str = "", pid: str = "", detail: str = "") -> None:
     """Append a single event to the recent-activity ring buffer.
 
     `kind` is one of: session_start | admit | reject | exit |
@@ -103,13 +103,15 @@ def _record_activity(*, kind: str, ticker: str = "",
     try:
         ts_iso = _datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         with _activity_lock:
-            _recent_activity.append({
-                "ts_iso": ts_iso,
-                "kind": kind,
-                "ticker": ticker,
-                "pid": pid,
-                "detail": detail,
-            })
+            _recent_activity.append(
+                {
+                    "ts_iso": ts_iso,
+                    "kind": kind,
+                    "ticker": ticker,
+                    "pid": pid,
+                    "detail": detail,
+                }
+            )
     except Exception:
         pass  # never break the trading path
 
@@ -119,7 +121,7 @@ def get_recent_activity(limit: int = 20) -> list:
     with _activity_lock:
         items = list(_recent_activity)
     items.reverse()
-    return items[:max(1, min(limit, _RECENT_ACTIVITY_MAXLEN))]
+    return items[: max(1, min(limit, _RECENT_ACTIVITY_MAXLEN))]
 
 
 def clear_recent_activity() -> None:
@@ -139,18 +141,22 @@ def is_live_mode_on() -> bool:
 
 # --- bootstrap ---
 
+
 def _build_config_from_env() -> OrbConfig:
     """Read v10 config from env vars. Defaults match v10 keystone."""
+
     def _f(name: str, default: float) -> float:
         try:
             return float(os.environ.get(name, default))
         except (TypeError, ValueError):
             return default
+
     def _i(name: str, default: int) -> int:
         try:
             return int(os.environ.get(name, default))
         except (TypeError, ValueError):
             return default
+
     def _b(name: str, default: bool) -> bool:
         v = os.environ.get(name)
         if v is None:
@@ -172,12 +178,17 @@ def _build_config_from_env() -> OrbConfig:
             return int(h) * 60 + int(m)
         except (ValueError, TypeError) as e:
             logger.warning(
-                "[ORB-ENV] %s=%r malformed (expected HH:MM): %s -- "
-                "falling back to %d:%02d",
-                name, raw, e, default_min // 60, default_min % 60,
+                "[ORB-ENV] %s=%r malformed (expected HH:MM): %s -- falling back to %d:%02d",
+                name,
+                raw,
+                e,
+                default_min // 60,
+                default_min % 60,
             )
             return default_min
+
     import json as _json
+
     bl_raw = os.environ.get("ORB_TICKER_SIDE_BLOCKLIST", "")
     blocklist = None
     if bl_raw.strip():
@@ -263,6 +274,7 @@ def _resolve_portfolio_ids() -> list[str]:
     """
     try:
         from engine.portfolio_book import PORTFOLIOS, ALL_PORTFOLIO_IDS
+
         ids = []
         for pid in ALL_PORTFOLIO_IDS:
             book = PORTFOLIOS.get(pid)
@@ -280,6 +292,7 @@ def _resolve_portfolio_ids() -> list[str]:
 def _resolve_earnings_fn():
     try:
         from tools.orb_earnings_calendar import is_earnings_window
+
         return is_earnings_window
     except ImportError:
         return None
@@ -311,8 +324,9 @@ def bootstrap(*, force: bool = False) -> None:
         earnings_fn = _resolve_earnings_fn()
         # Local-then-swap: build all, then publish atomically.
         try:
-            _new_engine = OrbEngine(cfg, portfolio_ids=portfolio_ids,
-                                    is_earnings_window_fn=earnings_fn)
+            _new_engine = OrbEngine(
+                cfg, portfolio_ids=portfolio_ids, is_earnings_window_fn=earnings_fn
+            )
             _new_adapters = LiveAdapterRegistry(_new_engine)
             # v9.1.0 -- EOD reversal addon engine. Lives alongside the
             # morning ORB. Its config is read from env (defaults all ON
@@ -320,18 +334,23 @@ def bootstrap(*, force: bool = False) -> None:
             # via ORB_EOD_REVERSAL_ENABLED=0.
             _new_eod_cfg = EodReversalConfig.from_env()
             _new_eod_engine = EodReversalEngine(
-                _new_eod_cfg, portfolio_ids=portfolio_ids,
+                _new_eod_cfg,
+                portfolio_ids=portfolio_ids,
             )
         except Exception:
-            logger.exception("[V79-ORB-BOOT] construction failed; "
-                             "module state unchanged")
+            logger.exception("[V79-ORB-BOOT] construction failed; module state unchanged")
             raise
         _engine = _new_engine
         _adapters = _new_adapters
         _eod_engine = _new_eod_engine
         _bootstrapped = True
-        logger.info("[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
-                    portfolio_ids, cfg.rr, cfg.or_minutes, cfg.skip_vix_above)
+        logger.info(
+            "[V79-ORB-BOOT] portfolios=%s rr=%s or_min=%s vix_thr=%s",
+            portfolio_ids,
+            cfg.rr,
+            cfg.or_minutes,
+            cfg.skip_vix_above,
+        )
 
 
 def get_engine() -> Optional[OrbEngine]:
@@ -348,14 +367,17 @@ def get_adapter(portfolio_id: str) -> Optional[LiveAdapter]:
 
 # --- session lifecycle ---
 
-def ensure_session_started(*, date_iso: str,
-                           tickers: list[str],
-                           vix_close_d1: Optional[float],
-                           ticker_open_today: dict[str, Optional[float]],
-                           ticker_prev_close: dict[str, Optional[float]],
-                           equity_per_portfolio: dict[str, float],
-                           spy_prior_ret_bps: Optional[float] = None,
-                           ) -> bool:
+
+def ensure_session_started(
+    *,
+    date_iso: str,
+    tickers: list[str],
+    vix_close_d1: Optional[float],
+    ticker_open_today: dict[str, Optional[float]],
+    ticker_prev_close: dict[str, Optional[float]],
+    equity_per_portfolio: dict[str, float],
+    spy_prior_ret_bps: Optional[float] = None,
+) -> bool:
     """Idempotent session start. Returns True if a fresh session was
     started, False if the session was already started for `date_iso`.
 
@@ -372,6 +394,7 @@ def ensure_session_started(*, date_iso: str,
     if spy_prior_ret_bps is None and _engine.cfg.skip_prior_spy_ret_lt_bps != 0.0:
         try:
             from tools.orb_spy_loader import prior_spy_return_bps
+
             spy_prior_ret_bps = prior_spy_return_bps(date_iso)
         except Exception as _e:
             logger.warning("[V900-SPY-LOADER] auto-load failed: %s", _e)
@@ -390,8 +413,10 @@ def ensure_session_started(*, date_iso: str,
     _session_date = date_iso
     logger.info(
         "[V79-ORB-RESET] date=%s vix_d1=%s block_day=%s reason=%s",
-        date_iso, vix_close_d1,
-        result.block_day, result.block_reason,
+        date_iso,
+        vix_close_d1,
+        result.block_day,
+        result.block_reason,
     )
     # v7.45.0: activity-feed event for session start + day-block if any
     clear_recent_activity()
@@ -416,16 +441,17 @@ def ensure_session_started(*, date_iso: str,
         purged = _engine.purge_non_recover_tickets()
         if purged:
             logger.warning(
-                "[V8322-UUID-PURGE] cleared orphan uuid tickets at "
-                "session_start: %s", purged,
+                "[V8322-UUID-PURGE] cleared orphan uuid tickets at session_start: %s",
+                purged,
             )
     except Exception as _e:
         logger.debug("[V8322-UUID-PURGE] failed: %s", _e)
     _record_activity(
         kind="session_start",
-        detail="date " + date_iso + " · VIX_d1=" +
-               (("%.2f" % vix_close_d1) if isinstance(vix_close_d1, (int, float))
-                else "n/a"),
+        detail="date "
+        + date_iso
+        + " · VIX_d1="
+        + (("%.2f" % vix_close_d1) if isinstance(vix_close_d1, (int, float)) else "n/a"),
     )
     if result.block_day:
         _record_activity(
@@ -448,9 +474,11 @@ def ensure_session_started(*, date_iso: str,
 # exercise orb.persistence directly; live_runtime tests cover the
 # bootstrap / ensure_session_started hookup.
 
+
 def _bot_version_str() -> str:
     try:
         from bot_version import BOT_VERSION
+
         return str(BOT_VERSION)
     except Exception:
         return ""
@@ -498,7 +526,8 @@ def _try_rehydrate_engine_state(date_iso: str) -> dict:
         return {}
     try:
         from orb.persistence import (
-            load_state_from_disk, apply_loaded_state,
+            load_state_from_disk,
+            apply_loaded_state,
         )
     except Exception:
         return {}
@@ -506,18 +535,21 @@ def _try_rehydrate_engine_state(date_iso: str) -> dict:
     if not loaded:
         return {}
     counters = apply_loaded_state(
-        _engine, loaded,
+        _engine,
+        loaded,
         recent_activity=_recent_activity,
         pending_v10_sizes=_pending_v10_sizes,
+        adapters=_adapters,
     )
     if counters and any(counters.values()):
         logger.info(
             "[V834-PERSIST] rehydrated date=%s or_windows=%d "
-            "day_states=%d risk_books=%d activity=%d sizes=%d",
+            "day_states=%d risk_books=%d positions=%d activity=%d sizes=%d",
             date_iso,
             counters.get("or_windows_loaded", 0),
             counters.get("day_states_loaded", 0),
             counters.get("risk_books_loaded", 0),
+            counters.get("open_positions_loaded", 0),
             counters.get("activity_loaded", 0),
             counters.get("pending_sizes_loaded", 0),
         )
@@ -563,6 +595,7 @@ def persist_engine_state() -> bool:
         pending_v10_sizes=dict(_pending_v10_sizes),
         date_iso=_session_date,
         bot_version=BOT_VERSION,
+        adapters=_adapters,
     )
     if ok:
         _persist_last_iso = now_iso
@@ -603,8 +636,9 @@ def reset_session() -> None:
 #
 # Failure-tolerant: any exception is swallowed and a single warn log
 # emitted. The risk caps stay at their last-good values.
-def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
-                              ) -> dict[str, float]:
+def refresh_equity_from_books(
+    prices: Optional[Mapping[str, float]] = None,
+) -> dict[str, float]:
     """Pull current per-portfolio equity and push it into each
     RiskBook via update_equity().
 
@@ -648,8 +682,7 @@ def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
         try:
             eq = float(book.current_equity(prices))
         except Exception as e:
-            logger.debug("[V79-ORB-EQUITY] %s current_equity failed: %s",
-                         pid, e)
+            logger.debug("[V79-ORB-EQUITY] %s current_equity failed: %s", pid, e)
         # 2. v7.77.0 -- if the book gave us nothing useful (val/gene
         #    or a misbehaving book), fall back to resolve_equity. That
         #    pulls from Alpaca's authoritative account balance for
@@ -658,8 +691,7 @@ def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
             try:
                 eq = float(resolve_equity(pid))
             except Exception as e:
-                logger.debug("[V79-ORB-EQUITY] %s resolve_equity failed: %s",
-                             pid, e)
+                logger.debug("[V79-ORB-EQUITY] %s resolve_equity failed: %s", pid, e)
         # 3. Last-ditch fallback: the book's raw paper_cash attribute.
         if eq <= 0:
             try:
@@ -673,17 +705,23 @@ def refresh_equity_from_books(prices: Optional[Mapping[str, float]] = None,
             rb.update_equity(eq)
             applied[pid] = eq
         except Exception as e:
-            logger.debug("[V79-ORB-EQUITY] %s update_equity failed: %s",
-                         pid, e)
+            logger.debug("[V79-ORB-EQUITY] %s update_equity failed: %s", pid, e)
     return applied
 
 
 # --- per-tick API for scan.py ---
 
-def feed_bar(*, ticker: str,
-             bar_high: float, bar_low: float, bar_open: float,
-             bar_close: float, bar_volume: float,
-             bar_bucket_min: int) -> None:
+
+def feed_bar(
+    *,
+    ticker: str,
+    bar_high: float,
+    bar_low: float,
+    bar_open: float,
+    bar_close: float,
+    bar_volume: float,
+    bar_bucket_min: int,
+) -> None:
     """Forward a 1-min bar to the OR window. No-op if not bootstrapped
     or live mode is off.
 
@@ -698,15 +736,16 @@ def feed_bar(*, ticker: str,
         return
     engine.on_bar_arrival(
         ticker=ticker,
-        bar_high=bar_high, bar_low=bar_low,
-        bar_open=bar_open, bar_close=bar_close,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        bar_open=bar_open,
+        bar_close=bar_close,
         bar_volume=bar_volume,
         bar_bucket_min=bar_bucket_min,
     )
 
 
-def backfill_or_windows(*, bars_by_ticker: dict,
-                        current_et_minutes: int) -> dict:
+def backfill_or_windows(*, bars_by_ticker: dict, current_et_minutes: int) -> dict:
     """v8.3.0 -- runtime wrapper for OrbEngine.backfill_or_windows.
 
     Forwards pre-bucketed 1m bars (caller converts timestamps to ET
@@ -729,14 +768,20 @@ def backfill_or_windows(*, bars_by_ticker: dict,
     )
 
 
-def check_entry(*, portfolio_id: str, ticker: str, side: str,
-                five_min_close: float, next_open: float,
-                equity: float, signal_iso: str = "",
-                recent_5m_highs: Optional[list[float]] = None,
-                recent_5m_lows: Optional[list[float]] = None,
-                recent_5m_closes: Optional[list[float]] = None,
-                session_vwap: Optional[float] = None,
-                ) -> EntryResult:
+def check_entry(
+    *,
+    portfolio_id: str,
+    ticker: str,
+    side: str,
+    five_min_close: float,
+    next_open: float,
+    equity: float,
+    signal_iso: str = "",
+    recent_5m_highs: Optional[list[float]] = None,
+    recent_5m_lows: Optional[list[float]] = None,
+    recent_5m_closes: Optional[list[float]] = None,
+    session_vwap: Optional[float] = None,
+) -> EntryResult:
     """Per-portfolio entry decision. Returns no-op EntryResult if the
     runtime isn't ready or live mode is off.
 
@@ -754,9 +799,12 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
     if a is None:
         return EntryResult(ok=False, reason_no=f"no_adapter:{portfolio_id}")
     result = a.check_entry(
-        ticker, side=side,
-        five_min_close=five_min_close, next_open=next_open,
-        equity=equity, signal_iso=signal_iso,
+        ticker,
+        side=side,
+        five_min_close=five_min_close,
+        next_open=next_open,
+        equity=equity,
+        signal_iso=signal_iso,
         recent_5m_highs=recent_5m_highs,
         recent_5m_lows=recent_5m_lows,
         recent_5m_closes=recent_5m_closes,
@@ -769,14 +817,21 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
         if result.ok:
             _record_activity(
                 kind="admit",
-                ticker=ticker, pid=portfolio_id,
-                detail=(side.upper() + " · " + str(int(result.shares or 0))
-                        + " sh @ " + ("%.2f" % (result.price or 0))),
+                ticker=ticker,
+                pid=portfolio_id,
+                detail=(
+                    side.upper()
+                    + " · "
+                    + str(int(result.shares or 0))
+                    + " sh @ "
+                    + ("%.2f" % (result.price or 0))
+                ),
             )
         elif result.reason_no and result.reason_no != "no_signal":
             _record_activity(
                 kind="reject",
-                ticker=ticker, pid=portfolio_id,
+                ticker=ticker,
+                pid=portfolio_id,
                 detail=side.upper() + " · " + (result.reason_no or ""),
             )
     except Exception:
@@ -784,9 +839,16 @@ def check_entry(*, portfolio_id: str, ticker: str, side: str,
     return result
 
 
-def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
-               bar_high: float, bar_low: float, bar_close: float,
-               bar_bucket_min: int) -> ExitResult:
+def check_exit(
+    *,
+    portfolio_id: str,
+    ticker: str,
+    ticket_id: str,
+    bar_high: float,
+    bar_low: float,
+    bar_close: float,
+    bar_bucket_min: int,
+) -> ExitResult:
     """Per-portfolio exit decision. Returns no-op ExitResult if
     runtime isn't ready or live mode is off.
 
@@ -802,17 +864,20 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
     if a is None:
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
     result = a.check_exit(
-        ticker, ticket_id,
-        bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+        ticker,
+        ticket_id,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        bar_close=bar_close,
         bar_bucket_min=bar_bucket_min,
     )
     if result and result.exit:
         try:
             _record_activity(
                 kind="exit",
-                ticker=ticker, pid=portfolio_id,
-                detail=str(result.reason or "") + " @ "
-                        + ("%.2f" % (result.price or 0)),
+                ticker=ticker,
+                pid=portfolio_id,
+                detail=str(result.reason or "") + " @ " + ("%.2f" % (result.price or 0)),
             )
         except Exception:
             pass
@@ -821,13 +886,14 @@ def check_exit(*, portfolio_id: str, ticker: str, ticket_id: str,
         try:
             _record_activity(
                 kind="partial",
-                ticker=ticker, pid=portfolio_id,
+                ticker=ticker,
+                pid=portfolio_id,
                 detail=str(int(getattr(result, "partial_shares", 0) or 0))
-                        + " sh @ "
-                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
-                        + " (booked $"
-                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
-                        + ")",
+                + " sh @ "
+                + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                + " (booked $"
+                + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                + ")",
             )
         except Exception:
             pass
@@ -877,8 +943,7 @@ def peek_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
         return _pending_v10_sizes.get((portfolio_id, ticker))
 
 
-def rollback_admit(portfolio_id: str, ticker: str,
-                   ticket_id: str = "", reason: str = "") -> bool:
+def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: str = "") -> bool:
     """v7.81.0 -- unwind a v10 admit when the downstream broker call
     returned without filling.
 
@@ -915,11 +980,15 @@ def rollback_admit(portfolio_id: str, ticker: str,
         except Exception as e:
             logger.warning(
                 "[V79-ORB-ROLLBACK] release_by_id %s/%s ticket=%s: %s",
-                portfolio_id, ticker, ticket_id[:8], e,
+                portfolio_id,
+                ticker,
+                ticket_id[:8],
+                e,
             )
     # 2. Transition FSM back to ARMED so the ticker can re-fire.
     try:
         from orb import state as _state
+
         ds = _engine._state.get_day_state(portfolio_id, ticker)
         if ds.phase == _state.PHASE_IN_POS or ds.in_position:
             ds.transition(_state.PHASE_ARMED)
@@ -928,22 +997,30 @@ def rollback_admit(portfolio_id: str, ticker: str,
     except Exception as e:
         logger.warning(
             "[V79-ORB-ROLLBACK] FSM rollback %s/%s: %s",
-            portfolio_id, ticker, e,
+            portfolio_id,
+            ticker,
+            e,
         )
     if any_change:
         logger.warning(
-            "[V79-ORB-ROLLBACK] %s/%s ticket=%s reason=%s "
-            "-- FSM->ARMED, RiskBook released",
-            portfolio_id, ticker,
+            "[V79-ORB-ROLLBACK] %s/%s ticket=%s reason=%s -- FSM->ARMED, RiskBook released",
+            portfolio_id,
+            ticker,
             ticket_id[:8] if ticket_id else "?",
             reason or "<none>",
         )
     return any_change
 
 
-def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
-                         bar_high: float, bar_low: float, bar_close: float,
-                         bar_bucket_min: int) -> ExitResult:
+def check_exit_by_ticker(
+    *,
+    portfolio_id: str,
+    ticker: str,
+    bar_high: float,
+    bar_low: float,
+    bar_close: float,
+    bar_bucket_min: int,
+) -> ExitResult:
     """Per-portfolio exit decision by ticker (no ticket_id required).
 
     Convenience for callers (broker/positions.py:manage_positions) that
@@ -964,16 +1041,18 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
         return ExitResult(exit=False, reason=f"no_adapter:{portfolio_id}")
     result = a.check_exit_by_ticker(
         ticker,
-        bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+        bar_high=bar_high,
+        bar_low=bar_low,
+        bar_close=bar_close,
         bar_bucket_min=bar_bucket_min,
     )
     if result and result.exit:
         try:
             _record_activity(
                 kind="exit",
-                ticker=ticker, pid=portfolio_id,
-                detail=str(result.reason or "") + " @ "
-                        + ("%.2f" % (result.price or 0)),
+                ticker=ticker,
+                pid=portfolio_id,
+                detail=str(result.reason or "") + " @ " + ("%.2f" % (result.price or 0)),
             )
         except Exception:
             pass
@@ -982,13 +1061,14 @@ def check_exit_by_ticker(*, portfolio_id: str, ticker: str,
         try:
             _record_activity(
                 kind="partial",
-                ticker=ticker, pid=portfolio_id,
+                ticker=ticker,
+                pid=portfolio_id,
                 detail=str(int(getattr(result, "partial_shares", 0) or 0))
-                        + " sh @ "
-                        + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
-                        + " (booked $"
-                        + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
-                        + ")",
+                + " sh @ "
+                + ("%.2f" % (getattr(result, "partial_price", 0) or 0))
+                + " (booked $"
+                + ("%.2f" % (getattr(result, "partial_pnl_dollars", 0) or 0))
+                + ")",
             )
         except Exception:
             pass
@@ -1047,6 +1127,7 @@ def eod_reset_session_if_needed(date_iso: str) -> None:
 
 
 # --- diagnostic helpers (for tests + manual ops) ---
+
 
 def _reset_for_testing() -> None:
     """Tear down the singleton. ONLY for tests.

@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.52 (2026-05-14) — Fix A: persist OrbPosition across Railway redeploys (category G)
+
+**Root problem (2026-05-14):** A Railway deploy during RTH at 10:45 ET restarted the process. `paper_state` persisted (legacy), but the ORB engine's `LiveAdapter._open_positions` and `RiskBook` started fresh. The new session's RiskBook had `open_count=0` while paper_state had the NFLX SHORT position — a phantom. Val and Main also diverged because Val's first post-deploy signal (NVDA LONG) was different from Main's pre-deploy orphan (NFLX SHORT).
+
+**Fix A — category G added to persistence:**
+
+`orb/persistence.py:serialize_engine_state` now saves `open_positions` per portfolio: the full `OrbPosition` dataclass (entry_price, stop, target, risk, shares, side, be_moved, partial_taken, etc.) from each `LiveAdapter._open_positions`. `apply_loaded_state` restores them on boot using `recover-{original_ticket_id}` keys, which the existing V8322 uuid-purge sweep (`purge_non_recover_tickets`) leaves intact. The recover tickets are also registered in the RiskBook with correct risk_dollars/notional so `open_count`, `open_risk`, and exit logic are immediately accurate.
+
+The math works out cleanly: section C (uuid tickets) contributes `X` to `_open_risk` and V8322 removes `X`; section G adds `recover_risk`, netting to exactly `recover_risk` after purge.
+
+**Forensic:** `[V834-PERSIST] restored position {pid} {ticker} {side} shares={N} stop={stop} ticket=recover-{tid[:16]}` logs each rehydrated position. The rehydrate summary log gains a `positions=N` field.
+
+**Test coverage:** `TestOpenPositionsRoundtrip` (2 new tests in `test_orb_state_persistence.py`): round-trip of a SHORT position through serialize→disk→load→apply, verifying recover ticket in RiskBook and OrbPosition in adapter; noop test confirming `adapters=None` is safe.
+
+---
+
 ## v9.1.51 (2026-05-14) — tune market validation thresholds to reduce false-positive WARNs
 
 Four monitor check thresholds relaxed to eliminate false positives from legitimate ORB edge cases observed on today's ORCL trade:
