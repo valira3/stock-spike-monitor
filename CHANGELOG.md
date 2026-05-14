@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.51 (2026-05-14) — tune market validation thresholds to reduce false-positive WARNs
+
+Four monitor check thresholds relaxed to eliminate false positives from legitimate ORB edge cases observed on today's ORCL trade:
+
+- `risk_sizing` floor: $200 → $150 (tight-OR days with small ATR stops can produce $150-199 dollar risk; was flagging valid trades)
+- `or_break` slippage tolerance: -10bps → -25bps (OR_high can be revised slightly upward by a later bar touching a new high after entry fires; 10bps was too narrow for this)
+- `atr_stop` ratio floor: 0.35 → 0.25 (tight OR range → small stop; the ORB stop is the max of ATR-based and OR-edge-based, so on small-OR days the realized ratio legitimately falls to 0.25-0.34)
+- `rr_ratio` win cap: 3.5R → 10R (ORB runner with BE stop and `ORB_PARTIAL_PROFIT_AT_1R=1` can hold to 7-8R on trend days; 3.5R was flagging every strong runner exit)
+
+---
+
 ## v9.1.50 (2026-05-14) — fix h-tick stuck, Val progress bar in FIRE=1 mode, Railway log monitoring
 
 Three fixes:

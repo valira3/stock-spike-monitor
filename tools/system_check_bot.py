@@ -874,7 +874,9 @@ def print_report(report: dict[str, Any]) -> None:
 
 # Tolerance band around expected risk per trade (1% of $100k = $1,000).
 # ATR-based stops vary by volatility so we allow 40-200% of nominal.
-_RISK_LOW_USD = 200.0  # below this = stop too tight or tiny position
+_RISK_LOW_USD = (
+    150.0  # below this = stop too tight or tiny position (tight-OR days can reach $150-199)
+)
 _RISK_HIGH_USD = 2500.0  # above this = stop too loose or oversized
 
 # Cooldown window: same (ticker, side) re-entry within this many minutes
@@ -1319,13 +1321,13 @@ def checks_market_validation(
         or_low = float(ow.get("or_low") or 0)
         if side == "LONG" and or_high:
             bps = (entry - or_high) / or_high * 10000
-            if bps < -10:
+            if bps < -25:  # -25bps: covers slippage + OR_high revision after entry bar
                 or_issues.append(f"{ticker} LONG ${entry:.2f} below OR_high ${or_high:.2f}")
             elif bps > 75:
                 or_issues.append(f"{ticker} LONG ${entry:.2f} {bps:.0f}bps above OR_high (chasing)")
         elif side == "SHORT" and or_low:
             bps = (or_low - entry) / or_low * 10000
-            if bps < -10:
+            if bps < -25:  # -25bps: same tolerance as LONG
                 or_issues.append(f"{ticker} SHORT ${entry:.2f} above OR_low ${or_low:.2f}")
             elif bps > 75:
                 or_issues.append(f"{ticker} SHORT ${entry:.2f} {bps:.0f}bps below OR_low (chasing)")
@@ -1378,7 +1380,7 @@ def checks_market_validation(
         actual_dist = abs(entry - stop)
         ratio = actual_dist / expected_dist
 
-        if ratio < 0.35:
+        if ratio < 0.25:  # 0.25: tight-OR days produce small stops; 0.35 was too strict
             atr_issues.append(
                 f"{ticker} stop ${actual_dist:.2f} << ATR×1.75=${expected_dist:.2f} "
                 f"(ratio={ratio:.2f})"
@@ -1462,9 +1464,10 @@ def checks_market_validation(
         reason = t.get("reason", "")
         if pnl > 0:
             # Win: partial at 1R runner to 2.5R, or full exit.
-            # Expect 0.7-2.6R; >3R possible on gap fills or news
-            if r > 3.5:
-                r_issues.append(f"{ticker} win +{r:.2f}R (>{3.5}R -- data check?)")
+            # With ORB_PARTIAL_PROFIT_AT_1R + BE stop, runners can hold
+            # to large R multiples on trend days. Flag only extreme outliers.
+            if r > 10.0:
+                r_issues.append(f"{ticker} win +{r:.2f}R (>10R -- data check?)")
         else:
             # Loss: stop at -1R + slippage. Beyond -1.5R = unusual.
             if r < -1.8:
