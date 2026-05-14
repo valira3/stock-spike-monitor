@@ -3403,15 +3403,15 @@
         if (enabled) {
           const isLive = (mode === "live");
           if (isLive) {
+            // v9.1.79 -- solid green LIVE pill, matching renderBadge and the
+            // EOD LIVE ORDERS badge so real-money mode is immediately obvious.
             badge.innerHTML =
-              '<span style="color:#5b6572;font-size:10.5px" title="Live broker mode">\ud83d\udd34 Live</span>';
+              '<span style="padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;' +
+              'background:#16a34a;color:#fff;letter-spacing:0.05em">LIVE</span>';
             badge.setAttribute(
               "title", `${label} executor enabled (live mode)`,
             );
           } else {
-            // Default to paper when mode is "paper", "software", or
-            // any non-"live" value (matches what the bot startup log
-            // reports for software-emulated paper mode).
             badge.innerHTML =
               '<span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">\ud83d\udcc4 Paper</span>';
             badge.setAttribute(
@@ -4661,9 +4661,11 @@
     if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
     if (mode === "live") {
+      // v9.1.79 -- "L" was too subtle; use a solid LIVE pill matching the
+      // LIVE ORDERS badge in the EOD section so real-money mode is unmissable.
       el.innerHTML =
-        '<span style="color:#34d399">\u2713</span>' +
-        '<span style="color:#34d399;font-size:9.5px;margin-left:3px;font-weight:600;letter-spacing:0.04em">L</span>';
+        '<span style="padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;' +
+        'background:#16a34a;color:#fff;letter-spacing:0.05em">LIVE</span>';
     } else {
       el.innerHTML = '\ud83d\udcc4 <span style="color:#5b6572">Paper</span>';
     }

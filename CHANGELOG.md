@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.79 (2026-05-14) — fix Val/Gene LIVE badge: "✓ L" → solid green LIVE pill
+
+The tab chip for live-mode executors showed `✓ L` (a small green letter "L"), which was too subtle to convey that real money is being traded. Two render paths were inconsistent:
+- `renderBadge` (per-executor poll): `✓ L` in green text
+- `renderHeader` (initial state paint): `🔴 Live` in grey text
+
+Both now render the same solid green pill — matching the `LIVE ORDERS` badge used in the EOD Reversal section and the executor's fire-mode display:
+```
+background:#16a34a; color:#fff; padding:2px 8px; border-radius:999px; font-weight:700
+```
+Paper mode unchanged: `📄 Paper` in grey text.
+
+---
+
 ## v9.1.78 (2026-05-14) — fix executor mode (paper/live) lost on Railway redeploy
 
 **Bug:** Switching Val to live mode via `/mode val live confirm` was not surviving Railway redeploys. Every deploy reset Val back to paper mode.
