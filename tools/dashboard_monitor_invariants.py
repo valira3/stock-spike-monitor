@@ -763,10 +763,31 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
         return _ok("or_locked_after_or_end", "skipped: v10 not bootstrapped")
     regime = (_state(ctx) or {}).get("regime") or {}
     mode = (regime.get("mode") or "").upper()
-    # OR phase is OK to be unlocked; only after the 09:35 ET ish boundary
-    # do we expect locks. dashboard_server.py labels post-OR-end as OPEN.
-    if mode not in ("OPEN", "POWER"):
+    if mode not in ("OPEN", "POWER", "OR"):
         return _ok("or_locked_after_or_end", f"skipped: regime mode={mode!r}")
+
+    # v9.1.42 -- skip check while OR window is still building. The backend
+    # emits OPEN for the full RTH session (not a separate OR mode during the
+    # opening range), so we derive OR end from config and current server time.
+    cfg = (v10.get("config") or {})
+    session_start_min = int(cfg.get("session_start_minutes") or 570)  # 09:30 ET
+    or_minutes = int(cfg.get("or_minutes") or 30)
+    or_end_min = session_start_min + or_minutes  # 10:00 ET with defaults
+    server_time = (_state(ctx) or {}).get("server_time") or ""
+    if server_time:
+        try:
+            from datetime import datetime as _datetime
+            from zoneinfo import ZoneInfo as _ZI
+            _et = _datetime.fromisoformat(server_time.replace("Z", "+00:00")).astimezone(_ZI("America/New_York"))
+            current_min = _et.hour * 60 + _et.minute
+            if current_min < or_end_min:
+                return _ok(
+                    "or_locked_after_or_end",
+                    f"skipped: OR window still building ({_et.strftime('%H:%M')} ET, "
+                    f"locks expected after {or_end_min // 60:02d}:{or_end_min % 60:02d} ET)",
+                )
+        except Exception:
+            pass
     or_windows = v10.get("or_windows") or {}
     if not or_windows:
         return _fail(

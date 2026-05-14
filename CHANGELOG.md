@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.42 (2026-05-14) — fix false-positive CRIT during OR window (or_locked_after_or_end)
+
+`inv_or_locked_after_or_end` was firing at 09:40 ET (10 min into the 30-min OR window) because:
+1. The backend emits `OPEN` for the full RTH session — there is no distinct `OR` regime mode
+2. The invariant assumed `OR` mode covered the opening range; the `mode not in ("OPEN","POWER")` skip never caught the OR-building phase
+
+Fix: compute OR end time from `v10.config` (`session_start_minutes + or_minutes = 570 + 30 = 10:00 ET`). If `server_time` is before OR end, skip the check. The invariant now only fires post-10:00 ET when locks are genuinely expected.
+
+---
+
 ## v9.1.41 (2026-05-14) — fix false-positive CRIT for disabled Gene executor
 
 `inv_risk_book_notional_cap_nonzero`: Gene with `ALPACA_SKIP_PORTFOLIOS=gene` has `equity=0, admit=0, reject=0`. The v7.83.0 dormant heuristic (`reject_count>0`) never fired because the executor never attempts entries, so it fell into `zeros` -> CRIT. Fix: check `executors_status` from the state snapshot; portfolios with `enabled:false` are now immediately classified as dormant (not zeros) regardless of admit/reject counts.
