@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.61 (2026-05-14) — orphan position recovery via ORB_ORPHAN_POSITIONS_{PID}
+
+Adds `_inject_orphan_positions()` called at session start after rehydrate. Reads env vars `ORB_ORPHAN_POSITIONS_VAL` / `ORB_ORPHAN_POSITIONS_GENE` (format: `TICKER:side:entry:stop:shares[,...]`) and creates `recover-orphan-{ticker}-{pid}` OrbPositions + RiskBook tickets for any ticker not already tracked. Idempotent (skips already-tracked tickers). Forensic tag: `[V9161-ORPHAN]`.
+
+Used to restore NVDA LONG tracking for Val after it was lost between pre-Fix-A deploys (v9.1.49–v9.1.51 all restarted the process before the position-persistence fix landed in v9.1.52). Fix A (v9.1.52) handles persistence going forward; this env-var mechanism is the escape hatch for positions already orphaned.
+
+---
+
 ## v9.1.60 (2026-05-14) — h-tick: never show ··· (clamp at 01s)
 
 The `···` appeared for ~1-2s every scan cycle when the scan was overdue but the SSE hadn't yet delivered the new `last_scan_at`. Even 1-2s of static dots looks like the countdown froze. Fix: `Math.max(1, remaining)` — the counter always shows at least "01s". Sequence is now `15, 14, ..., 01, 01` (briefly) then resets to `14, 13...` — no stuck-looking display.

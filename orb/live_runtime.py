@@ -446,6 +446,15 @@ def ensure_session_started(
             )
     except Exception as _e:
         logger.debug("[V8322-UUID-PURGE] failed: %s", _e)
+    # v9.1.61 -- inject positions that survived in Alpaca but were lost
+    # from the OrbEngine adapter during pre-Fix-A deploys. Read from env
+    # vars ORB_ORPHAN_POSITIONS_VAL / ORB_ORPHAN_POSITIONS_GENE.
+    # Format: "TICKER:side:entry:stop:shares[,TICKER2:...]"
+    # e.g. ORB_ORPHAN_POSITIONS_VAL=NVDA:long:235.76:232.94:324
+    try:
+        _inject_orphan_positions()
+    except Exception as _oe:
+        logger.debug("[V9161-ORPHAN] inject failed: %s", _oe)
     _record_activity(
         kind="session_start",
         detail="date "
@@ -459,6 +468,90 @@ def ensure_session_started(
             detail="day-level gate fired: " + (result.block_reason or "?"),
         )
     return True
+
+
+def _inject_orphan_positions() -> None:
+    """v9.1.61 -- restore OrbPositions from ORB_ORPHAN_POSITIONS_{PID} env vars.
+
+    Used when a position survived in Alpaca but the OrbEngine adapter lost
+    tracking due to pre-Fix-A deploys (before v9.1.52). Format per var:
+      TICKER:side:entry_price:stop:shares[,TICKER2:...]
+    Side effects: safe if ticker already tracked (idempotent).
+    """
+    import os as _os
+
+    if _engine is None or _adapters is None:
+        return
+    from orb import risk_book as _rb_mod
+    from orb.exits import make_position as _make_pos
+
+    for pid in _engine.portfolio_ids:
+        env_key = f"ORB_ORPHAN_POSITIONS_{pid.upper()}"
+        raw = (_os.environ.get(env_key) or "").strip()
+        if not raw:
+            continue
+        adapter = _adapters.get(pid)
+        rb = _engine._risk.get(pid)
+        if adapter is None or rb is None:
+            continue
+        tracked = {pos.ticker.upper() for pos in adapter._open_positions.values()}
+        for spec in raw.split(","):
+            spec = spec.strip()
+            if not spec:
+                continue
+            parts = spec.split(":")
+            if len(parts) < 5:
+                logger.warning(
+                    "[V9161-ORPHAN] bad spec %r for %s (need TICKER:side:entry:stop:shares)",
+                    spec,
+                    pid,
+                )
+                continue
+            try:
+                ticker = parts[0].upper()
+                side = parts[1].lower()
+                entry = float(parts[2])
+                stop = float(parts[3])
+                shares = int(parts[4])
+                if ticker in tracked:
+                    logger.debug("[V9161-ORPHAN] %s/%s already tracked, skipping", pid, ticker)
+                    continue
+                if not entry or not stop or not shares or abs(entry - stop) < 0.001:
+                    logger.warning("[V9161-ORPHAN] invalid params for %s/%s, skipping", pid, ticker)
+                    continue
+                rr = float(getattr(_engine.cfg, "rr", 2.5) or 2.5)
+                recover_tid = f"recover-orphan-{ticker}-{pid}"
+                pos = _make_pos(
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    side=side,
+                    entry_price=entry,
+                    stop=stop,
+                    rr=rr,
+                    shares=shares,
+                    risk_ticket_id=recover_tid,
+                )
+                with rb._lock:
+                    rb._open_tickets[recover_tid] = _rb_mod._Ticket(
+                        ticket_id=recover_tid,
+                        risk_dollars=pos.risk_dollars,
+                        notional=pos.notional,
+                    )
+                    rb._open_risk += pos.risk_dollars
+                    rb._open_notional += pos.notional
+                adapter._open_positions[recover_tid] = pos
+                logger.info(
+                    "[V9161-ORPHAN] injected %s %s %s entry=%.4f stop=%.4f shares=%d tid=%s",
+                    pid,
+                    ticker,
+                    side,
+                    entry,
+                    stop,
+                    shares,
+                    recover_tid,
+                )
+            except Exception as _e:
+                logger.warning("[V9161-ORPHAN] failed to inject %s/%r: %s", pid, spec, _e)
 
 
 # v8.3.4 -- engine state persistence wrappers.
