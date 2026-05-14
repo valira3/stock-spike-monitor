@@ -4234,9 +4234,7 @@ def run_local() -> int:
         from pathlib import Path as _P
         import ast as _ast
 
-        src = (_P(__file__).parent / "ingest" / "algo_plus.py").read_text(
-            encoding="utf-8"
-        )
+        src = (_P(__file__).parent / "ingest" / "algo_plus.py").read_text(encoding="utf-8")
         # Locate _resolve_alpaca_creds function body
         i = src.find("def _resolve_alpaca_creds")
         assert i != -1, "_resolve_alpaca_creds not found in ingest/algo_plus.py"
@@ -4245,9 +4243,7 @@ def run_local() -> int:
         i_gene = body.find("GENE_ALPACA_PAPER_KEY")
         assert i_val != -1, "VAL_ALPACA_PAPER_KEY missing from _resolve_alpaca_creds"
         assert i_gene != -1, "GENE_ALPACA_PAPER_KEY missing from _resolve_alpaca_creds"
-        assert i_val < i_gene, (
-            "VAL_ALPACA_PAPER_KEY must be checked before GENE_ALPACA_PAPER_KEY"
-        )
+        assert i_val < i_gene, "VAL_ALPACA_PAPER_KEY must be checked before GENE_ALPACA_PAPER_KEY"
         assert "INGEST SHADOW DISABLED" in body, (
             "[INGEST SHADOW DISABLED] log line missing from _resolve_alpaca_creds"
         )
@@ -5701,9 +5697,7 @@ def run_local() -> int:
             "scan_loop must define cur_min before calling _eod_reversal_pass "
             "(v9.1.20 fix); pre-fix raised NameError silently"
         )
-        assert idx_call != -1, (
-            "scan_loop must call _eod_reversal_pass(callbacks, cur_min)"
-        )
+        assert idx_call != -1, "scan_loop must call _eod_reversal_pass(callbacks, cur_min)"
         assert idx_assign < idx_call, (
             f"cur_min assignment (pos {idx_assign}) must precede the "
             f"_eod_reversal_pass call (pos {idx_call})"
@@ -5726,12 +5720,11 @@ def run_local() -> int:
                 continue
             assert 'getattr(book, "current_equity"' not in line, (
                 "v9.1.21 SEV-1 regression: do not use "
-                "getattr(book, \"current_equity\", ...) -- call as a "
+                'getattr(book, "current_equity", ...) -- call as a '
                 "method instead"
             )
         assert "book.current_equity()" in src, (
-            "scan._eod_reversal_pass must call current_equity() as a "
-            "method"
+            "scan._eod_reversal_pass must call current_equity() as a method"
         )
 
     @t("v9.1.25 EOD wiring: is_entry_window uses range, not equality")
@@ -5751,6 +5744,7 @@ def run_local() -> int:
         )
         # Real-call sanity: middle of window must be True.
         from orb.eod_reversal import EodReversalConfig
+
         eng = EodReversalEngine(EodReversalConfig(), portfolio_ids=["main"])
         assert eng.is_entry_window(15 * 60) is True
         assert eng.is_entry_window(15 * 60 + 25) is True
@@ -5938,7 +5932,7 @@ def main() -> int:
     parser.add_argument(
         "--synthetic", action="store_true", help="replay synthetic_harness goldens after local"
     )
-    parser.add_argument("--url", default="https://stock-spike-monitor-production.up.railway.app")
+    parser.add_argument("--url", default=os.environ.get("DASHBOARD_URL", "https://tradegenius.up.railway.app"))
     parser.add_argument("--password", default=os.environ.get("DASHBOARD_PASSWORD", ""))
     parser.add_argument("--expected-version", default=None)
     args = parser.parse_args()

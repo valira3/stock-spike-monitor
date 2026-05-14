@@ -5,9 +5,10 @@ name: Post-deploy smoke test
 # against the live dashboard. On failure, posts an alert to the TP
 # Telegram chat so Val sees it on mobile.
 
+# Push trigger disabled: smoke tests moved to scripts/run_smoke.py (local).
+# Run: python scripts/run_smoke.py [--no-wait] [--local-only]
+# workflow_dispatch kept for emergency ad-hoc GHA runs.
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 concurrency:

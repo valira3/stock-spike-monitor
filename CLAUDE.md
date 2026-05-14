@@ -181,6 +181,28 @@ python tools/afternoon_backtest.py --strategy eod_reversal \
 - Q1 2025 is the known weak quarter (pre-live-production, NFLX-driven whack-a-mole)
 - Do not use `ORB_MAX_TRADES_PER_DAY=1` — halves P&L by blocking profitable double-fires alongside losing ones
 
+## Local smoke test runner (replaces GHA post-deploy-smoke.yml)
+
+`scripts/run_smoke.py` runs the full smoke suite locally after a push. Reads credentials from `.env.monitor`.
+
+```bash
+# Full flow: wait for Railway rollout, then run local + prod tests
+python scripts/run_smoke.py
+
+# Skip Railway wait (if version already deployed or testing locally)
+python scripts/run_smoke.py --no-wait
+
+# Local tests only (no prod hit, no Railway wait)
+python scripts/run_smoke.py --local-only
+```
+
+- **Local tests** — imports `trade_genius` in-process with synthetic state. Requires `FMP_API_KEY` and `SSM_SMOKE_TEST=1` (both in `.env.monitor`).
+- **Prod tests (9)** — hits `https://tradegenius.up.railway.app` directly: login, `/api/state`, `/stream`, rate limiter.
+- **Telegram alert** — fires via `@tgval3_bot` on any failure (same bot as monitor alerts).
+- **Railway wait** — polls `/api/version` every 10s for up to 5 min until new BOT_VERSION appears.
+
+The GHA `post-deploy-smoke.yml` cron is disabled; `workflow_dispatch` kept for emergency runs.
+
 ## Local monitor loop (replaces GHA monitor.yml)
 
 `scripts/run_monitor.py` runs `tools.unified_monitor` every 5 min during RTH (Mon-Fri 07:00-19:00 ET). Results land in `data/monitor/latest.json` (same schema as the old `monitor-live` branch output).
