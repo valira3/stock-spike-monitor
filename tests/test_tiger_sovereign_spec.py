@@ -461,15 +461,14 @@ def test_SHARED_CB():
 
 
 def test_SHARED_EOD():
-    """SHARED-EOD: EOD flush at 15:49:59 ET."""
+    """SHARED-EOD: EOD flush at 15:59:59 ET (updated v9.1.23)."""
     from engine.timing import EOD_FLUSH_ET, is_after_eod_et
 
-    # v9.1.23: see engine/timing.py header.
     assert EOD_FLUSH_ET == time(15, 59, 59)
 
-    before = datetime(2026, 4, 28, 15, 49, 58, tzinfo=ET)
-    at_eod = datetime(2026, 4, 28, 15, 49, 59, tzinfo=ET)
-    after = datetime(2026, 4, 28, 15, 50, 0, tzinfo=ET)
+    before = datetime(2026, 4, 28, 15, 59, 58, tzinfo=ET)
+    at_eod = datetime(2026, 4, 28, 15, 59, 59, tzinfo=ET)
+    after = datetime(2026, 4, 28, 16, 0, 0, tzinfo=ET)
     assert is_after_eod_et(before) is False
     assert is_after_eod_et(at_eod) is True
     assert is_after_eod_et(after) is True

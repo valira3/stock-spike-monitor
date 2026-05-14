@@ -1,4 +1,5 @@
 """Tests for tools.railway_log_tail -- v7.79.0 log-tail module."""
+
 from __future__ import annotations
 
 import os
@@ -12,14 +13,13 @@ from tools import railway_log_tail as rlt
 def isolated_env(monkeypatch):
     """Clear Railway env vars per-test so leaked credentials can't
     influence test outcomes."""
-    for k in ("RAILWAY_API_TOKEN", "RAILWAY_SERVICE_ID", "RAILWAY_API_URL"):
+    for k in ("RAILWAY_API_TOKEN", "RAILWAY_SERVICE_ID", "RAILWAY_API_URL", "RAILWAY_USE_CLI"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")  # v8.1.3 legacy default
     yield
 
 
 class TestFetchRecentLogs:
-
     def test_returns_empty_when_token_missing(self, monkeypatch):
         monkeypatch.setenv("RAILWAY_SERVICE_ID", "abc")
         assert rlt.fetch_recent_logs() == []
@@ -42,7 +42,8 @@ class TestFetchRecentLogs:
         monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc")
         # _gql returns valid shape but with no edges
         monkeypatch.setattr(
-            rlt, "_gql",
+            rlt,
+            "_gql",
             lambda *a, **k: {"data": {"deployments": {"edges": []}}},
         )
         assert rlt.fetch_recent_logs() == []
@@ -51,19 +52,33 @@ class TestFetchRecentLogs:
         monkeypatch.setenv("RAILWAY_API_TOKEN", "tok")
         monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc")
         # First call: latest deployment id; second call: actual logs.
-        responses = iter([
-            {"data": {"deployments": {"edges": [
-                {"node": {"id": "deploy-1", "status": "SUCCESS"}}
-            ]}}},
-            {"data": {"deploymentLogs": [
-                {"timestamp": "2026-05-11T15:30:00Z",
-                 "message": "[V79-ORB-ENTRY] long AAPL ...",
-                 "severity": "info"},
-                {"timestamp": "2026-05-11T15:30:01Z",
-                 "message": "[ALPACA-ERR] insufficient_buying_power",
-                 "severity": "warning"},
-            ]}},
-        ])
+        responses = iter(
+            [
+                {
+                    "data": {
+                        "deployments": {
+                            "edges": [{"node": {"id": "deploy-1", "status": "SUCCESS"}}]
+                        }
+                    }
+                },
+                {
+                    "data": {
+                        "deploymentLogs": [
+                            {
+                                "timestamp": "2026-05-11T15:30:00Z",
+                                "message": "[V79-ORB-ENTRY] long AAPL ...",
+                                "severity": "info",
+                            },
+                            {
+                                "timestamp": "2026-05-11T15:30:01Z",
+                                "message": "[ALPACA-ERR] insufficient_buying_power",
+                                "severity": "warning",
+                            },
+                        ]
+                    }
+                },
+            ]
+        )
         monkeypatch.setattr(rlt, "_gql", lambda *a, **k: next(responses))
         logs = rlt.fetch_recent_logs(limit=10)
         assert len(logs) == 2
@@ -81,15 +96,21 @@ class TestFetchRecentLogs:
     def test_filters_non_dict_rows(self, monkeypatch):
         monkeypatch.setenv("RAILWAY_API_TOKEN", "tok")
         monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc")
-        responses = iter([
-            {"data": {"deployments": {"edges": [{"node": {"id": "d1"}}]}}},
-            {"data": {"deploymentLogs": [
-                {"timestamp": "t1", "message": "valid", "severity": "info"},
-                None,  # malformed
-                "string-instead-of-dict",  # malformed
-                {"timestamp": "t2", "message": "valid2", "severity": "info"},
-            ]}},
-        ])
+        responses = iter(
+            [
+                {"data": {"deployments": {"edges": [{"node": {"id": "d1"}}]}}},
+                {
+                    "data": {
+                        "deploymentLogs": [
+                            {"timestamp": "t1", "message": "valid", "severity": "info"},
+                            None,  # malformed
+                            "string-instead-of-dict",  # malformed
+                            {"timestamp": "t2", "message": "valid2", "severity": "info"},
+                        ]
+                    }
+                },
+            ]
+        )
         monkeypatch.setattr(rlt, "_gql", lambda *a, **k: next(responses))
         logs = rlt.fetch_recent_logs()
         assert len(logs) == 2
@@ -98,7 +119,6 @@ class TestFetchRecentLogs:
 
 
 class TestScanForFailures:
-
     def test_returns_empty_when_no_matches(self):
         logs = [
             {"timestamp": "t1", "message": "normal log line", "severity": "info"},
@@ -108,9 +128,11 @@ class TestScanForFailures:
 
     def test_detects_alpaca_error(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "[VAL] [ALPACA-ERR] req=(sym=AAPL ...) err=APIError",
-             "severity": "warning"},
+            {
+                "timestamp": "t1",
+                "message": "[VAL] [ALPACA-ERR] req=(sym=AAPL ...) err=APIError",
+                "severity": "warning",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "alpaca_error" in findings
@@ -118,45 +140,55 @@ class TestScanForFailures:
 
     def test_detects_sentinel_critical(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "[SENTINEL][CRITICAL] fetch_1min_bars META failed",
-             "severity": "error"},
+            {
+                "timestamp": "t1",
+                "message": "[SENTINEL][CRITICAL] fetch_1min_bars META failed",
+                "severity": "error",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "sentinel_critical" in findings
 
     def test_detects_insufficient_cash(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "[paper] skip MSFT -- insufficient cash (need $148K)",
-             "severity": "info"},
+            {
+                "timestamp": "t1",
+                "message": "[paper] skip MSFT -- insufficient cash (need $148K)",
+                "severity": "info",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "insufficient_cash" in findings
 
     def test_detects_risk_reject_notional(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "risk_reject:notional_cap (would-be $293 > $0)",
-             "severity": "info"},
+            {
+                "timestamp": "t1",
+                "message": "risk_reject:notional_cap (would-be $293 > $0)",
+                "severity": "info",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "risk_reject_notional_cap" in findings
 
     def test_detects_v15_wait_abort(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "[V15-SIZING] AAPL side=LONG WAIT (defensive abort): ...",
-             "severity": "info"},
+            {
+                "timestamp": "t1",
+                "message": "[V15-SIZING] AAPL side=LONG WAIT (defensive abort): ...",
+                "severity": "info",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "v15_wait_abort" in findings
 
     def test_detects_uncaught_traceback(self):
         logs = [
-            {"timestamp": "t1",
-             "message": "Traceback (most recent call last):",
-             "severity": "error"},
+            {
+                "timestamp": "t1",
+                "message": "Traceback (most recent call last):",
+                "severity": "error",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "uncaught_traceback" in findings
@@ -178,7 +210,11 @@ class TestScanForFailures:
         logs = [
             {"timestamp": "t1", "message": "[ALPACA-ERR] x", "severity": "warning"},
             {"timestamp": "t2", "message": "[V79-ORB-REJECT] y", "severity": "info"},
-            {"timestamp": "t3", "message": "insufficient cash -- bot says [paper] skip Z -- insufficient cash", "severity": "info"},
+            {
+                "timestamp": "t3",
+                "message": "insufficient cash -- bot says [paper] skip Z -- insufficient cash",
+                "severity": "info",
+            },
         ]
         findings = rlt.scan_for_failures(logs)
         assert "alpaca_error" in findings
@@ -191,7 +227,8 @@ class TestScanForFailures:
             {"timestamp": "t1", "message": "MY_CUSTOM_TAG fired", "severity": "info"},
         ]
         findings = rlt.scan_for_failures(
-            logs, signatures={"custom": r"MY_CUSTOM_TAG"},
+            logs,
+            signatures={"custom": r"MY_CUSTOM_TAG"},
         )
         assert findings == {
             "custom": {
@@ -208,7 +245,6 @@ class TestScanForFailures:
 
 
 class TestGrepLogsV784:
-
     def test_returns_empty_when_no_logs(self, monkeypatch):
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: [])
         assert rlt.grep_logs(r"\[V79-MIRROR-\w+\]") == []
@@ -221,8 +257,16 @@ class TestGrepLogsV784:
         logs = [
             {"timestamp": "t1", "message": "[V79-MIRROR-RECV] Val kind=...", "severity": "info"},
             {"timestamp": "t2", "message": "SCAN CYCLE done", "severity": "info"},
-            {"timestamp": "t3", "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG ...", "severity": "warning"},
-            {"timestamp": "t4", "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181", "severity": "info"},
+            {
+                "timestamp": "t3",
+                "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG ...",
+                "severity": "warning",
+            },
+            {
+                "timestamp": "t4",
+                "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181",
+                "severity": "info",
+            },
         ]
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: logs)
         out = rlt.grep_logs(r"\[V79-MIRROR-\w+\]")
@@ -240,18 +284,21 @@ class TestGrepLogsV784:
 
 
 class TestFormatLogSliceV784:
-
     def test_empty_returns_empty_string(self):
         assert rlt.format_log_slice([]) == ""
 
     def test_one_line_per_row(self):
         rows = [
-            {"timestamp": "2026-05-11T17:47:48Z",
-             "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA",
-             "severity": "info"},
-            {"timestamp": "2026-05-11T17:47:49Z",
-             "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181",
-             "severity": "info"},
+            {
+                "timestamp": "2026-05-11T17:47:48Z",
+                "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG ticker=TSLA",
+                "severity": "info",
+            },
+            {
+                "timestamp": "2026-05-11T17:47:49Z",
+                "message": "[V79-MIRROR-DISPATCH] Val ENTRY_LONG TSLA qty=181",
+                "severity": "info",
+            },
         ]
         out = rlt.format_log_slice(rows)
         assert "2026-05-11T17:47:48Z [V79-MIRROR-RECV]" in out
@@ -265,8 +312,9 @@ class TestFormatLogSliceV784:
         assert "…" in out
 
     def test_caps_at_max_lines_with_tail_note(self):
-        rows = [{"timestamp": f"t{i}", "message": f"line-{i}", "severity": "info"}
-                for i in range(30)]
+        rows = [
+            {"timestamp": f"t{i}", "message": f"line-{i}", "severity": "info"} for i in range(30)
+        ]
         out = rlt.format_log_slice(rows, max_lines=10)
         assert "line-0" in out
         assert "line-9" in out

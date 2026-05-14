@@ -156,11 +156,15 @@ def main() -> int:
             return 1
         time.sleep(5)  # let Railway settle
 
-    # Step 2: local smoke tests (31)
-    logger.info("=== LOCAL smoke tests ===")
-    local_rc = run_smoke(["--local"])
+    # Step 2: strategy unit tests (pytest tests/strategy/) — 986 tests, ~2s.
+    # Replaces the legacy smoke_test.py --local (76s, legacy v5.x era).
+    logger.info("=== LOCAL strategy tests (pytest tests/strategy/) ===")
+    pytest_cmd = [sys.executable, "-m", "pytest", "tests/strategy/", "-q", "--tb=short"]
+    local_rc = subprocess.run(
+        pytest_cmd, cwd=str(_REPO_ROOT), env={**os.environ, "PYTHONIOENCODING": "utf-8"}
+    ).returncode
     if local_rc != 0:
-        logger.error("LOCAL smoke FAILED (exit %d)", local_rc)
+        logger.error("LOCAL strategy tests FAILED (exit %d)", local_rc)
 
     if args.local_only:
         return local_rc

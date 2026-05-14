@@ -13,7 +13,11 @@ from tools.railway_log_tail import probe_railway_access
 
 
 def test_probe_missing_token():
-    with patch.dict("os.environ", {"RAILWAY_API_TOKEN": "", "RAILWAY_SERVICE_ID": "svc-abc"}, clear=False):
+    with patch.dict(
+        "os.environ",
+        {"RAILWAY_API_TOKEN": "", "RAILWAY_SERVICE_ID": "svc-abc", "RAILWAY_USE_CLI": "0"},
+        clear=False,
+    ):
         out = probe_railway_access()
     assert out["status"] == "missing_token"
     assert out["token_set"] is False
@@ -37,11 +41,14 @@ def test_probe_auth_failed_when_gql_returns_none():
     drift. The probe must map that to status='auth_failed' rather
     than masking it as 'ok'.
     """
-    with patch.dict(
-        "os.environ",
-        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-        clear=False,
-    ), patch("tools.railway_log_tail._gql", return_value=None):
+    with (
+        patch.dict(
+            "os.environ",
+            {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+            clear=False,
+        ),
+        patch("tools.railway_log_tail._gql", return_value=None),
+    ):
         out = probe_railway_access()
     assert out["status"] == "auth_failed"
     assert out["token_set"] is True
@@ -52,36 +59,56 @@ def test_probe_auth_failed_when_no_data_key():
     """A 200 response with no 'data' key is a schema drift, treated
     the same as a hard failure -- not 'ok'.
     """
-    with patch.dict(
-        "os.environ",
-        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-        clear=False,
-    ), patch("tools.railway_log_tail._gql", return_value={"errors": ["whatever"]}):
+    with (
+        patch.dict(
+            "os.environ",
+            {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+            clear=False,
+        ),
+        patch("tools.railway_log_tail._gql", return_value={"errors": ["whatever"]}),
+    ):
         out = probe_railway_access()
     assert out["status"] == "auth_failed"
 
 
 def test_probe_no_deployment_when_edges_empty():
     fake = {"data": {"deployments": {"edges": []}}}
-    with patch.dict(
-        "os.environ",
-        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-        clear=False,
-    ), patch("tools.railway_log_tail._gql", return_value=fake):
+    with (
+        patch.dict(
+            "os.environ",
+            {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+            clear=False,
+        ),
+        patch("tools.railway_log_tail._gql", return_value=fake),
+    ):
         out = probe_railway_access()
     assert out["status"] == "no_deployment"
 
 
 def test_probe_ok_returns_deployment_id():
-    fake = {"data": {"deployments": {"edges": [
-        {"node": {"id": "dep-123", "status": "SUCCESS",
-                  "createdAt": "2026-05-12T00:30:00Z"}}
-    ]}}}
-    with patch.dict(
-        "os.environ",
-        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-        clear=False,
-    ), patch("tools.railway_log_tail._gql", return_value=fake):
+    fake = {
+        "data": {
+            "deployments": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "dep-123",
+                            "status": "SUCCESS",
+                            "createdAt": "2026-05-12T00:30:00Z",
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    with (
+        patch.dict(
+            "os.environ",
+            {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+            clear=False,
+        ),
+        patch("tools.railway_log_tail._gql", return_value=fake),
+    ):
         out = probe_railway_access()
     assert out["status"] == "ok"
     assert out["deployment_id"] == "dep-123"
@@ -97,15 +124,29 @@ def test_probe_ok_returns_deployment_status_when_stale():
     that so the monitor footer can flag it. This is the smoking-gun
     pattern from issue #583 (lines_fetched=0 with status=ok).
     """
-    fake = {"data": {"deployments": {"edges": [
-        {"node": {"id": "dep-old", "status": "REMOVED",
-                  "createdAt": "2026-04-01T12:00:00Z"}}
-    ]}}}
-    with patch.dict(
-        "os.environ",
-        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-        clear=False,
-    ), patch("tools.railway_log_tail._gql", return_value=fake):
+    fake = {
+        "data": {
+            "deployments": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "dep-old",
+                            "status": "REMOVED",
+                            "createdAt": "2026-04-01T12:00:00Z",
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    with (
+        patch.dict(
+            "os.environ",
+            {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
+            clear=False,
+        ),
+        patch("tools.railway_log_tail._gql", return_value=fake),
+    ):
         out = probe_railway_access()
     assert out["status"] == "ok"  # auth works
     assert out["deployment_id"] == "dep-old"
@@ -131,11 +172,13 @@ def test_gql_captures_errors_into_last_gql_errors():
         "data": None,
     }
     rlt._last_gql_errors = []  # reset
-    with patch("tools.railway_log_tail._gql", side_effect=lambda *a, **kw: rlt._record_errors(fake)):
+    with patch(
+        "tools.railway_log_tail._gql", side_effect=lambda *a, **kw: rlt._record_errors(fake)
+    ):
         # Force the probe path that calls _gql -> _record_errors.
-        with patch.dict("os.environ",
-                        {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"},
-                        clear=False):
+        with patch.dict(
+            "os.environ", {"RAILWAY_API_TOKEN": "tok", "RAILWAY_SERVICE_ID": "svc"}, clear=False
+        ):
             probe_railway_access()
     errs = rlt.get_last_gql_errors()
     assert any("startDate" in e for e in errs)
@@ -147,6 +190,7 @@ def test_gql_clears_errors_on_clean_response():
     clear the module-global so a stale error from a previous call
     doesn't leak into the next probe's footer."""
     from tools import railway_log_tail as rlt
+
     rlt._last_gql_errors = ["stale error from previous run"]
     rlt._record_errors({"data": {"deployments": {"edges": []}}})
     assert rlt.get_last_gql_errors() == []

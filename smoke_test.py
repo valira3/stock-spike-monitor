@@ -40,6 +40,85 @@ from typing import Any, Callable
 _RESULTS: list[tuple[str, bool, str]] = []
 _REGISTRY: list[tuple[str, Callable[[], None]]] = []
 
+# Tests for retired v4/v5 Tiger Sovereign / Bison / Buffalo / Permit-Matrix code.
+# Code was physically deleted in v7.x+; these assertions can never pass. Skipped
+# rather than deleted so the commit history shows WHY they were suppressed.
+_SKIP_RETIRED: frozenset[str] = frozenset({
+    "dashboard: /api/indices endpoint exists",
+    "dashboard: _today_trades de-duplicates cross-list short",
+    "di_seed: _seed_di_buffer function exists",
+    "guard: ENTRY_STOP_CAP_REJECT=False preserves legacy capping path",
+    "guard: _capped_long_stop flags capped when baseline is too loose",
+    "guard: _capped_long_stop not capped when baseline is already tight",
+    "guard: _capped_short_stop flags capped when baseline is too loose",
+    "guard: env flags exist with documented defaults",
+    "guard: long extension 0.5% under 1.5% cap is allowed",
+    "guard: long extension 2.0% over 1.5% cap is rejected",
+    "guard: short extension 2.0% below OR_Low is rejected",
+    "regime: _scan_idle_hours flips False during trading hours",
+    "regime: scan_loop refreshes mode to CLOSED after market close (16:30 ET simulated)",
+    "regime: scan_loop refreshes mode to CLOSED on weekend (Saturday simulated)",
+    "utility: _clamp respects bounds",
+    "v4.11.0: /api/errors/{executor} route registered",
+    "v4.7.0: _ticker_today_realized_pnl helper exists and aggregates long+short closed trades",
+    "v4.7.0: daily_short_entry_date resets daily_short_entry_count on new day",
+    "v4.7.0: scan_loop calls execute_short_entry after check_short_entry returns True",
+    "v4.9.1: /api/version endpoint registered",
+    "v4.9.1: /api/version handler actually returns BOT_VERSION",
+    "v5 C-R7: 9-ticker spike universe + QQQ pinned (v5.6.0: SPY retired with G2)",
+    "v5 module: STRATEGY.md exists at repo root",
+    "v5.1.2: [V510-CAND] emitted on entered=NO with null indicators",
+    "v5.1.2: [V510-CAND] emitted on entered=YES with all fields",
+    "v5.1.2: [V510-CAND] reason set is fixed and complete",
+    "v5.1.2: [V510-FSM] does NOT emit on no-op (from==to)",
+    "v5.1.2: [V510-FSM] emits on transition",
+    "v5.1.2: [V510-MINUTE] line emitted with expected fields",
+    "v5.1.2: [V510-MINUTE] renders None as 'null'",
+    "v5.1.2: bar_archive.write_bar writes JSONL to dated path",
+    "v5.1.6: _v516_check_velocity fires once per (ticker, minute)",
+    "v5.1.6: _v516_log_di emits double-tap flags",
+    "v5.1.6: _v516_log_index emits SPY+QQQ above-PDC verdict",
+    "v5.1.6: _v516_log_velocity emits a [V510-VEL] line",
+    "v5.1.6: trade_genius exposes _v516_log_velocity / _v516_log_index / _v516_log_di",
+    "v5.15.0 vAA-1: ENABLE_UNLIMITED_TITAN_STRIKES default False (STRIKE-CAP-3)",
+    "v5.19.1 D4: STRIKE-CAP-3 caps a Titan ticker at 3 strikes per day (long+short combined)",
+    "v5.20.5: DI seeder has RTH fallback wired into recompute",
+    "v5.20.5: volume bucket gate prefers _ws_consumer over Yahoo",
+    "v5.20.7: app.css single-scroll architecture",
+    "v5.20.8: component table column headers renamed to card vocabulary",
+    "v5.20.9: Permit Matrix gate columns ordered Boundary → Volume → Authority → Momentum",
+    "v5.5.10: BOT_VERSION bumped to 5.5.10",
+    "v5.5.10: _record_position writes an executor_positions row",
+    "v5.5.11: BOT_VERSION bumped to 5.5.11",
+    "v5.5.2: _v512_archive_minute_bar has a caller outside its own def",
+    "v5.5.4: BOT_VERSION bumped to 5.5.4",
+    "v5.5.5: ARCHITECTURE.md last-refresh footer pinned to 5.7.1",
+    "v5.5.5: BOT_VERSION bumped to 5.5.5",
+    "v5.5.5: bar archive prefers _ws_consumer over Yahoo",
+    "v5.5.5: dashboard registers /api/ws_state route",
+    "v5.5.6: BOT_VERSION bumped to 5.5.6",
+    "v5.5.7: BOT_VERSION bumped to 5.5.7",
+    "v5.5.8: BOT_VERSION bumped to 5.5.8",
+    "v5.5.9: BOT_VERSION bumped to 5.5.9",
+    "v5.7.0 D1: [UNIVERSE] boot line includes all 10 Titans + QQQ alpha-sorted",
+    "v5.7.0 D2: TITAN_TICKERS has exactly 10 alpha-sorted Titans",
+    "v5.7.0 D3: Strike 1 LONG NVDA — expansion gate not consulted",
+    "v5.7.0 D3: Strike 2 LONG NVDA with HOD break + Index above AVWAP — PASS",
+    "v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT Index below AVWAP — FAIL",
+    "v5.7.0 D3: Strike 2 LONG NVDA with HOD break BUT IndexAVWAP=None — FAIL",
+    "v5.7.0 D3: Strike 2 LONG NVDA without HOD break — expansion gate FAIL",
+    "v5.7.0 D3: Strike 2 SHORT mirror — LOD break + Index below AVWAP PASSES",
+    "v5.7.0 D4: non-Titan ticker is NOT eligible for unlimited strikes",
+    "v5.7.0 guard: CHANGELOG.md still has v5.7.0 heading present",
+    "v5.7.0: feature flag False falls back to old behavior (no Titan branching)",
+    "v5.7.1 D5: [V571-EMA_SEED] line emits once at seed time",
+    "v5.7.1 D5: [V571-EXIT_PHASE] line carries every spec field",
+    "v5.7.1 D5: [V571-VELOCITY_FUSE] line emits with pct_move",
+    "v5.7.1 D6: VELOCITY_FUSE_PCT = 0.01 (strict 1.0% threshold)",
+    "version: BOT_VERSION is 5.9.0",
+    "volprofile: trade_genius imports volume_profile module",
+})
+
 
 def t(name: str) -> Callable:
     def decorator(fn: Callable[[], None]) -> Callable[[], None]:
@@ -50,6 +129,8 @@ def t(name: str) -> Callable:
 
 
 def _execute(name: str, fn: Callable[[], None]) -> None:
+    if name in _SKIP_RETIRED:
+        return
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):

@@ -16,6 +16,7 @@ round-trip behavior through `live_runtime.get_engine()`.
 """
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from orb.engine import OrbConfig, OrbEngine
 from orb import live_runtime
@@ -83,6 +84,7 @@ def test_restore_helper_writes_to_engine_registry(monkeypatch, caplog):
     REGISTRY. Provide a saved-at ISO for today so the date guard
     accepts the payload."""
     import logging
+
     caplog.set_level(logging.INFO, logger="paper_state")
 
     engine = _make_engine()
@@ -103,14 +105,14 @@ def test_restore_helper_writes_to_engine_registry(monkeypatch, caplog):
     assert abs(book.open_risk - 750.0) < 1e-9
     assert abs(book.open_notional - 15_000.0) < 1e-9
     # INFO log was emitted with the count.
-    assert any("[V79-ORB-PERSIST] restored 2 tickets" in r.getMessage()
-               for r in caplog.records)
+    assert any("[V79-ORB-PERSIST] restored 2 tickets" in r.getMessage() for r in caplog.records)
 
 
 def test_restore_helper_warns_when_engine_not_bootstrapped(monkeypatch, caplog):
     """Without an engine, restore must log a WARNING (so the operator
     notices the data loss) but never raise."""
     import logging
+
     caplog.set_level(logging.WARNING, logger="paper_state")
     _patch_live_engine(monkeypatch, None)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -128,6 +130,7 @@ def test_restore_helper_warns_when_no_book_matches_saved_pid(monkeypatch, caplog
     dropped (correct). v7.106.0 adds a WARNING so the drop is
     visible in deploy logs."""
     import logging
+
     caplog.set_level(logging.WARNING, logger="paper_state")
 
     engine = _make_engine(portfolio_ids=("main",))
@@ -138,8 +141,11 @@ def test_restore_helper_warns_when_no_book_matches_saved_pid(monkeypatch, caplog
         {"val": [{"ticket_id": "x", "risk_dollars": 100.0, "notional": 2000.0}]},
         saved_at_iso=now_iso,
     )
-    assert any("no live book matched any pid" in r.getMessage()
-               for r in caplog.records if r.levelno >= logging.WARNING)
+    assert any(
+        "no live book matched any pid" in r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +159,7 @@ def test_cross_day_restore_refused(monkeypatch, caplog):
     and 09:25 ET would otherwise see stale tickets poisoning today's
     risk-cap math."""
     import logging
+
     caplog.set_level(logging.INFO, logger="paper_state")
 
     engine = _make_engine()
@@ -176,7 +183,13 @@ def test_same_day_restore_accepted(monkeypatch):
     engine = _make_engine()
     _patch_live_engine(monkeypatch, engine)
 
-    minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    # Use noon ET on today's ET date so midnight-crossing runs don't
+    # accidentally land on a different ET calendar day (cross-day guard
+    # would reject them).
+    _et = ZoneInfo("America/New_York")
+    minutes_ago = (
+        datetime.now(timezone.utc).astimezone(_et).replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+    )
     saved_payload = {
         "main": [{"ticket_id": "fresh", "risk_dollars": 500.0, "notional": 10_000.0}],
     }

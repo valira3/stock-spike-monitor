@@ -4,6 +4,21 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.30 (2026-05-14) — test suite cleanup + smoke test optimization
+
+### 1. Smoke test suite cleaned (`smoke_test.py`)
+- Added `_SKIP_RETIRED` frozenset (73 tests) for v4/v5 Tiger Sovereign / Bison / Buffalo / Permit-Matrix code deleted in v7.x+. Suite now reports 278 passed, 0 failed.
+- Fixed `test_SHARED_EOD` boundary datetimes: was testing 15:49:59 against `EOD_FLUSH_ET=15:59:59` (v9.1.23 updated the constant but not the test boundary dates).
+
+### 2. `run_smoke.py --local-only` now runs `pytest tests/strategy/` (76s -> 5s)
+- Legacy `smoke_test.py --local` import chain pulls in pandas/numpy/yfinance; takes 76s for 278 passing tests. Replaced with `pytest tests/strategy/` (986 tests, ~5s including env load).
+
+### 3. Test isolation fixes
+- `test_riskbook_persist_engine_wiring_v7106.py::test_same_day_restore_accepted`: fixed midnight-ET boundary bug where "30 minutes ago" UTC crossed the ET calendar day boundary. Now anchors timestamp to noon ET on today's ET date.
+- `test_railway_log_tail.py` / `test_railway_probe_v791.py`: `isolated_env` fixture was not clearing `RAILWAY_USE_CLI`; the CLI fallback fired in tests that expected empty-on-missing-token, returning real logs.
+
+---
+
 ## v9.1.27 (2026-05-13) — Val/Gene post-loss cooldown + dashboard cooldown chip restored
 
 ### 1. Val/Gene post-loss cooldown wired (`executors/base.py`)
