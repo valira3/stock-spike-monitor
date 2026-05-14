@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.56 (2026-05-14) — fix h-tick phase-drift (absolute timestamps) + execData null crash
+
+**h-tick countdown root cause fixed (absolute timestamps):** The SSE timer and scan timer both run at 15s but on independent schedules, drifting apart over time. SSE could fire 13s before the next scan, delivering `next_scan_sec = 2` — the counter reached 0 in 2s and showed `♻ ···` for 13s until the next SSE. Replaced the relative `next_scan_sec` field with absolute `last_scan_at` (UTC ISO) + `scan_interval_sec`. The frontend now computes `remaining = interval - (Date.now() - lastScanAt)` fresh every second via the 1s tick timer. No matter when the SSE fires, the countdown is always accurate. The `streamTickTimer` is now just `setInterval(updateNextScanLabel, 1000)` — no more manual decrement.
+
+**"Fetch failed: execData is not defined" banner on Val tab:** Line 4899 accessed `execData.engine_positions` without a null guard. When the Val executor data hasn't loaded yet on page open, `execData` is `undefined` and this throws `TypeError`, which propagates to the outer `pollExecutor` catch and shows the red "Fetch failed:" banner. Fixed: `(execData && execData.engine_positions) || {}`.
+
+---
+
 ## v9.1.55 (2026-05-14) — monitor: filter network tracebacks from railway_logs_clean; orb_rollback to soft
 
 Two `railway_logs_clean` false positives:

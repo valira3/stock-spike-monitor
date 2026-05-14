@@ -3217,39 +3217,40 @@
   // Matrix; we keep this thin reader so the LIVE pill in the brand
   // row still updates.
   function renderNextScanCountdown(s) {
+    // v9.1.56 -- use last_scan_at (absolute UTC) instead of relative
+    // next_scan_sec. SSE and scan run on independent 15s timers that drift;
+    // SSE can fire 13s before the scan delivering next_scan_sec=2, causing
+    // the counter to hit 0 in 2s then sit at ... for 13s. Absolute
+    // timestamps let the client compute remaining fresh every second.
     const g = (s && s.gates) || {};
-    const nss = (typeof g.next_scan_sec === "number") ? g.next_scan_sec : null;
-    // Only overwrite with a real value — if the backend returns null (scan
-    // mid-execution or scanner not yet initialised), let the 1s tick timer
-    // keep decrementing rather than jumping to "♻ --".
-    if (nss !== null) {
-      window.__nextScanSec = nss;
+    if (g.last_scan_at) {
+      window.__lastScanAt = new Date(g.last_scan_at).getTime();
+    }
+    if (typeof g.scan_interval_sec === "number" && g.scan_interval_sec > 0) {
+      window.__scanIntervalMs = g.scan_interval_sec * 1000;
     }
     updateNextScanLabel();
   }
 
   function updateNextScanLabel() {
-    // v4.11.5 — always render the recycle (♻) symbol + a 2-char
-    // countdown. When the backend has no schedule (e.g. weekend, or the
-    // scanner hasn't started yet) we paint `♻ --` instead of falling
-    // back to a counting-up `tick NNs` label. Two chars always so the
-    // brand-row width budget is constant.
     const el = $("h-tick");
     if (!el) return;
-    const s = window.__nextScanSec;
-    if (typeof s === "number") {
-      if (s <= 0) {
-        el.textContent = "\u267B \u00B7\u00B7\u00B7";
+    if (window.__lastScanAt && window.__scanIntervalMs) {
+      const remaining = Math.max(0, Math.ceil(
+        (window.__scanIntervalMs - (Date.now() - window.__lastScanAt)) / 1000
+      ));
+      if (remaining <= 0) {
+        el.textContent = "♻ ···";
         el.setAttribute("aria-label", "scanning now");
         el.setAttribute("title", "scan in progress");
       } else {
-        const ss = String(s).padStart(2, "0");
-        el.textContent = `\u267B ${ss}s`;
+        const ss = String(remaining).padStart(2, "0");
+        el.textContent = `♻ ${ss}s`;
         el.setAttribute("aria-label", `next scan in ${ss}s`);
         el.setAttribute("title", `next scan in ${ss}s`);
       }
     } else {
-      el.textContent = "\u267B --";
+      el.textContent = "♻ --";
       el.setAttribute("aria-label", "next scan: not scheduled");
       el.setAttribute("title", "next scan: not scheduled (market closed or scanner idle)");
     }
@@ -3595,18 +3596,10 @@
       scheduleReconnect();
       return;
     }
-    // v4.11.5 — header tick is always a countdown to next scan. When
-    // the backend reports a number we decrement it once per second; when
-    // it doesn't, updateNextScanLabel() paints `♻ --` (still 2 chars)
-    // instead of the old counting-up `tick NNs` fallback. The 1s tick
-    // also keeps the label fresh after a /state refresh resets the
-    // value.
-    streamTickTimer = setInterval(() => {
-      if (typeof window.__nextScanSec === "number") {
-        window.__nextScanSec -= 1;
-      }
-      updateNextScanLabel();
-    }, 1000);
+    // v9.1.56 — 1s tick refreshes the countdown label using the absolute
+    // last_scan_at timestamp stored in window.__lastScanAt. No more
+    // per-second decrement needed; remaining is computed from Date.now().
+    streamTickTimer = setInterval(updateNextScanLabel, 1000);
 
     streamConn.addEventListener("state", (ev) => {
       lastDataAt = Date.now();
@@ -4896,7 +4889,7 @@
         // v9.1.50 \u2014 FIRE=1 independent mode: Val/Gene can hold tickers
         // not in Main's paper_state. Fill gaps from engine_positions
         // (stop/entry_stop keyed by ticker, added by dashboard_server).
-        const _engPos = execData.engine_positions || {};
+        const _engPos = (execData && execData.engine_positions) || {};
         for (const [_sym, _ep] of Object.entries(_engPos)) {
           if (!_stopBySym[_sym] && Number.isFinite(_ep.stop) && _ep.stop > 0) {
             _stopBySym[_sym] = {

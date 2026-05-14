@@ -2303,6 +2303,17 @@ def snapshot() -> dict[str, Any]:
                 "per_ticker": _ticker_gates(m, tickers),
                 # v3.4.21 — next scan countdown (seconds until next tick).
                 "next_scan_sec": _next_scan_seconds(m),
+                # v9.1.56 — absolute UTC timestamp of the last scan so the
+                # frontend can compute remaining = interval - elapsed without
+                # the phase-drift that plagued the relative next_scan_sec field
+                # (SSE timer and scan timer drift apart; relative value was
+                # stale the moment it was sent).
+                "last_scan_at": (
+                    getattr(m, "_last_scan_time", None).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                    if getattr(m, "_last_scan_time", None) is not None
+                    else None
+                ),
+                "scan_interval_sec": int(getattr(m, "SCAN_INTERVAL", 15) or 15),
             },
             "near_misses": list(getattr(m, "_near_miss_log", []) or []),
             "observer": {
