@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.72 (2026-05-14) — fix send_telegram_alert KeyError when dashboard login fails
+
+`send_telegram_alert(report)` crashed with `KeyError: 'checks'` whenever the monitor's `session.login()` call failed (dashboard temporarily unavailable during Railway redeploys). The `run()` function has an early-return path that returns `{"ok": False, "error": "...", "overall": "CRIT"}` without a "checks" key. The alert function then tried `report["checks"]` (bare subscript) which raised KeyError. The monitor caught this in `except Exception as e: logger.warning("system_check_bot alert failed: %s", e)` and still returned rc=2 (CRIT) due to the "overall" field, causing repeated false-positive Telegram alerts.
+
+Fix: `report["checks"]` → `report.get("checks") or []`. When "checks" is absent (login-failure path), crits and warns are both empty and `send_telegram_alert` returns early without sending anything.
+
+---
+
 ## v9.1.71 (2026-05-14) — fix position_count_three_way CRIT from unclosed EOD positions post-market
 
 `position_count_three_way` fired at 16:19 ET: `broker_open_n=3` (Val's Alpaca paper account still holds AAPL/ORCL/NVDA) while all internal books show 0.

@@ -1558,8 +1558,11 @@ def send_telegram_alert(report: dict[str, Any]) -> None:
     CRIT = urgent header; WARN = FYI header. Both fire so the operator
     sees config drift and trade deviations as well as hard failures.
     """
-    crits = [c for c in report["checks"] if c["status"] == CRIT]
-    warns = [c for c in report["checks"] if c["status"] == WARN]
+    # v9.1.72 -- guard against login-failure early-return path where run()
+    # returns {"ok": False, "error": "...", "overall": CRIT} without "checks".
+    _chks = report.get("checks") or []
+    crits = [c for c in _chks if c["status"] == CRIT]
+    warns = [c for c in _chks if c["status"] == WARN]
     if not crits and not warns:
         return
     token = (os.environ.get("TELEGRAM_TP_TOKEN") or "").strip()
