@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.80 (2026-05-14) — fix executor live mode reverting to paper on every Railway deploy
+
+v9.1.78 moved the state file path to `/data/` (persistent volume). But the **mtime-based** file selection in `_load_state` was still fragile: any paper-mode state save during the ~3-minute Railway startup window produced a newer paper file than the live file, silently reverting live→paper on every deploy.
+
+**Root cause:** `_load_state()` picked whichever of `tradegenius_val_paper.json` or `tradegenius_val_live.json` was most recently modified. Between v9.1.78 and v9.1.79 deploying (within ~7 minutes of each other), any startup activity in paper mode could win the mtime race.
+
+**Fix: "live file always wins" logic in `_load_state`:**
+- If `/data/tradegenius_val_live.json` exists and contains `"mode": "live"`, boot in live mode regardless of paper file mtime. No mtime comparison needed.
+- Fall back to paper state file only when live file is absent or corrupt.
+
+**Fix: `set_mode("paper")` deletes the live state file:**
+- Switching back to paper removes `/data/tradegenius_val_live.json` so the next restart doesn't re-enter live from the old file.
+- Without this, the "live file always wins" logic would re-enter live even after an explicit `/mode paper` command.
+
+**After this deploys:** reissue `/mode val live confirm` in Telegram to write the live state file to `/data/`. All future deploys will then correctly boot in live mode without operator intervention.
+
+---
+
 ## v9.1.79 (2026-05-14) — fix Val/Gene LIVE badge: "✓ L" → solid green LIVE pill
 
 The tab chip for live-mode executors showed `✓ L` (a small green letter "L"), which was too subtle to convey that real money is being traded. Two render paths were inconsistent:

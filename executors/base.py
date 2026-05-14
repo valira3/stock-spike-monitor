@@ -234,23 +234,40 @@ class TradeGeniusBase:
             logger.exception("[%s] save state failed (%s)", self.NAME, path)
 
     def _load_state(self) -> None:
-        # First load: if a persisted mode file exists for EITHER mode,
-        # prefer the most recently written one so a live-mode restart
-        # stays in live. If neither exists, default to paper.
+        # v9.1.80 -- "live file always wins" logic replaces the fragile
+        # mtime comparison. The old approach: pick the most recently
+        # modified file. Problem: any paper-mode state save during the
+        # ~3-minute Railway startup window produces a newer paper file
+        # than the live file, silently reverting live→paper on every
+        # deploy. An explicit live state file means the operator
+        # intentionally switched; only an explicit /mode paper command
+        # (which now deletes the live file) should revert it.
         paper_path = self._state_file("paper")
         live_path = self._state_file("live")
-        candidates = []
-        for m, p in (("paper", paper_path), ("live", live_path)):
-            if os.path.exists(p):
-                try:
-                    mtime = os.path.getmtime(p)
-                except OSError:
-                    mtime = 0.0
-                candidates.append((mtime, m, p))
-        if not candidates:
+        # Prefer live: if the live state file exists and records mode=live,
+        # boot in live regardless of paper file mtime.
+        if os.path.exists(live_path):
+            try:
+                with open(live_path, "r", encoding="utf-8") as _lf:
+                    _live_state = json.load(_lf)
+                if _live_state.get("mode") == "live":
+                    self._state = _live_state
+                    self.mode = "live"
+                    logger.info(
+                        "[%s] _load_state: live state file found -> mode=live",
+                        self.NAME,
+                    )
+                    return
+            except Exception:
+                logger.exception(
+                    "[%s] _load_state: live file parse failed, falling back",
+                    self.NAME,
+                )
+        # Fall back to paper state file.
+        chosen_path = paper_path if os.path.exists(paper_path) else None
+        chosen_mode = "paper"
+        if chosen_path is None:
             return
-        candidates.sort(reverse=True)
-        _, chosen_mode, chosen_path = candidates[0]
         try:
             with open(chosen_path, "r", encoding="utf-8") as f:
                 self._state = json.load(f)
@@ -347,6 +364,19 @@ class TradeGeniusBase:
         nm = (new_mode or "").strip().lower()
         if nm == "paper":
             self.mode = "paper"
+            # v9.1.80 -- delete the live state file so the next Railway
+            # restart boots in paper mode. Without this, _load_state's
+            # "live file always wins" logic would re-enter live on restart.
+            try:
+                live_path = self._state_file("live")
+                if os.path.exists(live_path):
+                    os.remove(live_path)
+                    logger.info("[%s] set_mode(paper): removed live state file", self.NAME)
+            except Exception:
+                logger.exception(
+                    "[%s] set_mode(paper): failed to remove live state file",
+                    self.NAME,
+                )
             try:
                 self.client = self._build_alpaca_client()
             except Exception:
