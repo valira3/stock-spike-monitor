@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.73 (2026-05-14) — fix EOD positions hidden by empty ORB table on Main tab
+
+When Main had EOD positions open (15:00–15:59 ET) but no ORB morning positions, `renderPositions` always emitted the full 11-column ORB table header (with empty `<tbody>`) before appending the EOD section. This produced:
+
+1. An empty 11-column header table with no rows (looks like "no positions")
+2. A headerless `eod-pos-table` below it with the actual AAPL/ORCL rows
+
+The operator saw column headers but no data rows — the EOD positions were scrolled below the empty ORB header and effectively invisible. On refresh, if `eod_positions` became empty (Railway redeploy reset the EodReversalEngine), only the empty header table remained, which looked like "no positions" consistently. This created the "appeared and disappeared" symptom.
+
+**Fix (`app.js IIFE-1 renderPositions`):**
+- Extract `_posTableHeaders` as a shared variable (the 11-column `<thead>` block)
+- Only emit the ORB `<table>` when `positions.length > 0`; when 0, set `body.innerHTML = ""`
+- EOD section: when ORB positions also present → separator + headerless EOD table (continuation). When standalone (no ORB rows) → use `_posTableHeaders` so the operator sees column labels above the EOD rows
+
+---
+
 ## v9.1.72 (2026-05-14) — fix send_telegram_alert KeyError when dashboard login fails
 
 `send_telegram_alert(report)` crashed with `KeyError: 'checks'` whenever the monitor's `session.login()` call failed (dashboard temporarily unavailable during Railway redeploys). The `run()` function has an early-return path that returns `{"ok": False, "error": "...", "overall": "CRIT"}` without a "checks" key. The alert function then tried `report["checks"]` (bare subscript) which raised KeyError. The monitor caught this in `except Exception as e: logger.warning("system_check_bot alert failed: %s", e)` and still returned rc=2 (CRIT) due to the "overall" field, causing repeated false-positive Telegram alerts.

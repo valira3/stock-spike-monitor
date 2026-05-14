@@ -591,21 +591,31 @@
           <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
         </tr>${progressRow}${_chartRow}`;
       }).join("");
-      body.innerHTML = `<table>
-        <thead><tr>
-          <th title="Symbol \u00b7 colored dot shows side (green = long, red = short)">Ticker</th>
-          <th title="LONG = bought to open. SHORT = sold to open.">Side</th>
-          <th class="right" title="Number of shares">Sh</th>
-          <th class="right" title="Average fill price when the position opened">Entry</th>
-          <th class="right" title="Latest mark price">Mark</th>
-          <th class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">Notional</th>
-          <th class="right" title="Effective stop \u2014 trail stop if armed (TRAIL badge), otherwise the hard stop">Stop</th>
-          <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
-          <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
-          <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
-          <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
-        </tr></thead>
-        <tbody>${rows}</tbody></table>`;
+      // v9.1.73 -- only render the ORB table when there are actual ORB rows.
+      // Previously an empty 11-column header table was always emitted, even
+      // with 0 ORB positions. The EOD section was then appended below it,
+      // making it look like a separate unlabelled table with the ORB headers
+      // floating above (no data rows visible) \u2014 the "appeared and disappeared"
+      // symptom the operator saw. Now the ORB table is skipped entirely when
+      // empty, and the EOD table gets the shared headers when standalone.
+      var _posTableHeaders = '<thead><tr>' +
+        '<th title="Symbol \u00b7 colored dot shows side">Ticker</th>' +
+        '<th title="LONG = bought to open. SHORT = sold to open.">Side</th>' +
+        '<th class="right" title="Number of shares">Sh</th>' +
+        '<th class="right" title="Average fill price when the position opened">Entry</th>' +
+        '<th class="right" title="Latest mark price">Mark</th>' +
+        '<th class="right" title="Notional at cost: shares \u00d7 entry.">Notional</th>' +
+        '<th class="right" title="Effective stop">Stop</th>' +
+        '<th class="right" title="Risk dollars at the effective stop.">Risk</th>' +
+        '<th class="right" title="Unrealized profit/loss in dollars">Unreal.</th>' +
+        '<th class="right" title="Unrealized P&L as a percent of cost basis">%</th>' +
+        '<th class="right" title="Time in position since entry">Held</th>' +
+        '</tr></thead>';
+      if (positions.length > 0) {
+        body.innerHTML = '<table>' + _posTableHeaders + '<tbody>' + rows + '</tbody></table>';
+      } else {
+        body.innerHTML = "";
+      }
 
       // v9.1.65 -- EOD reversal positions (Main portfolio, time-based bar).
       if (_eodMainTickers.length > 0) {
@@ -659,8 +669,16 @@
             '<td class="right">' + fmtHeld(ep.entry_iso) + '</td>' +
           '</tr>' + _bar;
         }).join("");
-        body.innerHTML += (positions.length > 0 ? '<div class="eod-section-sep"></div>' : '') +
-          '<table class="eod-pos-table"><tbody>' + _eodRows + '</tbody></table>';
+        // When ORB positions also present: add a separator; EOD table is a
+        // headerless continuation. When standalone: give it the shared headers
+        // so the operator sees the column labels.
+        if (positions.length > 0) {
+          body.innerHTML += '<div class="eod-section-sep"></div>' +
+            '<table class="eod-pos-table"><tbody>' + _eodRows + '</tbody></table>';
+        } else {
+          body.innerHTML = '<table class="eod-pos-table">' + _posTableHeaders +
+            '<tbody>' + _eodRows + '</tbody></table>';
+        }
       }
     }
 
