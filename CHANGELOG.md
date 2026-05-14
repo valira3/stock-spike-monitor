@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.75 (2026-05-14) — Telegram dedup: suppress repeated CRIT/WARN alerts within 30 min
+
+`scripts/run_monitor.py` now tracks `(section, name) → last_alerted_ts` for each CRIT/WARN. The same check won't fire a Telegram alert again within 30 minutes (`_ALERT_DEDUP_SECS = 1800`). When all CRITs are suppressed, logs "Telegram suppressed (dedup, already alerted): [list]" at INFO level so the operator can still see it in the log without being spammed on mobile.
+
+Root cause this fixed: old monitor instances started before the v9.1.70/71 invariant fixes accumulated at the 5-minute tick boundary. Each instance with old code ran at the top of the minute, found the same two post-market CRITs (val_gene_trades_match_main, position_count_three_way), and sent a Telegram alert — up to 6-7 alerts per 5-minute window. With dedup, only the first occurrence in any 30-minute window fires Telegram. Subsequent identical CRITs within the window are logged and suppressed.
+
+Immediate fix applied separately: all old python processes killed (`Stop-Process`), fresh PID 22916 (v9.1.75) started.
+
+---
+
 ## v9.1.74 (2026-05-14) — fix test contamination of /data/eod_trade_log.jsonl
 
 `test_pass_flatten_at_exit` in `test_eod_reversal_scan_integration.py` calls `scan._eod_reversal_pass` at cur_min=959 (15:59 ET), which triggers `_eod_append_trade_log(leg)` — writing fake entries (AAPL@$99, ORCL@$100.50, pnl=$0.00) to `/data/eod_trade_log.jsonl`. With today's date in `entry_iso`, 48 fake entries accumulated across multiple CI runs today and would have contaminated Main's Today's Trades with zero-P&L phantom trades.

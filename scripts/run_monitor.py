@@ -43,6 +43,13 @@ INTERVAL = 300  # 5 min
 RTH_START = 7  # 07:00 ET
 RTH_END = 19  # 19:00 ET (covers pre-market open through after-hours close)
 
+# v9.1.75 -- Telegram dedup: track (section, name) → last-alerted timestamp.
+# Same CRIT/WARN won't fire again within ALERT_DEDUP_SECS (30 min).
+# Prevents repeated Telegram spam from the same invariant when old monitor
+# instances with stale code accumulate at the 5-min tick boundaries.
+_ALERT_DEDUP_SECS = 1800  # 30 minutes
+_last_alerted: dict[tuple[str, str], float] = {}
+
 _REPO_ROOT = Path(__file__).parent.parent
 ENV_FILE = _REPO_ROOT / ".env.monitor"
 MONITOR_DIR = _REPO_ROOT / "data" / "monitor"
@@ -124,7 +131,32 @@ def _run_once() -> int:
         logger.warning("system_check_bot save failed: %s", e)
 
     try:
-        send_telegram_alert(report)
+        # v9.1.75 -- dedup: suppress re-alerting on the same CRIT/WARN
+        # within _ALERT_DEDUP_SECS (30 min) so stale old-code monitor
+        # instances can't spam Telegram at every 5-min tick boundary.
+        now_ts = time.time()
+        new_checks = []
+        for c in report.get("checks") or []:
+            if c.get("status") not in ("CRIT", "WARN"):
+                continue
+            key = (c.get("section", ""), c.get("name", ""))
+            last = _last_alerted.get(key, 0.0)
+            if now_ts - last >= _ALERT_DEDUP_SECS:
+                new_checks.append(c)
+                _last_alerted[key] = now_ts
+        if new_checks:
+            # Build a filtered report with only the un-deduplicated checks.
+            deduped = dict(report)
+            deduped["checks"] = new_checks
+            send_telegram_alert(deduped)
+        else:
+            suppressed = [
+                f"{c.get('section')}.{c.get('name')}"
+                for c in (report.get("checks") or [])
+                if c.get("status") in ("CRIT", "WARN")
+            ]
+            if suppressed:
+                logger.info("Telegram suppressed (dedup, already alerted): %s", suppressed)
     except Exception as e:
         logger.warning("system_check_bot alert failed: %s", e)
 
