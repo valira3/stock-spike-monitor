@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.47 (2026-05-14) — fix two invariant false positives for ORB_PORTFOLIO_FIRE=1
+
+Both `val_gene_trades_match_main` and `v10_in_pos_has_internal_position` were written for FIRE=0 (mirror mode). With FIRE=1 (default since v8.3.23), Val and Main fire independently — trade counts and positions differ by design.
+
+- `val_gene_trades_match_main`: skip when Val has independent Alpaca positions (`val_alpaca_pos != main_paper_pos` or Val has any position) — confirms FIRE=1 independent mode.
+- `v10_in_pos_has_internal_position`: extend `_ticker_set_for()` to include Val/Gene Alpaca positions from `/api/executor/{pid}` so their independently-held positions satisfy the in_pos check without triggering the phantom alarm.
+
+---
+
 ## v9.1.46 (2026-05-14) — dashboard refresh rate 2s/5s → 15s
 
 SSE push interval (`h_stream` in `dashboard_server.py`): `asyncio.sleep(2.0)` → `asyncio.sleep(15.0)`. Poll fallback interval (`app.js`): `setInterval(pollOnce, 5000)` → `setInterval(pollOnce, 15000)`. Banner text updated accordingly. Reduces server load and Railway egress — the operator's eye resolves 15s updates comfortably during trading.

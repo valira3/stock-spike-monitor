@@ -166,6 +166,16 @@ def inv_val_gene_trades_match_main(ctx):
     gene = _exec(ctx, "gene")
     if not s or not val or not gene:
         return _ok("val_gene_trades_match_main", "skipped: state/exec missing")
+    # v9.1.47 -- skip in ORB_PORTFOLIO_FIRE=1 (independent mode, default since
+    # v8.3.23). In FIRE=1 each portfolio fires its own entries independently --
+    # Val/Gene trade counts diverge from Main by design. Detect FIRE=1 by
+    # checking if Val has Alpaca positions that are independent of paper_state.
+    val_alpaca_pos = len(val.get("positions") or [])
+    main_paper_pos = len(s.get("positions") or [])
+    if val_alpaca_pos != main_paper_pos or (val.get("enabled") and val_alpaca_pos > 0):
+        return _ok("val_gene_trades_match_main",
+                   f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
+                   f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})")
     main_count = len(s.get("trades_today") or [])
     val_count = len(val.get("trades_today") or [])
     gene_count = len(gene.get("trades_today") or [])
@@ -1002,6 +1012,17 @@ def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
                 t = p.get("ticker") or p.get("symbol")
                 if t:
                     out.add(str(t).upper())
+        # v9.1.47 -- ORB_PORTFOLIO_FIRE=1: Val/Gene positions live in
+        # their Alpaca accounts, not paper_state. Include the executor
+        # Alpaca positions for val/gene so their in_pos FSM states
+        # don't trigger phantom alerts when they hold independent entries.
+        if pid in ("val", "gene"):
+            exec_data = _exec(ctx, pid) or {}
+            for p in (exec_data.get("positions") or []):
+                if isinstance(p, dict):
+                    t = p.get("symbol") or p.get("ticker")
+                    if t:
+                        out.add(str(t).upper())
         return out
 
     # Cache per-portfolio ticker sets (cheap, but stable per call).

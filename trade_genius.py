@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "9.1.46"
+BOT_VERSION = "9.1.47"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -1342,7 +1342,7 @@ def remove_ticker(sym: str) -> dict:
 SHARES         = 10
 PAPER_DOLLARS_PER_ENTRY = float(os.getenv("PAPER_DOLLARS_PER_ENTRY", "10000"))
 
-SCAN_INTERVAL  = 60      # seconds between scans
+SCAN_INTERVAL  = 15      # seconds between scans (v9.1.47: 60 -> 15)
 YAHOO_TIMEOUT  = 8       # seconds
 YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
 
