@@ -3562,7 +3562,7 @@
       $("banner").classList.add("hide");
     } else if (state === "polling") {
       if (pulse) pulse.classList.add("off");
-      showBanner("Live stream dropped. Reconnecting… data is polled every 5s.", "warn");
+      showBanner("Live stream dropped. Reconnecting… data is polled every 15s.", "warn");
     } else {
       if (pulse) pulse.classList.add("off");
       showBanner("Disconnected from bot. Attempting to reconnect…", "err");
@@ -3638,7 +3638,7 @@
   function startPolling() {
     if (pollTimer) return;
     pollOnce();
-    pollTimer = setInterval(pollOnce, 5000);
+    pollTimer = setInterval(pollOnce, 15000);
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }

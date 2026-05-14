@@ -4708,7 +4708,7 @@ async def h_stream(request):
 
             # heartbeat comment to keep proxies from closing
             await resp.write(b": ping\n\n")
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(15.0)
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     except Exception as e:

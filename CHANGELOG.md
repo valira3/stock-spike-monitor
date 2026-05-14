@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.46 (2026-05-14) — dashboard refresh rate 2s/5s → 15s
+
+SSE push interval (`h_stream` in `dashboard_server.py`): `asyncio.sleep(2.0)` → `asyncio.sleep(15.0)`. Poll fallback interval (`app.js`): `setInterval(pollOnce, 5000)` → `setInterval(pollOnce, 15000)`. Banner text updated accordingly. Reduces server load and Railway egress — the operator's eye resolves 15s updates comfortably during trading.
+
+---
+
 ## v9.1.45 (2026-05-14) — fix or_locked false-positive at 10:00 ET boundary + empty-windows post-deploy guard
 
 Two fixes in `inv_or_locked_after_or_end`:
