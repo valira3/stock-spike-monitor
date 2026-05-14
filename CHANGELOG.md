@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.55 (2026-05-14) — monitor: filter network tracebacks from railway_logs_clean; orb_rollback to soft
+
+Two `railway_logs_clean` false positives:
+
+- `uncaught_traceback` CRIT from Telegram/httpx network blips: `httpx.ConnectError` and `RemoteProtocolError` produce several traceback log entries per incident but are transient Railway→Telegram network failures, not code bugs. Now each traceback is classified: if the next 10 log lines contain a network error pattern (`httpx.`, `httpcore.`, `ConnectError`, etc.), it's excluded from the application-traceback count. Only true application-level crashes (tracebacks followed by our own code's error lines) trigger CRIT.
+
+- `orb_rollback` added to `soft_signals` (threshold ≥5): a single `[V79-ORB-ROLLBACK]` from a deploy-time race (e.g., the ORCL entry rolled back at 10:45 ET when execute_entry returned empty) is historical and not actionable after the fact. Requires ≥5 occurrences to indicate a systemic issue worth paging on.
+
+---
+
 ## v9.1.54 (2026-05-14) — fix h-tick "♻ --" and sporadic data refresh
 
 Two related dashboard display bugs:

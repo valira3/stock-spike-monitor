@@ -1236,12 +1236,37 @@ def inv_railway_logs_clean(ctx: InvariantContext) -> dict:
             "(missing RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID or API error)",
         )
     findings = scan_for_failures(logs)
+
+    # v9.1.55 -- filter out network-layer tracebacks from uncaught_traceback.
+    # Transient Telegram/httpx connectivity failures (httpx.ConnectError,
+    # RemoteProtocolError, etc.) produce several traceback entries per blip
+    # and are not bugs. For each traceback, inspect the next 10 log lines;
+    # if any contain a known network error pattern, it's a network traceback.
+    if "uncaught_traceback" in findings:
+        import re as _re
+
+        _net_re = _re.compile(
+            r"httpx\.|httpcore\.|telegram\.|ConnectError|RemoteProtocol|ReadTimeout"
+            r"|ssl\.|NetworkError|TimeoutError"
+        )
+        app_count = 0
+        for i, row in enumerate(logs):
+            if "Traceback (most recent call last):" in (row.get("message") or ""):
+                context = [logs[j].get("message", "") for j in range(i + 1, min(i + 10, len(logs)))]
+                if not any(_net_re.search(c) for c in context):
+                    app_count += 1
+        if app_count == 0:
+            del findings["uncaught_traceback"]
+        else:
+            findings["uncaught_traceback"]["count"] = app_count
+
     critical_signals = ("alpaca_error", "sentinel_critical", "uncaught_traceback")
     soft_signals = (
         "insufficient_cash",
         "risk_reject_notional_cap",
         "risk_reject_other",
         "v15_wait_abort",
+        "orb_rollback",  # entry rollbacks are historical; alert only if systemic (>=5)
     )
     info_signals = ("ingest_disconnect",)
     triggered: list[tuple[str, dict, str]] = []
