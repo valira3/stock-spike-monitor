@@ -8,7 +8,7 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 Two invariant false positives:
 
-- `no_phantom_positions`: `ORB_PARTIAL_PROFIT_AT_1R=1` clears the RiskBook ticket at 1R but paper_state retains the runner shares. Invariant now skips when `partial_profit_at_1r=True`, all positions are unrealized-profitable, and `risk.open_count=0` — confirmed runner state after a 1R partial exit.
+- `no_phantom_positions`: `ORB_PARTIAL_PROFIT_AT_1R=1` clears the RiskBook ticket at 1R but paper_state retains the runner shares. Generalized to check `excess = main_pos - rb_open`; when `in_profit >= excess` with `partial_profit_at_1r=True`, the excess positions are runners — not phantoms. Handles both single-runner (`rb_open=0`) and runner + new live trade (`rb_open>=1`) states.
 - `inv_or_locked_after_or_end`: removed "OR" from the checked-mode set. During the actual OR phase the engine is still building windows; the existing `or_end_min + 2` time guard already handles the production OPEN-regime check correctly.
 
 ---

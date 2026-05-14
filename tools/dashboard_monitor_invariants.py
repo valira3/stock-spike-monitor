@@ -698,21 +698,22 @@ def inv_no_phantom_positions(ctx):
     # so we only check main here.
     if abs(main_pos - rb_open) > 0:
         # v9.1.48 -- ORB_PARTIAL_PROFIT_AT_1R=1 pattern: the 1R partial
-        # exit closes the RiskBook ticket (open_count -> 0) but the runner
-        # (remaining shares) stays in paper_state. Detect this by checking
-        # if all open positions have unrealized > 0 (runner in profit) AND
-        # the partial_profit_at_1r config flag is enabled. This is normal
-        # behavior, not a phantom -- flag as INFO not CRIT.
+        # exit closes the RiskBook ticket but the runner (remaining shares)
+        # stays in paper_state. excess = main_pos - rb_open runners are OK
+        # if at least that many positions are in-profit (runners are always
+        # profitable since their stop moved to BE after the 1R close).
         cfg = v10.get("config") or {}
         partial_profit = bool(cfg.get("partial_profit_at_1r"))
-        positions = s.get("positions") or []
-        all_in_profit = all(float(p.get("unrealized") or 0) > 0 for p in positions)
-        if partial_profit and all_in_profit and main_pos > 0 and rb_open == 0:
-            return _ok(
-                "no_phantom_positions",
-                f"runner state: {main_pos} position(s) in paper_state after 1R partial exit "
-                f"(partial_profit_at_1r=True, all positions profitable, RiskBook ticket cleared)",
-            )
+        if partial_profit and main_pos > rb_open:
+            positions = s.get("positions") or []
+            in_profit = sum(1 for p in positions if float(p.get("unrealized") or 0) > 0)
+            excess = main_pos - rb_open
+            if in_profit >= excess:
+                return _ok(
+                    "no_phantom_positions",
+                    f"runner state: {excess} runner(s) in paper_state after 1R partial exit "
+                    f"({in_profit}/{main_pos} positions profitable, RiskBook open_count={rb_open})",
+                )
         return _fail(
             "no_phantom_positions",
             f"main has {main_pos} positions in /api/state but RiskBook reports open_count={rb_open}",
