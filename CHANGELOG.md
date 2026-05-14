@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.82 (2026-05-14) — phase-aware monitor cadence: 5min RTH / 15min pre-market / 60min off-hours
+
+`scripts/run_monitor.py` now varies its tick interval by market phase instead of sleeping until the next RTH window:
+- **RTH** (Mon-Fri 07:00-19:00 ET): every 5 min (unchanged)
+- **Pre-market** (Mon-Fri 06:00-07:00 ET): every 15 min
+- **Off-hours / overnight**: every 60 min (was sleeping straight through to RTH start)
+
+Log line now shows phase tag: `=== tick HH:MM:SS ET [rth] ===` / `[premarket]`. Startup banner updated to show all three intervals.
+
+---
+
 ## v9.1.81 (2026-05-14) — subtle LIVE badge: small dark-green dot + "live" text
 
 Replace bright solid-green pill with a minimal indicator: `&#9679;` dot (`color:#22c55e`, 8 px) followed by "live" text (`color:#86efac`, 10 px, weight 500). Applied to both renderer paths — `renderHeader` (Main IIFE-1, ~line 3406) and `renderBadge` (Val/Gene IIFE-2, ~line 4663) — so live-mode labelling is consistent across all three portfolio tabs.

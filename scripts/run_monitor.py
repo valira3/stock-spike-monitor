@@ -1,11 +1,14 @@
-"""scripts/run_monitor.py -- local RTH monitor loop.
+"""scripts/run_monitor.py -- local monitor loop.
 
-Replaces .github/workflows/monitor.yml. Runs tools.system_check_bot every
-5 min during US market hours (Mon-Fri, 07:00-19:00 ET). Reads credentials
-from .env.monitor in the repo root (copy from .env.monitor.example).
+Replaces .github/workflows/monitor.yml. Tick cadence varies by market phase:
+  - RTH (Mon-Fri 07:00-19:00 ET): every 5 min
+  - Pre-market (Mon-Fri 06:00-07:00 ET): every 15 min
+  - Off-hours / overnight: every 60 min
+
+Reads credentials from .env.monitor in the repo root.
 
 Usage:
-    python scripts/run_monitor.py           # RTH-gated (default)
+    python scripts/run_monitor.py           # default (phase-aware cadence)
     python scripts/run_monitor.py --always  # run continuously (for testing)
     python scripts/run_monitor.py --once    # single run then exit
 
@@ -39,9 +42,12 @@ logging.basicConfig(
 logger = logging.getLogger("run_monitor")
 
 ET = ZoneInfo("America/New_York")
-INTERVAL = 300  # 5 min
+PRE_MARKET_START = 6  # 06:00 ET - pre-market monitoring begins
 RTH_START = 7  # 07:00 ET
 RTH_END = 19  # 19:00 ET (covers pre-market open through after-hours close)
+RTH_INTERVAL = 300  # 5 min during RTH
+PRE_MARKET_INTERVAL = 900  # 15 min during pre-market
+OFF_HOURS_INTERVAL = 3600  # 60 min overnight / off-hours
 
 # v9.1.75 -- Telegram dedup: track (section, name) → last-alerted timestamp.
 # Same CRIT/WARN won't fire again within ALERT_DEDUP_SECS (30 min).
@@ -76,26 +82,34 @@ def _load_env(path: Path) -> None:
     logger.info("Loaded %d var(s) from %s", loaded, path.name)
 
 
-def _is_rth() -> bool:
+def _market_phase() -> str:
+    """Return 'rth', 'premarket', or 'offhours' for the current ET time."""
     now = datetime.now(ET)
-    return now.weekday() < 5 and RTH_START <= now.hour < RTH_END
+    if now.weekday() >= 5:
+        return "offhours"
+    if RTH_START <= now.hour < RTH_END:
+        return "rth"
+    if PRE_MARKET_START <= now.hour < RTH_START:
+        return "premarket"
+    return "offhours"
 
 
-def _seconds_until_rth() -> float:
+def _seconds_until_next_window() -> float:
+    """Seconds until the next pre-market or RTH window (whichever comes first)."""
     now = datetime.now(ET)
-    today_open = now.replace(hour=RTH_START, minute=0, second=0, microsecond=0)
-    if now < today_open and now.weekday() < 5:
-        return (today_open - now).total_seconds()
+    today_premarket = now.replace(hour=PRE_MARKET_START, minute=0, second=0, microsecond=0)
+    if now < today_premarket and now.weekday() < 5:
+        return (today_premarket - now).total_seconds()
     candidate = now + timedelta(days=1)
-    candidate = candidate.replace(hour=RTH_START, minute=0, second=0, microsecond=0)
+    candidate = candidate.replace(hour=PRE_MARKET_START, minute=0, second=0, microsecond=0)
     while candidate.weekday() >= 5:
         candidate += timedelta(days=1)
     return max(60.0, (candidate - now).total_seconds())
 
 
-def _sleep_to_next_tick() -> None:
+def _sleep_to_next_tick(interval: int) -> None:
     now = time.time()
-    boundary = (int(now) // INTERVAL + 1) * INTERVAL
+    boundary = (int(now) // interval + 1) * interval
     sleep = max(5.0, boundary - now)
     logger.info("Next tick in %.0fs", sleep)
     time.sleep(sleep)
@@ -179,31 +193,34 @@ def main() -> None:
         sys.exit(_run_once())
 
     logger.info(
-        "Monitor loop started \u2014 interval=5min window=%s",
-        "24/7" if args.always else "Mon-Fri %02d:00-%02d:00 ET" % (RTH_START, RTH_END),
+        "Monitor loop started \u2014 RTH=5min pre-market=15min off-hours=60min window=%s",
+        "24/7" if args.always else "Mon-Fri %02d:00-%02d:00 ET" % (PRE_MARKET_START, RTH_END),
     )
 
     try:
         while True:
-            if not args.always and not _is_rth():
-                secs = _seconds_until_rth()
+            phase = _market_phase() if not args.always else "rth"
+
+            if phase == "offhours":
+                secs = _seconds_until_next_window()
                 eta = datetime.fromtimestamp(time.time() + secs, ET)
                 logger.info(
-                    "Outside RTH \u2014 sleeping until %s ET (%.0f min)",
+                    "Off-hours \u2014 sleeping until %s ET (%.0f min)",
                     eta.strftime("%a %H:%M"),
                     secs / 60,
                 )
-                time.sleep(min(secs, 3600))
+                time.sleep(min(secs, OFF_HOURS_INTERVAL))
                 continue
 
+            interval = RTH_INTERVAL if phase == "rth" else PRE_MARKET_INTERVAL
             t0 = time.time()
-            logger.info("=== tick %s ET ===", datetime.now(ET).strftime("%H:%M:%S"))
+            logger.info("=== tick %s ET [%s] ===", datetime.now(ET).strftime("%H:%M:%S"), phase)
             rc = _run_once()
             elapsed = time.time() - t0
             label = {0: "OK", 1: "WARN", 2: "CRIT"}.get(rc, f"ERR({rc})")
             logger.info("Tick done \u2014 rc=%d %s in %.1fs", rc, label, elapsed)
 
-            _sleep_to_next_tick()
+            _sleep_to_next_tick(interval)
 
     except KeyboardInterrupt:
         logger.info("Stopped (Ctrl-C)")
