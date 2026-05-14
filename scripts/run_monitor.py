@@ -1,6 +1,6 @@
 """scripts/run_monitor.py -- local RTH monitor loop.
 
-Replaces .github/workflows/monitor.yml. Runs tools.unified_monitor every
+Replaces .github/workflows/monitor.yml. Runs tools.system_check_bot every
 5 min during US market hours (Mon-Fri, 07:00-19:00 ET). Reads credentials
 from .env.monitor in the repo root (copy from .env.monitor.example).
 
@@ -9,8 +9,9 @@ Usage:
     python scripts/run_monitor.py --always  # run continuously (for testing)
     python scripts/run_monitor.py --once    # single run then exit
 
-Results land in data/monitor/latest.json (same schema as the old GHA output).
-Telegram alerts fire on invariant failures exactly as before.
+system_check_bot combines unified_monitor + dashboard_analysis + web UI checks
+into a single pass (one login, all data fetched concurrently). Results land in
+data/monitor/system_check_latest.json. Telegram alert on any CRIT check.
 """
 
 from __future__ import annotations
@@ -94,59 +95,38 @@ def _sleep_to_next_tick() -> None:
 
 
 def _run_once() -> int:
-    os.environ.setdefault("UNIFIED_MONITOR_DIR", str(MONITOR_DIR))
-    try:
-        import importlib
-
-        mod = importlib.import_module("tools.unified_monitor")
-        rc = mod.main()
-        return rc if isinstance(rc, int) else 0
-    except SystemExit as e:
-        return e.code if isinstance(e.code, int) else 1
-    except Exception as e:
-        logger.exception("unified_monitor raised: %s", e)
-        return 99
-
-
-def _run_dashboard_analysis() -> int:
-    """Run tools.dashboard_analysis every tick.
-
-    Fetches live /api/state + /api/executor/val + /api/indices, audits
-    the bot state against Keystone strategy expectations, and saves the
-    report to data/monitor/dashboard_analysis_latest.json. Sends a
-    Telegram alert when CRIT checks are found.
-    """
-    from tools.dashboard_analysis import run_analysis, print_report, save_report, send_alert_on_crit
+    """Run system_check_bot: single login, SYSTEM + INVARIANTS + STRATEGY checks,
+    web UI validation, Alpaca + Railway side-channel pulls. Saves to
+    data/monitor/system_check_latest.json. Returns 0=OK, 1=WARN, 2=CRIT."""
+    from tools.system_check_bot import run, print_report, save_report, send_telegram_alert
 
     url = os.environ.get("DASHBOARD_BASE_URL", "https://tradegenius.up.railway.app").rstrip("/")
     password = os.environ.get("DASHBOARD_PASSWORD", "").strip()
-    token = os.environ.get("TELEGRAM_TP_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_TP_CHAT_ID", "").strip()
 
-    try:
-        report = run_analysis(url, password or None)
-    except Exception as e:
-        logger.exception("dashboard_analysis raised: %s", e)
+    if not password:
+        logger.error("DASHBOARD_PASSWORD not set in env or .env.monitor")
         return 99
 
-    # Always print the report to local logs.
+    try:
+        report = run(url, password)
+    except Exception as e:
+        logger.exception("system_check_bot raised: %s", e)
+        return 99
+
     try:
         print_report(report)
     except Exception:
         pass
 
-    # Persist to disk alongside the unified_monitor output.
     try:
         save_report(report, MONITOR_DIR)
     except Exception as e:
-        logger.warning("dashboard_analysis save failed: %s", e)
+        logger.warning("system_check_bot save failed: %s", e)
 
-    # Alert on CRIT (e.g. daily kill triggered, live mode off, EOD window wrong).
-    if token and chat_id:
-        try:
-            send_alert_on_crit(report, token, chat_id)
-        except Exception as e:
-            logger.warning("dashboard_analysis alert failed: %s", e)
+    try:
+        send_telegram_alert(report)
+    except Exception as e:
+        logger.warning("system_check_bot alert failed: %s", e)
 
     overall = report.get("overall", "CRIT")
     return 0 if overall == "OK" else (1 if overall == "WARN" else 2)
@@ -188,15 +168,8 @@ def main() -> None:
             logger.info("=== tick %s ET ===", datetime.now(ET).strftime("%H:%M:%S"))
             rc = _run_once()
             elapsed = time.time() - t0
-            label = {0: "OK", 4: "INVARIANTS-FAILED"}.get(rc, f"ERR({rc})")
+            label = {0: "OK", 1: "WARN", 2: "CRIT"}.get(rc, f"ERR({rc})")
             logger.info("Tick done \u2014 rc=%d %s in %.1fs", rc, label, elapsed)
-
-            # Dashboard analysis: runs every tick alongside unified_monitor.
-            # Failure is non-blocking \u2014 monitor loop continues regardless.
-            try:
-                _run_dashboard_analysis()
-            except Exception as _da_e:
-                logger.warning("dashboard_analysis error (non-blocking): %s", _da_e)
 
             _sleep_to_next_tick()
 

@@ -4,6 +4,26 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.36 (2026-05-14) — system-check-bot (unified monitor)
+
+`tools/system_check_bot.py` replaces `unified_monitor.py` + `dashboard_analysis.py` as the single monitor tool. Single login, all data fetched concurrently, 48+ checks across three sections in ~0.7s.
+
+**SYSTEM section (15 checks — new):**
+- Web UI: dashboard HTML loads (200 OK), title correct, no Python traceback leaked, all 11 required DOM IDs present, brand-ver span present, EOD section present, PAPER chip (no emoji)
+- Static assets: `/static/app.js` and `/static/app.css` both 200
+- API reachability: `/api/state`, `/api/executor/val`, `/api/executor/gene`, `/api/indices`
+- `server_time_label` encoding (U+FFFD detection)
+
+**INVARIANTS section (20 checks — unchanged from unified_monitor):**
+All 18 production invariants from `dashboard_monitor_invariants.py` plus import health check.
+
+**STRATEGY section (14 checks — from dashboard_analysis):**
+Session state, 22 Keystone config fields, VIX gate, EOD config/fence, risk books, executors, cooldowns, ingest, RTH trade correlation.
+
+**run_monitor.py** now calls `system_check_bot.run()` exclusively. Single Telegram alert on any CRIT check. Report saved to `data/monitor/system_check_latest.json`.
+
+---
+
 ## v9.1.35 (2026-05-14) — monitor dashboard analysis (PR 5)
 
 ### `tools/dashboard_analysis.py` — new live-state audit tool
