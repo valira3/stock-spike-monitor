@@ -4540,7 +4540,20 @@
     var actBody = execField(panel, "v10-pid-act-body");
     if (actBody) {
       if (events.length === 0) {
-        actBody.innerHTML = '<div class="empty">No v10 events on this portfolio yet today.</div>';
+        // v9.1.77 -- parity with Main's activity feed empty state. When not in
+        // RTH and no session has started, show "session starts" instead of the
+        // generic "no events" text so the operator's eye-trace is identical
+        // across all three tabs (Main already does this at line ~7011).
+        var _actMode2 = ((s.regime || {}).mode || "CLOSED");
+        var _actRth2 = (_actMode2 === "OPEN" || _actMode2 === "OR"
+          || _actMode2 === "POWER" || _actMode2 === "PRE");
+        var _actSession2 = !!((s.v10 || {}).session_date);
+        if (!_actRth2 && !_actSession2) {
+          actBody.innerHTML = '<div class="empty" style="font-size:11px;padding:10px 14px">'
+            + '&mdash; session starts 09:25 ET &mdash;</div>';
+        } else {
+          actBody.innerHTML = '<div class="empty">No v10 events on this portfolio yet today.</div>';
+        }
       } else {
         var rowsHtml = [];
         for (var j = 0; j < events.length; j++) {
@@ -4734,7 +4747,10 @@
     const chip = execField(panel, "trades-realized");
     const sumEl = execField(panel, "trades-summary");
     const trades = (data && Array.isArray(data.todays_trades)) ? data.todays_trades : [];
-    if (count) count.textContent = "\u00b7 " + (disabled ? "\u2014" : trades.length);
+    // v9.1.77 -- show "0" not "\u2014" when disabled so Gene's trade count reads
+    // as "zero trades because Gene is off" rather than "unknown". Parity with
+    // the operator expectation: "\u2014" means unavailable, "0" means confirmed zero.
+    if (count) count.textContent = "\u00b7 " + (disabled ? "0" : trades.length);
 
     // v7.0.3 \u2014 use the same summary calc Main uses so opens/closes
     // counts match and the chip aggregate is identical.
@@ -4968,7 +4984,8 @@
     // Open positions card ----------------------------------------------
     const posBody = execField(panel, "pos-body");
     const posCount = execField(panel, "pos-count");
-    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "\u2014" : positions.length);  // total = ORB + EOD (both are Alpaca positions)
+    // v9.1.77 -- show "0" not "\u2014" for disabled (same rationale as trades-count fix).
+    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "0" : positions.length);  // total = ORB + EOD (both are Alpaca positions)
 
     if (posBody) {
       if (disabled) {
@@ -5927,12 +5944,17 @@
         ? "ORB_EOD_FIRE_BROKER=1 — real broker orders will fire at " + entryEt + " ET."
         : "Paper-fire mode: signals tracked but no real orders. Set ORB_EOD_FIRE_BROKER=1 to go live.";
     }
-    // Also give the section card a left-border accent when firing LIVE.
-    var _section = document.getElementById("v10-eod-section");
-    if (_section) {
-      _section.style.borderLeft = cfg.fire_broker
-        ? "3px solid #22c55e"
-        : "";
+    // v9.1.77 -- give the EOD card a green left-border accent when LIVE.
+    // Previously always targeted #v10-eod-section (Main's element) even
+    // when called for Val/Gene panels — the border was applied to the wrong
+    // tab. Now scoped to the nearest card ancestor of bodyEl so each panel
+    // gets its own accent independently.
+    var _eodCard = bodyEl && bodyEl.closest
+      ? bodyEl.closest(".card, section")
+      : document.getElementById("v10-eod-section");
+    if (!_eodCard) _eodCard = document.getElementById("v10-eod-section");
+    if (_eodCard) {
+      _eodCard.style.borderLeft = cfg.fire_broker ? "3px solid #22c55e" : "";
     }
     // Body: list open positions + closed legs.
     var rows = [];

@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.77 (2026-05-14) — fix four cross-tab UI divergences identified in deep UI audit
+
+Deep Playwright audit (tools/ui_quality_assessment.py) identified four structural divergences between Main, Val, and Gene tabs. All four fixed in this PR.
+
+**1. Recent Activity empty state — text and logic differ across tabs**
+- Main showed "— session starts 09:25 ET —" when not in RTH (dynamic, RTH-aware check at line ~7011)
+- Val/Gene always showed "No v10 events on this portfolio yet today." from the static HTML template (no RTH awareness)
+- Fix: `renderV10PerPortfolio` now applies the same RTH/session check before setting `actBody.innerHTML`. Post-market / pre-session on Val/Gene now shows "— session starts 09:25 ET —" matching Main.
+
+**2. Gene Today's Trades count "· —" instead of "· 0" when disabled**
+- Line 4737: `count.textContent = "· " + (disabled ? "—" : trades.length)` — "—" reads as "unknown" to an operator, not "zero"
+- Fix: use `"0"` for the disabled state so Gene consistently reads as "zero trades because it's off"
+
+**3. Gene Open Positions count "· —" instead of "· 0" when disabled**
+- Same root as #2: `posCount.textContent = "· " + (disabled ? "—" : positions.length)`
+- Fix: same "0" substitution
+
+**4. EOD green border accent targeted Main's element from Val/Gene context**
+- `_v10EodFillBody` always called `document.getElementById("v10-eod-section")` to set the green left-border when `fire_broker=true`. This is Main's element. When called for Val/Gene, the border was applied to Main's EOD card, not Val/Gene's.
+- Fix: use `bodyEl.closest(".card, section")` to scope to the nearest card ancestor of the actual body element being rendered. Falls back to `#v10-eod-section` if `closest` is unavailable (IE compatibility).
+
+Also ships: `tools/ui_quality_assessment.py` — Playwright-based deep UI audit tool that checks all three tabs for KPI row consistency, positions card, trades card, section order, v10 section, cross-tab session/banner/count consistency, mobile horizontal scroll.
+
+---
+
 ## v9.1.76 (2026-05-14) — suppress fill_match P&L divergence WARN post-market
 
 `fill_match` compares Main's paper realized P&L (+$1,660 from today's ORB trades) to Val's Alpaca `account.day_pnl` ($0.00 — auto-liquidated EOD positions settled flat). This produces a 100% divergence gap → WARN.
