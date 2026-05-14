@@ -3403,11 +3403,11 @@
         if (enabled) {
           const isLive = (mode === "live");
           if (isLive) {
-            // v9.1.79 -- solid green LIVE pill, matching renderBadge and the
-            // EOD LIVE ORDERS badge so real-money mode is immediately obvious.
+            // v9.1.81 -- subtle dot + word: small dark-green circle + "live"
+            // text. Readable on the dark theme without being garish.
             badge.innerHTML =
-              '<span style="padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;' +
-              'background:#16a34a;color:#fff;letter-spacing:0.05em">LIVE</span>';
+              '<span style="color:#22c55e;font-size:8px;vertical-align:middle">●</span>' +
+              '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
             badge.setAttribute(
               "title", `${label} executor enabled (live mode)`,
             );
@@ -4661,11 +4661,10 @@
     if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
     if (mode === "live") {
-      // v9.1.79 -- "L" was too subtle; use a solid LIVE pill matching the
-      // LIVE ORDERS badge in the EOD section so real-money mode is unmissable.
+      // v9.1.81 -- subtle dot + word style (matches renderHeader path).
       el.innerHTML =
-        '<span style="padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;' +
-        'background:#16a34a;color:#fff;letter-spacing:0.05em">LIVE</span>';
+        '<span style="color:#22c55e;font-size:8px;vertical-align:middle">&#9679;</span>' +
+        '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
     } else {
       el.innerHTML = '\ud83d\udcc4 <span style="color:#5b6572">Paper</span>';
     }

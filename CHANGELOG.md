@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.81 (2026-05-14) — subtle LIVE badge: small dark-green dot + "live" text
+
+Replace bright solid-green pill with a minimal indicator: `&#9679;` dot (`color:#22c55e`, 8 px) followed by "live" text (`color:#86efac`, 10 px, weight 500). Applied to both renderer paths — `renderHeader` (Main IIFE-1, ~line 3406) and `renderBadge` (Val/Gene IIFE-2, ~line 4663) — so live-mode labelling is consistent across all three portfolio tabs.
+
+---
+
 ## v9.1.80 (2026-05-14) — fix executor live mode reverting to paper on every Railway deploy
 
 v9.1.78 moved the state file path to `/data/` (persistent volume). But the **mtime-based** file selection in `_load_state` was still fragile: any paper-mode state save during the ~3-minute Railway startup window produced a newer paper file than the live file, silently reverting live→paper on every deploy.
