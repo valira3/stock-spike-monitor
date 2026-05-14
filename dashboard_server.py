@@ -170,6 +170,7 @@ def _chandelier_stage(pos: dict) -> int:
 # v7.0.0 Phase 6 — TRAIL pill state helpers (spec F).
 # ---------------------------------------------------------------------------
 
+
 def _compute_trail_pill_state(pos: dict) -> dict | None:
     """Return TRAIL pill state dict or None.
 
@@ -199,16 +200,8 @@ def _compute_trail_pill_state(pos: dict) -> dict | None:
     Pure computation; never raises.
     """
     try:
-        effective_stop = (
-            pos.get("effective_stop")
-            or pos.get("stop")
-            or pos.get("trail_stop")
-        )
-        mark = (
-            pos.get("mark")
-            or pos.get("current_price")
-            or pos.get("last_price")
-        )
+        effective_stop = pos.get("effective_stop") or pos.get("stop") or pos.get("trail_stop")
+        mark = pos.get("mark") or pos.get("current_price") or pos.get("last_price")
         if effective_stop is None or mark is None:
             return None
         eff = _safe_float(effective_stop)
@@ -248,6 +241,7 @@ def _compute_trail_pill_state(pos: dict) -> dict | None:
 # v7.0.0 Phase 6 — Per-portfolio strip + block builders (spec G + H).
 # ---------------------------------------------------------------------------
 
+
 def _build_portfolio_strip(book, executor=None) -> dict:
     """Build the strip sub-object for a single portfolio block.
 
@@ -275,6 +269,7 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         elif pid == "main":
             try:
                 import trade_genius as _tg_strip
+
                 _sp = bool(
                     getattr(_tg_strip, "_scan_paused", False)
                     or getattr(_tg_strip, "_scan_idle_hours", False)
@@ -292,12 +287,14 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         try:
             _plc = getattr(book, "_post_loss_cooldown", {}) or {}
             long_cd = sum(
-                1 for k in _plc if isinstance(k, tuple) and len(k) == 2
-                and str(k[1]).upper() == "LONG"
+                1
+                for k in _plc
+                if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "LONG"
             )
             short_cd = sum(
-                1 for k in _plc if isinstance(k, tuple) and len(k) == 2
-                and str(k[1]).upper() == "SHORT"
+                1
+                for k in _plc
+                if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "SHORT"
             )
         except Exception:
             long_cd = 0
@@ -324,16 +321,15 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         errors = {"count": err_count, "last": err_last}
 
         # --- positions + day_pnl come from the outer block; stub 0 here ---
-        pos_count = (
-            len(getattr(book, "positions", {}) or {})
-            + len(getattr(book, "short_positions", {}) or {})
+        pos_count = len(getattr(book, "positions", {}) or {}) + len(
+            getattr(book, "short_positions", {}) or {}
         )
 
         return {
             "cooldowns": cooldowns,
             "errors": errors,
             "positions": pos_count,
-            "day_pnl": 0.0,   # overwritten by _build_portfolio_block after assembly
+            "day_pnl": 0.0,  # overwritten by _build_portfolio_block after assembly
             "state": state,
         }
     except Exception:
@@ -410,10 +406,7 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 today_s = ""
             # v8.3.7 -- realized P&L now merges in-memory + on-disk.
             realized = _compute_realized_pnl_today(m, today_s)
-            unreal = sum(
-                r.get("unrealized", 0.0)
-                for r in _serialize_positions(longs, shorts, _px)
-            )
+            unreal = sum(r.get("unrealized", 0.0) for r in _serialize_positions(longs, shorts, _px))
             day_pnl = realized + unreal
             positions_list = _serialize_positions(longs, shorts, _px)
             trades_today = _today_trades()
@@ -449,14 +442,13 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 if equity > 0.0 and _last > 0.0:
                     day_pnl = equity - _last
             else:
-                equity = float(
-                    getattr(book.config, "portfolio_equity_floor", 100_000.0)
-                ) + day_pnl
+                equity = float(getattr(book.config, "portfolio_equity_floor", 100_000.0)) + day_pnl
             longs_b = getattr(book, "positions", {}) or {}
             shorts_b = getattr(book, "short_positions", {}) or {}
             positions_list = _serialize_positions(longs_b, shorts_b, _px)
             trades_today = [
-                t for t in (
+                t
+                for t in (
                     (getattr(book, "trade_history", []) or [])
                     + (getattr(book, "short_trade_history", []) or [])
                 )
@@ -512,8 +504,8 @@ def _is_executor_subscribed(pid: str) -> bool:
             return False
         bus = m.signal_bus_status() if hasattr(m, "signal_bus_status") else {}
         names = bus.get("names") or []
-        expected = "TradeGeniusVal" if pid == "val" else (
-            "TradeGeniusGene" if pid == "gene" else ""
+        expected = (
+            "TradeGeniusVal" if pid == "val" else ("TradeGeniusGene" if pid == "gene" else "")
         )
         if not expected:
             return False
@@ -542,8 +534,10 @@ def _build_portfolios_map(prices: dict | None = None) -> dict:
             PORTFOLIO_VAL,
             PORTFOLIO_GENE,
         )
+
         try:
             import trade_genius as _tg_pm
+
             val_exec = getattr(_tg_pm, "val_executor", None)
             gene_exec = getattr(_tg_pm, "gene_executor", None)
         except Exception:
@@ -637,16 +631,18 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             phase_v510 = "A"
         sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
         _long_mark = px_f if px_f is not None else entry
-        _long_trail_pill = _compute_trail_pill_state({
-            "effective_stop": effective_stop,
-            "mark": _long_mark,
-            "side": "LONG",
-            "v644_hold_seconds": p.get("v644_hold_seconds"),
-            # v7.2.7 \u2014 pill only renders when trail has actually tightened.
-            "trail_active": trail_active,
-            "trail_stop": trail_stop,
-            "chandelier_stage": chandelier_stage,
-        })
+        _long_trail_pill = _compute_trail_pill_state(
+            {
+                "effective_stop": effective_stop,
+                "mark": _long_mark,
+                "side": "LONG",
+                "v644_hold_seconds": p.get("v644_hold_seconds"),
+                # v7.2.7 \u2014 pill only renders when trail has actually tightened.
+                "trail_active": trail_active,
+                "trail_stop": trail_stop,
+                "chandelier_stage": chandelier_stage,
+            }
+        )
         rows.append(
             {
                 "ticker": tkr,
@@ -703,16 +699,18 @@ def _serialize_positions(longs: dict, shorts: dict, prices: dict) -> list[dict]:
             phase_v510 = "A"
         sb_distance = (unreal + 500.0) if isinstance(unreal, (int, float)) else None
         _short_mark = px_f if px_f is not None else entry
-        _short_trail_pill = _compute_trail_pill_state({
-            "effective_stop": effective_stop,
-            "mark": _short_mark,
-            "side": "SHORT",
-            "v644_hold_seconds": p.get("v644_hold_seconds"),
-            # v7.2.7 \u2014 pill only renders when trail has actually tightened.
-            "trail_active": trail_active,
-            "trail_stop": trail_stop,
-            "chandelier_stage": chandelier_stage,
-        })
+        _short_trail_pill = _compute_trail_pill_state(
+            {
+                "effective_stop": effective_stop,
+                "mark": _short_mark,
+                "side": "SHORT",
+                "v644_hold_seconds": p.get("v644_hold_seconds"),
+                # v7.2.7 \u2014 pill only renders when trail has actually tightened.
+                "trail_active": trail_active,
+                "trail_stop": trail_stop,
+                "chandelier_stage": chandelier_stage,
+            }
+        )
         rows.append(
             {
                 "ticker": tkr,
@@ -766,7 +764,7 @@ def _compute_realized_pnl_today(m, today_s: str) -> float:
     """
     realized = 0.0
     realized_keys: set = set()
-    for t in (getattr(m, "paper_trades", None) or []):
+    for t in getattr(m, "paper_trades", None) or []:
         if not isinstance(t, dict):
             continue
         if t.get("date") != today_s:
@@ -777,11 +775,13 @@ def _compute_realized_pnl_today(m, today_s: str) -> float:
             realized += float(t.get("pnl", 0.0) or 0.0)
         except (TypeError, ValueError):
             continue
-        realized_keys.add((
-            (t.get("ticker") or "").upper(),
-            str(t.get("time") or t.get("exit_time") or ""),
-        ))
-    for t in (getattr(m, "short_trade_history", None) or []):
+        realized_keys.add(
+            (
+                (t.get("ticker") or "").upper(),
+                str(t.get("time") or t.get("exit_time") or ""),
+            )
+        )
+    for t in getattr(m, "short_trade_history", None) or []:
         if not isinstance(t, dict):
             continue
         if t.get("date") != today_s:
@@ -790,17 +790,21 @@ def _compute_realized_pnl_today(m, today_s: str) -> float:
             realized += float(t.get("pnl", 0.0) or 0.0)
         except (TypeError, ValueError):
             continue
-        realized_keys.add((
-            (t.get("ticker") or "").upper(),
-            str(t.get("time") or t.get("exit_time") or ""),
-        ))
+        realized_keys.add(
+            (
+                (t.get("ticker") or "").upper(),
+                str(t.get("time") or t.get("exit_time") or ""),
+            )
+        )
     try:
         log_rows = m.trade_log_read_tail(
-            limit=500, since_date=today_s, portfolio="paper",
+            limit=500,
+            since_date=today_s,
+            portfolio="paper",
         )
     except Exception:
         log_rows = []
-    for row in (log_rows or []):
+    for row in log_rows or []:
         if not isinstance(row, dict):
             continue
         if row.get("date") != today_s:
@@ -876,11 +880,9 @@ def _today_trades() -> list[dict]:
         action = (t.get("action") or "").upper()
         is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
         if is_close:
-            time_key = (t.get("exit_time") or t.get("time")
-                        or t.get("entry_time") or "")
+            time_key = t.get("exit_time") or t.get("time") or t.get("entry_time") or ""
         else:
-            time_key = (t.get("entry_time") or t.get("time")
-                        or t.get("exit_time") or "")
+            time_key = t.get("entry_time") or t.get("time") or t.get("exit_time") or ""
         return (
             (t.get("ticker") or "").upper(),
             str(time_key),
@@ -1018,7 +1020,9 @@ def _today_trades() -> list[dict]:
     # already emitted.
     try:
         log_rows = m.trade_log_read_tail(
-            limit=500, since_date=today, portfolio="paper",
+            limit=500,
+            since_date=today,
+            portfolio="paper",
         )
     except Exception:
         log_rows = []
@@ -1445,7 +1449,6 @@ def _executors_status_snapshot(m) -> dict:
     return out
 
 
-
 def _v611_regime_snapshot() -> dict:
     """v6.11.0 -- C25 SPY regime + amp window fields for /api/state.
 
@@ -1530,6 +1533,7 @@ def _ingest_volume_feed_status(m) -> str:
     """
     try:
         import ingest.algo_plus as _iap
+
         state = _iap.get_health().get()
         if state == _iap.LIVE:
             return "live"
@@ -1538,7 +1542,9 @@ def _ingest_volume_feed_status(m) -> str:
         # Backwards compat: fall back to the legacy flag if for any
         # reason ingest_algo_plus is unavailable in this image.
         try:
-            return "live" if bool(getattr(m, "VOLUME_FEED_AVAILABLE", False)) else "disabled_no_creds"
+            return (
+                "live" if bool(getattr(m, "VOLUME_FEED_AVAILABLE", False)) else "disabled_no_creds"
+            )
         except Exception:
             return "disabled_no_creds"
 
@@ -1560,10 +1566,12 @@ def _earnings_watcher_snapshot() -> dict:
     _ew_version = "unknown"
     try:
         from bot_version import BOT_VERSION as _bv  # type: ignore
+
         _ew_version = str(_bv)
     except Exception:
         try:
             import trade_genius as _tg_mod  # type: ignore
+
             _ew_version = str(getattr(_tg_mod, "BOT_VERSION", "unknown"))
         except Exception:
             _ew_version = "unknown"
@@ -1581,6 +1589,7 @@ def _earnings_watcher_snapshot() -> dict:
     try:
         try:
             from zoneinfo import ZoneInfo as _Zi
+
             _now_et = _dt.now(_Zi("America/New_York"))
         except Exception:
             _now_et = _dt.now(_tz.utc).replace(tzinfo=None)
@@ -1650,15 +1659,17 @@ def _earnings_watcher_snapshot() -> dict:
         if op.exists():
             positions = _json.loads(op.read_text()) or {}
             for tkr, p in positions.items():
-                out["open_positions"].append({
-                    "ticker": tkr,
-                    "side": p.get("side"),
-                    "entry_px": p.get("entry_px"),
-                    "qty": p.get("qty"),
-                    "notional": p.get("notional"),
-                    "conv": p.get("conv"),
-                    "entry_ts_utc": p.get("entry_ts_utc"),
-                })
+                out["open_positions"].append(
+                    {
+                        "ticker": tkr,
+                        "side": p.get("side"),
+                        "entry_px": p.get("entry_px"),
+                        "qty": p.get("qty"),
+                        "notional": p.get("notional"),
+                        "conv": p.get("conv"),
+                        "entry_ts_utc": p.get("entry_ts_utc"),
+                    }
+                )
     except Exception:
         pass
 
@@ -1726,6 +1737,7 @@ def snapshot() -> dict[str, Any]:
         broker_open_ts = None
         try:
             from broker.open_pnl import read_latest_open_pnl
+
             rec = read_latest_open_pnl()
             if rec is not None:
                 broker_open_pnl = float(rec.get("total_unrealized") or 0.0)
@@ -1919,7 +1931,7 @@ def snapshot() -> dict[str, Any]:
         try:
             now_et = m._now_et()
             now_iso = now_et.isoformat()
-            now_label = now_et.strftime("%a %b %d · %H:%M:%S ET")
+            now_label = now_et.strftime("%a %b %d | %H:%M:%S ET")
         except Exception:
             now_iso = ""
             now_label = ""
@@ -1932,6 +1944,7 @@ def snapshot() -> dict[str, Any]:
         # if anything is missing post-deploy.
         try:
             from engine import sentinel as _sent_mod
+
             v610_atr_trail = bool(getattr(_sent_mod, "_V610_ATR_TRAIL_ENABLED", False))
             v610_ema_confirm = bool(getattr(_sent_mod, "_V610_EMA_CONFIRM_ENABLED", False))
             v610_lunch_supp = bool(getattr(_sent_mod, "_V610_LUNCH_SUPPRESSION_ENABLED", False))
@@ -1960,6 +1973,7 @@ def snapshot() -> dict[str, Any]:
         # /api/state simply degrades the dashboard suffixes to legacy.
         try:
             from engine import local_weather as _lw_mod
+
             v620_local_or_break = bool(getattr(_lw_mod, "V620_LOCAL_OR_BREAK_ENABLED", False))
             v620_local_or_break_k = float(getattr(_lw_mod, "V620_LOCAL_OR_BREAK_K", 0.0) or 0.0)
         except Exception:
@@ -1970,6 +1984,7 @@ def snapshot() -> dict[str, Any]:
                 V620_FAST_BOUNDARY_ENABLED as _v620_fb,
                 V620_FAST_BOUNDARY_CUTOFF_HHMM_ET as _v620_fb_cutoff,
             )
+
             v620_fast_boundary = bool(_v620_fb)
             v620_fast_boundary_cutoff = str(_v620_fb_cutoff)
         except Exception:
@@ -1977,6 +1992,7 @@ def snapshot() -> dict[str, Any]:
             v620_fast_boundary_cutoff = "10:30"
         try:
             import eye_of_tiger as _eot_mod
+
             v620_di_threshold = float(getattr(_eot_mod, "ENTRY_1_DI_THRESHOLD", 25.0))
         except Exception:
             v620_di_threshold = 25.0
@@ -1992,6 +2008,7 @@ def snapshot() -> dict[str, Any]:
         # the dashboard EMA-shield card suffix to legacy.
         try:
             from engine import sentinel as _sent_mod
+
             v630_noise_enabled = bool(getattr(_sent_mod, "V630_NOISE_CROSS_FILTER_ENABLED", False))
             v630_noise_atr_k = float(getattr(_sent_mod, "V630_NOISE_CROSS_ATR_K", 0.0) or 0.0)
         except Exception:
@@ -2008,11 +2025,13 @@ def snapshot() -> dict[str, Any]:
         # to the new legacy.
         try:
             from engine import sentinel as _sent_mod
+
             v640_alarm_b = bool(getattr(_sent_mod, "ALARM_B_ENABLED", False))
         except Exception:
             v640_alarm_b = False
         try:
             from engine import alarm_f_trail as _f_mod
+
             v640_chand_wide = float(getattr(_f_mod, "WIDE_MULT", 1.5) or 0.0)
             v640_chand_tight = float(getattr(_f_mod, "TIGHT_MULT", 0.7) or 0.0)
         except Exception:
@@ -2038,12 +2057,14 @@ def snapshot() -> dict[str, Any]:
                 POST_LOSS_COOLDOWN_MIN_LONG as _v643_cd_long,
                 POST_LOSS_COOLDOWN_MIN_SHORT as _v643_cd_short,
             )
+
             v643_cd_long = int(_v643_cd_long)
             v643_cd_short = int(_v643_cd_short)
         except Exception:
             v643_cd_long, v643_cd_short = 0, 30
         try:
             import trade_genius as _v642_tg
+
             v642_active = list(_v642_tg.get_active_cooldowns())
             # v7.0.1: per-portfolio breakdown for the per-book strip and
             # tab-level cooldown panels. Main is identical to v642_active
@@ -2082,6 +2103,7 @@ def snapshot() -> dict[str, Any]:
         #   bars_today, ws_state (per spec section 4.5).
         try:
             import ingest.algo_plus as _iap
+
             _ingest_snap = _iap._ingest_health_snapshot()
             shadow_data_status = _ingest_snap.get("status", "unconfigured")
             shadow_disabled = shadow_data_status == "unconfigured"
@@ -2105,6 +2127,7 @@ def snapshot() -> dict[str, Any]:
         v10_block: dict = {"available": False}
         try:
             import orb.live_runtime as _v10_rt
+
             v10_block = _v10_rt.snapshot()
             v10_block["available"] = True
         except Exception as _e_v10:
@@ -2120,11 +2143,12 @@ def snapshot() -> dict[str, Any]:
         # the max-trades-per-day gate.
         try:
             from engine.portfolio_book import PORTFOLIOS as _PB
+
             try:
                 _today_s = _ssm()._now_et().strftime("%Y-%m-%d")
             except Exception:
                 _today_s = ""
-            for _ds in (v10_block.get("day_states") or []):
+            for _ds in v10_block.get("day_states") or []:
                 _pid = _ds.get("portfolio_id")
                 if not _pid:
                     continue
@@ -2136,10 +2160,10 @@ def snapshot() -> dict[str, Any]:
                     _ds["broker_trades_today"] = 0
                     continue
                 _n = 0
-                for _t in (getattr(_book, "trade_history", []) or []):
+                for _t in getattr(_book, "trade_history", []) or []:
                     if _t.get("date") == _today_s:
                         _n += 1
-                for _t in (getattr(_book, "short_trade_history", []) or []):
+                for _t in getattr(_book, "short_trade_history", []) or []:
                     if _t.get("date") == _today_s:
                         _n += 1
                 _ds["broker_trades_today"] = _n
@@ -2176,6 +2200,31 @@ def snapshot() -> dict[str, Any]:
                 except Exception:
                     _v10_prices[_t] = None
             v10_block["prices"] = _v10_prices
+        except Exception:
+            pass
+
+        # v9.1.31 -- inject current Yahoo VIX into day_status so the
+        # dashboard banner can show a live VIX value even when Alpaca's
+        # equity feed doesn't provide VIX (vix_d1_close stays None from
+        # the Alpaca path). The cached /api/indices payload already
+        # fetches ^VIX from Yahoo; we just plumb it across.
+        try:
+            with _indices_cache_lock:
+                _idx_payload = _indices_cache.get("payload") or {}
+            _yahoo_vix = next(
+                (
+                    r["last"]
+                    for r in (_idx_payload.get("indices") or [])
+                    if r.get("symbol") == "^VIX"
+                    and r.get("available")
+                    and r.get("last") is not None
+                ),
+                None,
+            )
+            if _yahoo_vix is not None:
+                _ds = v10_block.get("day_status")
+                if isinstance(_ds, dict):
+                    _ds["vix_current"] = float(_yahoo_vix)
         except Exception:
             pass
 
@@ -2812,20 +2861,22 @@ async def h_v10_projection(request):
         m = _ssm()
         # Live growth vs starting capital
         from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+
         book = PORTFOLIOS.get(PORTFOLIO_MAIN)
         if book is not None:
             current_equity = float(book.current_equity())
             payload["live_balance"] = current_equity
             payload["live_growth_pct"] = (
-                100.0 * (current_equity - payload["starting_balance"])
-                / payload["starting_balance"]
-                if payload["starting_balance"] > 0 else 0.0
+                100.0 * (current_equity - payload["starting_balance"]) / payload["starting_balance"]
+                if payload["starting_balance"] > 0
+                else 0.0
             )
     except Exception as e:
         payload["live_error"] = str(e)[:120]
     # Live runtime status (bootstrapped, session_date, etc.)
     try:
         import orb.live_runtime as _v10_rt
+
         payload["live_mode"] = _v10_rt.is_live_mode_on()
         payload["bootstrapped"] = _v10_rt._bootstrapped
     except Exception:
@@ -2940,20 +2991,22 @@ def _pair_executor_fills(raw_fills: list[dict]) -> list[dict]:
                 book["lots"].append([qty, price])
             action = "BUY" if new_side == "LONG" else "SHORT"
             cost = (qty * price) if (price is not None) else None
-            out.append({
-                "action": action,
-                "ticker": sym,
-                "symbol": sym,
-                "side": new_side,
-                "shares": qty,
-                "qty": qty,
-                "price": price,
-                "avg_fill_price": price,
-                "cost": cost,
-                "time": f.get("ftime"),
-                "filled_at": f.get("fiso"),
-                "date": f.get("fdate"),
-            })
+            out.append(
+                {
+                    "action": action,
+                    "ticker": sym,
+                    "symbol": sym,
+                    "side": new_side,
+                    "shares": qty,
+                    "qty": qty,
+                    "price": price,
+                    "avg_fill_price": price,
+                    "cost": cost,
+                    "time": f.get("ftime"),
+                    "filled_at": f.get("fiso"),
+                    "date": f.get("fdate"),
+                }
+            )
         else:
             lots = _take_lots(sym, qty)
             open_side = cur_side or ("LONG" if side_str == "sell" else "SHORT")
@@ -3241,15 +3294,17 @@ def _executor_snapshot(name: str) -> dict:
                         price = float(fap) if fap is not None else None
                     except Exception:
                         price = None
-                    raw_fills.append({
-                        "side_str": side_str,  # "buy" | "sell"
-                        "sym": sym,
-                        "qty": qty,
-                        "price": price,
-                        "ftime": ftime,
-                        "fiso": fiso,
-                        "fdate": fdate,
-                    })
+                    raw_fills.append(
+                        {
+                            "side_str": side_str,  # "buy" | "sell"
+                            "sym": sym,
+                            "qty": qty,
+                            "price": price,
+                            "ftime": ftime,
+                            "fiso": fiso,
+                            "fdate": fdate,
+                        }
+                    )
                 except Exception:
                     continue
 
@@ -3805,8 +3860,8 @@ _INTRADAY_FETCH_TTL_S = 60.0
 # (full pre/post-market). Currently informational; the actual fetch
 # bounds live in _intraday_fetch_alpaca_bars and the display bounds
 # live in dashboard_static/app.js (X_MIN=240, X_MAX=1200).
-_INTRADAY_WINDOW_START_ET_MIN = 4 * 60   # 04:00 ET = 3:00 CT
-_INTRADAY_WINDOW_END_ET_MIN = 20 * 60    # 20:00 ET = 19:00 CT
+_INTRADAY_WINDOW_START_ET_MIN = 4 * 60  # 04:00 ET = 3:00 CT
+_INTRADAY_WINDOW_END_ET_MIN = 20 * 60  # 20:00 ET = 19:00 CT
 
 
 def _intraday_fetch_alpaca_bars(ticker: str, day: str) -> list[dict]:
@@ -4104,9 +4159,7 @@ def _intraday_resample_5m(bars: list[dict]) -> list[dict]:
     return out
 
 
-def _intraday_ema9_5m(
-    bars5: list[dict], pdc: float | None = None
-) -> list[float | None]:
+def _intraday_ema9_5m(bars5: list[dict], pdc: float | None = None) -> list[float | None]:
     """Standard 9-period EMA over the 5m closes.
 
     v6.0.0: when the real bar count is < 9 and ``pdc`` is provided,
@@ -4222,7 +4275,9 @@ def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
                         "[V914-INTRADAY-MARK] %s LONG open without "
                         "matching entry_ts_utc=%r vs day=%s -- "
                         "emitting marker anyway (v9.1.14)",
-                        tu, ets, day,
+                        tu,
+                        ets,
+                        day,
                     )
                 out.append(
                     {
@@ -4251,7 +4306,9 @@ def _intraday_today_trades(m, ticker: str, day: str) -> list[dict]:
                         "[V914-INTRADAY-MARK] %s SHORT open without "
                         "matching entry_ts_utc=%r vs day=%s -- "
                         "emitting marker anyway (v9.1.14)",
-                        tu, ets, day,
+                        tu,
+                        ets,
+                        day,
                     )
                 out.append(
                     {
@@ -4331,7 +4388,13 @@ def _intraday_build_lifecycle(ticker: str, day: str) -> dict:
     out = {"entries": [], "exits": [], "trail_series": [], "open": []}
     if not sym:
         return out
-    base = _P(os.environ.get("FORENSICS_DIR") or (os.environ.get("TG_DATA_ROOT", "/data") + "/forensics")) / day
+    base = (
+        _P(
+            os.environ.get("FORENSICS_DIR")
+            or (os.environ.get("TG_DATA_ROOT", "/data") + "/forensics")
+        )
+        / day
+    )
 
     def _load_jsonl(path: _P) -> list[dict]:
         rows: list[dict] = []
@@ -4499,6 +4562,7 @@ def _intraday_build_payload(ticker: str) -> dict:
         # draw the dashed lines).
         try:
             from zoneinfo import ZoneInfo as _ZI
+
             _today_et = datetime.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
         except Exception:
             _today_et = day

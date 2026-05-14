@@ -3335,7 +3335,7 @@
     }
 
     // v4.2.2 — extract tz token (ET/CDT/CT/PT/PST/\u2026) from
-    // server_time_label tail, e.g. "Fri Apr 24 · 13:09:13 ET".
+    // server_time_label tail, e.g. "Fri Apr 24 | 13:09:13 ET".
     // The client-side tick loop renders the actual HH:MM:SS every
     // second; we only cache the tz label here so the clock shows it.
     const lbl = s.server_time_label || "";
@@ -5760,20 +5760,38 @@
     var vixPassEl = document.getElementById("v10-vix-pass");
     var dayStateEl = document.getElementById("v10-day-state");
     var thr = ds.vix_threshold || 22.0;
+    // v9.1.31 -- vix_d1_close is Alpaca's prior-day VIX (often null
+    // because Alpaca equity feed doesn't cover VIX). Fall back to
+    // vix_current (Yahoo ^VIX injected by dashboard_server.py) for
+    // display; gate evaluation is still based on vix_d1_close.
     var vix = ds.vix_d1_close;
+    var vixCurrent = ds.vix_current;
+    var vixDisplay = (vix != null) ? vix : vixCurrent;
+    var vixIsLive = (vix == null && vixCurrent != null);
     if (vixEl) {
-      vixEl.textContent = (vix == null ? "n/a" : vix.toFixed(2)) + "/" + thr.toFixed(0);
+      var vixNumStr = vixDisplay != null ? vixDisplay.toFixed(2) : "n/a";
+      vixEl.textContent = vixNumStr + "/" + thr.toFixed(0);
+      vixEl.title = vixIsLive
+        ? "Current VIX " + vixNumStr + " (live Yahoo; prior-day close unavailable from Alpaca equity feed)"
+        : "Prior-day VIX close " + vixNumStr;
     }
     if (vixPassEl) {
-      var pass = (vix == null) ? "?" : (vix > thr ? "FAIL" : "PASS");
+      // Gate uses prior-day close; if unavailable show "?" with
+      // a note that current VIX is within / outside the threshold.
+      var pass = (vix == null)
+        ? (vixCurrent != null ? (vixCurrent > thr ? "WARN" : "OK") : "?")
+        : (vix > thr ? "FAIL" : "PASS");
       vixPassEl.textContent = pass;
-      if (pass === "PASS") {
+      if (pass === "PASS" || pass === "OK") {
         vixPassEl.style.background = "#16a34a"; vixPassEl.style.color = "#fff";
       } else if (pass === "FAIL") {
         vixPassEl.style.background = "#dc2626"; vixPassEl.style.color = "#fff";
+      } else if (pass === "WARN") {
+        vixPassEl.style.background = "rgba(245,158,11,0.25)"; vixPassEl.style.color = "#fbbf24";
       } else {
         vixPassEl.style.background = "#374151"; vixPassEl.style.color = "#e5e7eb";
       }
+      if (vixIsLive) vixPassEl.title = "Based on current VIX — prior-day close unavailable from Alpaca";
     }
     if (dayStateEl) {
       if (ds.block_day) {

@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.31 (2026-05-14) — dashboard VIX + encoding fixes
+
+### 1. VIX always `—` in v10 banner — fixed
+Backend: `dashboard_server.py` now injects `vix_current` into `day_status` from the cached Yahoo `^VIX` row when Alpaca's equity feed returns null (structural gap — Alpaca never provides VIX via equity feed). Frontend: `renderV10DayStatus` falls back to `vix_current` for display with a tooltip noting it's current vs prior-day close. Gate evaluation (`FAIL`/`PASS`) still uses `vix_d1_close`; when that's null and current VIX is available, shows `WARN`/`OK` instead.
+
+### 2. `server_time_label` encoding bug fixed
+`strftime("%a %b %d · %H:%M:%S ET")` used a UTF-8 middle-dot (`·`) that Railway's container locale serialized as U+FFFD. Changed to ASCII `|` separator. Clock rendering and timezone extraction regex unaffected.
+
+---
+
 ## v9.1.30 (2026-05-14) — test suite cleanup + smoke test optimization
 
 ### 1. Smoke test suite cleaned (`smoke_test.py`)
