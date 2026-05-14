@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.32 (2026-05-14) — dashboard live-state correctness (12 UI fixes)
+
+### Operator clarity fixes
+- **EOD card always visible** when `eod.enabled=true` — previously hidden until first activity, so config couldn't be verified before 15:00 ET. Now shows "Armed — entry opens at 15:00 ET" standby state.
+- **EOD LIVE mode emphasis**: `fire_broker=true` shows solid green "LIVE ORDERS" badge (was identical translucent pill to paper mode). Card gains a left green border accent. `rod3_bps` relabeled "rev Xbps" with tooltip.
+- **Off-hours v10 banner**: when `session_date` is empty (00:00–09:25 ET), replaces gate pills with a single CLOSED chip. Avoids misleading `VIX — | Day —` display all night.
+- **Activity card off-hours**: collapses to `— session starts 09:25 ET —` dim line instead of full empty card.
+- **Duplicate VIX suppressed** in index strip: Alpaca `VIX: n/a` tile hidden when Yahoo `^VIX` is available.
+- **Gene tab disabled state**: badge shows `OFF` (was `✗`); tab button dims to 50% opacity.
+- **Phase badges self-describing**: `A`→`OPEN`, `B`→`1R↗`, `C`→`TRAIL` (kept class names, changed labels).
+- **Cooldown pill shows `cooldown 0`** dimly during RTH (OPEN/OR/POWER) so absence ≠ tracking broken.
+- **Equity KPI tooltip**: explains that trade sizing uses the risk-book equity ($100k configured capital), not mark-to-market portfolio equity.
+- **Day P&L source label**: Main shows `paper` sub-label; Val/Gene shows `Alpaca` sub-label so cross-tab comparison is understood.
+- **"OR Proximity"** card title (was "v10 Matrix") — both Main and Val/Gene panels.
+- **`_toPct()` moved outside `positions.map()`** — was re-declared on every render cycle.
+
+---
+
 ## v9.1.31 (2026-05-14) — dashboard VIX + encoding fixes
 
 ### 1. VIX always `—` in v10 banner — fixed

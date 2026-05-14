@@ -258,6 +258,19 @@
   function renderKPIs(s, sl) {
     const p = sl.portfolio || {};
     $("k-equity").textContent = fmtUsd(p.equity);
+    // v9.1.32 -- tooltip clarifies that trade sizing uses the risk-book
+    // equity ($100k configured capital), not the mark-to-market portfolio
+    // equity shown here. The gap grows as paper returns accumulate.
+    const equityKpi = $("k-equity") && $("k-equity").closest(".kpi");
+    if (equityKpi) {
+      const rb = ((s.v10 || {}).risk_books || {}).main || {};
+      const rbEq = rb.equity;
+      if (rbEq != null && Math.abs(p.equity - rbEq) > 0.5) {
+        equityKpi.title = "Mark-to-market equity (paper cash + positions). "
+          + "Trade sizing uses the risk-book equity: " + fmtUsd(rbEq, 0)
+          + " (configured starting capital). Gap = accumulated paper returns.";
+      }
+    }
     const vs = p.vs_start;
     const eqSub = $("k-equity-sub");
     eqSub.innerHTML = `Start ${fmtUsd(p.start, 0)} · <span class="${vs >= 0 ? 'delta-up' : 'delta-down'}">${fmtUsd(vs)}</span>`;
@@ -303,6 +316,7 @@
     // chip never wraps + clips against the KPI tile's max-height.
     $("k-pnl-sub").innerHTML =
       `${tradesLen} trade${tradesLen===1?"":"s"} · <span class="${pctCls}">${fmtPct(pct)}</span>`
+      + ' <span style="color:var(--text-dim);font-size:10px" title="Day P&L source: paper state (trade_genius.py trade log). Val/Gene tabs show Alpaca live data.">paper</span>'
       + (brokerHtml ? '<div class="kpi-broker-line">' + brokerHtml.replace(/^ · /, '') + '</div>' : '');
 
     const positions = sl.positions || [];
@@ -380,9 +394,11 @@
         const phaseTitle = (phase === "A")
           ? "Phase A \u2014 fresh entry, hard stop only"
           : (phase === "B")
-            ? "Phase B \u2014 first runner / partial taken, breakeven trail"
+            ? "Phase B \u2014 1R partial taken, trail arming toward breakeven"
             : "Phase C \u2014 mature runner, ratcheting trail stop";
-        const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="${escapeHtml(phaseTitle)}">${phase}</span>`;
+        // Self-describing labels: OPEN / 1R\u2197 / TRAIL instead of A/B/C.
+        const phaseLabel = phase === "A" ? "OPEN" : phase === "B" ? "1R\u2197" : "TRAIL";
+        const phaseBadge = `<span class="eot-phase-badge eot-phase-${phase}" title="${escapeHtml(phaseTitle)}">${phaseLabel}</span>`;
         const dotTitle = (p.side === "SHORT") ? "Open short position" : "Open long position";
         // v6.0.3: % column added for parity with Val/Gene executor tabs.
         // cost basis = entry * shares; unrealized / cost_basis gives the
@@ -426,11 +442,10 @@
             ? entryPx + 2.5 * (entryPx - stopPx)
             : entryPx - 2.5 * (stopPx - entryPx);
           var span = targetPx - stopPx; // signed; negative for short
-          function _toPct(px) {
+          var _toPct = function (px) {
             if (Math.abs(span) < 1e-9) return 50;
-            var pos = (px - stopPx) / span * 100;
-            return Math.max(0, Math.min(100, pos));
-          }
+            return Math.max(0, Math.min(100, (px - stopPx) / span * 100));
+          };
           var entryAt = _toPct(entryPx);
           var oneRPx = isLong
             ? entryPx + (entryPx - stopPx)
@@ -3329,8 +3344,22 @@
         cdPill.style.display = "";
         cdDiv.style.display = "";
       } else {
-        cdPill.style.display = "none";
-        cdDiv.style.display = "none";
+        // v9.1.32 -- during RTH show a dim "cooldown 0" so the operator
+        // can distinguish "no cooldowns active" from "tracking broken".
+        // Off-hours: hide entirely (no trades possible, no confusion).
+        var _mode = ((s.regime || {}).mode || "CLOSED");
+        var _isRth = (_mode === "OPEN" || _mode === "OR" || _mode === "POWER");
+        if (_isRth) {
+          cdPill.textContent = "cooldown 0";
+          cdPill.title = "No active post-loss cooldowns.";
+          cdPill.style.background = "transparent";
+          cdPill.style.color = "var(--text-dim)";
+          cdPill.style.display = "";
+          cdDiv.style.display = "";
+        } else {
+          cdPill.style.display = "none";
+          cdDiv.style.display = "none";
+        }
       }
     }
 
@@ -3870,7 +3899,14 @@
       strip.classList.remove("idx-marquee", "is-paused");
       return;
     }
-    const parts = rows.map(r => {
+    // v9.1.32 -- suppress the Alpaca VIX row (symbol="VIX", available=false)
+    // when a Yahoo ^VIX row is already present and available. Avoids the
+    // double-VIX confusion: "VIX: n/a" and "VIX 17.87" both showing.
+    const _hasYahooVix = rows.some(r => r.symbol === "^VIX" && r.available && r.last != null);
+    const filteredRows = _hasYahooVix
+      ? rows.filter(r => !(r.symbol === "VIX" && !r.available))
+      : rows;
+    const parts = filteredRows.map(r => {
       // v4.13.0 — cash-index rows from Yahoo carry display_label
       // ("S&P 500" instead of "^GSPC") and may include an inline future
       // badge. ETF rows from Alpaca don't have those keys, so we just
@@ -4058,7 +4094,7 @@
     <section class="grid" data-f="v10-prox-section-pid">
       <div class="card">
         <div class="card-head">
-          <span class="card-title" title="v10 Matrix (v9.1.11: combined Proximity + Ticker Matrix). Distance from current price to OR break levels + per-(pid,ticker) FSM phase + trades n/cap. Click any row to expand the intraday chart.">v10 Matrix &middot; ${label}<span class="count" data-f="v10-prox-pid-count">\u2014</span></span>
+          <span class="card-title" title="Distance from current price to OR break levels + per-(pid,ticker) FSM phase + trades n/cap. Click any row to expand the intraday chart.">OR Proximity &middot; ${label}<span class="count" data-f="v10-prox-pid-count">\u2014</span></span>
           <span class="chip" data-f="v10-prox-pid-summary">\u2014</span>
         </div>
         <div class="card-body flush" data-f="v10-prox-pid-body">
@@ -4475,12 +4511,19 @@
     if (!el) return;
     const label = name.charAt(0).toUpperCase() + name.slice(1);
     if (!data || data.enabled === false) {
-      el.innerHTML = "\u2717";
-      el.style.color = "#9aa6b2";
+      el.innerHTML = "OFF";
+      el.style.color = "var(--text-dim)";
       el.setAttribute("title",
         `${label} executor disabled (missing PAPER_KEY or *_ENABLED=0)`);
+      // Dim the entire tab button so disabled tabs don't compete visually
+      // with enabled ones. The tab is still clickable (shows a banner).
+      const tabBtn = el.closest(".tg-tab");
+      if (tabBtn) tabBtn.style.opacity = "0.45";
       return;
     }
+    // Clear any dim from a previous disabled render
+    const _tabBtn = el.closest(".tg-tab");
+    if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
     if (mode === "live") {
       el.innerHTML =
@@ -4767,6 +4810,7 @@
       const sign = pct >= 0 ? "+" : "\u2212";
       setFieldHtml(panel, "k-pnl-sub",
         `vs close \u00b7 <span class="${pct >= 0 ? 'delta-up' : 'delta-down'}">${sign}${Math.abs(pct).toFixed(2)}%</span>`
+        + ' <span style="color:var(--text-dim);font-size:10px" title="Day P&L source: Alpaca broker (equity minus prior-day close). Main tab shows paper state.">Alpaca</span>'
       );
     }
 
@@ -5642,72 +5686,101 @@
       section.style.display = "none";
       return;
     }
+    // v9.1.32 -- always show the EOD card when enabled so the operator
+    // can verify config before 15:00 ET. Previously hidden until activity
+    // started, leaving no indication the engine was armed.
     section.style.display = "";
-    _v10EodFillBody(eod, "main", body, statusEl, fireEl);
+    _v10EodFillBody(eod, "main", body, statusEl, fireEl, s);
   }
 
-  function _v10EodFillBody(eod, pid, bodyEl, statusEl, fireEl) {
-    if (!eod) { bodyEl.innerHTML = '<div style="color:#6b7280">No EOD data.</div>'; return; }
+  function _v10EodFillBody(eod, pid, bodyEl, statusEl, fireEl, stateCtx) {
+    if (!eod) { bodyEl.innerHTML = '<div style="color:var(--text-dim)">No EOD data.</div>'; return; }
     var perPid = (eod.per_portfolio || {})[pid] || {open_count:0, open_positions:[], closed_legs:[], realized_pnl_today:0, entry_attempted:false, rejected_count:0};
     var cfg = eod.config || {};
-    var entryEt = cfg.entry_et || "15:30";
+    var entryEt = cfg.entry_et || "15:00";
     var exitEt = cfg.exit_et || "15:59";
     var realized = parseFloat(perPid.realized_pnl_today || 0) || 0;
     var openCount = perPid.open_count || 0;
     var closedCount = (perPid.closed_legs || []).length;
     if (statusEl) {
       var parts = [];
-      parts.push("window " + entryEt + "-" + exitEt);
+      parts.push("window " + entryEt + "&#8209;" + exitEt + " ET");
       parts.push("open " + openCount);
       parts.push("closed " + closedCount);
       var realStr = (realized >= 0 ? "+" : "") + "$" + realized.toFixed(2);
-      var realCol = realized >= 0 ? "#86efac" : "#fca5a5";
-      parts.push('PnL <span style="color:' + realCol + '">' + realStr + '</span>');
-      statusEl.innerHTML = parts.join(' <span style="color:#374151">·</span> ');
+      var realCls = realized >= 0 ? "delta-up" : "delta-down";
+      parts.push('P&L <span class="' + realCls + '">' + realStr + '</span>');
+      statusEl.innerHTML = parts.join(' <span style="color:var(--border-strong)">·</span> ');
     }
     if (fireEl) {
       var firing = !!cfg.fire_broker;
-      fireEl.textContent = firing ? "LIVE" : "paper";
-      fireEl.style.background = firing ? "rgba(22,163,74,0.18)" : "rgba(245,158,11,0.18)";
-      fireEl.style.color = firing ? "#86efac" : "#f59e0b";
+      // v9.1.32 -- LIVE mode gets a stronger visual treatment: larger
+      // text, solid green background (not translucent), so real-order
+      // mode is unmissable. Paper stays amber+translucent.
+      if (firing) {
+        fireEl.textContent = "LIVE ORDERS";
+        fireEl.style.cssText = "padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;"
+          + "background:#16a34a;color:#fff;letter-spacing:0.04em;";
+      } else {
+        fireEl.textContent = "paper";
+        fireEl.style.cssText = "padding:2px 7px;border-radius:999px;font-size:11px;font-weight:600;"
+          + "background:rgba(245,158,11,0.18);color:#f59e0b;";
+      }
       fireEl.title = firing
-        ? "ORB_EOD_FIRE_BROKER=1 -- real broker orders firing."
-        : "Paper-fire-observation mode: signals are tracked but broker orders are not placed. Set ORB_EOD_FIRE_BROKER=1 in Railway env to enable live firing.";
+        ? "ORB_EOD_FIRE_BROKER=1 — real broker orders will fire at " + entryEt + " ET."
+        : "Paper-fire mode: signals tracked but no real orders. Set ORB_EOD_FIRE_BROKER=1 to go live.";
+    }
+    // Also give the section card a left-border accent when firing LIVE.
+    var _section = document.getElementById("v10-eod-section");
+    if (_section) {
+      _section.style.borderLeft = cfg.fire_broker
+        ? "3px solid #22c55e"
+        : "";
     }
     // Body: list open positions + closed legs.
     var rows = [];
     (perPid.open_positions || []).forEach(function (p) {
-      var sideCol = p.side === "long" ? "#86efac" : "#fca5a5";
+      var sideCol = p.side === "long" ? "var(--up)" : "var(--down)";
+      // rev signal strength labeled clearly (was "rod3=X.Xbps" — internal name)
+      var revBps = parseFloat(p.rod3_bps);
+      var revHtml = Number.isFinite(revBps)
+        ? '<span style="color:var(--text-muted);font-size:11px" title="Reversal signal strength (bps from VWAP)">rev ' + revBps.toFixed(1) + 'bps</span>'
+        : '';
       rows.push(
         '<div style="display:flex;gap:10px;align-items:center">'
         + '<span style="color:' + sideCol + ';font-weight:700;min-width:46px">' + p.side.toUpperCase() + '</span>'
-        + '<span style="color:#e5e7eb;font-weight:700;min-width:46px">' + p.ticker + '</span>'
-        + '<span style="color:#9ca3af">' + p.shares + ' sh @ $' + (parseFloat(p.entry_price)||0).toFixed(2) + '</span>'
-        + '<span style="color:#a78bfa">rod3=' + (parseFloat(p.rod3_bps)||0).toFixed(1) + 'bps</span>'
-        + '<span style="color:#374151">·</span>'
-        + '<span style="color:#9ca3af">$' + Math.round(p.notional || 0).toLocaleString() + ' notional</span>'
+        + '<span style="color:var(--text);font-weight:700;min-width:46px">' + p.ticker + '</span>'
+        + '<span style="color:var(--text-muted)">' + p.shares + ' sh @ $' + (parseFloat(p.entry_price)||0).toFixed(2) + '</span>'
+        + revHtml
+        + '<span style="color:var(--border-strong)">·</span>'
+        + '<span style="color:var(--text-muted)">$' + Math.round(p.notional || 0).toLocaleString() + '</span>'
         + '</div>'
       );
     });
     (perPid.closed_legs || []).forEach(function (leg) {
       var pnl = parseFloat(leg.pnl) || 0;
-      var col = pnl >= 0 ? "#86efac" : "#fca5a5";
-      var sideCol = leg.side === "long" ? "#86efac" : "#fca5a5";
+      var pnlCls = pnl >= 0 ? "delta-up" : "delta-down";
+      var sideCol = leg.side === "long" ? "var(--up)" : "var(--down)";
       rows.push(
         '<div style="display:flex;gap:10px;align-items:center;opacity:0.75">'
         + '<span style="color:' + sideCol + ';min-width:46px">' + leg.side.toUpperCase() + '</span>'
-        + '<span style="color:#e5e7eb;min-width:46px">' + leg.ticker + '</span>'
-        + '<span style="color:#9ca3af">' + leg.shares + ' sh $' + (parseFloat(leg.entry_price)||0).toFixed(2) + ' -> $' + (parseFloat(leg.exit_price)||0).toFixed(2) + '</span>'
-        + '<span style="color:' + col + ';font-weight:700">' + (pnl >= 0 ? "+" : "") + '$' + pnl.toFixed(2) + '</span>'
-        + '<span style="color:#6b7280">' + (leg.exit_reason || 'eod') + '</span>'
+        + '<span style="color:var(--text);min-width:46px">' + leg.ticker + '</span>'
+        + '<span style="color:var(--text-muted)">' + leg.shares + ' sh $' + (parseFloat(leg.entry_price)||0).toFixed(2) + ' → $' + (parseFloat(leg.exit_price)||0).toFixed(2) + '</span>'
+        + '<span class="' + pnlCls + '" style="font-weight:700">' + (pnl >= 0 ? "+" : "") + '$' + pnl.toFixed(2) + '</span>'
+        + '<span style="color:var(--text-dim)">' + (leg.exit_reason || 'eod') + '</span>'
         + '</div>'
       );
     });
     if (!rows.length) {
+      // v9.1.32 -- show standby state when armed but not yet in the entry window.
+      var _mode = ((stateCtx && stateCtx.regime || {}).mode || "");
+      var _eodArmed = (_mode === "OPEN" || _mode === "OR" || _mode === "POWER" || !_mode);
       var msg = perPid.entry_attempted
         ? "No EOD signal admitted today (insufficient cross-section)."
-        : "Waiting for " + entryEt + " ET entry window.";
-      bodyEl.innerHTML = '<div style="color:#6b7280">' + msg + '</div>';
+        : _eodArmed
+          ? "⏳ Armed — entry opens at " + entryEt + " ET."
+          : "Session closed.";
+      bodyEl.innerHTML = '<div style="color:var(--text-dim);font-size:12px">' + msg + '</div>';
     } else {
       bodyEl.innerHTML = rows.join('');
     }
@@ -5755,7 +5828,56 @@
       }
     }
 
+    // v9.1.32 -- off-hours collapsed state. When session_date is empty
+    // (bot hasn't run a session today yet — typically between 00:00 and
+    // 09:25 ET) the gate pills show nothing meaningful (— / —). Replace
+    // the entire gate section with a single CLOSED chip so the banner
+    // doesn't look half-loaded all night. During an active session
+    // (session_date non-empty) all gates render normally.
     var ds = v10.day_status || {};
+    var _sessionActive = !!(ds.session_date);
+    var _regimeMode = ((s.regime || {}).mode || "CLOSED");
+    var _isMarketHours = (_regimeMode === "OPEN" || _regimeMode === "OR"
+      || _regimeMode === "POWER" || _regimeMode === "PRE");
+    var _showGatePills = _sessionActive || _isMarketHours;
+    // Hide the full gate section (VIX | Day rows) when off-hours and
+    // session not yet started. IDs are the v10-day-status pill spans.
+    ["v10-vix", "v10-vix-pass", "v10-day-state",
+     "v10-atr-pill", "v10-atr-pill-divider",
+     "v10-partial-pill", "v10-partial-pill-divider",
+     "v10-wash-pill", "v10-wash-pill-divider",
+     "v10-spy-pill", "v10-spy-pill-divider",
+     "v10-mbr-pill", "v10-mbr-pill-divider",
+     "v10-chase-pill", "v10-chase-pill-divider",
+     "v10-cooldown-pill", "v10-cooldown-pill-divider",
+    ].forEach(function (id) {
+      var _el = document.getElementById(id);
+      if (!_el) return;
+      // The dividers before VIX and Day are always shown; hide the rest.
+      var _isDivider = id.indexOf("divider") !== -1;
+      if (!_showGatePills) {
+        _el.style.display = "none";
+      }
+      // elements will be re-shown below if _showGatePills is true
+    });
+    // Add / remove a CLOSED chip next to the mode pill when off-hours.
+    var _closedChip = document.getElementById("v10-closed-chip");
+    if (!_showGatePills) {
+      if (!_closedChip) {
+        _closedChip = document.createElement("span");
+        _closedChip.id = "v10-closed-chip";
+        _closedChip.style.cssText = "padding:3px 10px;border-radius:999px;font-size:12px;"
+          + "font-weight:600;background:#374151;color:#9ca3af;";
+        _closedChip.title = "Market closed — session gates reset at 09:25 ET";
+        var _v10Banner = document.getElementById("v10-day-status");
+        if (_v10Banner) _v10Banner.appendChild(_closedChip);
+      }
+      _closedChip.textContent = "CLOSED";
+      _closedChip.style.display = "";
+      return; // skip all gate pill rendering below
+    }
+    if (_closedChip) _closedChip.style.display = "none";
+
     var vixEl = document.getElementById("v10-vix");
     var vixPassEl = document.getElementById("v10-vix-pass");
     var dayStateEl = document.getElementById("v10-day-state");
@@ -6682,7 +6804,18 @@
     }
     if (!body) return;
     if (events.length === 0) {
-      body.innerHTML = '<div class="empty">No v10 events yet today.</div>';
+      // v9.1.32 -- off-hours: collapse to a single dim line instead
+      // of showing the full "waiting" card with an empty body.
+      var _actMode = ((s.regime || {}).mode || "CLOSED");
+      var _actRth = (_actMode === "OPEN" || _actMode === "OR"
+        || _actMode === "POWER" || _actMode === "PRE");
+      var _actSession = !!((s.v10 || {}).session_date);
+      if (!_actRth && !_actSession) {
+        body.innerHTML = '<div class="empty" style="font-size:11px;padding:10px 14px">'
+          + '&mdash; session starts 09:25 ET &mdash;</div>';
+      } else {
+        body.innerHTML = '<div class="empty">No v10 events yet today.</div>';
+      }
       return;
     }
     var rows = [];
