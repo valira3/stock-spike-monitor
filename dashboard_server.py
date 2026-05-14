@@ -3823,16 +3823,30 @@ async def h_executor_verify_live(request):
         return web.json_response({"ok": False, "error": f"unknown executor {name!r}"})
 
     def _verify():
+        import os as _os
+
         executor = _get_executor(name)
         if executor is None:
             return {"ok": False, "error": f"{name} executor not initialised"}
         live_key = getattr(executor, "live_key", "").strip()
         live_secret = getattr(executor, "live_secret", "").strip()
+        # Diagnostic: also check raw env directly so we can distinguish
+        # "executor read it at init" from "env var not in process at all".
+        prefix = getattr(executor, "ENV_PREFIX", name.upper() + "_")
+        raw_key = _os.environ.get(prefix + "ALPACA_LIVE_KEY", "")
+        raw_secret = _os.environ.get(prefix + "ALPACA_LIVE_SECRET", "")
         if not live_key or not live_secret:
             return {
                 "ok": False,
                 "error": f"no live keys configured (set {name.upper()}_ALPACA_LIVE_KEY "
                 f"and {name.upper()}_ALPACA_LIVE_SECRET in Railway env)",
+                "diag": {
+                    "env_key_present": bool(raw_key),
+                    "env_secret_present": bool(raw_secret),
+                    "executor_key_present": bool(live_key),
+                    "executor_secret_present": bool(live_secret),
+                    "env_prefix": prefix,
+                },
             }
         try:
             client = executor._build_alpaca_client(mode="live")
