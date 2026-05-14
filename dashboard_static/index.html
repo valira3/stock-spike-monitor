@@ -88,7 +88,7 @@
      dashboard; Val and Gene poll /api/executor/{name} every 15s.
      v5.14.0 — Shadow tab removed (shadow strategy retired). -->
 <nav id="tg-tabs" style="display:flex;gap:0;background:#10151c;border-bottom:1px solid #1f2937;padding:0 14px">
-  <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" title="Main paper-trading dashboard (default executor)" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">📄 Paper</span></button>
+  <button type="button" class="tg-tab tg-tab-on" data-tg-tab="main" title="Main paper-trading dashboard (default executor)" style="background:transparent;border:none;color:#e7ecf3;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid #7dd3fc">Main <span class="chip chip-neut" style="font-size:10px;vertical-align:middle" title="Paper-trading mode">PAPER</span></button>
   <button type="button" class="tg-tab" data-tg-tab="val" title="Val executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Val <span id="tg-badge-val" style="color:#5b6572;font-size:10.5px">—</span></button>
   <button type="button" class="tg-tab" data-tg-tab="gene" title="Gene executor dashboard (per-executor live state)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Gene <span id="tg-badge-gene" style="color:#5b6572;font-size:10.5px">—</span></button>
   <button type="button" class="tg-tab" data-tg-tab="lifecycle" title="Per-position event timeline (entries, exits, gate trips, fills)" style="background:transparent;border:none;color:#8a96a7;padding:10px 18px;font-family:inherit;font-size:12.5px;cursor:pointer;border-bottom:2px solid transparent">Lifecycle <span id="tg-badge-lifecycle" style="color:#5b6572;font-size:10.5px">—</span></button>
@@ -156,40 +156,28 @@
          Eliminates the prior 12px-vs-18px spacing inconsistency. -->
     <section id="v10-day-status" class="v10-banner" style="padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
       <span style="font-weight:700;color:#7dd3fc;font-size:14px;letter-spacing:0.5px">v10 ORB</span>
-      <span id="v10-mode-pill" class="v10-pill" style="padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600">…</span>
+      <span id="v10-mode-pill" class="v10-pill" style="padding:3px 10px;display:inline">…</span>
       <span class="v10-divider" style="color:#374151">|</span>
       <span style="color:#9ca3af;font-size:12px">VIX</span>
       <span id="v10-vix" style="color:#e5e7eb;font-weight:600">—</span>
-      <span id="v10-vix-pass" class="v10-pill v10-pass" style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600">—</span>
+      <span id="v10-vix-pass" class="v10-pill v10-pass" style="display:inline">—</span>
       <span class="v10-divider" style="color:#374151">|</span>
       <span style="color:#9ca3af;font-size:12px">Day</span>
       <span id="v10-day-state" style="color:#e5e7eb;font-weight:600">—</span>
-      <!-- v8.1.2 -- ATR-stop + Partial-profit chips. Populated by
-           renderV10DayStatus from /api/state.config.{atr_stop_mult,
-           partial_profit_at_1r}. Hidden when the corresponding
-           feature is off so the banner doesn't get cluttered. -->
       <span id="v10-atr-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-atr-pill" class="v10-pill" title="ATR-based stop placement (v8.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#1e3a8a;color:#dbeafe">ATR×—</span>
+      <span id="v10-atr-pill" class="v10-pill v10-pill-atr" title="ATR-based stop placement (v8.0.0+)">ATR×—</span>
       <span id="v10-partial-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-partial-pill" class="v10-pill" title="Partial-profit-at-1R (v8.1.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600">P@1R</span>
-      <!-- v8.1.8 -- wash-sale risk counter. Hidden when count=0 so
-           the banner stays uncluttered on clean-trading days. -->
+      <span id="v10-partial-pill" class="v10-pill" title="Partial-profit-at-1R (v8.1.0+)">P@1R</span>
       <span id="v10-wash-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-wash-pill" class="v10-pill" title="Wash-sale risk entries this session (v8.1.8+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(245,158,11,0.18);color:#f59e0b">Wash 0</span>
-      <!-- v9.0.0 -- chase-prevention + regime-skip indicators.
-           Populated by renderV10DayStatus from
-           /api/state.v10.day_status.{spy_d1_ret_bps, spy_threshold_bps}
-           and /api/state.v10.{mbr_reject_count, vwap_chase_reject_count}.
-           Hidden when off (threshold=0) or count=0 so the banner stays
-           clean. -->
+      <span id="v10-wash-pill" class="v10-pill v10-pill-wash" title="Wash-sale risk entries this session (v8.1.8+)">Wash 0</span>
       <span id="v10-spy-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-spy-pill" class="v10-pill" title="Prior-day SPY return regime gate (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600">SPY —</span>
+      <span id="v10-spy-pill" class="v10-pill" title="Prior-day SPY return regime gate (v9.0.0+)">SPY —</span>
       <span id="v10-mbr-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-mbr-pill" class="v10-pill" title="Weak-break entries rejected this session (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(59,130,246,0.18);color:#60a5fa">mbr 0</span>
+      <span id="v10-mbr-pill" class="v10-pill v10-pill-mbr" title="Weak-break entries rejected this session (v9.0.0+)">mbr 0</span>
       <span id="v10-chase-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-chase-pill" class="v10-pill" title="Mega-cap chase-fence rejections this session (v9.0.0+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(168,85,247,0.18);color:#c4b5fd">chase 0</span>
+      <span id="v10-chase-pill" class="v10-pill v10-pill-chase" title="Mega-cap chase-fence rejections this session (v9.0.0+)">chase 0</span>
       <span id="v10-cooldown-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
-      <span id="v10-cooldown-pill" class="v10-pill" title="Active post-loss cooldowns (v9.1.26+)" style="display:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(245,158,11,0.22);color:#fbbf24">cooldown 0</span>
+      <span id="v10-cooldown-pill" class="v10-pill v10-pill-cool" title="Active post-loss cooldowns (v9.1.26+)">cooldown 0</span>
     </section>
 
     <!-- v7.58.0 -- renamed from "v10 Projection" and collapsed to one

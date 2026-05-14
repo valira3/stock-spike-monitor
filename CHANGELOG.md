@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.34 (2026-05-14) — code quality cleanup (PR 4)
+
+- **Dead CSS deleted**: removed `.pmtx-weather-*` (Weather Check banner, v7.58.0 removed HTML) and `.pmtx-comp-*` (Pipeline Component grid, never rendered on v10 path). −265 lines.
+- **`.v10-pill` CSS class** added with color variants (`.v10-pill-atr/wash/mbr/chase/cool`) — replaces repeated `padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600` inline style on 9 pill spans in index.html.
+- **Lifecycle `<select>` styled** to match dashboard theme: `appearance:none`, `--surface-2` background, `--border` border, dropdown chevron SVG — no white OS default box in dark mode on Windows.
+- **`📄 Paper` emoji** in Main tab replaced with `.chip.chip-neut` "PAPER" text badge — cross-platform consistent.
+
+---
+
 ## v9.1.33 (2026-05-14) — Val/Gene executor loading shimmer
 
 CSS shimmer animation on KPI value placeholders while the first `/api/executor/<name>` fetch is in-flight. `ensureExecSkeleton` adds `.tg-exec-loading` to the panel root; `pollExecutor` removes it on first successful response. Dashes pulse at 1.4s so the operator can distinguish "loading" from "executor offline/no data".
