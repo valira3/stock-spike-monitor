@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.54 (2026-05-14) — fix h-tick "♻ --" and sporadic data refresh
+
+Two related dashboard display bugs:
+
+**`♻ --` after countdown reaches 0**: The SSE backend was returning `next_scan_sec = null` during the brief window when the scan is mid-execution (before `_last_scan_time` is updated for the new cycle). `renderNextScanCountdown` was overwriting `window.__nextScanSec = null`, which immediately jumped the display to `♻ --`. Fix: only overwrite `__nextScanSec` when the backend returns a real number — null pushes let the 1s tick timer continue decrementing uninterrupted.
+
+**Sporadic data refresh**: SSE was at 5s (changed in v9.1.50 to smooth the countdown) but the scan runs every 15s. This pushed the same data payload 3× between scans, triggering `renderAll()` and a DOM rebuild each time — causing visible flicker and the perception of "sporadic" updates. Reverted SSE to 15s (matching scan cadence). The countdown is now driven entirely by the client-side 1s tick timer: it counts down from the last SSE-delivered value, shows `♻ ···` when it reaches 0, and resets to ~15 on the next SSE push. No intermediate DOM rebuilds between scans.
+
+---
+
 ## v9.1.53 (2026-05-14) — monitor: fix NFLX orphan false-positive WARNs (risk_sizing + fill_match)
 
 Two monitor false positives from the NFLX SHORT orphan trade (pre-deploy, tight OR stop, $143 risk, never sent to Alpaca):

@@ -3219,7 +3219,12 @@
   function renderNextScanCountdown(s) {
     const g = (s && s.gates) || {};
     const nss = (typeof g.next_scan_sec === "number") ? g.next_scan_sec : null;
-    window.__nextScanSec = nss;
+    // Only overwrite with a real value — if the backend returns null (scan
+    // mid-execution or scanner not yet initialised), let the 1s tick timer
+    // keep decrementing rather than jumping to "♻ --".
+    if (nss !== null) {
+      window.__nextScanSec = nss;
+    }
     updateNextScanLabel();
   }
 

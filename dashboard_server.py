@@ -4737,7 +4737,7 @@ async def h_stream(request):
 
             # heartbeat comment to keep proxies from closing
             await resp.write(b": ping\n\n")
-            await asyncio.sleep(5.0)  # push every 5s so h-tick countdown is smooth
+            await asyncio.sleep(15.0)  # match scan interval; frontend timer handles countdown
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     except Exception as e:
