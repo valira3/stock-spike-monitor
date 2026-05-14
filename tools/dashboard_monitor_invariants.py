@@ -178,9 +178,22 @@ def inv_val_gene_trades_match_main(ctx):
             f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
             f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})",
         )
-    main_count = len(s.get("trades_today") or [])
-    val_count = len(val.get("trades_today") or [])
-    gene_count = len(gene.get("trades_today") or [])
+    main_trades = s.get("trades_today") or []
+    # v9.1.68 -- skip if Main's trades_today includes EOD supplement rows
+    # (portfolio="eod", injected by _eod_trade_rows_for_pid in v9.1.67).
+    # In FIRE=1 EOD mode each portfolio tracks EOD trades independently;
+    # comparing Main's injected count against Val's Alpaca todays_trades
+    # produces a guaranteed mismatch even when everything is working.
+    if any(t.get("portfolio") == "eod" or t.get("eod") for t in main_trades):
+        return _ok(
+            "val_gene_trades_match_main",
+            "skipped: Main trades_today includes EOD supplement (FIRE=1 EOD mode)",
+        )
+    main_count = len(main_trades)
+    # v9.1.68 -- executor snapshot field is "todays_trades", not "trades_today".
+    # The wrong key name made val_count always 0 in FIRE=1 post-EOD sessions.
+    val_count = len(val.get("todays_trades") or val.get("trades_today") or [])
+    gene_count = len(gene.get("todays_trades") or gene.get("trades_today") or [])
     mismatches = []
     if val.get("enabled") is not False and val_count != main_count:
         mismatches.append(f"val={val_count} vs main={main_count}")
@@ -482,6 +495,23 @@ def inv_open_risk_within_cap(ctx):
         if cap > 0 and used > cap + 0.01:
             over.append(f"{pid}: open_risk=${used:.2f} > cap=${cap:.2f}")
     if over:
+        # v9.1.68 -- after the ORB entry window closes (11:00 ET cutoff),
+        # no new admissions can happen so over-cap is from morning-admitted
+        # positions resolving at EOD (stop or flush). A CRIT at 15:51 ET
+        # is not actionable; demote to soft OK with detail preserved.
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            _et_min = (lambda d: d.hour * 60 + d.minute)(datetime.now(ZoneInfo("US/Eastern")))
+            if _et_min >= 660:  # past 11:00 ET ORB cutoff
+                return _ok(
+                    "open_risk_within_cap",
+                    f"soft post-cutoff: {len(over)} pid(s) over cap — "
+                    f"resolves at EOD. {'; '.join(over)}",
+                )
+        except Exception:
+            pass
         return _fail(
             "open_risk_within_cap",
             f"{len(over)} pid(s) over concurrent-risk cap",

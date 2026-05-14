@@ -4,6 +4,23 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.68 (2026-05-14) — fix two post-EOD false-positive CRITs from v9.1.67
+
+Both CRITs fired at 15:51 ET after EOD positions closed and v9.1.67 was live.
+
+**CRIT 1: val_gene_trades_match_main** (root cause: two bugs compounding)
+- Bug A: v9.1.67 injected EOD supplement rows (`portfolio="eod"`) into Main's `trades_today`, making `main_count=9` when it had been 0 post-EOD.
+- Bug B: The invariant read `val.get("trades_today")` but the executor snapshot field is `"todays_trades"` (not `"trades_today"`), always giving `val_count=0`.
+- Post-EOD the FIRE=1 skip condition (`val_alpaca_pos != main_paper_pos`) was False (both 0), so the check ran and saw 9 ≠ 0 → CRIT.
+- Fix: (1) skip early if any Main trade has `portfolio="eod"` (EOD-mode divergence is expected); (2) use `val.get("todays_trades") or val.get("trades_today")` so the field is read correctly.
+
+**CRIT 2: open_risk_within_cap** (NVDA orphan in Val's RiskBook at $2293 vs $2000 cap)
+- NVDA was admitted via `_inject_orphan_positions` which bypasses the normal cap admission gate. At 15:51 ET, it was still open (Val-only orphan positions don't get bus exit signals; they close at EOD flush).
+- A Telegram CRIT at 15:51 ET is not actionable — the position resolves at EOD.
+- Fix: after ORB time cutoff (11:00 ET), no new admissions can happen. Demote over-cap from `_fail` (CRIT) to `_ok` with a soft note. The cap enforcement still fires as CRIT pre-cutoff when admissions are possible.
+
+---
+
 ## v9.1.67 (2026-05-14) — EOD reversal trades in Today's Trades across all tabs
 
 EOD reversal closed legs now appear in the Today's Trades section on all tabs alongside ORB trades.
