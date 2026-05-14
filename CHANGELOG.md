@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.49 (2026-05-14) — dashboard: fix h-tick stuck at 0, connection-drop banner false triggers, no blink on reconnect
+
+Three connected UX bugs that produced the "love counter stuck / connection dropped" cycle:
+
+- **Stale-data watchdog threshold 10s → 35s**: the watchdog was firing on almost every SSE cycle (push interval = 15s, watchdog = 10s < 15s). Every ~12s the dashboard would switch to "polling" mode, show the "Live stream dropped" banner, then reconnect. Threshold raised to 35s (> 2×) so the watchdog only triggers when the SSE genuinely goes dark.
+- **h-tick at 0 shows `♻ ···`**: the countdown now goes negative (no `Math.max(0, ...)` clamp) so `updateNextScanLabel` detects `s <= 0` and shows an animated-looking `♻ ···` ("scanning") instead of the stuck `♻ 00s`. The next SSE push resets it to the new countdown.
+- **Banner fade transition**: replaced `display: none` hide with `max-height / opacity / padding` CSS transition so the banner fades in/out smoothly instead of popping in and causing a layout-shift blink.
+
+**Trail marker note**: the TRAIL badge and progress-bar trail tick are valid — they appear when `ORB_MOVE_TO_BE_AFTER_1R=1` moves the runner's stop to breakeven, which the backend correctly identifies as a "tightened stop" in `_compute_trail_pill_state`.
+
+---
+
 ## v9.1.48 (2026-05-14) — fix no_phantom_positions for 1R runner + inv_or_locked_after_or_end during OR regime
 
 Two invariant false positives:

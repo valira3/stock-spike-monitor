@@ -326,8 +326,15 @@
     border: 1px solid #7a2b2b; border-radius: var(--radius);
     padding: 10px 14px; font-size: 12.5px;
     display: flex; align-items: center; gap: 10px;
+    overflow: hidden;
+    max-height: 80px;
+    opacity: 1;
+    transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.2s ease, border-width 0.2s ease;
   }
-  .banner.hide { display: none; }
+  .banner.hide {
+    max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0;
+    border-width: 0; pointer-events: none;
+  }
   .banner-ok { background: var(--warn-dim); color: var(--warn); border-color: #7a5a1a; }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }

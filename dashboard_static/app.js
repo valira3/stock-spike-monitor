@@ -3233,10 +3233,16 @@
     if (!el) return;
     const s = window.__nextScanSec;
     if (typeof s === "number") {
-      const ss = String(s).padStart(2, "0");
-      el.textContent = `\u267B ${ss}s`;
-      el.setAttribute("aria-label", `next scan in ${ss}s`);
-      el.setAttribute("title", `next scan in ${ss}s`);
+      if (s <= 0) {
+        el.textContent = "\u267B \u00B7\u00B7\u00B7";
+        el.setAttribute("aria-label", "scanning now");
+        el.setAttribute("title", "scan in progress");
+      } else {
+        const ss = String(s).padStart(2, "0");
+        el.textContent = `\u267B ${ss}s`;
+        el.setAttribute("aria-label", `next scan in ${ss}s`);
+        el.setAttribute("title", `next scan in ${ss}s`);
+      }
     } else {
       el.textContent = "\u267B --";
       el.setAttribute("aria-label", "next scan: not scheduled");
@@ -3592,7 +3598,7 @@
     // value.
     streamTickTimer = setInterval(() => {
       if (typeof window.__nextScanSec === "number") {
-        window.__nextScanSec = Math.max(0, window.__nextScanSec - 1);
+        window.__nextScanSec -= 1;
       }
       updateNextScanLabel();
     }, 1000);
@@ -3697,17 +3703,18 @@
   setInterval(window.__tgTickClock, 1000);
   window.__tgTickClock();
 
-  // stale-data watchdog: if no data in 10s, drop to polling.
-  // Uses scheduleStreamReconnect so back-to-back watchdog ticks
-  // can't queue multiple reconnect setTimeouts.
+  // stale-data watchdog: if no data in 35s (> 2× the 15s SSE push
+  // interval), drop to polling. Threshold was 10s before v9.1.49 which
+  // caused false triggers on nearly every cycle and produced the
+  // "connection dropped" banner during normal operation.
   setInterval(() => {
-    if (lastDataAt && (Date.now() - lastDataAt) > 10000 && streamConn) {
+    if (lastDataAt && (Date.now() - lastDataAt) > 35000 && streamConn) {
       setConn("polling");
       stopStream();
       startPolling();
       scheduleStreamReconnect(15000);
     }
-  }, 3000);
+  }, 5000);
 
   // kick off
   startStream();
