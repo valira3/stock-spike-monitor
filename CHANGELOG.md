@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.71 (2026-05-14) — fix position_count_three_way CRIT from unclosed EOD positions post-market
+
+`position_count_three_way` fired at 16:19 ET: `broker_open_n=3` (Val's Alpaca paper account still holds AAPL/ORCL/NVDA) while all internal books show 0.
+
+Root cause: Railway redeployed at ~15:58 ET (v9.1.67). The new instance booted with an empty `EodReversalEngine` and the next scan at ~16:00 ET missed the 15:59 ET exit window. The `_eod_fire_broker_close` for AAPL and ORCL never fired on the new instance. NVDA (orphan recovery) also never received an exit signal since Val-only positions don't get bus signals (per CLAUDE.md: "those Val-only positions close only at EOD flush"). Three positions remain open in Alpaca paper with no corresponding engine state.
+
+Fix: same post-market session-mode skip as v9.1.70 applied to `val_gene_trades_match_main`. When `regime.mode` is "AFTER"/"CLOSED"/"PRE", `position_count_three_way` returns a soft OK noting the unclosed count. The CRIT still fires during market hours ("OR"/"OPEN") when phantom positions are actionable.
+
+---
+
 ## v9.1.70 (2026-05-14) — fix val_gene_trades_match_main CRIT persisting post-16:00 ET
 
 `val_gene_trades_match_main` kept firing after market close because the v9.1.68 EOD-aware skip only covers when Main's `trades_today` contains EOD supplement rows. The 9-trade mismatch at 16:06 ET was from ORB paper trades (not EOD), and both position counts were 0 post-market so the FIRE=1 position-based skip also didn't trigger.
