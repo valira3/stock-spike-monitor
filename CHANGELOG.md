@@ -4,6 +4,17 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.62 (2026-05-14) — Val/Gene tab UI parity: progress row colspan + phase badge
+
+Two divergences vs Main fixed:
+
+- **Progress bar colspan**: Val/Gene progress row was `colspan="9"` but the table has 11 columns, causing the bar to not span the full width. Fixed to `colspan="11"`.
+- **Phase badge (OPEN/1R↗/TRAIL)**: Main's ticker cell shows the position phase derived from `phase` field in paper_state. Val/Gene now shows the same badge derived from `engine_positions.partial_taken` + `engine_positions.be_moved` (added to the serialization alongside stop/entry). Badge is hidden when engine_positions has no data for the ticker.
+
+Also adds `partial_taken` and `be_moved` to the `engine_positions` payload in `/api/executor/{name}` so future phase-aware logic has the data available.
+
+---
+
 ## v9.1.61 (2026-05-14) — orphan position recovery via ORB_ORPHAN_POSITIONS_{PID}
 
 Adds `_inject_orphan_positions()` called at session start after rehydrate. Reads env vars `ORB_ORPHAN_POSITIONS_VAL` / `ORB_ORPHAN_POSITIONS_GENE` (format: `TICKER:side:entry:stop:shares[,...]`) and creates `recover-orphan-{ticker}-{pid}` OrbPositions + RiskBook tickets for any ticker not already tracked. Idempotent (skips already-tracked tickers). Forensic tag: `[V9161-ORPHAN]`.

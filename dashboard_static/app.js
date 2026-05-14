@@ -5021,6 +5021,19 @@
           // intraday chart the v10 Proximity matrix uses (shared via
           // window.__tgRenderTickerChart). Expansion state lives on the
           // posBody element so it survives re-renders.
+          // Phase badge parity with Main's OPEN / 1R↗ / TRAIL badge.
+          // Derived from engine_positions partial_taken + be_moved flags.
+          var _phaseBadge = "";
+          var _epData = _engPos[p.symbol] || null;
+          if (_epData) {
+            var _phA = !_epData.partial_taken;
+            var _phC = _epData.partial_taken && _epData.be_moved;
+            var _phB = _epData.partial_taken && !_epData.be_moved;
+            var _phLabel = _phA ? "OPEN" : _phB ? "1R↗" : "TRAIL";
+            var _phCls = _phA ? "A" : _phB ? "B" : "C";
+            var _phTitle = _phA ? "Initial entry (stop at hard stop)" : _phB ? "1R partial taken, arming toward BE" : "Mature runner, stop at breakeven";
+            _phaseBadge = '<span class="eot-phase-badge eot-phase-' + _phCls + '" title="' + _phTitle + '">' + _phLabel + '</span>';
+          }
           var _expanded = posBody.__posExpanded && posBody.__posExpanded.has(p.symbol);
           var _chartRow = _expanded
             ? '<tr class="pos-chart-row" data-pos-chart="' + esc(p.symbol) + '">'
@@ -5029,7 +5042,7 @@
               + '</td></tr>'
             : '';
           return `<tr data-pos-ticker="${esc(p.symbol)}" tabindex="0" role="button" aria-expanded="${_expanded ? 'true' : 'false'}" style="cursor:pointer">
-            <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span></td>
+            <td><span class="ticker">${esc(p.symbol)} <span class="mark ${markCls}" title="${esc(dotTitle)}">\u25cf</span></span>${_phaseBadge}</td>
             <td><span class="${sideCls}">${esc(p.side)}</span></td>
             <td class="right">${fmtNum(p.qty, 0)}</td>
             <td class="right">${fmtNum(p.avg_entry, 2)}</td>

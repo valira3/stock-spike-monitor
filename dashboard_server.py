@@ -3403,6 +3403,8 @@ def _executor_snapshot(name: str) -> dict:
                     "entry": _entry,
                     "shares": int(getattr(_pos, "shares", 0) or 0),
                     "side": _side,
+                    "partial_taken": bool(getattr(_pos, "partial_taken", False)),
+                    "be_moved": bool(getattr(_pos, "be_moved", False)),
                 }
             payload["engine_positions"] = _eng_pos
     except Exception:
