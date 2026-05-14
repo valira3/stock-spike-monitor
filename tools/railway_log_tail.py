@@ -47,11 +47,82 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# CLI-based log fetch (local machine, no API token required)
+# ---------------------------------------------------------------------------
+
+
+def _railway_exe() -> str | None:
+    """Return the railway CLI executable name, handling Windows .cmd wrappers."""
+    # On Windows npm installs railway as railway.cmd; shutil.which finds it.
+    for candidate in ("railway", "railway.cmd"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
+
+
+def _fetch_via_cli(limit: int = 500) -> list[dict] | None:
+    """Fetch logs via the `railway` CLI.
+
+    Returns a normalised list of {timestamp, message, severity} dicts on
+    success, or None if the CLI is unavailable / not authenticated.
+
+    Used automatically by fetch_recent_logs() when RAILWAY_API_TOKEN is
+    not set but the railway CLI is installed and linked to a project.
+    """
+    exe = _railway_exe()
+    if not exe:
+        logger.debug("railway CLI not found")
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "logs", "--lines", str(min(limit, 500)), "--json", "--since", "24h"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            # shell=True needed on Windows for .cmd scripts when not using full path
+            shell=(sys.platform == "win32"),
+        )
+    except subprocess.TimeoutExpired:
+        logger.debug("railway CLI timed out")
+        return None
+    except Exception as e:
+        logger.debug("railway CLI error: %s", e)
+        return None
+
+    if result.returncode != 0:
+        logger.debug("railway CLI exit %d: %s", result.returncode, result.stderr[:200])
+        return None
+
+    rows: list[dict] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows.append(
+            {
+                "timestamp": str(obj.get("timestamp") or ""),
+                "message": str(obj.get("message") or ""),
+                # CLI uses "level"; normalise to "severity" for callers
+                "severity": str(obj.get("level") or obj.get("severity") or ""),
+            }
+        )
+    return rows
 
 
 _DEFAULT_API = "https://backboard.railway.com/graphql/v2"
@@ -89,9 +160,9 @@ FAILURE_SIGNATURES: dict[str, str] = {
 _last_gql_errors: list[str] = []
 
 
-def _gql(token: str, query: str, variables: dict, *,
-         api_url: str = _DEFAULT_API,
-         timeout: float = 10.0) -> dict | None:
+def _gql(
+    token: str, query: str, variables: dict, *, api_url: str = _DEFAULT_API, timeout: float = 10.0
+) -> dict | None:
     """POST a GraphQL query. Returns parsed JSON or None on any error.
 
     v7.92.0 -- supports BOTH Railway token types: personal/team API
@@ -107,7 +178,10 @@ def _gql(token: str, query: str, variables: dict, *,
 
     def _try(headers: dict) -> dict | None:
         req = urllib.request.Request(
-            api_url, data=payload, method="POST", headers=headers,
+            api_url,
+            data=payload,
+            method="POST",
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -213,13 +287,11 @@ query deploymentLogs(
 """
 
 
-def _resolve_latest_deployment_id(token: str, service_id: str,
-                                  api_url: str) -> str | None:
+def _resolve_latest_deployment_id(token: str, service_id: str, api_url: str) -> str | None:
     """Query Railway for the most recent deployment of the service.
     Returns the deployment id or None on any failure.
     """
-    resp = _gql(token, _LATEST_DEPLOYMENT_QUERY, {"serviceId": service_id},
-                api_url=api_url)
+    resp = _gql(token, _LATEST_DEPLOYMENT_QUERY, {"serviceId": service_id}, api_url=api_url)
     if not resp or "data" not in resp:
         return None
     try:
@@ -248,7 +320,16 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     """
     token = (os.environ.get("RAILWAY_API_TOKEN", "") or "").strip()
     service_id = (os.environ.get("RAILWAY_SERVICE_ID", "") or "").strip()
-    if not token or not service_id:
+    if not token:
+        # Fall back to the railway CLI when explicitly opted in via
+        # RAILWAY_USE_CLI=1. Opt-in avoids breaking existing tests that
+        # assert fetch_recent_logs() == [] when no token is configured.
+        if os.environ.get("RAILWAY_USE_CLI") == "1":
+            cli_rows = _fetch_via_cli(limit=limit)
+            if cli_rows is not None:
+                return cli_rows
+        return []
+    if not service_id:
         return []
     api_url = (os.environ.get("RAILWAY_API_URL", "") or "").strip() or _DEFAULT_API
     deployment_id = _resolve_latest_deployment_id(token, service_id, api_url)
@@ -269,13 +350,16 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     # future version.
     _safe_limit = max(1, min(int(limit), 500))
     from datetime import datetime, timedelta, timezone as _tz
+
     _now = datetime.now(_tz.utc)
     _start = (_now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     _end = _now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    resp = _gql(token, _DEPLOYMENT_LOGS_QUERY,
-                {"deploymentId": deployment_id, "limit": _safe_limit,
-                 "startDate": _start, "endDate": _end},
-                api_url=api_url)
+    resp = _gql(
+        token,
+        _DEPLOYMENT_LOGS_QUERY,
+        {"deploymentId": deployment_id, "limit": _safe_limit, "startDate": _start, "endDate": _end},
+        api_url=api_url,
+    )
     if not resp or "data" not in resp:
         return []
     try:
@@ -286,11 +370,13 @@ def fetch_recent_logs(limit: int = 500) -> list[dict]:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        out.append({
-            "timestamp": str(row.get("timestamp") or ""),
-            "message": str(row.get("message") or ""),
-            "severity": str(row.get("severity") or ""),
-        })
+        out.append(
+            {
+                "timestamp": str(row.get("timestamp") or ""),
+                "message": str(row.get("message") or ""),
+                "severity": str(row.get("severity") or ""),
+            }
+        )
     return out
 
 
@@ -381,14 +467,20 @@ def probe_railway_access() -> dict:
         "deployment_created": "",
     }
     if not token:
+        if os.environ.get("RAILWAY_USE_CLI") == "1":
+            cli_rows = _fetch_via_cli(limit=1)
+            if cli_rows is not None:
+                out["status"] = "ok"
+                out["deployment_id"] = "cli"
+                out["deployment_status"] = "cli"
+                return out
         out["status"] = "missing_token"
         return out
     if not service_id:
         out["status"] = "missing_service"
         return out
     api_url = (os.environ.get("RAILWAY_API_URL", "") or "").strip() or _DEFAULT_API
-    resp = _gql(token, _LATEST_DEPLOYMENT_QUERY, {"serviceId": service_id},
-                api_url=api_url)
+    resp = _gql(token, _LATEST_DEPLOYMENT_QUERY, {"serviceId": service_id}, api_url=api_url)
     if not resp or "data" not in resp:
         out["status"] = "auth_failed"
         return out
@@ -410,9 +502,10 @@ def probe_railway_access() -> dict:
     return out
 
 
-def scan_for_failures(logs: list[dict],
-                      signatures: dict[str, str] | None = None,
-                      ) -> dict[str, dict]:
+def scan_for_failures(
+    logs: list[dict],
+    signatures: dict[str, str] | None = None,
+) -> dict[str, dict]:
     """Scan logs for FAILURE_SIGNATURES.
 
     Args:
@@ -435,11 +528,14 @@ def scan_for_failures(logs: list[dict],
         ts = row.get("timestamp") or ""
         for name, rx in compiled.items():
             if rx.search(msg):
-                bucket = findings.setdefault(name, {
-                    "count": 0,
-                    "first_message": msg[:300],
-                    "last_timestamp": ts,
-                })
+                bucket = findings.setdefault(
+                    name,
+                    {
+                        "count": 0,
+                        "first_message": msg[:300],
+                        "last_timestamp": ts,
+                    },
+                )
                 bucket["count"] += 1
                 # Keep the most recent timestamp for the bucket.
                 if ts and ts > bucket["last_timestamp"]:
@@ -447,8 +543,7 @@ def scan_for_failures(logs: list[dict],
     return findings
 
 
-def grep_logs(pattern: str, *, limit: int = 500,
-              max_matches: int = 20) -> list[dict]:
+def grep_logs(pattern: str, *, limit: int = 500, max_matches: int = 20) -> list[dict]:
     """v7.84.0 -- fetch Railway logs and return rows matching `pattern`.
 
     Used by invariants to enrich their failure detail with the actual

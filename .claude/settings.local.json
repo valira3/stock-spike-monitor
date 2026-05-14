@@ -10,7 +10,27 @@
       "Bash(FMP_API_KEY=VqYj2Jujrc8IvUOe4CR1g0tRf0qlB4AV SSM_SMOKE_TEST=1 TG_BACKTEST_MODE=1 BARS_DIR=./data python *)",
       "Bash(pkill -f \"replay_v511_full\")",
       "Bash(git restore *)",
-      "Bash(echo \".venv/\")"
+      "Bash(echo \".venv/\")",
+      "Bash(railway --version)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" https://tradegenius.up.railway.app/api/version)",
+      "Bash(curl -v https://tradegenius.up.railway.app/api/version)",
+      "Bash(npm install *)",
+      "Bash(curl -sk https://tradegenius.up.railway.app/api/version)",
+      "Bash(railway login *)",
+      "Bash(railway whoami *)",
+      "mcp__claude_ai_Cloudflare_Developer_Platform__accounts_list",
+      "Bash(dir C:\\\\Projects\\\\stock-spike-monitor /b)",
+      "Bash(railway variables *)",
+      "Bash(railway status *)",
+      "Bash(railway service *)",
+      "Bash(railway link *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(cd /root/stock-spike-monitor && python scripts/run_monitor.py --once 2>&1 | head -20)",
+      "Bash(railway logs *)",
+      "Bash(where railway *)",
+      "Bash(npm root *)",
+      "Bash(ls \"$\\(npm root -g\\)/.bin/railway\"*)"
     ]
   }
 }

@@ -5,9 +5,12 @@ the morning ORB framework so each can be validated standalone on the same
 corpus that produced the v9.0.0 results (`/tmp/rth-data/data/` + the
 quarterly slices under `/tmp/cv_q*`).
 
-Both strategies enter at 15:30 ET and exit at 15:55 ET (a ~25-min hold
-that avoids the 4pm closing-auction crowd). Production VWAP-style slippage
-(5 bps each side) applied.
+Both strategies enter at 15:30 ET and exit at 15:55 ET by default.
+
+IMPORTANT: production eod_reversal.py (orb/eod_reversal.py) uses 15:00 ET
+entry since v9.1.2 (entry_et_minutes default = 15*60). To match production
+set AFT_ENTRY_BUCKET=900 AFT_EXIT_BUCKET=959 explicitly. The 15:00 entry
+gives +$10,036/yr vs +$4,649/yr at the default 15:30 on the Keystone corpus.
 
 Strategy 1 -- INTRADAY_MOMENTUM (Gao, Han, Li, Zhou 2015 + Zarattini, Aziz,
 Barbon 2024):

@@ -27,7 +27,7 @@ Production runs the **v10 ORB anchor** strategy for morning entries (9:30-11:00 
 - Val/Gene executors: `executors/{base,bootstrap,val,gene}.py`
 - Multi-layered verification: `tools/orb_session_sim.py` + `tests/strategy/test_orb_session_sim.py` (15 scenarios); `tools/orb_replay_day.py` + `tests/strategy/test_orb_replay_day.py` (archive replay)
 - Universe / tickers: code expects `/data/tickers.json` on persistent volume; default in `config.py` UNIVERSE
-- Version: `bot_version.py` (`BOT_VERSION = "7.x.y"`); mirrored in `trade_genius.py`
+- Version: `bot_version.py` (`BOT_VERSION`); mirrored in `trade_genius.py`
 - Bar archive writer: `bar_archive.py` (writes to `/data/bars/YYYY-MM-DD/<TICKER>.jsonl`)
 - Retirement plan: `docs/v10_retirement_plan.md` (gates legacy code physical-deletion on 5-day paper-fire observation)
 - Legacy still on disk (hidden in UI under `body.v10-live` but not yet physically deleted): `tiger_buffalo_v5.py`, `_pmtx*` JS, `.pmtx-*` CSS. Removal scheduled for post-paper-fire PRs.
@@ -101,10 +101,127 @@ top-of-file docstrings AND in `docs/pl_optimization_final_report_v12.md`
 (currently v12). v8.3.26's R6 results will land in v13 after the
 sweep runs.
 
-## Retrieving live state from sandbox (added v8.3.24)
+## Keystone — canonical production baseline
 
-The Claude Code sandbox is firewalled from `tradegenius.up.railway.app` (Host-not-in-allowlist). To analyze live trading state without the operator pasting JSON, pull the latest snapshot from the dedicated `snapshots-live` branch via the GitHub MCP:
+**Keystone** is the locked production strategy benchmark as of 2026-05-13.
 
+**Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:30-15:59 ET). No blocklist. VWAP-chase gate is the production discriminator for the 6 mega-caps.
+
+**Results (SIP corpus, Jan 2025-May 2026, 341 days, with 30-min post-loss cooldown):**
+
+| Component | Ann/yr | Notes |
+|---|---:|---|
+| Morning ORB | +$31,449 | VWAP 25bps gate + 30min cooldown |
+| EOD reversal (r17) | +$10,036 | ORCL/AAPL/MSFT/AVGO fence, 35% notional, 15:00-15:59 ET |
+| **Combined** | **+$41,485** | **+58.8% on $100k / 17mo / 1/6 neg quarters** |
+
+| Quarter | Combined P&L |
+|---|---:|
+| 2025-Q1 | -$5,183 |
+| 2025-Q2 | +$11,430 |
+| 2025-Q3 | +$8,479 |
+| 2025-Q4 | +$15,208 |
+| 2026-Q1 | +$8,316 |
+| 2026-Q2 | +$20,521 |
+
+**How to run (morning ORB):**
+```bash
+ORB_OR_MINUTES=30 ORB_RR=2.5 ORB_RISK_PER_TRADE_PCT=1.0 \
+ORB_RANGE_MIN_PCT=0.008 ORB_RANGE_MAX_PCT=0.025 \
+ORB_MAX_TRADES_PER_DAY=5 ORB_MAX_CONCURRENT_RISK_DOLLARS=2000 \
+ORB_DAILY_LOSS_KILL_PCT=2.0 ORB_ATR_STOP_MULT=1.75 ORB_ATR_LOOKBACK_5M=14 \
+ORB_PARTIAL_PROFIT_AT_1R=1 ORB_MOVE_TO_BE_AFTER_1R=1 \
+ORB_STOP_BUFFER_BPS=5.0 ORB_ENTRY_SLIPPAGE_BPS=1.5 \
+ORB_EXIT_SLIPPAGE_BPS=1.5 ORB_STOP_KICK_BPS=5.0 ORB_SHORT_PENALTY_BPS=1.0 \
+ORB_MAX_TRADE_NOTIONAL_PCT=75 ORB_SKIP_GAP_ABOVE_PCT=1.5 \
+ORB_SKIP_VIX_ABOVE=22.0 ORB_SKIP_PRIOR_SPY_RET_LT_BPS=-40.0 \
+ORB_SKIP_EARNINGS_WINDOW=1 ORB_TIME_CUTOFF_ET=11:00 ORB_EOD_CUTOFF_ET=15:55 \
+ORB_ACCOUNT=100000 ORB_COMPOUND_DAILY=1 ORB_TICKER_SIDE_BLOCKLIST='{}' \
+ORB_MAX_VWAP_DEV_BPS=25.0 ORB_MAX_VWAP_DEV_TICKERS='META,MSFT,AAPL,AMZN,GOOG,AVGO' \
+ORB_POST_LOSS_COOLDOWN_MIN=30 \
+python tools/orb_backtest.py --corpus data --out results/keystone_verify \
+  --year-prefix 20 \
+  --tickers AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,ORCL,QQQ,SPY,TSLA
+```
+
+**How to run (EOD r17):**
+```bash
+AFT_STRATEGY=eod_reversal AFT_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX \
+AFT_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO AFT_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT \
+AFT_EOD_TOP_N=1 AFT_NOTIONAL_PCT=35 AFT_SIZING_MODE=fixed_notional \
+AFT_ENTRY_BUCKET=900 AFT_EXIT_BUCKET=959 \
+AFT_ENTRY_SLIP_BPS=1.5 AFT_EXIT_SLIP_BPS=1.5 AFT_ACCOUNT=100000 AFT_COMPOUND_DAILY=1 \
+python tools/afternoon_backtest.py --strategy eod_reversal \
+  --corpus data --out results/keystone/eod --year-prefix 20
+# NOTE: AFT_ENTRY_BUCKET=900 (15:00 ET) is required — afternoon_backtest.py
+# defaults to 930 (15:30) but production eod_reversal.py has used 15:00 since v9.1.2.
+```
+
+**Key techniques & levers:**
+
+| Lever | Value | Why |
+|---|---|---|
+| `ORB_MAX_VWAP_DEV_BPS=25` on 6 mega-caps | Production gate | Blocks entries where price has already chased >25bps past session VWAP on META/MSFT/AAPL/AMZN/GOOG/AVGO — replaces the old T5 blocklist without hard-blocking tickers |
+| `ORB_POST_LOSS_COOLDOWN_MIN=30` | Production parity | Mirrors `POST_LOSS_COOLDOWN_MIN=30` in Railway env; prevents same-(ticker,side) re-entry within 30 min of a stop — eliminates 66% of bad-day double-fires in backtest |
+| `ORB_ATR_STOP_MULT=1.75` | Volatility-adaptive stop | ATR(14) × 1.75 instead of OR-edge ± buffer; wider on volatile days, tighter on quiet days |
+| `ORB_PARTIAL_PROFIT_AT_1R=1` | Partial exit at 1R | Half-close at 1R, runner rides to 2.5R target with BE stop |
+| r17 EOD fence | ORCL/AAPL/MSFT/AVGO long, ORCL/NFLX/AAPL/MSFT short | Per-(ticker,side) fence discovered in r17 forensic; drops retail-momentum stocks that reverse momentum instead of mean-reverting |
+
+**Backtest speed — pkl cache:**
+- First run: ~30s (reads JSONL, writes `data/.bt_cache/<TICKER>.pkl`)
+- Subsequent runs: ~7s (loads pkl — 7× faster)
+- Cache auto-invalidates when any JSONL file is newer than its pkl
+- Delete `data/.bt_cache/` to force a full rebuild
+
+**Artifacts:** `results/keystone/keystone.json`, `results/keystone/morning/per_day/`, `results/keystone/eod/per_day/`
+
+**Anti-patterns to avoid when sweeping:**
+- Do not confuse with v12 Config A (uses T5 blocklist, no VWAP gate, OR-edge stop)
+- Do not add `ORB_REQUIRE_RVOL_ABOVE` — kills +$27k/yr of edge on this corpus
+- Q1 2025 is the known weak quarter (pre-live-production, NFLX-driven whack-a-mole)
+- Do not use `ORB_MAX_TRADES_PER_DAY=1` — halves P&L by blocking profitable double-fires alongside losing ones
+
+## Local monitor loop (replaces GHA monitor.yml)
+
+`scripts/run_monitor.py` runs `tools.unified_monitor` every 5 min during RTH (Mon-Fri 07:00-19:00 ET). Results land in `data/monitor/latest.json` (same schema as the old `monitor-live` branch output).
+
+```bash
+# First-time setup: copy and fill in credentials
+cp .env.monitor.example .env.monitor   # then edit it
+
+# Run (RTH-gated by default)
+python scripts/run_monitor.py
+
+# One-off manual check
+python scripts/run_monitor.py --once
+
+# Run 24/7 (bypass RTH gate — for testing)
+python scripts/run_monitor.py --always
+```
+
+Required vars in `.env.monitor`: `DASHBOARD_BASE_URL`, `DASHBOARD_PASSWORD`, `VAL/GENE_ALPACA_PAPER_KEY/SECRET`, `RAILWAY_API_TOKEN`, `RAILWAY_SERVICE_ID`, `TELEGRAM_TP_TOKEN`, `TELEGRAM_TP_CHAT_ID`. See `.env.monitor.example` for the full template.
+
+The GHA `monitor.yml` cron is disabled (schedule trigger removed); `workflow_dispatch` is kept for emergency ad-hoc runs.
+
+## Retrieving live state (added v8.3.24)
+
+**From the local machine** (Railway CLI + curl both work):
+```bash
+# Quick version check
+curl -sk https://tradegenius.up.railway.app/api/version
+
+# Full state snapshot (positions, RiskBook, day_states, trade_log)
+curl -sk https://tradegenius.up.railway.app/api/state | python -m json.tool
+
+# Per-portfolio executor state
+curl -sk https://tradegenius.up.railway.app/api/executor/val
+curl -sk https://tradegenius.up.railway.app/api/executor/gene
+
+# Railway logs (requires `railway login` in an external terminal first)
+railway logs --project stock-spike-monitor
+```
+
+**From a GHA/CI sandbox** (firewalled from the Railway host): pull the latest snapshot from the `snapshots-live` branch via GitHub MCP:
 ```
 mcp__github__get_file_contents(
     owner="valira3", repo="stock-spike-monitor",
@@ -120,13 +237,28 @@ For an immediate refresh outside the cron window: Actions tab -> state-snapshot 
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
 
 ## Before pushing
-Run `bash scripts/preflight.sh` — mirrors CI checks locally:
-- pytest
-- version-bump consistency (`BOT_VERSION` matches CHANGELOG heading AND `trade_genius.py`)
-- em-dash literal check on .py files
-- ruff/black format check
 
-In sandbox where `telegram` is missing, `pytest tests/strategy/` is the focused alternative (231+ tests; the v10 path is fully covered there).
+**Primary (cross-platform, Windows/macOS/Linux):**
+```
+python scripts/run_ci.py
+```
+Runs all local CI checks in sequence with clear pass/fail output:
+1. `pytest tests/strategy/` — 231+ fast ORB unit tests (no telegram dep)
+2. BOT_VERSION consistency — `bot_version.py` == `trade_genius.py` == CHANGELOG top heading
+3. CURRENT_MAIN_NOTE guard — top CHANGELOG entry must match `vX.Y.Z`
+4. Em-dash literal check — new .py lines added vs `origin/main` must not carry literal `—` (U+2014); use `—` escape
+5. ruff check + ruff format --check (skipped gracefully if ruff not installed)
+
+Optional flags:
+- `--smoke` — also runs `python smoke_test.py` (31 local smoke tests; needs env vars)
+- `--slow` — includes `pytest.mark.slow` tests (~70s extra)
+- `--all` — both of the above
+
+**bash alternative (Linux/macOS/WSL only):**
+`bash scripts/preflight.sh` — equivalent bash script; same checks.
+
+**Focused pytest (when telegram module is missing in sandbox):**
+`pytest tests/strategy/` — the v10 path is fully covered there (231+ tests).
 
 ## Post-deploy smoke
 
@@ -142,6 +274,13 @@ v5.14.0 dropped the shadow_db row-count check along with the rest of the shadow 
 - `pytest tests/test_<module>.py -k <name>` (focused)
 - `python -m tools.orb_session_sim --scenario golden_long -v` — end-to-end smoke against live runtime
 - New algo PRs: add a unit test under `tests/strategy/`
+
+## Architectural landmines
+
+- **`trade_genius.py` is a 12k-line legacy monolith.** It is excluded from ruff linting (`extend-exclude` in `pyproject.toml`). Do NOT add new features to it — all new algo/strategy code belongs in `orb/`, `engine/`, or `executors/` packages. It's the host process (Telegram bot + scheduler + scan loop bootstrap) but its internals are not the production path for v10 decisions.
+- **`COMMANDS.md` is a v3.4.x-era artifact.** It documents the old Telegram command surface accurately for that version but does not reflect the current command set. Do not use it as a reference for what commands exist today.
+- **`STRATEGY.md` documents the retired Tiger Sovereign spec (v15.0).** It is not current behavior. The live strategy is fully described in this file and `ARCHITECTURE.md`.
+- **`dashboard_server.py` is read-only by design.** No endpoint mutates bot state. Useful API endpoints for diagnostics: `/api/version`, `/api/state`, `/api/executor/val`, `/api/executor/gene`, `/stream` (SSE, 2s push).
 
 ## Common gotchas
 - Universe drift: `/data/tickers.json` on persistent volume can lag code's `UNIVERSE` list. v5.8.0 startup guard auto-rewrites it.

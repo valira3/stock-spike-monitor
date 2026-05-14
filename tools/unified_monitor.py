@@ -56,6 +56,7 @@ Exit codes:
     3  serialization error
     4  invariants failed (data still written, Telegram sent if configured)
 """
+
 from __future__ import annotations
 
 import json
@@ -134,9 +135,17 @@ def _pull_alpaca_all() -> dict[str, Any]:
     """
     from tools.alpaca_snapshot import PORTFOLIOS, _pull_portfolio
 
+    skip = {
+        p.strip().lower()
+        for p in os.environ.get("ALPACA_SKIP_PORTFOLIOS", "").split(",")
+        if p.strip()
+    }
     out: dict[str, Any] = {}
     any_ok = False
     for pid in PORTFOLIOS:
+        if pid in skip:
+            _log(f"  alpaca {pid} SKIPPED (ALPACA_SKIP_PORTFOLIOS)")
+            continue
         snap = _pull_portfolio(pid)
         out[pid] = snap
         if "__error__" in snap:
@@ -157,16 +166,16 @@ def _pull_alpaca_all() -> dict[str, Any]:
 # at every meaningful decision point. The monitor only needs the lines
 # the operator would care about during a postmortem.
 RAILWAY_FORENSIC_PATTERN = (
-    r"\[V9\d{2}-|"           # v9 forensic tags ([V900-MBR-REJECT], [V910-EOD-*], [V917-TIME-CUTOFF-REJECT], ...)
-    r"\[V79-ORB-|"           # v79 ORB lifecycle (BOOT/RESET/ENTRY/EXIT/...)
-    r"\[V10-FIRE\]|"         # broker-fire dispatch
-    r"\[V834-|"              # engine state persistence
-    r"\[V8\d{2}-|"           # other v8 forensic tags
-    r"ENTRY|EXIT|"           # generic entry/exit lines
+    r"\[V9\d{2}-|"  # v9 forensic tags ([V900-MBR-REJECT], [V910-EOD-*], [V917-TIME-CUTOFF-REJECT], ...)
+    r"\[V79-ORB-|"  # v79 ORB lifecycle (BOOT/RESET/ENTRY/EXIT/...)
+    r"\[V10-FIRE\]|"  # broker-fire dispatch
+    r"\[V834-|"  # engine state persistence
+    r"\[V8\d{2}-|"  # other v8 forensic tags
+    r"ENTRY|EXIT|"  # generic entry/exit lines
     r"TRADE_CLOSED|"
-    r"Traceback|"            # python errors
-    r"ERROR|"                # generic error
-    r"daily_kill|killswitch" # safety triggers
+    r"Traceback|"  # python errors
+    r"ERROR|"  # generic error
+    r"daily_kill|killswitch"  # safety triggers
 )
 RAILWAY_LOG_LIMIT = 2000
 
@@ -182,15 +191,15 @@ RAILWAY_LOG_LIMIT = 2000
 # lands in when multiple tags appear in the same message --
 # longest / most-specific prefix first.
 RAILWAY_TAG_BUCKETS: tuple[str, ...] = (
-    "[V910-",       # EOD reversal addon (today's failure mode)
-    "[V900-",       # v9 morning ORB gates / rejects
-    "[V917-",       # time-cutoff rejects (the spam tag)
-    "[V79-ORB-",    # v79 ORB engine lifecycle
-    "[V10-FIRE]",   # broker-fire dispatch
-    "[V834-",       # engine state persistence
-    "[V83-",        # OR backfill sweep
-    "[V8",          # other v8 forensic tags (catch-all)
-    "[V9",          # other v9 forensic tags (catch-all)
+    "[V910-",  # EOD reversal addon (today's failure mode)
+    "[V900-",  # v9 morning ORB gates / rejects
+    "[V917-",  # time-cutoff rejects (the spam tag)
+    "[V79-ORB-",  # v79 ORB engine lifecycle
+    "[V10-FIRE]",  # broker-fire dispatch
+    "[V834-",  # engine state persistence
+    "[V83-",  # OR backfill sweep
+    "[V8",  # other v8 forensic tags (catch-all)
+    "[V9",  # other v9 forensic tags (catch-all)
     "Traceback",
     "ERROR",
 )
@@ -252,17 +261,16 @@ def _sample_per_tag(
 
 def _pull_railway_logs() -> dict[str, Any]:
     """Tail recent Railway logs filtered to forensic patterns. Falls
-    back to empty result if RAILWAY_API_TOKEN / RAILWAY_SERVICE_ID not
-    configured (the monitor is still useful without log access)."""
-    if not os.environ.get("RAILWAY_API_TOKEN"):
-        _log("  railway logs SKIPPED -- RAILWAY_API_TOKEN unset")
-        return {"__skipped__": "no token"}
-    if not os.environ.get("RAILWAY_SERVICE_ID"):
-        _log("  railway logs SKIPPED -- RAILWAY_SERVICE_ID unset")
-        return {"__skipped__": "no service id"}
+    back to empty result if neither RAILWAY_API_TOKEN nor the railway
+    CLI is available (the monitor is still useful without log access).
+    The railway CLI is tried automatically when RAILWAY_API_TOKEN is
+    absent, so no token is required on a local machine with `railway
+    login` already run."""
     try:
         from tools.railway_log_tail import (
-            fetch_recent_logs, grep_logs, probe_railway_access,
+            fetch_recent_logs,
+            grep_logs,
+            probe_railway_access,
         )
     except Exception as e:
         return {"__error__": f"railway_log_tail import: {e}"}
@@ -299,8 +307,7 @@ def _pull_railway_logs() -> dict[str, Any]:
 # ----- section: invariants --------------------------------------------
 
 
-def _run_invariants(dashboard_payload: dict[str, Any],
-                    base_url: str) -> dict[str, Any]:
+def _run_invariants(dashboard_payload: dict[str, Any], base_url: str) -> dict[str, Any]:
     """Run the production invariant battery against the freshly-pulled
     dashboard data. Reuses INVARIANTS + InvariantContext from the
     pre-v9.1.18 dashboard_monitor_invariants module so behavior matches
@@ -351,8 +358,7 @@ def _maybe_alert_telegram(invariants: dict[str, Any]) -> None:
     Invariant results carry `{name, ok, summary, detail}` -- ok=False
     is the violation signal.
     """
-    failed = [r for r in invariants.get("results", [])
-              if not r.get("ok", True)]
+    failed = [r for r in invariants.get("results", []) if not r.get("ok", True)]
     if not failed:
         return
     token = (os.environ.get("TELEGRAM_TP_TOKEN") or "").strip()
@@ -393,9 +399,7 @@ def _write_outputs(snapshot: dict[str, Any], out_dir: Path) -> tuple[Path, Path]
 def main() -> int:
     base = _require_env("DASHBOARD_BASE_URL")
     password = _require_env("DASHBOARD_PASSWORD")
-    out_dir = Path(os.environ.get(
-        "UNIFIED_MONITOR_DIR", "data/monitor"
-    )).resolve()
+    out_dir = Path(os.environ.get("UNIFIED_MONITOR_DIR", "data/monitor")).resolve()
 
     _log(f"[unified-monitor] base={base} out={out_dir}")
 
@@ -406,8 +410,7 @@ def main() -> int:
         print(f"::error::/api/state unreachable: {state}", flush=True)
         return 2
     if "__login_error__" in dashboard_endpoints:
-        print(f"::error::login failed: {dashboard_endpoints['__login_error__']}",
-              flush=True)
+        print(f"::error::login failed: {dashboard_endpoints['__login_error__']}", flush=True)
         return 2
 
     _log("=== alpaca ===")
@@ -421,8 +424,7 @@ def main() -> int:
 
     snapshot = {
         "schema_version": 1,
-        "captured_at_utc": datetime.now(timezone.utc)
-            .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "captured_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "dashboard_base_url": base,
         "dashboard": {"endpoints": dashboard_endpoints},
         "alpaca": alpaca,

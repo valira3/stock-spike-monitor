@@ -1,6 +1,9 @@
 __pycache__/
+data/.bt_cache/
+results/
 CODE_REVIEW.md
 .env
+.env.monitor
 
 *.log
 dashboard_secret.key

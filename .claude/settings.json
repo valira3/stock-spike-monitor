@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(railway logs *)",
+      "Bash(railway whoami)",
+      "Bash(railway --version)",
+      "Bash(railway status *)",
+      "Bash(railway variables *)",
+      "Bash(railway link *)",
+      "Bash(railway service *)",
+      "Bash(curl -sk *)",
+      "Bash(curl -s *)",
+      "Bash(tasklist *)"
+    ]
+  }
+}

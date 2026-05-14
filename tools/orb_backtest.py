@@ -151,7 +151,15 @@ class Bar1m:
     volume: float        # total_volume preferred, fallback iex_volume
 
 
+# Module-level bar cache. Populated by run() before the main loop so that
+# every subsequent call (session stats, RVOL, main loop) hits RAM instead
+# of disk. Cleared after run() returns. Key: (date, ticker).
+_BAR_CACHE: dict[tuple[str, str], list] = {}
+
+
 def load_day_bars(corpus_dir: Path, date: str, ticker: str) -> list[Bar1m]:
+    if _BAR_CACHE:
+        return _BAR_CACHE.get((date, ticker), [])
     fp = corpus_dir / date / f"{ticker}.jsonl"
     if not fp.is_file():
         return []
@@ -432,6 +440,10 @@ class ORBConfig:
                                           #     Filters reversal-style
                                           #     breakouts that fire
                                           #     against premkt drift.
+    post_loss_cooldown_min: int = 0       # mirrors production POST_LOSS_COOLDOWN_MIN.
+                                          # After a hard stop on (ticker, side),
+                                          # block re-entry for this many minutes.
+                                          # 0 = off. Production value: 30.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -557,6 +569,7 @@ class ORBConfig:
             pm_or_minutes=_envi("ORB_PM_OR_MINUTES", 30),
             pm_trade_end_et=_et_to_minutes(_envs("ORB_PM_TRADE_END_ET", "15:00")),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
+            post_loss_cooldown_min=_envi("ORB_POST_LOSS_COOLDOWN_MIN", 0),
         )
 
 
@@ -1413,6 +1426,95 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     per_day_dir = out_dir / "per_day"
     per_day_dir.mkdir(parents=True, exist_ok=True)
 
+    # Pre-load all bars into the module-level _BAR_CACHE.
+    # Fast path: per-ticker pickle files in corpus_dir/.bt_cache/ (one file
+    # per ticker, ~17 MB each, loads 12 tickers in ~3s vs ~25s for raw JSONL).
+    # Slow path: read JSONL with threads and write pkl for next run.
+    import concurrent.futures as _cf
+    import pickle as _pickle
+    _BAR_CACHE.clear()
+    _cache_dir = corpus_dir / ".bt_cache"
+    _cache_dir.mkdir(exist_ok=True)
+
+    def _pkl_is_fresh(tk: str) -> bool:
+        """True if pkl exists and is newer than the newest JSONL for this ticker."""
+        pf = _cache_dir / f"{tk}.pkl"
+        if not pf.exists():
+            return False
+        pkl_mtime = pf.stat().st_mtime
+        for d in dates:
+            jf = corpus_dir / d / f"{tk}.jsonl"
+            if jf.exists() and jf.stat().st_mtime > pkl_mtime:
+                return False
+        return True
+
+    _all_fresh = all(_pkl_is_fresh(tk) for tk in tickers)
+    if _all_fresh:
+        # Fast path: load from pkl (~3s for 12 tickers)
+        # Bars stored as tuples (bucket,o,h,l,c,vol) → reconstruct Bar1m.
+        _date_set = set(dates)
+        for tk in tickers:
+            with open(_cache_dir / f"{tk}.pkl", "rb") as _fh:
+                for _d, _tuples in _pickle.load(_fh).items():
+                    if _d in _date_set:
+                        _BAR_CACHE[(_d, tk)] = [
+                            Bar1m(*t) for t in _tuples
+                        ]
+    else:
+        # Slow path: read JSONL with threads, then write pkl for next run
+        _all_keys = [(d, tk) for d in dates for tk in tickers]
+        _bar_workers = min(len(_all_keys), 32)
+
+        def _load_raw(key):
+            d, tk = key
+            fp = corpus_dir / d / f"{tk}.jsonl"
+            if not fp.is_file():
+                return key, []
+            try:
+                bars = []
+                for line in fp.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    ts_str = rec.get("ts", "")
+                    bkt = _ts_to_et_bucket_minutes(ts_str) if ts_str else -1
+                    if bkt < 0:
+                        bkt = _bucket_to_minutes(rec.get("et_bucket", ""))
+                    if bkt < 0:
+                        continue
+                    bars.append(Bar1m(
+                        bucket=bkt,
+                        open=float(rec.get("open", 0)),
+                        high=float(rec.get("high", 0)),
+                        low=float(rec.get("low", 0)),
+                        close=float(rec.get("close", 0)),
+                        volume=float(rec.get("total_volume") or rec.get("volume") or 0),
+                    ))
+                bars.sort(key=lambda b: b.bucket)
+                return key, bars
+            except Exception:
+                return key, []
+
+        with _cf.ThreadPoolExecutor(max_workers=_bar_workers) as _pool:
+            for key, bars in _pool.map(_load_raw, _all_keys):
+                if bars:
+                    _BAR_CACHE[key] = bars
+
+        # Write pkl files for fast subsequent loads.
+        # Store bars as plain tuples (bucket,o,h,l,c,vol) — class-agnostic.
+        for tk in tickers:
+            tk_data = {
+                d: [(b.bucket, b.open, b.high, b.low, b.close, b.volume)
+                    for b in _BAR_CACHE[(d, tk)]]
+                for d in dates if (d, tk) in _BAR_CACHE
+            }
+            if tk_data:
+                with open(_cache_dir / f"{tk}.pkl", "wb") as _fh:
+                    _pickle.dump(tk_data, _fh, protocol=_pickle.HIGHEST_PROTOCOL)
+
     total_pnl = 0.0
     total_entries = 0
     # v11 compounding: track running account if enabled. We use a local
@@ -1591,32 +1693,50 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
 
         candidate_pairs: list[dict] = []
         if not regime_skip_day:
-            for tk in tickers:
-                # v22b: regime-low conditional per-ticker skip.
-                if (is_regime_low_today
-                        and cfg.regime_low_skip_tickers
-                        and tk in cfg.regime_low_skip_tickers):
-                    continue
+            _skip_set = (cfg.regime_low_skip_tickers
+                         if is_regime_low_today and cfg.regime_low_skip_tickers
+                         else set())
+            _active = [tk for tk in tickers if tk not in _skip_set]
+
+            def _run_ticker(tk):
+                bars = load_day_bars(corpus_dir, date, tk)
+                if not bars:
+                    return tk, [], None
                 try:
-                    bars = load_day_bars(corpus_dir, date, tk)
-                    if not bars:
-                        continue
                     pairs = run_ticker_day(date, tk, bars, eff_cfg, current_account)
-                    candidate_pairs.extend(pairs)
+                    return tk, pairs, None
                 except (RuntimeError, AssertionError):
-                    # Genuine bugs -- re-raise rather than silently dropping.
                     raise
                 except Exception as e:
-                    tickers_failed += 1
-                    if len(failures) < 10:
-                        failures.append({
-                            "date": date,
-                            "ticker": tk,
-                            "error_class": type(e).__name__,
-                            "error_msg": str(e),
-                        })
-                    print(f"WARN {date} {tk}: {type(e).__name__}: {e}",
-                          file=sys.stderr)
+                    return tk, [], e
+
+            _ticker_workers = min(len(_active), 12)
+            if _ticker_workers > 1:
+                with _cf.ThreadPoolExecutor(max_workers=_ticker_workers) as _tp:
+                    for tk, pairs, err in _tp.map(_run_ticker, _active):
+                        if err is not None:
+                            tickers_failed += 1
+                            if len(failures) < 10:
+                                failures.append({"date": date, "ticker": tk,
+                                    "error_class": type(err).__name__,
+                                    "error_msg": str(err)})
+                            print(f"WARN {date} {tk}: {type(err).__name__}: {err}",
+                                  file=sys.stderr)
+                        else:
+                            candidate_pairs.extend(pairs)
+            else:
+                for tk in _active:
+                    _, pairs, err = _run_ticker(tk)
+                    if err is not None:
+                        tickers_failed += 1
+                        if len(failures) < 10:
+                            failures.append({"date": date, "ticker": tk,
+                                "error_class": type(err).__name__,
+                                "error_msg": str(err)})
+                        print(f"WARN {date} {tk}: {type(err).__name__}: {err}",
+                              file=sys.stderr)
+                    else:
+                        candidate_pairs.extend(pairs)
 
         # v12 directional alignment: drop signals whose side doesn't match
         # the regime. Applied after collection so the diagnostic count is
@@ -1772,11 +1892,32 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
         #   New entries on a locked pair after that ts are rejected.
         locked_pairs: dict[tuple[str, str], int] = {}
         r18_lock_rejects = 0
+        # post-loss cooldown: (ticker, side) -> cooldown_until ISO str.
+        # Mirrors production POST_LOSS_COOLDOWN_MIN. After a hard stop,
+        # block same (ticker, side) re-entry for post_loss_cooldown_min min.
+        _plc_until: dict[tuple[str, str], str] = {}
+
+        def _ts_to_minutes(iso: str) -> int:
+            # Parse HH:MM from "YYYY-MM-DDTHH:MM:SS..." -> minutes since midnight
+            try:
+                t = iso[11:16]  # "HH:MM"
+                h, m = int(t[:2]), int(t[3:5])
+                return h * 60 + m
+            except Exception:
+                return 0
+
         for ts, kind, idx, p, notional, risk in events:
             if kind == "entry":
                 if kill_active:
                     rejected_idx.add(idx)
                     continue
+                # post-loss cooldown gate (mirrors POST_LOSS_COOLDOWN_MIN)
+                if cfg.post_loss_cooldown_min > 0:
+                    plc_key = (p["ticker"], p["side"])
+                    until = _plc_until.get(plc_key)
+                    if until is not None and ts < until:
+                        rejected_idx.add(idx)
+                        continue
                 # v18 rule #1 -- per-(ticker, side) lock after a losing leg
                 if cfg.loss_lock_threshold_usd > 0:
                     key = (p["ticker"], p["side"])
@@ -1808,6 +1949,14 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
                     if (cfg.loss_lock_threshold_usd > 0
                             and p["pnl_dollars"] < -cfg.loss_lock_threshold_usd):
                         locked_pairs[(p["ticker"], p["side"])] = ts
+                    # post-loss cooldown: record block window after hard stop
+                    if (cfg.post_loss_cooldown_min > 0
+                            and p.get("exit_reason") == "stop"):
+                        exit_min = _ts_to_minutes(ts)
+                        until_min = exit_min + cfg.post_loss_cooldown_min
+                        until_h, until_m = divmod(until_min, 60)
+                        until_iso = ts[:11] + f"{until_h:02d}:{until_m:02d}" + ts[16:]
+                        _plc_until[(p["ticker"], p["side"])] = until_iso
                     # v18 rule #2 halt: realized drawdown from peak crossed
                     # the threshold. Same effect as kill_active but a
                     # different trigger.
@@ -1938,6 +2087,7 @@ def run(corpus_dir: Path, out_dir: Path, dates: list[str],
     out_dir.joinpath("summary.json").write_text(
         json.dumps(summary, indent=2)
     )
+    _BAR_CACHE.clear()  # free memory; restore disk-read path for subsequent calls
     return summary
 
 
