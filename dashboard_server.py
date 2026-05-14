@@ -1108,6 +1108,18 @@ def _today_trades() -> list[dict]:
             seen.add(k_exit)
             out.append(synth_exit)
 
+    # v9.1.67 -- EOD reversal trades for Main portfolio.
+    # paper_state / trade_log only carries ORB trades; EOD closed legs
+    # are tracked separately in EodReversalEngine._states["main"].
+    _existing_combos = {
+        ((r.get("ticker") or "").upper(), (r.get("action") or "").upper()) for r in out
+    }
+    for _eod_row in _eod_trade_rows_for_pid("main"):
+        _combo = (_eod_row["ticker"].upper(), _eod_row["action"].upper())
+        if _combo not in _existing_combos:
+            out.append(_eod_row)
+            _existing_combos.add(_combo)
+
     # sort by time if present. For close actions (SELL / COVER) the
     # canonical timestamp is the exit_time; opens (BUY / SHORT) carry it
     # as entry_time. Falling back through ``time`` first preserves any
@@ -1122,6 +1134,106 @@ def _today_trades() -> list[dict]:
 
     out.sort(key=_sort_key)
     return out
+
+
+def _eod_trade_rows_for_pid(pid: str) -> list[dict]:
+    """v9.1.67 -- convert EodReversalEngine closed legs to trade row dicts.
+
+    Returns entry + exit rows for each closed EOD leg today, in the schema
+    shared by renderTrades (Main) and renderExecTrades (Val/Gene). Never
+    raises. Returns [] when the EOD engine is not running or has no closed
+    legs for this portfolio.
+    """
+    try:
+        import orb.live_runtime as _rt_eod
+        from datetime import datetime as _dt67
+        from zoneinfo import ZoneInfo as _tz67
+
+        _et = _tz67("US/Eastern")
+        _eod_eng = _rt_eod.get_eod_engine()
+        if _eod_eng is None:
+            return []
+        _eod_st = _eod_eng._states.get(pid)
+        if not _eod_st or not _eod_st.closed_legs:
+            return []
+        _today = _dt67.now(_et).strftime("%Y-%m-%d")
+
+        def _iso_to_et_hhmm(iso: str) -> str:
+            try:
+                _d = _dt67.fromisoformat(iso.replace("Z", "+00:00"))
+                return _d.astimezone(_et).strftime("%H:%M ET")
+            except Exception:
+                return ""
+
+        rows: list[dict] = []
+        for leg in _eod_st.closed_legs:
+            tk = (leg.get("ticker") or "").upper()
+            if not tk:
+                continue
+            _side_raw = (leg.get("side") or "long").lower()
+            _side = "LONG" if _side_raw == "long" else "SHORT"
+            _entry_action = "BUY" if _side == "LONG" else "SHORT"
+            _exit_action = "SELL" if _side == "LONG" else "COVER"
+            _shares = int(leg.get("shares") or 0)
+            _entry_px = float(leg.get("entry_price") or 0.0)
+            _exit_px = float(leg.get("exit_price") or 0.0)
+            _pnl = float(leg.get("pnl") or 0.0)
+            _notional = float(leg.get("notional_at_entry") or (_entry_px * _shares))
+            _pnl_pct = round(_pnl / _notional * 100, 2) if _notional > 0 else None
+            _entry_iso = leg.get("entry_iso") or ""
+            _exit_iso = leg.get("exit_iso") or ""
+            # only include legs from today
+            _leg_date = _entry_iso[:10] if _entry_iso else _exit_iso[:10]
+            if _leg_date and _leg_date != _today:
+                continue
+            _et_entry = _iso_to_et_hhmm(_entry_iso)
+            _et_exit = _iso_to_et_hhmm(_exit_iso)
+            rows.append(
+                {
+                    "action": _entry_action,
+                    "ticker": tk,
+                    "symbol": tk,
+                    "side": _side,
+                    "shares": _shares,
+                    "qty": _shares,
+                    "price": _entry_px,
+                    "entry_price": _entry_px,
+                    "avg_fill_price": _entry_px,
+                    "cost": round(_shares * _entry_px, 2),
+                    "time": _et_entry,
+                    "entry_time": _et_entry,
+                    "filled_at": _entry_iso,
+                    "date": _today,
+                    "portfolio": "eod",
+                    "eod": True,
+                }
+            )
+            rows.append(
+                {
+                    "action": _exit_action,
+                    "ticker": tk,
+                    "symbol": tk,
+                    "side": _side,
+                    "shares": _shares,
+                    "qty": _shares,
+                    "price": _exit_px,
+                    "exit_price": _exit_px,
+                    "entry_price": _entry_px,
+                    "avg_fill_price": _exit_px,
+                    "cost": round(_shares * _exit_px, 2),
+                    "pnl": round(_pnl, 2),
+                    "pnl_pct": _pnl_pct,
+                    "time": _et_exit,
+                    "exit_time": _et_exit,
+                    "filled_at": _exit_iso,
+                    "date": _today,
+                    "portfolio": "eod",
+                    "eod": True,
+                }
+            )
+        return rows
+    except Exception:
+        return []
 
 
 def _proximity_rows() -> list[dict]:
@@ -3361,6 +3473,29 @@ def _executor_snapshot(name: str) -> dict:
         except Exception as te:
             logger.warning("executor %s todays_trades fetch failed: %s", name, te)
             payload["todays_trades"] = []
+
+        # v9.1.67 -- supplement with EOD engine closed legs. EOD trades placed
+        # via _v10_dispatch_executor_fire are real Alpaca orders so they should
+        # already appear in todays_trades from the Alpaca fill fetch above.
+        # This supplement ensures they show even if the Alpaca API call failed
+        # or the orders hadn't settled into the history at fetch time.
+        try:
+            _eod_supplement = _eod_trade_rows_for_pid(name)
+            if _eod_supplement:
+                _existing_ta = {
+                    ((r.get("ticker") or "").upper(), (r.get("action") or "").upper())
+                    for r in (payload.get("todays_trades") or [])
+                }
+                for _esr in _eod_supplement:
+                    _c = (_esr["ticker"].upper(), _esr["action"].upper())
+                    if _c not in _existing_ta:
+                        payload.setdefault("todays_trades", []).append(_esr)
+                        _existing_ta.add(_c)
+                payload["todays_trades"].sort(
+                    key=lambda t: t.get("filled_at") or t.get("time") or ""
+                )
+        except Exception:
+            pass
 
         payload["healthy"] = True
     except Exception as e:

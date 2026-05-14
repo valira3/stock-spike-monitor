@@ -4,6 +4,21 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.67 (2026-05-14) — EOD reversal trades in Today's Trades across all tabs
+
+EOD reversal closed legs now appear in the Today's Trades section on all tabs alongside ORB trades.
+
+**Root cause:** `_today_trades()` reads `paper_state` + `trade_log.jsonl` (ORB only). `EodReversalEngine._states[pid].closed_legs` was never surfaced to any trade list. For Main, the legacy `callbacks.execute_entry` path is unreliable for EOD. For Val/Gene, EOD orders ARE real Alpaca orders so they should appear via `_pair_executor_fills`, but the supplement ensures they show even if the Alpaca API call misses them.
+
+**Changes (`dashboard_server.py`):**
+- `_eod_trade_rows_for_pid(pid)`: new helper reads `EodReversalEngine._states[pid].closed_legs`, converts each leg to BUY/SHORT (entry) + SELL/COVER (exit) rows in the standard trade schema shared by both `renderTrades` and `renderExecTrades`. Filters to today's legs only. Never raises.
+- `_today_trades()`: appends `_eod_trade_rows_for_pid("main")` before the final sort. Dedup by `(ticker, action)` prevents double-counting if the same trade already came via paper_state/trade_log.
+- `_executor_snapshot()`: after building `todays_trades` from Alpaca fills, supplements with `_eod_trade_rows_for_pid(name)`. Dedup by `(ticker, action)` prevents double-counting when Alpaca fills already include the EOD orders. Result sorted by `filled_at`.
+
+**Regarding "bar UI on Val":** The ORB stop bar (red/neutral/green zones + needle) is already implemented for Val via `engine_positions` cross-reference (v9.1.50). With 0 ORB positions after 11:00 ET cutoff and all EOD positions closed at 15:59 ET, no bars are visible today. Both bars (ORB stop bar and EOD teal time bar) will show correctly next session.
+
+---
+
 ## v9.1.66 (2026-05-14) — Val/Gene EOD positions separated into own section (mirrors Main layout)
 
 EOD reversal positions on Val/Gene now render in a distinct section below the ORB positions table, matching the Main tab design introduced in v9.1.65.
