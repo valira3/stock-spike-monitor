@@ -178,6 +178,18 @@ def inv_val_gene_trades_match_main(ctx):
             f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
             f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})",
         )
+    # v9.1.70 -- skip post-market. In FIRE=1 independent mode, Val's
+    # Alpaca todays_trades (real broker) and Main's trades_today (paper
+    # state) are from different systems and will rarely match. During
+    # market hours the position-count skip above catches active divergence;
+    # post-market there are no open positions so it doesn't trigger, but
+    # there's also nothing actionable about a count mismatch at 16:15 ET.
+    _session_mode = (s.get("regime") or {}).get("mode") or ""
+    if _session_mode in ("AFTER", "CLOSED", "PRE"):
+        return _ok(
+            "val_gene_trades_match_main",
+            f"skipped: post-market session mode={_session_mode}",
+        )
     main_trades = s.get("trades_today") or []
     # v9.1.68 -- skip if Main's trades_today includes EOD supplement rows
     # (portfolio="eod", injected by _eod_trade_rows_for_pid in v9.1.67).

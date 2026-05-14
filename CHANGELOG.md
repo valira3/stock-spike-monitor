@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.70 (2026-05-14) — fix val_gene_trades_match_main CRIT persisting post-16:00 ET
+
+`val_gene_trades_match_main` kept firing after market close because the v9.1.68 EOD-aware skip only covers when Main's `trades_today` contains EOD supplement rows. The 9-trade mismatch at 16:06 ET was from ORB paper trades (not EOD), and both position counts were 0 post-market so the FIRE=1 position-based skip also didn't trigger.
+
+Root cause: in FIRE=1 independent mode, Main's `trades_today` (paper state, ORB trades) and Val's `todays_trades` (Alpaca, real broker) are from fundamentally different systems. During market hours the position-count skip catches active divergence. Post-market, there are no open positions so it doesn't trigger — but there's also nothing actionable about a count mismatch at 16:15 ET.
+
+Fix: added a session-mode skip. When `s.regime.mode` is "AFTER", "CLOSED", or "PRE", the invariant returns OK with a note. The invariant still fires during "OR" and "OPEN" modes when mirror failures are actionable.
+
+---
+
 ## v9.1.69 (2026-05-14) — EOD trades persist across redeploys; live Unreal/% on Main EOD positions
 
 **EOD trades not showing on Main (root cause):** `_eod_trade_rows_for_pid("main")` reads `EodReversalEngine._states["main"].closed_legs`, which is in-memory only. The v9.1.67 Railway deploy happened at ~15:56 ET; the new instance boots with a fresh EodReversalEngine (empty closed_legs). The EOD positions closed at 15:59 ET on the old instance but the new instance never saw them.
