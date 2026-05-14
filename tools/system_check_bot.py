@@ -471,14 +471,35 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
             Check(s, "session", CRIT, "ORB_LIVE_MODE=0 -- LEGACY fallback active, v10 not trading")
         )
     elif is_post_open and not session_date:
-        out.append(
-            Check(
-                s,
-                "session",
-                WARN,
-                "session_date empty after 09:30 ET (reset should have fired at 09:25)",
-            )
+        # Suppress if the activity log already contains a session_start event
+        # for today -- this means the engine DID start a session (possibly
+        # just redeployed) and session_date will populate on the next scan tick.
+        activity = v10.get("activity") or []
+        today_et = datetime.now(ET).date().isoformat()
+        had_session_start = any(
+            e.get("kind") == "session_start" and (e.get("ts_iso") or "")[:10] >= today_et
+            for e in activity
         )
+        if not had_session_start:
+            out.append(
+                Check(
+                    s,
+                    "session",
+                    WARN,
+                    "session_date empty after 09:33 ET with no session_start in activity log "
+                    "(session reset may have failed)",
+                )
+            )
+        else:
+            out.append(
+                Check(
+                    s,
+                    "session",
+                    OK,
+                    "session_date transiently empty (session_start seen in activity -- "
+                    "post-deploy race, resolves on next scan tick)",
+                )
+            )
     else:
         out.append(Check(s, "session", OK, f"live_mode=ON session={session_date or '(off-hours)'}"))
 

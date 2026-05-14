@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.43 (2026-05-14) — fix session WARN on post-deploy race (activity log check)
+
+Every RTH deploy creates a ~20s window where `session_date` is empty while the new process re-fires the session reset. The `session_date empty` WARN fired every time v9.1.4x was pushed during trading hours.
+
+Fix: if `session_date` is empty but the `v10.activity` log already contains a `session_start` event for today, the engine is working correctly — it's just between a deploy and its next scan tick. Return OK instead of WARN. A genuine failure (engine never started session) has no `session_start` events and still fires WARN.
+
+---
+
 ## v9.1.42 (2026-05-14) — fix false-positive CRIT during OR window (or_locked_after_or_end)
 
 `inv_or_locked_after_or_end` was firing at 09:40 ET (10 min into the 30-min OR window) because:
