@@ -4944,7 +4944,7 @@
     // Open positions card ----------------------------------------------
     const posBody = execField(panel, "pos-body");
     const posCount = execField(panel, "pos-count");
-    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "\u2014" : positions.length);
+    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "\u2014" : positions.length);  // total = ORB + EOD (both are Alpaca positions)
 
     if (posBody) {
       if (disabled) {
@@ -4987,16 +4987,14 @@
             };
           }
         }
-        // v9.1.65 -- EOD reversal positions for this executor. When set,
-        // renders a time-based bar instead of the ORB stop bar.
+        // v9.1.65 -- EOD reversal positions keyed by ticker. v9.1.66 splits
+        // them into a separate section below the ORB table so the layout
+        // mirrors Main (ORB on top, EOD section below with teal time bar).
         const _eodPos = (data && data.eod_positions) || {};
-        // v7.0.3 \u2014 match Main's positions <table> shape exactly: no
-        // inline styles, semantic classes (.ticker .mark .side-* etc.),
-        // header tooltips. Field names differ because /api/executor/<name>
-        // is broker-shape (symbol/qty/avg_entry/unrealized_pnl/...) vs Main's
-        // engine-shape (ticker/shares/entry/unrealized/...) but the rendered
-        // columns and styling are identical.
-        const rows = positions.map(p => {
+        const _orbPositions = positions.filter(p => !_eodPos[p.symbol]);
+        const _eodPositions = positions.filter(p => !!_eodPos[p.symbol]);
+        // v7.0.3 \u2014 match Main's positions <table> shape exactly.
+        const rows = _orbPositions.map(p => {
           const sideCls = p.side === "SHORT" ? "side-short" : "side-long";
           const markCls = p.side === "SHORT" ? "mark-short" : "mark-long";
           const pnlCls = (Number(p.unrealized_pnl) || 0) >= 0 ? "delta-up" : "delta-down";
@@ -5016,103 +5014,75 @@
           // (_stopInfo.entry_stop) so the 1R / target ticks don't drift
           // when the chandelier trail moves the live stop past entry.
           // _stopInfo.eff is overlaid as a separate "trail" tick.
+          // v9.1.66 -- only ORB positions reach here; EOD positions are in
+          // a separate section below. Plain ORB stop bar, no EOD branch.
           var _progressRow = "";
-          if (_isEodPosition) {
-            // v9.1.65 -- EOD time bar: shows elapsed/remaining in the
-            // 15:00-15:59 ET window. Teal needle, no stop/target axis.
-            var _eNowMin = (typeof window.__tgNowEtMinutes === "function") ? window.__tgNowEtMinutes() : 0;
-            var _eWS = 15 * 60, _eWE = 15 * 60 + 59;
-            var _eElap = Math.max(0, Math.min(59, _eNowMin - _eWS));
-            var _ePct = (_eElap / 59) * 100;
-            var _eRem = 59 - _eElap;
-            var _eNC = p.side === "SHORT" ? "eod-needle-short" : "eod-needle-long";
+          var _axisStopForBar = _stopInfo
+              && Number.isFinite(_stopInfo.entry_stop)
+              && _stopInfo.entry_stop > 0
+                ? _stopInfo.entry_stop
+                : (_stopInfo && Number.isFinite(_stopInfo.eff) ? _stopInfo.eff : null);
+          var _effStopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
+                                 ? _stopInfo.eff : null;
+          var _entryForBar = Number(p.avg_entry);
+          var _markForBar  = Number(p.current_price);
+          if (_axisStopForBar != null
+              && Number.isFinite(_entryForBar) && _entryForBar > 0
+              && Number.isFinite(_markForBar)  && _markForBar  > 0
+              && Math.abs(_entryForBar - _axisStopForBar) > 1e-4) {
+            var _isLong = p.side !== "SHORT";
+            var _stopForBar = _axisStopForBar;
+            var _targetForBar = _isLong
+              ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
+              : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
+            var _span = _targetForBar - _stopForBar;
+            var _exPct = function(px) {
+              if (Math.abs(_span) < 1e-9) return 50;
+              return Math.max(0, Math.min(100, (px - _stopForBar) / _span * 100));
+            };
+            var _entryAt = _exPct(_entryForBar);
+            var _oneRPx = _isLong
+              ? _entryForBar + (_entryForBar - _stopForBar)
+              : _entryForBar - (_stopForBar - _entryForBar);
+            var _oneRAt = _exPct(_oneRPx);
+            var _markAt = _exPct(_markForBar);
+            var _r = _isLong
+              ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
+              : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
+            var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
+            var _trailTick = "";
+            if (_effStopForBar != null
+                && Math.abs(_effStopForBar - _axisStopForBar) > 1e-4) {
+              var _trailAt = _exPct(_effStopForBar);
+              _trailTick = '<span class="pos-progress-tick trail" '
+                + 'style="left:' + _trailAt.toFixed(2) + '%" '
+                + 'data-label="trail" '
+                + 'title="effective stop (trail): ' + fmtNum(_effStopForBar, 2) + '"></span>';
+            }
             _progressRow =
-              '<tr class="pos-progress-row eod-time-bar" data-pos-ticker="' + esc(p.symbol) + '">' +
+              '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
                 '<td colspan="11" class="pos-progress-cell">' +
-                  '<div class="pos-progress eod-progress">' +
+                  '<div class="pos-progress">' +
                     '<div class="pos-progress-track">' +
-                      '<div class="pos-progress-zone eod-elapsed" style="left:0%;width:' + _ePct.toFixed(1) + '%;border-radius:5px 0 0 5px"></div>' +
-                      '<div class="pos-progress-zone eod-remain" style="left:' + _ePct.toFixed(1) + '%;width:' + (100 - _ePct).toFixed(1) + '%;border-radius:0 5px 5px 0"></div>' +
-                      '<span class="pos-progress-needle ' + _eNC + '" style="left:' + _ePct.toFixed(1) + '%">' +
-                        '<span class="needle-label">' + _eElap + 'm</span>' +
+                      '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
+                      '<div class="pos-progress-zone neutral" style="left:' + _entryAt.toFixed(2) + '%; width:' + (_oneRAt - _entryAt).toFixed(2) + '%"></div>' +
+                      '<div class="pos-progress-zone green"   style="left:' + _oneRAt.toFixed(2) + '%; width:' + (100 - _oneRAt).toFixed(2) + '%"></div>' +
+                      '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
+                      '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
+                      '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                      _trailTick +
+                      '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
+                        '<span class="needle-label">' + esc(_rTxt) + '</span>' +
                       '</span>' +
                     '</div>' +
                     '<div class="pos-progress-meta">' +
-                      '<span class="pp-meta-left">15:00 entry</span>' +
-                      '<span class="pp-meta-center">' + _eRem + 'm to EOD exit</span>' +
-                      '<span class="pp-meta-right">15:59 exit</span>' +
+                      '<span class="pp-meta-left">stop ' + fmtNum((_effStopForBar != null ? _effStopForBar : _stopForBar), 2) + '</span>' +
+                      '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
+                      '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
                     '</div>' +
                   '</div>' +
                 '</td>' +
               '</tr>';
-          } else {
-            var _axisStopForBar = _stopInfo
-                && Number.isFinite(_stopInfo.entry_stop)
-                && _stopInfo.entry_stop > 0
-                  ? _stopInfo.entry_stop
-                  : (_stopInfo && Number.isFinite(_stopInfo.eff) ? _stopInfo.eff : null);
-            var _effStopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
-                                   ? _stopInfo.eff : null;
-            var _entryForBar = Number(p.avg_entry);
-            var _markForBar  = Number(p.current_price);
-            if (_axisStopForBar != null
-                && Number.isFinite(_entryForBar) && _entryForBar > 0
-                && Number.isFinite(_markForBar)  && _markForBar  > 0
-                && Math.abs(_entryForBar - _axisStopForBar) > 1e-4) {
-              var _isLong = p.side !== "SHORT";
-              var _stopForBar = _axisStopForBar;
-              var _targetForBar = _isLong
-                ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
-                : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
-              var _span = _targetForBar - _stopForBar;
-              var _exPct = function(px) {
-                if (Math.abs(_span) < 1e-9) return 50;
-                return Math.max(0, Math.min(100, (px - _stopForBar) / _span * 100));
-              };
-              var _entryAt = _exPct(_entryForBar);
-              var _oneRPx = _isLong
-                ? _entryForBar + (_entryForBar - _stopForBar)
-                : _entryForBar - (_stopForBar - _entryForBar);
-              var _oneRAt = _exPct(_oneRPx);
-              var _markAt = _exPct(_markForBar);
-              var _r = _isLong
-                ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
-                : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
-              var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
-              var _trailTick = "";
-              if (_effStopForBar != null
-                  && Math.abs(_effStopForBar - _axisStopForBar) > 1e-4) {
-                var _trailAt = _exPct(_effStopForBar);
-                _trailTick = '<span class="pos-progress-tick trail" '
-                  + 'style="left:' + _trailAt.toFixed(2) + '%" '
-                  + 'data-label="trail" '
-                  + 'title="effective stop (trail): ' + fmtNum(_effStopForBar, 2) + '"></span>';
-              }
-              _progressRow =
-                '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
-                  '<td colspan="11" class="pos-progress-cell">' +
-                    '<div class="pos-progress">' +
-                      '<div class="pos-progress-track">' +
-                        '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
-                        '<div class="pos-progress-zone neutral" style="left:' + _entryAt.toFixed(2) + '%; width:' + (_oneRAt - _entryAt).toFixed(2) + '%"></div>' +
-                        '<div class="pos-progress-zone green"   style="left:' + _oneRAt.toFixed(2) + '%; width:' + (100 - _oneRAt).toFixed(2) + '%"></div>' +
-                        '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
-                        '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
-                        '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
-                        _trailTick +
-                        '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
-                          '<span class="needle-label">' + esc(_rTxt) + '</span>' +
-                        '</span>' +
-                      '</div>' +
-                      '<div class="pos-progress-meta">' +
-                        '<span class="pp-meta-left">stop ' + fmtNum((_effStopForBar != null ? _effStopForBar : _stopForBar), 2) + '</span>' +
-                        '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
-                        '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
-                      '</div>' +
-                    '</div>' +
-                  '</td>' +
-                '</tr>';
-            }
           }
           // v7.89.0 -- Notional column (mirrors the Main table column
           // added in v7.87.0). For longs it's the dollar amount
@@ -5127,14 +5097,12 @@
           // intraday chart the v10 Proximity matrix uses (shared via
           // window.__tgRenderTickerChart). Expansion state lives on the
           // posBody element so it survives re-renders.
-          // Phase badge: ORB positions show OPEN/1R↗/TRAIL; EOD positions
-          // show an EOD badge instead (v9.1.65).
+          // Phase badge (OPEN / 1R↗ / TRAIL) from engine_positions flags.
+          // EOD positions are now in a separate section below, so all rows
+          // here are ORB positions (v9.1.66).
           var _phaseBadge = "";
-          var _isEodPosition = !!_eodPos[p.symbol];
           var _epData = _engPos[p.symbol] || null;
-          if (_isEodPosition) {
-            _phaseBadge = '<span class="eod-badge">EOD</span>';
-          } else if (_epData) {
+          if (_epData) {
             var _phA = !_epData.partial_taken;
             var _phC = _epData.partial_taken && _epData.be_moved;
             var _phB = _epData.partial_taken && !_epData.be_moved;
@@ -5164,21 +5132,78 @@
             <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${(typeof window.fmtHeld==='function'?window.fmtHeld(p.entry_ts_utc):'—')}</td>
           </tr>${_progressRow}${_chartRow}`;
         }).join("");
-        posBody.innerHTML = `<table>
-          <thead><tr>
-            <th title="Symbol \u00b7 colored dot shows side (green = long, red = short)">Ticker</th>
-            <th title="LONG = bought to open. SHORT = sold to open.">Side</th>
-            <th class="right" title="Number of shares">Sh</th>
-            <th class="right" title="Average fill price when the position opened">Entry</th>
-            <th class="right" title="Latest mark price">Mark</th>
-            <th class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">Notional</th>
-            <th class="right" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
-            <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
-            <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
-            <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
-            <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
-          </tr></thead>
-          <tbody>${rows}</tbody></table>`;
+        if (_orbPositions.length > 0) {
+          posBody.innerHTML = `<table>
+            <thead><tr>
+              <th title="Symbol \u00b7 colored dot shows side (green = long, red = short)">Ticker</th>
+              <th title="LONG = bought to open. SHORT = sold to open.">Side</th>
+              <th class="right" title="Number of shares">Sh</th>
+              <th class="right" title="Average fill price when the position opened">Entry</th>
+              <th class="right" title="Latest mark price">Mark</th>
+              <th class="right" title="Notional at cost: shares \u00d7 entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap (v7.86.0).">Notional</th>
+              <th class="right" title="Effective stop from the engine (Main state). TRAIL badge means the trail stop is armed.">Stop</th>
+              <th class="right" title="Risk dollars at the effective stop. |entry \u2212 stop| \u00d7 shares. Sums into the Concurrent Risk gauge.">Risk</th>
+              <th class="right" title="Unrealized profit/loss in dollars at the current mark">Unreal.</th>
+              <th class="right" title="Unrealized P&L as a percent of cost basis (entry x shares)">%</th>
+              <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
+            </tr></thead>
+            <tbody>${rows}</tbody></table>`;
+        } else {
+          posBody.innerHTML = "";
+        }
+
+        // v9.1.66 -- EOD reversal positions section (mirrors Main layout).
+        // Separated from ORB positions so operator sees ORB on top / EOD below.
+        // Val/Gene have live Alpaca data so mark + P&L are shown (unlike Main).
+        if (_eodPositions.length > 0) {
+          var _eodEtMin = (typeof window.__tgNowEtMinutes === "function") ? window.__tgNowEtMinutes() : 0;
+          var _eodWS = 15 * 60, _eodWE = 15 * 60 + 59;
+          var _eodHtml = _eodPositions.map(function(p) {
+            var _sc = p.side === "SHORT" ? "side-short" : "side-long";
+            var _mc = p.side === "SHORT" ? "mark-short" : "mark-long";
+            var _pnlC = (Number(p.unrealized_pnl) || 0) >= 0 ? "delta-up" : "delta-down";
+            var _nt = (function(){ var s=Number(p.qty),e=Number(p.avg_entry); if(!(s>0&&e>0))return "—"; return fmtUsd(s*e); })();
+            var _dotTitle = p.side === "SHORT" ? "Open short position" : "Open long position";
+            var _eEl = Math.max(0, Math.min(59, _eodEtMin - _eodWS));
+            var _ePct = (_eEl / 59) * 100;
+            var _eRem = 59 - _eEl;
+            var _eNC = p.side === "SHORT" ? "eod-needle-short" : "eod-needle-long";
+            var _bar =
+              '<tr class="pos-progress-row eod-time-bar" data-pos-ticker="' + esc(p.symbol) + '">' +
+                '<td colspan="11" class="pos-progress-cell">' +
+                  '<div class="pos-progress eod-progress">' +
+                    '<div class="pos-progress-track">' +
+                      '<div class="pos-progress-zone eod-elapsed" style="left:0%;width:' + _ePct.toFixed(1) + '%;border-radius:5px 0 0 5px"></div>' +
+                      '<div class="pos-progress-zone eod-remain" style="left:' + _ePct.toFixed(1) + '%;width:' + (100 - _ePct).toFixed(1) + '%;border-radius:0 5px 5px 0"></div>' +
+                      '<span class="pos-progress-needle ' + _eNC + '" style="left:' + _ePct.toFixed(1) + '%">' +
+                        '<span class="needle-label">' + _eEl + 'm</span>' +
+                      '</span>' +
+                    '</div>' +
+                    '<div class="pos-progress-meta">' +
+                      '<span class="pp-meta-left">15:00 entry</span>' +
+                      '<span class="pp-meta-center">' + _eRem + 'm to EOD exit</span>' +
+                      '<span class="pp-meta-right">15:59 exit</span>' +
+                    '</div>' +
+                  '</div>' +
+                '</td>' +
+              '</tr>';
+            return '<tr data-pos-ticker="' + esc(p.symbol) + '">' +
+              '<td><span class="ticker">' + esc(p.symbol) + ' <span class="mark ' + _mc + '" title="' + esc(_dotTitle) + '">●</span></span><span class="eod-badge">EOD</span></td>' +
+              '<td><span class="' + _sc + '">' + esc(p.side) + '</span></td>' +
+              '<td class="right">' + fmtNum(p.qty, 0) + '</td>' +
+              '<td class="right">' + fmtNum(p.avg_entry, 2) + '</td>' +
+              '<td class="right">' + fmtNum(p.current_price, 2) + '</td>' +
+              '<td class="right">' + _nt + '</td>' +
+              '<td class="right">—</td>' +
+              '<td class="right">—</td>' +
+              '<td class="right ' + _pnlC + '">' + fmtUsd(p.unrealized_pnl) + '</td>' +
+              '<td class="right ' + _pnlC + '">' + fmtPctExec(p.unrealized_pnl_pct, 2) + '</td>' +
+              '<td class="right">' + (typeof window.fmtHeld === "function" ? window.fmtHeld(p.entry_ts_utc) : "—") + '</td>' +
+            '</tr>' + _bar;
+          }).join("");
+          posBody.innerHTML += (_orbPositions.length > 0 ? '<div class="eod-section-sep"></div>' : '') +
+            '<table class="eod-pos-table"><tbody>' + _eodHtml + '</tbody></table>';
+        }
 
         // v9.1.9 -- click-to-expand parity with Main's renderPositions.
         // Toggle the ticker in posBody.__posExpanded and re-render via

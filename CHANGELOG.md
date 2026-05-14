@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.66 (2026-05-14) — Val/Gene EOD positions separated into own section (mirrors Main layout)
+
+EOD reversal positions on Val/Gene now render in a distinct section below the ORB positions table, matching the Main tab design introduced in v9.1.65.
+
+Previously, EOD positions were detected via `_eodPos[p.symbol]` but still rendered inline with ORB positions in the same table (EOD badge + teal time bar, but same row structure). Val/Gene have live Alpaca data so the separated EOD section shows mark price + unrealized P&L (richer than Main's entry-only view).
+
+**Changes (app.js IIFE-2 `renderExecutor`):**
+- Split `positions` into `_orbPositions` (no `eod_positions` match) and `_eodPositions` (matched) before rendering.
+- ORB table now maps only `_orbPositions`; all EOD-specific branches (badge, time bar) removed from the ORB loop — clean separation.
+- If `_orbPositions.length === 0` (only EOD positions open), the ORB table is skipped entirely (`posBody.innerHTML = ""`); avoids rendering an empty table header.
+- EOD section appended after ORB table: same teal time bar + `eod-section-sep` divider. Rows include mark + P&L from Alpaca (unlike Main).
+
+---
+
 ## v9.1.65 (2026-05-14) — EOD reversal positions on dashboard: teal time bar + Main tab visibility
 
 EOD reversal positions (15:00-15:59 ET window) now appear on all three tabs with a time-based progress bar instead of the ORB stop bar.
