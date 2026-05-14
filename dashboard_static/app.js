@@ -3238,13 +3238,14 @@
     if (window.__lastScanAt && window.__scanIntervalMs) {
       // Clamp at 1 so the counter never shows ··· (which looks frozen).
       // Shows "01s" for ~1s while the scan fires, then resets to ~14s.
-      const remaining = Math.max(1, Math.ceil(
+      const _raw = Math.ceil(
         (window.__scanIntervalMs - (Date.now() - window.__lastScanAt)) / 1000
-      ));
+      );
+      const remaining = Math.max(0, _raw);
       const ss = String(remaining).padStart(2, "0");
       el.textContent = `♻ ${ss}s`;
-      el.setAttribute("aria-label", `next scan in ${ss}s`);
-      el.setAttribute("title", `next scan in ${ss}s`);
+      el.setAttribute("aria-label", remaining <= 0 ? "scanning now" : `next scan in ${ss}s`);
+      el.setAttribute("title", remaining <= 0 ? "scan in progress" : `next scan in ${ss}s`);
     } else {
       el.textContent = "♻ --";
       el.setAttribute("aria-label", "next scan: not scheduled");
