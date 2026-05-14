@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.65 (2026-05-14) — EOD reversal positions on dashboard: teal time bar + Main tab visibility
+
+EOD reversal positions (15:00-15:59 ET window) now appear on all three tabs with a time-based progress bar instead of the ORB stop bar.
+
+**Why Main didn't show EOD positions:** `EodReversalEngine._states[pid].open_positions` is a third separate store — distinct from `LiveAdapter._open_positions` (what the Main tab reads) and from Alpaca positions (what Val/Gene tabs read). Val/Gene positions appeared because they were real Alpaca orders surfaced by `executor.get_positions()`. For Main, EOD longs go through `callbacks.execute_entry` (legacy paper path, not surfaced by the ORB dashboard renderer) and EOD shorts hit `_v10_dispatch_executor_fire(pid="main")` which finds no Main executor and fails silently.
+
+**Fix:**
+- `dashboard_server.py`: Added `_eod_positions_for_pid(pid)` helper that reads `EodReversalEngine._states[pid].open_positions`. Injected into `_executor_snapshot` (Val/Gene tabs) and the main `/api/state` snapshot (Main tab) as `eod_positions` dict keyed by ticker.
+- `app.js` IIFE-1: Added `__tgNowEtMinutes()` utility (ET-aware, DST-safe via `Intl.DateTimeFormat`). Modified `renderPositions` to append EOD positions from `s.eod_positions` as a separate mini-table below the ORB table, each with an EOD time bar.
+- `app.js` IIFE-2: Modified `renderExecutor` to detect EOD positions via `data.eod_positions[p.symbol]`. When matched, renders a teal time-based bar (15:00 left → 15:59 right, needle at current ET time) instead of the ORB stop bar. Also fixes ORB stop bar `colspan="9"` → `colspan="11"` (table has 11 columns: Ticker/Side/Sh/Entry/Mark/Notional/Stop/Risk/Unreal./%/Held).
+- `app.css`: Added `.pos-progress-zone.eod-elapsed` (teal gradient), `.eod-remain` (dim), `.eod-needle-long/short` (teal/indigo), `.eod-badge` chip, `.eod-section-sep` divider.
+
+**Forensic:** `[V910-EOD-ENTRY]` / `[V910-EOD-FIRE]` log tags; EOD position data sourced from `EodReversalEngine` directly, not from paper_state or Alpaca.
+
+---
+
 ## v9.1.64 (2026-05-14) — fix countdown stuck 5s: bypass snapshot cache for last_scan_at in SSE
 
 Root cause: `_SNAPSHOT_CACHE_TTL = 10.0s`. When the scan fires and `_last_scan_time` updates, the SSE keeps delivering the 10s-old cached `last_scan_at` until the cache expires. The client shows "00s" for up to 10s (in practice ~5s depending on cache-build timing) before the fresh timestamp arrives.

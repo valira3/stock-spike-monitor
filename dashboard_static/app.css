@@ -2261,6 +2261,42 @@ body.v10-live .legacy-v10-hidden {
 }
 
 /* ============================================================
+   v9.1.65 -- EOD reversal time bar and EOD position badge.
+   The EOD bar replaces the stop-based ORB bar for positions
+   entered at 15:00 ET that exit at 15:59 ET. Teal palette to
+   distinguish from ORB red/green progress zones.
+============================================================ */
+.pos-progress-zone.eod-elapsed {
+  background: linear-gradient(90deg, rgba(13,148,136,0.55) 0%, rgba(20,184,166,0.80) 100%);
+}
+.pos-progress-zone.eod-remain {
+  background: rgba(148,163,184,0.18);
+}
+.pos-progress-needle.eod-needle-long  { background: #14b8a6; }
+.pos-progress-needle.eod-needle-short { background: #818cf8; }
+.pos-progress-needle.eod-needle-long .needle-label  { color: #5eead4; border-color: rgba(20,184,166,0.4); }
+.pos-progress-needle.eod-needle-short .needle-label { color: #c7d2fe; border-color: rgba(129,140,248,0.4); }
+.eod-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #5eead4;
+  background: rgba(20,184,166,0.15);
+  border: 1px solid rgba(20,184,166,0.35);
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.eod-section-sep {
+  height: 1px;
+  background: rgba(75,85,99,0.4);
+  margin: 6px 0 4px;
+}
+.eod-pos-table { width: 100%; }
+
+/* ============================================================
    v7.43.0 -- broker P&L chip in the Day P&L KPI sub-line.
    Surfaces broker_day_pnl alongside paper P&L with a delta chip
    when they diverge.

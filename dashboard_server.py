@@ -2376,6 +2376,11 @@ def snapshot() -> dict[str, Any]:
             # v6.17.0 \u2014 earnings_watcher panel surface. Reads
             # last_cycle.json + open_positions.json from /data/earnings_watcher.
             "earnings_watcher": _earnings_watcher_snapshot(),
+            # v9.1.65 -- EOD reversal open positions for the Main portfolio.
+            # Tracked in EodReversalEngine separately from paper_state so
+            # Main tab can show EOD positions even when callbacks.execute_entry
+            # fails (paper-fire mode) or the EOD short fires with no Main executor.
+            "eod_positions": _eod_positions_for_pid("main"),
         }
     except Exception as e:
         logger.exception("dashboard snapshot failed: %s", e)
@@ -3068,6 +3073,37 @@ def _pair_executor_fills(raw_fills: list[dict]) -> list[dict]:
     return out
 
 
+def _eod_positions_for_pid(pid: str) -> dict:
+    """v9.1.65 -- EOD reversal open positions for one portfolio.
+
+    Returns a dict keyed by ticker (upper-case). Fields needed by the
+    frontend EOD time bar: side, entry_price, shares, entry_iso,
+    notional_at_entry. Returns {} when the EOD engine is not running
+    or has no open positions for this portfolio. Never raises.
+    """
+    try:
+        import orb.live_runtime as _rt_eod
+
+        _eod_eng = _rt_eod.get_eod_engine()
+        if _eod_eng is None:
+            return {}
+        _eod_st = _eod_eng._states.get(pid)
+        if not _eod_st or not _eod_st.open_positions:
+            return {}
+        out: dict = {}
+        for _tk, _ep in _eod_st.open_positions.items():
+            out[_tk.upper()] = {
+                "side": _ep.side,
+                "entry_price": float(_ep.entry_price),
+                "shares": int(_ep.shares),
+                "entry_iso": str(_ep.entry_iso or ""),
+                "notional_at_entry": float(_ep.notional_at_entry),
+            }
+        return out
+    except Exception:
+        return {}
+
+
 def _executor_snapshot(name: str) -> dict:
     """Build the JSON payload for one per-executor tab.
 
@@ -3409,6 +3445,12 @@ def _executor_snapshot(name: str) -> dict:
             payload["engine_positions"] = _eng_pos
     except Exception:
         pass
+
+    # v9.1.65 -- EOD reversal positions for this executor's portfolio.
+    # Stored in EodReversalEngine._states independently from OrbEngine;
+    # needed so the frontend can detect EOD positions and render the
+    # time-based bar instead of the ORB stop bar.
+    payload["eod_positions"] = _eod_positions_for_pid(name)
 
     with _executor_cache_lock:
         _executor_cache[cache_key] = (now, payload)

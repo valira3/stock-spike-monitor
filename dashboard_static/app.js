@@ -73,6 +73,28 @@
     } catch (e) { return "—"; }
   }
   window.fmtHeld = fmtHeld;  // exposed for IIFE-2 (Val/Gene tabs)
+
+  // v9.1.65 -- current time as ET minutes-since-midnight (0-1439).
+  // Used by the EOD time bar to compute elapsed/remaining in the
+  // 15:00-15:59 ET exit window. Handles DST via Intl.DateTimeFormat.
+  function __tgNowEtMinutes() {
+    try {
+      var _parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric", minute: "numeric", hour12: false,
+      }).formatToParts(new Date());
+      var _h = 0, _m = 0;
+      for (var _i = 0; _i < _parts.length; _i++) {
+        if (_parts[_i].type === "hour")   _h = parseInt(_parts[_i].value) || 0;
+        if (_parts[_i].type === "minute") _m = parseInt(_parts[_i].value) || 0;
+      }
+      return _h * 60 + _m;
+    } catch (_e) {
+      return ((new Date().getUTCHours() - 4 + 24) % 24) * 60 + new Date().getUTCMinutes();
+    }
+  }
+  window.__tgNowEtMinutes = __tgNowEtMinutes;
+
   function fmtPct(v, digits) {
     if (v === null || v === undefined || isNaN(v)) return "—";
     const abs = Math.abs(v);
@@ -352,7 +374,11 @@
 
   function renderPositions(s, sl) {
     const positions = sl.positions || [];
-    $("pos-count").textContent = `· ${positions.length}`;
+    // v9.1.65 -- EOD reversal positions (from EodReversalEngine state,
+    // separate from paper_state ORB positions). Keyed by ticker.
+    const _eodMain = s.eod_positions || {};
+    const _eodMainTickers = Object.keys(_eodMain);
+    $("pos-count").textContent = `· ${positions.length + _eodMainTickers.length}`;
     const body = $("pos-body");
     // v7.89.0 -- port-strip / port-strip-empty footer blocks were
     // retired from the Open Positions card. Equity now lives in the
@@ -361,7 +387,7 @@
     // invested / short-liability dollars.
     const card = body && body.parentElement;
 
-    if (positions.length === 0) {
+    if (positions.length === 0 && _eodMainTickers.length === 0) {
       body.innerHTML = `<div class="empty">No open positions.</div>`;
       body.style.display = "";
       if (card) card.classList.add("is-empty");
@@ -580,6 +606,56 @@
           <th class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">Held</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`;
+
+      // v9.1.65 -- EOD reversal positions (Main portfolio, time-based bar).
+      if (_eodMainTickers.length > 0) {
+        var _eodEtMin = __tgNowEtMinutes();
+        var _eodWS = 15 * 60, _eodWE = 15 * 60 + 59;
+        var _eodRows = _eodMainTickers.map(function(tk) {
+          var ep = _eodMain[tk];
+          var _sc = ep.side === "short" ? "side-short" : "side-long";
+          var _sl = ep.side === "short" ? "SHORT" : "LONG";
+          var _nt = fmtUsd(ep.shares * ep.entry_price);
+          var _elapsed = Math.max(0, Math.min(59, _eodEtMin - _eodWS));
+          var _pct = (_elapsed / 59) * 100;
+          var _rem = 59 - _elapsed;
+          var _nc = ep.side === "short" ? "eod-needle-short" : "eod-needle-long";
+          var _bar =
+            '<tr class="pos-progress-row eod-time-bar" data-pos-ticker="' + escapeHtml(tk) + '">' +
+              '<td colspan="11" class="pos-progress-cell">' +
+                '<div class="pos-progress eod-progress">' +
+                  '<div class="pos-progress-track">' +
+                    '<div class="pos-progress-zone eod-elapsed" style="left:0%;width:' + _pct.toFixed(1) + '%;border-radius:5px 0 0 5px"></div>' +
+                    '<div class="pos-progress-zone eod-remain" style="left:' + _pct.toFixed(1) + '%;width:' + (100 - _pct).toFixed(1) + '%;border-radius:0 5px 5px 0"></div>' +
+                    '<span class="pos-progress-needle ' + _nc + '" style="left:' + _pct.toFixed(1) + '%">' +
+                      '<span class="needle-label">' + _elapsed + 'm</span>' +
+                    '</span>' +
+                  '</div>' +
+                  '<div class="pos-progress-meta">' +
+                    '<span class="pp-meta-left">15:00 entry</span>' +
+                    '<span class="pp-meta-center">' + _rem + 'm to EOD exit</span>' +
+                    '<span class="pp-meta-right">15:59 exit</span>' +
+                  '</div>' +
+                '</div>' +
+              '</td>' +
+            '</tr>';
+          return '<tr data-pos-ticker="' + escapeHtml(tk) + '">' +
+            '<td><span class="ticker">' + escapeHtml(tk) + '</span><span class="eod-badge">EOD</span></td>' +
+            '<td><span class="' + _sc + '">' + _sl + '</span></td>' +
+            '<td class="right">' + ep.shares + '</td>' +
+            '<td class="right">' + fmtPx(ep.entry_price) + '</td>' +
+            '<td class="right">—</td>' +
+            '<td class="right">' + _nt + '</td>' +
+            '<td class="right">—</td>' +
+            '<td class="right">—</td>' +
+            '<td class="right">—</td>' +
+            '<td class="right">—</td>' +
+            '<td class="right">' + fmtHeld(ep.entry_iso) + '</td>' +
+          '</tr>' + _bar;
+        }).join("");
+        body.innerHTML += (positions.length > 0 ? '<div class="eod-section-sep"></div>' : '') +
+          '<table class="eod-pos-table"><tbody>' + _eodRows + '</tbody></table>';
+      }
     }
 
     // v9.1.9 -- click a position row to toggle an inline intraday chart
@@ -4911,6 +4987,9 @@
             };
           }
         }
+        // v9.1.65 -- EOD reversal positions for this executor. When set,
+        // renders a time-based bar instead of the ORB stop bar.
+        const _eodPos = (data && data.eod_positions) || {};
         // v7.0.3 \u2014 match Main's positions <table> shape exactly: no
         // inline styles, semantic classes (.ticker .mark .side-* etc.),
         // header tooltips. Field names differ because /api/executor/<name>
@@ -4938,76 +5017,102 @@
           // when the chandelier trail moves the live stop past entry.
           // _stopInfo.eff is overlaid as a separate "trail" tick.
           var _progressRow = "";
-          var _axisStopForBar = _stopInfo
-              && Number.isFinite(_stopInfo.entry_stop)
-              && _stopInfo.entry_stop > 0
-                ? _stopInfo.entry_stop
-                : (_stopInfo && Number.isFinite(_stopInfo.eff) ? _stopInfo.eff : null);
-          var _effStopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
-                                 ? _stopInfo.eff : null;
-          var _entryForBar = Number(p.avg_entry);
-          var _markForBar  = Number(p.current_price);
-          if (_axisStopForBar != null
-              && Number.isFinite(_entryForBar) && _entryForBar > 0
-              && Number.isFinite(_markForBar)  && _markForBar  > 0
-              && Math.abs(_entryForBar - _axisStopForBar) > 1e-4) {
-            var _isLong = p.side !== "SHORT";
-            var _stopForBar = _axisStopForBar;  // axis anchor (immutable)
-            var _targetForBar = _isLong
-              ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
-              : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
-            var _span = _targetForBar - _stopForBar;
-            function _exPct(px) {
-              if (Math.abs(_span) < 1e-9) return 50;
-              var pos = (px - _stopForBar) / _span * 100;
-              return Math.max(0, Math.min(100, pos));
-            }
-            var _entryAt = _exPct(_entryForBar);
-            var _oneRPx = _isLong
-              ? _entryForBar + (_entryForBar - _stopForBar)
-              : _entryForBar - (_stopForBar - _entryForBar);
-            var _oneRAt = _exPct(_oneRPx);
-            var _markAt = _exPct(_markForBar);
-            var _r = _isLong
-              ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
-              : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
-            var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
-            // v9.1.5 -- effective-stop indicator (trail). Same shape as
-            // Main's renderer. Renders when the trail has moved away
-            // from the admission stop.
-            var _trailTick = "";
-            if (_effStopForBar != null
-                && Math.abs(_effStopForBar - _axisStopForBar) > 1e-4) {
-              var _trailAt = _exPct(_effStopForBar);
-              _trailTick = '<span class="pos-progress-tick trail" '
-                + 'style="left:' + _trailAt.toFixed(2) + '%" '
-                + 'data-label="trail" '
-                + 'title="effective stop (trail): ' + fmtNum(_effStopForBar, 2) + '"></span>';
-            }
+          if (_isEodPosition) {
+            // v9.1.65 -- EOD time bar: shows elapsed/remaining in the
+            // 15:00-15:59 ET window. Teal needle, no stop/target axis.
+            var _eNowMin = (typeof window.__tgNowEtMinutes === "function") ? window.__tgNowEtMinutes() : 0;
+            var _eWS = 15 * 60, _eWE = 15 * 60 + 59;
+            var _eElap = Math.max(0, Math.min(59, _eNowMin - _eWS));
+            var _ePct = (_eElap / 59) * 100;
+            var _eRem = 59 - _eElap;
+            var _eNC = p.side === "SHORT" ? "eod-needle-short" : "eod-needle-long";
             _progressRow =
-              '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
-                '<td colspan="9" class="pos-progress-cell">' +
-                  '<div class="pos-progress">' +
+              '<tr class="pos-progress-row eod-time-bar" data-pos-ticker="' + esc(p.symbol) + '">' +
+                '<td colspan="11" class="pos-progress-cell">' +
+                  '<div class="pos-progress eod-progress">' +
                     '<div class="pos-progress-track">' +
-                      '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
-                      '<div class="pos-progress-zone neutral" style="left:' + _entryAt.toFixed(2) + '%; width:' + (_oneRAt - _entryAt).toFixed(2) + '%"></div>' +
-                      '<div class="pos-progress-zone green"   style="left:' + _oneRAt.toFixed(2) + '%; width:' + (100 - _oneRAt).toFixed(2) + '%"></div>' +
-                      '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
-                      '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
-                      '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
-                      _trailTick +
-                      '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
-                        '<span class="needle-label">' + esc(_rTxt) + '</span>' +
+                      '<div class="pos-progress-zone eod-elapsed" style="left:0%;width:' + _ePct.toFixed(1) + '%;border-radius:5px 0 0 5px"></div>' +
+                      '<div class="pos-progress-zone eod-remain" style="left:' + _ePct.toFixed(1) + '%;width:' + (100 - _ePct).toFixed(1) + '%;border-radius:0 5px 5px 0"></div>' +
+                      '<span class="pos-progress-needle ' + _eNC + '" style="left:' + _ePct.toFixed(1) + '%">' +
+                        '<span class="needle-label">' + _eElap + 'm</span>' +
                       '</span>' +
                     '</div>' +
                     '<div class="pos-progress-meta">' +
-                      '<span class="pp-meta-left">stop ' + fmtNum((_effStopForBar != null ? _effStopForBar : _stopForBar), 2) + '</span>' +
-                      '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
-                      '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
+                      '<span class="pp-meta-left">15:00 entry</span>' +
+                      '<span class="pp-meta-center">' + _eRem + 'm to EOD exit</span>' +
+                      '<span class="pp-meta-right">15:59 exit</span>' +
                     '</div>' +
                   '</div>' +
                 '</td>' +
               '</tr>';
+          } else {
+            var _axisStopForBar = _stopInfo
+                && Number.isFinite(_stopInfo.entry_stop)
+                && _stopInfo.entry_stop > 0
+                  ? _stopInfo.entry_stop
+                  : (_stopInfo && Number.isFinite(_stopInfo.eff) ? _stopInfo.eff : null);
+            var _effStopForBar = _stopInfo && Number.isFinite(_stopInfo.eff)
+                                   ? _stopInfo.eff : null;
+            var _entryForBar = Number(p.avg_entry);
+            var _markForBar  = Number(p.current_price);
+            if (_axisStopForBar != null
+                && Number.isFinite(_entryForBar) && _entryForBar > 0
+                && Number.isFinite(_markForBar)  && _markForBar  > 0
+                && Math.abs(_entryForBar - _axisStopForBar) > 1e-4) {
+              var _isLong = p.side !== "SHORT";
+              var _stopForBar = _axisStopForBar;
+              var _targetForBar = _isLong
+                ? _entryForBar + 2.5 * (_entryForBar - _stopForBar)
+                : _entryForBar - 2.5 * (_stopForBar - _entryForBar);
+              var _span = _targetForBar - _stopForBar;
+              var _exPct = function(px) {
+                if (Math.abs(_span) < 1e-9) return 50;
+                return Math.max(0, Math.min(100, (px - _stopForBar) / _span * 100));
+              };
+              var _entryAt = _exPct(_entryForBar);
+              var _oneRPx = _isLong
+                ? _entryForBar + (_entryForBar - _stopForBar)
+                : _entryForBar - (_stopForBar - _entryForBar);
+              var _oneRAt = _exPct(_oneRPx);
+              var _markAt = _exPct(_markForBar);
+              var _r = _isLong
+                ? (_markForBar - _entryForBar) / (_entryForBar - _stopForBar)
+                : (_entryForBar - _markForBar) / (_stopForBar - _entryForBar);
+              var _rTxt = (_r >= 0 ? "+" : "") + _r.toFixed(2) + "R";
+              var _trailTick = "";
+              if (_effStopForBar != null
+                  && Math.abs(_effStopForBar - _axisStopForBar) > 1e-4) {
+                var _trailAt = _exPct(_effStopForBar);
+                _trailTick = '<span class="pos-progress-tick trail" '
+                  + 'style="left:' + _trailAt.toFixed(2) + '%" '
+                  + 'data-label="trail" '
+                  + 'title="effective stop (trail): ' + fmtNum(_effStopForBar, 2) + '"></span>';
+              }
+              _progressRow =
+                '<tr class="pos-progress-row" data-pos-ticker="' + esc(p.symbol) + '">' +
+                  '<td colspan="11" class="pos-progress-cell">' +
+                    '<div class="pos-progress">' +
+                      '<div class="pos-progress-track">' +
+                        '<div class="pos-progress-zone red"     style="left:0%; width:' + _entryAt.toFixed(2) + '%"></div>' +
+                        '<div class="pos-progress-zone neutral" style="left:' + _entryAt.toFixed(2) + '%; width:' + (_oneRAt - _entryAt).toFixed(2) + '%"></div>' +
+                        '<div class="pos-progress-zone green"   style="left:' + _oneRAt.toFixed(2) + '%; width:' + (100 - _oneRAt).toFixed(2) + '%"></div>' +
+                        '<span class="pos-progress-tick" style="left:' + _entryAt.toFixed(2) + '%" data-label="entry"></span>' +
+                        '<span class="pos-progress-tick" style="left:' + _oneRAt.toFixed(2) + '%" data-label="1R"></span>' +
+                        '<span class="pos-progress-tick end" style="left:100%" data-label="target"></span>' +
+                        _trailTick +
+                        '<span class="pos-progress-needle ' + (_r >= 0 ? 'up' : 'down') + '" style="left:' + _markAt.toFixed(2) + '%">' +
+                          '<span class="needle-label">' + esc(_rTxt) + '</span>' +
+                        '</span>' +
+                      '</div>' +
+                      '<div class="pos-progress-meta">' +
+                        '<span class="pp-meta-left">stop ' + fmtNum((_effStopForBar != null ? _effStopForBar : _stopForBar), 2) + '</span>' +
+                        '<span class="pp-meta-center">1R ' + fmtNum(_oneRPx, 2) + '</span>' +
+                        '<span class="pp-meta-right">target ' + fmtNum(_targetForBar, 2) + '</span>' +
+                      '</div>' +
+                    '</div>' +
+                  '</td>' +
+                '</tr>';
+            }
           }
           // v7.89.0 -- Notional column (mirrors the Main table column
           // added in v7.87.0). For longs it's the dollar amount
@@ -5022,11 +5127,14 @@
           // intraday chart the v10 Proximity matrix uses (shared via
           // window.__tgRenderTickerChart). Expansion state lives on the
           // posBody element so it survives re-renders.
-          // Phase badge parity with Main's OPEN / 1R↗ / TRAIL badge.
-          // Derived from engine_positions partial_taken + be_moved flags.
+          // Phase badge: ORB positions show OPEN/1R↗/TRAIL; EOD positions
+          // show an EOD badge instead (v9.1.65).
           var _phaseBadge = "";
+          var _isEodPosition = !!_eodPos[p.symbol];
           var _epData = _engPos[p.symbol] || null;
-          if (_epData) {
+          if (_isEodPosition) {
+            _phaseBadge = '<span class="eod-badge">EOD</span>';
+          } else if (_epData) {
             var _phA = !_epData.partial_taken;
             var _phC = _epData.partial_taken && _epData.be_moved;
             var _phB = _epData.partial_taken && !_epData.be_moved;
