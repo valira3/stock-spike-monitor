@@ -452,9 +452,10 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
     now_et = datetime.now(ET)
     now_min = now_et.hour * 60 + now_et.minute
     is_rth = 9 <= now_et.hour < 16 and now_et.weekday() < 5
-    # Session reset fires at 09:25 ET; only flag missing session_date after
-    # 09:30 ET so we don't false-positive in the 09:00-09:25 pre-open window.
-    is_post_open = now_min >= 570 and now_et.weekday() < 5  # 570 = 09:30 ET
+    # Session reset fires on the first scan tick after 09:30 ET (confirmed
+    # empirically: fires at ~09:30:32 ET). Use 09:33 as the threshold so
+    # the monitor doesn't false-positive during the first few scan cycles.
+    is_post_open = now_min >= 573 and now_et.weekday() < 5  # 573 = 09:33 ET
     out: list[Check] = []
 
     # -- session --

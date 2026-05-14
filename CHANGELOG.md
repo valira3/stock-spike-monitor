@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.40 (2026-05-14) — fix session WARN race at 09:30 ET
+
+Session reset fires on the first scan tick after 09:30 ET (empirically ~09:30:32 ET). Monitor at 09:30:29 ET caught the state 3 seconds before the reset — valid WARN at the instant but spurious. Threshold bumped from 09:30 (570 min) to 09:33 (573 min) to absorb the startup jitter.
+
+---
+
 ## v9.1.39 (2026-05-14) — fix false-positive session WARN (09:00-09:25 ET)
 
 `checks_strategy` was flagging `session_date empty` as WARN between 09:00-09:25 ET because `is_rth` starts at 09:00 but the session reset fires at 09:25. Changed threshold to `is_post_open` (09:30 ET) — the warning now only fires if session_date is still empty after trading has opened.
