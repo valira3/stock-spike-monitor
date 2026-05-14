@@ -450,7 +450,11 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
     val = raw.get("/api/executor/val") or {}
     idx = raw.get("/api/indices") or {}
     now_et = datetime.now(ET)
+    now_min = now_et.hour * 60 + now_et.minute
     is_rth = 9 <= now_et.hour < 16 and now_et.weekday() < 5
+    # Session reset fires at 09:25 ET; only flag missing session_date after
+    # 09:30 ET so we don't false-positive in the 09:00-09:25 pre-open window.
+    is_post_open = now_min >= 570 and now_et.weekday() < 5  # 570 = 09:30 ET
     out: list[Check] = []
 
     # -- session --
@@ -465,9 +469,14 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
         out.append(
             Check(s, "session", CRIT, "ORB_LIVE_MODE=0 -- LEGACY fallback active, v10 not trading")
         )
-    elif is_rth and not session_date:
+    elif is_post_open and not session_date:
         out.append(
-            Check(s, "session", WARN, "RTH but session_date empty (reset expected at 09:25 ET)")
+            Check(
+                s,
+                "session",
+                WARN,
+                "session_date empty after 09:30 ET (reset should have fired at 09:25)",
+            )
         )
     else:
         out.append(Check(s, "session", OK, f"live_mode=ON session={session_date or '(off-hours)'}"))

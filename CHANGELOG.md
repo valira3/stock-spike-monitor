@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.39 (2026-05-14) — fix false-positive session WARN (09:00-09:25 ET)
+
+`checks_strategy` was flagging `session_date empty` as WARN between 09:00-09:25 ET because `is_rth` starts at 09:00 but the session reset fires at 09:25. Changed threshold to `is_post_open` (09:30 ET) — the warning now only fires if session_date is still empty after trading has opened.
+
+---
+
 ## v9.1.38 (2026-05-14) — system-check-bot MARKET section (Alpaca SIP bars)
 
 New `MARKET` check section (section 5). Runs every 5-min tick when trades exist today. Pulls Alpaca SIP 5m bar data for each traded ticker + today's Alpaca order fills.
