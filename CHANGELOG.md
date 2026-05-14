@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.33 (2026-05-14) — Val/Gene executor loading shimmer
+
+CSS shimmer animation on KPI value placeholders while the first `/api/executor/<name>` fetch is in-flight. `ensureExecSkeleton` adds `.tg-exec-loading` to the panel root; `pollExecutor` removes it on first successful response. Dashes pulse at 1.4s so the operator can distinguish "loading" from "executor offline/no data".
+
+---
+
 ## v9.1.32 (2026-05-14) — dashboard live-state correctness (12 UI fixes)
 
 ### Operator clarity fixes

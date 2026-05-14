@@ -4160,6 +4160,9 @@
     if (!panel.dataset.tgReady) {
       panel.innerHTML = execSkeleton(exec);
       panel.dataset.tgReady = "1";
+      // v9.1.33 -- mark the panel as loading so KPI values shimmer
+      // until the first successful poll fills them in.
+      panel.classList.add("tg-exec-loading");
     }
     return panel;
   }
@@ -4487,6 +4490,8 @@
       if (!r.ok) throw new Error("http " + r.status);
       const data = await r.json();
       _execLastData[name] = data;
+      // v9.1.33 -- clear loading shimmer on first successful data fetch.
+      if (panel) panel.classList.remove("tg-exec-loading");
       renderExecutor(name, data);
       // v4.11.0 — paint health pill from per-executor errors snapshot.
       try { applyHealthPill(name, (data && data.errors) || { count: 0, severity: "green", entries: [] }); } catch (e) {}
