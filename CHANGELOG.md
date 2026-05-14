@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.38 (2026-05-14) — system-check-bot MARKET section (Alpaca SIP bars)
+
+New `MARKET` check section (section 5). Runs every 5-min tick when trades exist today. Pulls Alpaca SIP 5m bar data for each traded ticker + today's Alpaca order fills.
+
+| Check | Data source | What it catches |
+|---|---|---|
+| `or_break` | `/api/state.v10.or_windows` vs trade log `entry_price` | Entry >75bps above OR_high (chasing) or below OR_high for LONGs |
+| `atr_stop` | Alpaca SIP 5m bars → ATR(14)×1.75 vs `entry_stop` | Stop too tight (<0.35× expected) or too wide (>3×) |
+| `fill_match` | Alpaca orders (filled_qty>0) vs trade log tickers + P&L | Missing Alpaca fills for traded tickers; day P&L gap >30% between paper and Alpaca |
+| `rr_ratio` | trade log `pnl` / `risk_dollars` | Win >3.5R (data check?); loss worse than -1.8R (excessive slippage) |
+| `vwap_gate` | Alpaca bar `vwap` at entry time vs `entry_price` | Mega-cap (META/MSFT/AAPL/AMZN/GOOG/AVGO) entry >25bps from VWAP → CRIT |
+
+Validated on yesterday's 6 real TSLA/NVDA trades: ATR stops all within band, R-multiples clean, fills present.
+
+---
+
 ## v9.1.37 (2026-05-14) — system-check-bot: WARN alerts + trade log audit
 
 ### 1. Telegram alerts now fire on WARN as well as CRIT

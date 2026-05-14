@@ -827,7 +827,7 @@ def print_report(report: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SECTION 4 — TRADE LOG (deep comparison against strategy expectations)
+# SECTION 4 \u2014 TRADE LOG (deep comparison against strategy expectations)
 # ---------------------------------------------------------------------------
 
 # Tolerance band around expected risk per trade (1% of $100k = $1,000).
@@ -891,7 +891,7 @@ def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
     if not today:
         # No trades today is normal before 09:30 or on a no-signal day
         now_min = datetime.now(ET).hour * 60 + datetime.now(ET).minute
-        if now_min > 660:  # after 11:00 ET — would expect some activity or at least a session
+        if now_min > 660:  # after 11:00 ET \u2014 would expect some activity or at least a session
             checks.append(
                 Check(
                     s,
@@ -1106,6 +1106,401 @@ def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
     return checks
 
 
+# ---------------------------------------------------------------------------
+# SECTION 5 \u2014 MARKET VALIDATION (Alpaca SIP bars + fill cross-check)
+# ---------------------------------------------------------------------------
+
+
+def _compute_atr(bars: list[dict[str, Any]], n: int = 14) -> float | None:
+    """Wilder's ATR(n) from a list of {o,h,l,c} bar dicts, oldest first."""
+    if len(bars) < n + 1:
+        return None
+    trs = [
+        max(
+            bars[i]["h"] - bars[i]["l"],
+            abs(bars[i]["h"] - bars[i - 1]["c"]),
+            abs(bars[i]["l"] - bars[i - 1]["c"]),
+        )
+        for i in range(1, len(bars))
+    ]
+    atr = sum(trs[:n]) / n
+    for tr in trs[n:]:
+        atr = (atr * (n - 1) + tr) / n
+    return atr
+
+
+def pull_alpaca_market_data(tickers: list[str], date_et: str) -> dict[str, Any]:
+    """Fetch 5m SIP bars for *tickers* on *date_et* (YYYY-MM-DD ET)
+    plus today's filled orders from the Val portfolio.
+
+    Returns {bars: {ticker: [{t,o,h,l,c,v}]}, fills: [{...}], errors: [...]}.
+    """
+    out: dict[str, Any] = {"bars": {}, "fills": [], "errors": []}
+    if not tickers and not date_et:
+        return out
+
+    # Credentials from env (already loaded by run_monitor)
+    key = (os.environ.get("VAL_ALPACA_PAPER_KEY") or "").strip()
+    secret = (os.environ.get("VAL_ALPACA_PAPER_SECRET") or "").strip()
+    if not key or not secret:
+        out["errors"].append("VAL_ALPACA_PAPER_KEY/SECRET not set")
+        return out
+
+    # ----- bars -----
+    if tickers:
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+            dc = StockHistoricalDataClient(key, secret)
+            # Full RTH window: 09:30–16:00 ET  = 13:30–20:00 UTC
+            start_utc = datetime.fromisoformat(f"{date_et}T13:30:00+00:00")
+            end_utc = datetime.fromisoformat(f"{date_et}T20:00:00+00:00")
+            req = StockBarsRequest(
+                symbol_or_symbols=tickers,
+                timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+                start=start_utc,
+                end=end_utc,
+                feed="sip",
+            )
+            resp = dc.get_stock_bars(req)
+            for ticker, bar_list in (resp.data or {}).items():
+                out["bars"][ticker] = [
+                    {
+                        "t": b.timestamp.isoformat(),
+                        "o": float(b.open),
+                        "h": float(b.high),
+                        "l": float(b.low),
+                        "c": float(b.close),
+                        "v": float(b.volume),
+                        "vw": float(b.vwap) if b.vwap else None,
+                    }
+                    for b in bar_list
+                ]
+        except Exception as e:
+            out["errors"].append(f"bars fetch: {type(e).__name__}: {str(e)[:120]}")
+
+    # ----- fills (via today's orders) -----
+    try:
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+
+        tc = TradingClient(key, secret, paper=True)
+        req_o = GetOrdersRequest(
+            status=QueryOrderStatus.ALL,
+            after=f"{date_et}T00:00:00Z",
+            limit=500,
+        )
+        orders = tc.get_orders(filter=req_o) or []
+        out["fills"] = [
+            {
+                "symbol": str(o.symbol or ""),
+                "side": str(o.side.value if hasattr(o.side, "value") else o.side),
+                "filled_qty": float(o.filled_qty or 0),
+                "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+                "filled_at": str(o.filled_at) if o.filled_at else None,
+                "status": str(o.status.value if hasattr(o.status, "value") else o.status),
+            }
+            for o in orders
+            if float(o.filled_qty or 0) > 0  # only filled orders
+        ]
+    except Exception as e:
+        out["errors"].append(f"fills fetch: {type(e).__name__}: {str(e)[:120]}")
+
+    return out
+
+
+def checks_market_validation(
+    raw: dict[str, Any],
+    market_data: dict[str, Any],
+) -> list[Check]:
+    """Section 5: market-data-driven validation using Alpaca SIP bars + fills.
+
+    Checks:
+      or_break   -- entry price vs OR_high/OR_low from live or_windows
+      atr_stop   -- actual stop distance vs ATR(14)x1.75 from real 5m bars
+      fill_match -- Alpaca fills present for all traded tickers + P&L consistency
+      rr_ratio   -- pnl / risk_dollars in expected R-multiple range
+      vwap_gate  -- mega-cap entries checked against VWAP deviation (if vwap in bars)
+    """
+    s = "MARKET"
+    checks: list[Check] = []
+
+    if not market_data or (not market_data.get("bars") and not market_data.get("fills")):
+        if market_data.get("errors"):
+            checks.append(
+                Check(
+                    s,
+                    "fetch",
+                    WARN,
+                    "market data unavailable: " + "; ".join(market_data.get("errors", [])),
+                )
+            )
+        return checks
+
+    if market_data.get("errors"):
+        for err in market_data["errors"]:
+            checks.append(Check(s, "fetch_warn", WARN, err))
+
+    state = raw.get("/api/state") or {}
+    v10 = state.get("v10") or {}
+    or_windows = v10.get("or_windows") or {}
+    cfg = v10.get("config") or {}
+    vwap_tickers = set(cfg.get("max_vwap_dev_tickers") or [])
+    vwap_thr_bps = float(cfg.get("max_vwap_dev_bps") or 25.0)
+
+    trade_log = raw.get("/api/trade_log?limit=5000") or {}
+    today_et = datetime.now(ET).date().isoformat()
+    today = [r for r in (trade_log.get("rows") or []) if r.get("date") == today_et]
+
+    bars = market_data.get("bars") or {}
+    fills = market_data.get("fills") or []
+
+    if not today:
+        checks.append(Check(s, "no_trades", INFO, "no trades today to validate"))
+        return checks
+
+    # --------------------------------------------------------------------- #
+    # 1. OR Break entry validation                                           #
+    # --------------------------------------------------------------------- #
+    or_issues: list[str] = []
+    for t in today:
+        ticker = t.get("ticker", "")
+        side = (t.get("side") or "").upper()
+        entry = float(t.get("entry_price") or 0)
+        ow = or_windows.get(ticker)
+        if not ow or not ow.get("locked"):
+            continue  # OR not locked \u2014 pre-OR-close entry, skip
+        or_high = float(ow.get("or_high") or 0)
+        or_low = float(ow.get("or_low") or 0)
+        if side == "LONG" and or_high:
+            bps = (entry - or_high) / or_high * 10000
+            if bps < -10:
+                or_issues.append(f"{ticker} LONG ${entry:.2f} below OR_high ${or_high:.2f}")
+            elif bps > 75:
+                or_issues.append(f"{ticker} LONG ${entry:.2f} {bps:.0f}bps above OR_high (chasing)")
+        elif side == "SHORT" and or_low:
+            bps = (or_low - entry) / or_low * 10000
+            if bps < -10:
+                or_issues.append(f"{ticker} SHORT ${entry:.2f} above OR_low ${or_low:.2f}")
+            elif bps > 75:
+                or_issues.append(f"{ticker} SHORT ${entry:.2f} {bps:.0f}bps below OR_low (chasing)")
+
+    if or_issues:
+        checks.append(
+            Check(
+                s, "or_break", WARN, f"{len(or_issues)} OR break issue(s): " + " | ".join(or_issues)
+            )
+        )
+    elif or_windows:
+        checks.append(Check(s, "or_break", OK, f"all {len(today)} entries at/near OR break level"))
+
+    # --------------------------------------------------------------------- #
+    # 2. ATR(14) stop validation using real 5m SIP bars                     #
+    # --------------------------------------------------------------------- #
+    atr_issues: list[str] = []
+    atr_ok_count = 0
+    for t in today:
+        ticker = t.get("ticker", "")
+        entry = float(t.get("entry_price") or 0)
+        stop = float(t.get("entry_stop") or 0)
+        if not entry or not stop:
+            continue
+        ticker_bars = bars.get(ticker, [])
+        if len(ticker_bars) < 15:
+            continue  # not enough bars to compute ATR
+
+        # Use bars up to the bar containing the entry time
+        entry_time_s = str(t.get("entry_time") or "")
+        try:
+            h, m = int(entry_time_s[:2]), int(entry_time_s[3:5])
+            entry_min_utc = h * 60 + m + 240  # ET → UTC offset (EDT=+4h)
+        except (ValueError, IndexError):
+            entry_min_utc = 999
+        # Filter bars whose timestamp is before the entry
+        pre_entry = [
+            b
+            for b in ticker_bars
+            if (datetime.fromisoformat(b["t"]).hour * 60 + datetime.fromisoformat(b["t"]).minute)
+            < entry_min_utc
+        ]
+        if len(pre_entry) < 15:
+            pre_entry = ticker_bars[: max(15, len(ticker_bars) // 2)]
+
+        atr = _compute_atr(pre_entry)
+        if atr is None or atr <= 0:
+            continue
+        expected_dist = atr * 1.75
+        actual_dist = abs(entry - stop)
+        ratio = actual_dist / expected_dist
+
+        if ratio < 0.35:
+            atr_issues.append(
+                f"{ticker} stop ${actual_dist:.2f} << ATR×1.75=${expected_dist:.2f} "
+                f"(ratio={ratio:.2f})"
+            )
+        elif ratio > 3.0:
+            atr_issues.append(
+                f"{ticker} stop ${actual_dist:.2f} >> ATR×1.75=${expected_dist:.2f} "
+                f"(ratio={ratio:.2f})"
+            )
+        else:
+            atr_ok_count += 1
+
+    if atr_issues:
+        checks.append(
+            Check(
+                s,
+                "atr_stop",
+                WARN,
+                f"{len(atr_issues)} stop(s) outside 0.35-3× ATR band: " + " | ".join(atr_issues),
+            )
+        )
+    elif atr_ok_count > 0:
+        checks.append(Check(s, "atr_stop", OK, f"all {atr_ok_count} stop(s) within ATR×1.75 band"))
+
+    # --------------------------------------------------------------------- #
+    # 3. Alpaca fill vs trade log: execution presence + P&L consistency    #
+    #                                                                       #
+    # Per-price matching is noisy: paper uses simulated mid prices while    #
+    # Alpaca records actual fills (50-150bps normal slippage). Instead:     #
+    #   a) Alpaca has fills for every ticker the bot traded today           #
+    #   b) Alpaca day_pnl is within 30% of paper state realized P&L        #
+    # --------------------------------------------------------------------- #
+    if fills:
+        traded_tickers = {t.get("ticker") for t in today if t.get("ticker")}
+        filled_tickers = {f.get("symbol") for f in fills if f.get("symbol")}
+        missing_fills = traded_tickers - filled_tickers
+
+        paper_pnl = sum(float(t.get("pnl") or 0) for t in today)
+        val_exec = raw.get("/api/executor/val") or {}
+        alpaca_pnl = float((val_exec.get("account") or {}).get("day_pnl") or 0)
+        pnl_delta = abs(paper_pnl - alpaca_pnl)
+        pnl_pct = (pnl_delta / max(abs(paper_pnl), 1)) * 100 if paper_pnl else 0
+
+        fill_issues: list[str] = []
+        if missing_fills:
+            fill_issues.append(f"no Alpaca fills for: {sorted(missing_fills)}")
+        if abs(paper_pnl) > 20 and pnl_pct > 30:
+            fill_issues.append(
+                f"P&L divergence: paper=${paper_pnl:+.2f} "
+                f"Alpaca=${alpaca_pnl:+.2f} ({pnl_pct:.0f}% gap)"
+            )
+        if fill_issues:
+            checks.append(Check(s, "fill_match", WARN, " | ".join(fill_issues)))
+        else:
+            checks.append(
+                Check(
+                    s,
+                    "fill_match",
+                    OK,
+                    f"fills present for {len(traded_tickers)} ticker(s); "
+                    f"P&L paper=${paper_pnl:+.2f} Alpaca=${alpaca_pnl:+.2f}",
+                )
+            )
+    else:
+        checks.append(Check(s, "fill_match", INFO, "no Alpaca fills today yet"))
+
+    # --------------------------------------------------------------------- #
+    # 4. R-multiple consistency: pnl / risk_dollars                          #
+    # --------------------------------------------------------------------- #
+    r_issues: list[str] = []
+    for t in today:
+        ep = float(t.get("entry_price") or 0)
+        stop = float(t.get("entry_stop") or 0)
+        sh = float(t.get("shares") or 0)
+        pnl = float(t.get("pnl") or 0)
+        risk = abs(ep - stop) * sh if ep and stop and sh else 0
+        if risk < 50:
+            continue
+        r = pnl / risk
+        ticker = t.get("ticker", "?")
+        reason = t.get("reason", "")
+        if pnl > 0:
+            # Win: partial at 1R runner to 2.5R, or full exit.
+            # Expect 0.7-2.6R; >3R possible on gap fills or news
+            if r > 3.5:
+                r_issues.append(f"{ticker} win +{r:.2f}R (>{3.5}R -- data check?)")
+        else:
+            # Loss: stop at -1R + slippage. Beyond -1.5R = unusual.
+            if r < -1.8:
+                r_issues.append(
+                    f"{ticker} loss {r:.2f}R (<-1.8R -- excessive slippage on '{reason}'?)"
+                )
+
+    if r_issues:
+        checks.append(
+            Check(
+                s,
+                "rr_ratio",
+                WARN,
+                f"{len(r_issues)} R-multiple outlier(s): " + " | ".join(r_issues),
+            )
+        )
+    else:
+        checks.append(
+            Check(s, "rr_ratio", OK, f"all {len(today)} trade R-multiples within expected range")
+        )
+
+    # --------------------------------------------------------------------- #
+    # 5. VWAP gate for mega-caps (using bar vwap field)                      #
+    # --------------------------------------------------------------------- #
+    vwap_issues: list[str] = []
+    for t in today:
+        ticker = t.get("ticker", "")
+        if ticker not in vwap_tickers:
+            continue
+        entry = float(t.get("entry_price") or 0)
+        if not entry:
+            continue
+        ticker_bars = bars.get(ticker, [])
+        if not ticker_bars:
+            continue
+        # Use VWAP from bar at/just before entry
+        entry_time_s = str(t.get("entry_time") or "")
+        try:
+            h, m = int(entry_time_s[:2]), int(entry_time_s[3:5])
+            entry_min_utc = h * 60 + m + 240
+        except (ValueError, IndexError):
+            continue
+        bar_at_entry = None
+        for b in reversed(ticker_bars):
+            bt = datetime.fromisoformat(b["t"])
+            if bt.hour * 60 + bt.minute <= entry_min_utc:
+                bar_at_entry = b
+                break
+        if not bar_at_entry or not bar_at_entry.get("vw"):
+            continue
+        vwap = float(bar_at_entry["vw"])
+        dev_bps = abs(entry - vwap) / vwap * 10000
+        if dev_bps > vwap_thr_bps:
+            vwap_issues.append(
+                f"{ticker} entry=${entry:.2f} VWAP=${vwap:.2f} "
+                f"dev={dev_bps:.0f}bps > {vwap_thr_bps:.0f}bps gate"
+            )
+
+    if vwap_issues:
+        checks.append(
+            Check(
+                s,
+                "vwap_gate",
+                CRIT,
+                f"{len(vwap_issues)} mega-cap entry(ies) exceeded VWAP gate: "
+                + " | ".join(vwap_issues),
+            )
+        )
+    elif vwap_tickers:
+        mega_traded = [t.get("ticker") for t in today if t.get("ticker") in vwap_tickers]
+        if mega_traded and bars:
+            checks.append(
+                Check(s, "vwap_gate", OK, f"VWAP gate respected for {sorted(set(mega_traded))}")
+            )
+
+    return checks
+
+
 def send_telegram_alert(report: dict[str, Any]) -> None:
     """Send Telegram alert on any CRIT or WARN check.
 
@@ -1217,14 +1612,31 @@ def run(
     for t in threads:
         t.join(timeout=30)
 
-    # Run all four check sections
+    # Phase 2: market data fetch \u2014 needs today's tickers from the trade log.
+    # Runs after phase 1 so we know which tickers to pull bars for.
+    market_data: dict[str, Any] = {}
+    try:
+        today_et = datetime.now(ET).date().isoformat()
+        trade_log_rows = (raw.get("/api/trade_log?limit=5000") or {}).get("rows") or []
+        traded_tickers = list(
+            {r["ticker"] for r in trade_log_rows if r.get("date") == today_et and r.get("ticker")}
+        )
+        if traded_tickers:
+            market_data = pull_alpaca_market_data(traded_tickers, today_et)
+    except Exception as e:
+        market_data = {"errors": [f"market data phase: {e}"]}
+
+    # Run all five check sections
     checks: list[Check] = []
     checks.extend(checks_system(raw, expected_version))
     checks.extend(checks_invariants(raw, base_url))
     checks.extend(checks_strategy(raw))
     checks.extend(checks_trade_log(raw))
+    checks.extend(checks_market_validation(raw, market_data))
 
-    return build_report(checks, raw, alpaca, railway, time.monotonic() - t0)
+    report = build_report(checks, raw, alpaca, railway, time.monotonic() - t0)
+    report["market_data_tickers"] = list(market_data.get("bars", {}).keys())
+    return report
 
 
 def main() -> int:
