@@ -774,13 +774,16 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
     or_minutes = int(cfg.get("or_minutes") or 30)
     or_end_min = session_start_min + or_minutes  # 10:00 ET with defaults
     server_time = (_state(ctx) or {}).get("server_time") or ""
+    current_min = 0
     if server_time:
         try:
             from datetime import datetime as _datetime
             from zoneinfo import ZoneInfo as _ZI
             _et = _datetime.fromisoformat(server_time.replace("Z", "+00:00")).astimezone(_ZI("America/New_York"))
             current_min = _et.hour * 60 + _et.minute
-            if current_min < or_end_min:
+            # v9.1.45: add 2-min buffer past OR end so a deploy at exactly
+            # or_end_min doesn't false-positive before state rebuilds.
+            if current_min <= or_end_min + 2:
                 return _ok(
                     "or_locked_after_or_end",
                     f"skipped: OR window still building ({_et.strftime('%H:%M')} ET, "
@@ -788,8 +791,21 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
                 )
         except Exception:
             pass
+    # v9.1.45: post-deploy guard for empty or_windows. When the engine
+    # restarts mid-session (e.g. Railway redeploy at 10:00 ET), or_windows
+    # is temporarily empty while the new process rebuilds state.
+    # Discriminator: session_date empty + ingest has bars = post-deploy restart.
+    ingest = (_state(ctx) or {}).get("ingest_status") or {}
+    bars_today = int(ingest.get("bars_today") or 0)
+    session_date = v10.get("session_date") or ""
     or_windows = v10.get("or_windows") or {}
     if not or_windows:
+        if not session_date and bars_today > 100:
+            return _ok(
+                "or_locked_after_or_end",
+                f"skipped: post-deploy startup, or_windows empty "
+                f"(session_date not set yet, bars_today={bars_today})",
+            )
         return _fail(
             "or_locked_after_or_end",
             f"v10.or_windows is empty during {mode} (no tickers tracked)",

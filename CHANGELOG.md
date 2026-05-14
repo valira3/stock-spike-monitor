@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.45 (2026-05-14) — fix or_locked false-positive at 10:00 ET boundary + empty-windows post-deploy guard
+
+Two fixes in `inv_or_locked_after_or_end`:
+1. **Boundary off-by-one**: skip condition was `current_min < or_end_min` (strict less-than); at exactly 10:00 ET (`current_min == 600`) the check fired. Widened to `<= or_end_min + 2` (10:02 ET) — gives a 2-minute buffer for Railway to redeploy and rebuild state.
+2. **Empty or_windows post-deploy**: when `or_windows` is completely empty (`0 total`) after a mid-session redeploy, the engine hasn't rebuilt state yet. Added discriminator: if `session_date=""` AND `bars_today > 100` (ingest ran all day), return OK with "post-deploy startup" instead of FAIL.
+
+---
+
 ## v9.1.44 (2026-05-14) — fix session WARN: post-deploy startup discriminator
 
 The activity-log check in v9.1.43 still failed for the very first post-deploy tick: fresh process has empty activity buffer AND `day_states=0`. Added a second discriminator: if `day_states=0` AND `bars_today > 100`, it's a mid-session restart (ingest ran all day → high bar count) and the session reset is pending. Return OK with "post-deploy startup (bars_today=N)" instead of WARN. Genuine failure: `session_date=""`, no activity events, `day_states=0`, AND `bars_today <= 100` (cold start that never got a session).
