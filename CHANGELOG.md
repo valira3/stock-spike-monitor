@@ -4,6 +4,23 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.78 (2026-05-14) — fix executor mode (paper/live) lost on Railway redeploy
+
+**Bug:** Switching Val to live mode via `/mode val live confirm` was not surviving Railway redeploys. Every deploy reset Val back to paper mode.
+
+**Root cause:** `ExecutorBase._state_file()` returned a bare relative path:
+```python
+return f"tradegenius_{self.NAME.lower()}_{m}.json"
+# → /app/tradegenius_val_live.json  (ephemeral Railway container filesystem)
+```
+The `/app` directory is wiped on every Railway deploy. When the user issued `/mode val live confirm`, the live-mode state file (`tradegenius_val_live.json`) was written to `/app`. The next deploy (v9.1.75 at ~16:55 ET, v9.1.76 at ~17:08 ET, or v9.1.77 at ~17:50 ET) cleared the file. The new instance found no state file and defaulted to paper.
+
+**Fix:** `_state_file()` now derives its directory from `PAPER_STATE_FILE` (default `/data/paper_state.json`), placing executor state files at `/data/tradegenius_val_live.json` — the Railway persistent volume that already stores `paper_state.json`, `trade_log.jsonl`, `eod_trade_log.jsonl`, etc. Live-mode state now survives redeploys.
+
+**After deploying this fix:** reissue `/mode val live confirm` in Telegram. Subsequent redeploys will preserve the live mode automatically.
+
+---
+
 ## v9.1.77 (2026-05-14) — fix four cross-tab UI divergences identified in deep UI audit
 
 Deep Playwright audit (tools/ui_quality_assessment.py) identified four structural divergences between Main, Val, and Gene tabs. All four fixed in this PR.

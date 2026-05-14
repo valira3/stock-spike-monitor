@@ -209,8 +209,19 @@ class TradeGeniusBase:
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
+        # v9.1.78 -- write state files to the same persistent-volume directory
+        # as PAPER_STATE_FILE (/data/ on Railway) so a mode flip to "live"
+        # survives Railway redeploys. Previously the path was relative to the
+        # working directory (/app) which is ephemeral -- every deploy wiped the
+        # live-mode state file and the executor rebooted to paper default.
         m = (mode or self.mode).strip().lower()
-        return f"tradegenius_{self.NAME.lower()}_{m}.json"
+        fname = f"tradegenius_{self.NAME.lower()}_{m}.json"
+        try:
+            paper_state = os.environ.get("PAPER_STATE_FILE", "paper_state.json")
+            d = os.path.dirname(paper_state) or "."
+            return os.path.join(d, fname)
+        except Exception:
+            return fname
 
     def _save_state(self) -> None:
         self._state["mode"] = self.mode
