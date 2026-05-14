@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.50 (2026-05-14) — fix h-tick stuck, Val progress bar in FIRE=1 mode, Railway log monitoring
+
+Three fixes:
+
+**h-tick countdown stuck at `···`**: SSE push interval changed from 15s → 5s. With both SSE and scan at 15s they were synchronized, so every push delivered `next_scan_sec ≈ 0` and the counter never showed a positive value. At 5s SSE, three pushes occur per scan cycle (at ~10s, ~5s, and ~0s before the next scan), giving the countdown meaningful intermediate ticks to display.
+
+**Val progress bar missing (FIRE=1 mode)**: In independent mode Val can hold tickers that Main doesn't. The progress bar builder (`_stopBySym`) was cross-referencing only Main's paper_state for stop prices, so Val's NVDA position (when Main holds NFLX) had no stop data and rendered no bar. Fix: `dashboard_server.py:_executor_snapshot` now enriches the `/api/executor/{name}` response with `engine_positions` (stop, entry_stop, entry, shares, side) pulled from the `OrbEngine`'s `LiveAdapter._open_positions` for that portfolio. The frontend fills gaps in `_stopBySym` from `execData.engine_positions` before rendering.
+
+**Railway log monitoring**: `RAILWAY_USE_CLI=1` was already in `.env.monitor` but `fetch_recent_logs()` requires it to enable the CLI fallback when no API token is set. The CLI works and now surfaces forensic logs in monitor reports. Added `orb_rollback` to `FAILURE_SIGNATURES` to detect `[V79-ORB-ROLLBACK]` (entry admitted by engine but execute_entry returned without placing the order — the post-deploy ORCL Main rollback pattern seen today).
+
+**Root cause of NFLX/Val divergence (no code fix needed)**: NFLX SHORT was entered in the pre-v9.1.49 session at 10:43 ET. The v9.1.49 deploy at 10:45 ET reset the RiskBook. paper_state preserved the NFLX position as an orphan (rb_open=0, no active ticket). Val correctly entered NVDA LONG in the new session. The `no_phantom_positions` CRIT is firing accurately — it's a genuine cross-deploy state artifact, not a false positive.
+
+---
+
 ## v9.1.49 (2026-05-14) — dashboard: fix h-tick stuck at 0, connection-drop banner false triggers, no blink on reconnect
 
 Three connected UX bugs that produced the "love counter stuck / connection dropped" cycle:

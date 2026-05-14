@@ -3368,6 +3368,35 @@ def _executor_snapshot(name: str) -> dict:
     # within the 15s cache TTL.
     payload["errors"] = _errors_snapshot_safe(name)
 
+    # v9.1.50 \u2014 engine-side position data (stop, entry_stop, entry,
+    # shares, side) from the OrbEngine's LiveAdapter for this portfolio.
+    # In FIRE=1 independent mode Val/Gene can hold tickers that Main
+    # doesn't, so the dashboard JS can't cross-reference Main's
+    # paper_state for the progress-bar stop price. Exposes the immutable
+    # admission stop (entry_stop) and current stop (may have moved to BE)
+    # keyed by ticker so the frontend can render the bar without Main.
+    try:
+        import orb.live_runtime as _rt_snap
+
+        _adapter = _rt_snap.get_adapter(name)
+        if _adapter is not None:
+            _eng_pos: dict = {}
+            for _pos in _adapter._open_positions.values():
+                _side = (getattr(_pos, "side", None) or "long").lower()
+                _risk = float(getattr(_pos, "risk", 0) or 0)
+                _entry = float(getattr(_pos, "entry_price", 0) or 0)
+                _orig_stop = (_entry - _risk) if _side == "long" else (_entry + _risk)
+                _eng_pos[(_pos.ticker or "").upper()] = {
+                    "stop": float(getattr(_pos, "stop", 0) or 0),
+                    "entry_stop": _orig_stop,
+                    "entry": _entry,
+                    "shares": int(getattr(_pos, "shares", 0) or 0),
+                    "side": _side,
+                }
+            payload["engine_positions"] = _eng_pos
+    except Exception:
+        pass
+
     with _executor_cache_lock:
         _executor_cache[cache_key] = (now, payload)
     return payload
@@ -4708,7 +4737,7 @@ async def h_stream(request):
 
             # heartbeat comment to keep proxies from closing
             await resp.write(b": ping\n\n")
-            await asyncio.sleep(15.0)
+            await asyncio.sleep(5.0)  # push every 5s so h-tick countdown is smooth
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     except Exception as e:

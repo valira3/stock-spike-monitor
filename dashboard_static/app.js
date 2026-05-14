@@ -4881,20 +4881,25 @@
           if (!_mp || !_mp.ticker) continue;
           const _eff = (typeof _mp.effective_stop === "number")
                          ? _mp.effective_stop : _mp.stop;
-          // v7.2.8 \u2014 mirror the backend trail_pill gate (see
-          // dashboard_server.py:_compute_trail_pill_state). The
-          // backend already decides if the trail has actually moved
-          // the stop tighter than entry; if trail_pill is null,
-          // don't render TRAIL on this fallback table either.
           const _trailArmed = !!(_mp.trail_pill && _mp.trail_pill.status);
-          // v9.1.5 -- entry_stop is the immutable admission stop used
-          // for the progress-bar axis math so the graph doesn't invert
-          // when the trail moves the live stop past entry into profit.
           var _entryStop = (typeof _mp.entry_stop === "number" && _mp.entry_stop > 0)
                              ? _mp.entry_stop : _mp.stop;
           _stopBySym[_mp.ticker] = {
             eff: _eff, trail: _trailArmed, entry_stop: _entryStop,
           };
+        }
+        // v9.1.50 \u2014 FIRE=1 independent mode: Val/Gene can hold tickers
+        // not in Main's paper_state. Fill gaps from engine_positions
+        // (stop/entry_stop keyed by ticker, added by dashboard_server).
+        const _engPos = execData.engine_positions || {};
+        for (const [_sym, _ep] of Object.entries(_engPos)) {
+          if (!_stopBySym[_sym] && Number.isFinite(_ep.stop) && _ep.stop > 0) {
+            _stopBySym[_sym] = {
+              eff: _ep.stop,
+              trail: false,
+              entry_stop: (_ep.entry_stop > 0 ? _ep.entry_stop : _ep.stop),
+            };
+          }
         }
         // v7.0.3 \u2014 match Main's positions <table> shape exactly: no
         // inline styles, semantic classes (.ticker .mark .side-* etc.),

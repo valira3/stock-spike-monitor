@@ -140,6 +140,10 @@ FAILURE_SIGNATURES: dict[str, str] = {
     # Engine-side risk rejects.
     "risk_reject_notional_cap": r"risk_reject:notional_cap",
     "risk_reject_other": r"\[V79-ORB-REJECT\]",
+    # v9.1.50 -- ORB entry rolled back (execute_entry returned without
+    # placing the order). Happens when the Main broker callback returns
+    # early, leaving the engine ticket open but no real order placed.
+    "orb_rollback": r"\[V79-ORB-ROLLBACK\]",
     # Cash gates.
     "insufficient_cash": r"\[paper\] skip .* insufficient cash",
     # V15-SIZING gate (should disappear post-v7.78.0 for v10 entries).
