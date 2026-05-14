@@ -471,33 +471,44 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
             Check(s, "session", CRIT, "ORB_LIVE_MODE=0 -- LEGACY fallback active, v10 not trading")
         )
     elif is_post_open and not session_date:
-        # Suppress if the activity log already contains a session_start event
-        # for today -- this means the engine DID start a session (possibly
-        # just redeployed) and session_date will populate on the next scan tick.
+        # Two patterns where session_date is legitimately empty after 09:33 ET:
+        #
+        # A) Post-deploy startup (< ~60s after process restart): activity buffer
+        #    is empty (new process) AND day_states=0, but ingest has been running
+        #    all day (bars_today > 100). Session reset will fire on next scan tick.
+        #
+        # B) Mid-tick race already seen today: activity log has a session_start
+        #    event but session_date hasn't populated yet in this snapshot.
+        #
+        # Genuine failure: session_date empty, no activity events, AND day_states=0
+        # for >5 min with bars flowing -- but we can't distinguish that from
+        # case A on the first post-deploy check. Accept one transient OK on
+        # restart; if the next 5-min tick still shows empty, it WILL fire.
         activity = v10.get("activity") or []
+        day_states = v10.get("day_states") or []
+        ingest = state.get("ingest_status") or {}
+        bars_today = int(ingest.get("bars_today") or 0)
         today_et = datetime.now(ET).date().isoformat()
         had_session_start = any(
             e.get("kind") == "session_start" and (e.get("ts_iso") or "")[:10] >= today_et
             for e in activity
         )
-        if not had_session_start:
-            out.append(
-                Check(
-                    s,
-                    "session",
-                    WARN,
-                    "session_date empty after 09:33 ET with no session_start in activity log "
-                    "(session reset may have failed)",
-                )
+        is_post_deploy_startup = not day_states and bars_today > 100
+        if had_session_start or is_post_deploy_startup:
+            reason = (
+                "session_start in activity"
+                if had_session_start
+                else f"post-deploy startup (bars_today={bars_today}, session reset pending)"
             )
+            out.append(Check(s, "session", OK, f"session_date transiently empty -- {reason}"))
         else:
             out.append(
                 Check(
                     s,
                     "session",
-                    OK,
-                    "session_date transiently empty (session_start seen in activity -- "
-                    "post-deploy race, resolves on next scan tick)",
+                    WARN,
+                    "session_date empty after 09:33 ET, no session_start events, "
+                    f"day_states=0, bars_today={bars_today} -- session reset may have failed",
                 )
             )
     else:

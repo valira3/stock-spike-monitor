@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.44 (2026-05-14) — fix session WARN: post-deploy startup discriminator
+
+The activity-log check in v9.1.43 still failed for the very first post-deploy tick: fresh process has empty activity buffer AND `day_states=0`. Added a second discriminator: if `day_states=0` AND `bars_today > 100`, it's a mid-session restart (ingest ran all day → high bar count) and the session reset is pending. Return OK with "post-deploy startup (bars_today=N)" instead of WARN. Genuine failure: `session_date=""`, no activity events, `day_states=0`, AND `bars_today <= 100` (cold start that never got a session).
+
+---
+
 ## v9.1.43 (2026-05-14) — fix session WARN on post-deploy race (activity log check)
 
 Every RTH deploy creates a ~20s window where `session_date` is empty while the new process re-fires the session reset. The `session_date empty` WARN fired every time v9.1.4x was pushed during trading hours.
