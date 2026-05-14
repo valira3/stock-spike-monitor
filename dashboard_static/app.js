@@ -74,9 +74,7 @@
   }
   window.fmtHeld = fmtHeld;  // exposed for IIFE-2 (Val/Gene tabs)
 
-  // v9.1.65 -- current time as ET minutes-since-midnight (0-1439).
-  // Used by the EOD time bar to compute elapsed/remaining in the
-  // 15:00-15:59 ET exit window. Handles DST via Intl.DateTimeFormat.
+  // ET minutes-since-midnight (0-1439) for EOD time bar; Intl.DateTimeFormat handles DST.
   function __tgNowEtMinutes() {
     try {
       var _parts = new Intl.DateTimeFormat("en-US", {
@@ -374,8 +372,7 @@
 
   function renderPositions(s, sl) {
     const positions = sl.positions || [];
-    // v9.1.65 -- EOD reversal positions (from EodReversalEngine state,
-    // separate from paper_state ORB positions). Keyed by ticker.
+    // EOD reversal positions from EodReversalEngine (separate from paper_state ORB). Keyed by ticker.
     const _eodMain = s.eod_positions || {};
     const _eodMainTickers = Object.keys(_eodMain);
     $("pos-count").textContent = `· ${positions.length + _eodMainTickers.length}`;
@@ -591,13 +588,9 @@
           <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
         </tr>${progressRow}${_chartRow}`;
       }).join("");
-      // v9.1.73 -- only render the ORB table when there are actual ORB rows.
-      // Previously an empty 11-column header table was always emitted, even
-      // with 0 ORB positions. The EOD section was then appended below it,
-      // making it look like a separate unlabelled table with the ORB headers
-      // floating above (no data rows visible) \u2014 the "appeared and disappeared"
-      // symptom the operator saw. Now the ORB table is skipped entirely when
-      // empty, and the EOD table gets the shared headers when standalone.
+      // Only render the ORB table when there are actual ORB rows \u2014 an empty table
+      // pushes the EOD section below an orphaned header, making positions appear
+      // to "appear and disappear" on refresh. EOD table gets its own headers when standalone.
       var _posTableHeaders = '<thead><tr>' +
         '<th title="Symbol \u00b7 colored dot shows side">Ticker</th>' +
         '<th title="LONG = bought to open. SHORT = sold to open.">Side</th>' +
@@ -617,7 +610,6 @@
         body.innerHTML = "";
       }
 
-      // v9.1.65 -- EOD reversal positions (Main portfolio, time-based bar).
       if (_eodMainTickers.length > 0) {
         var _eodEtMin = __tgNowEtMinutes();
         var _eodWS = 15 * 60, _eodWE = 15 * 60 + 59;
@@ -649,7 +641,6 @@
                 '</div>' +
               '</td>' +
             '</tr>';
-          // v9.1.69 -- show live mark/unreal when backend supplies them.
           var _markTxt = Number.isFinite(ep.current_price) ? fmtPx(ep.current_price) : '—';
           var _unrNum = ep.unrealized_pnl;
           var _unrTxt = Number.isFinite(_unrNum) ? fmtUsd(_unrNum) : '—';
@@ -3403,8 +3394,7 @@
         if (enabled) {
           const isLive = (mode === "live");
           if (isLive) {
-            // v9.1.81 -- subtle dot + word: small dark-green circle + "live"
-            // text. Readable on the dark theme without being garish.
+            // Dark-green dot + "live" text — readable on dark theme without being garish.
             badge.innerHTML =
               '<span style="color:#22c55e;font-size:8px;vertical-align:middle">●</span>' +
               '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
@@ -4540,10 +4530,8 @@
     var actBody = execField(panel, "v10-pid-act-body");
     if (actBody) {
       if (events.length === 0) {
-        // v9.1.77 -- parity with Main's activity feed empty state. When not in
-        // RTH and no session has started, show "session starts" instead of the
-        // generic "no events" text so the operator's eye-trace is identical
-        // across all three tabs (Main already does this at line ~7011).
+        // RTH-aware empty state: show "session starts" instead of "no events"
+        // so the operator's eye-trace is identical across all three tabs.
         var _actMode2 = ((s.regime || {}).mode || "CLOSED");
         var _actRth2 = (_actMode2 === "OPEN" || _actMode2 === "OR"
           || _actMode2 === "POWER" || _actMode2 === "PRE");
@@ -4661,7 +4649,7 @@
     if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
     if (mode === "live") {
-      // v9.1.81 -- subtle dot + word style (matches renderHeader path).
+      // Dot + word style; matches renderHeader (Main IIFE-1).
       el.innerHTML =
         '<span style="color:#22c55e;font-size:8px;vertical-align:middle">&#9679;</span>' +
         '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
@@ -4748,9 +4736,7 @@
     const chip = execField(panel, "trades-realized");
     const sumEl = execField(panel, "trades-summary");
     const trades = (data && Array.isArray(data.todays_trades)) ? data.todays_trades : [];
-    // v9.1.77 -- show "0" not "\u2014" when disabled so Gene's trade count reads
-    // as "zero trades because Gene is off" rather than "unknown". Parity with
-    // the operator expectation: "\u2014" means unavailable, "0" means confirmed zero.
+    // "0" not "\u2014" when disabled: "\u2014" means unavailable, "0" means confirmed zero.
     if (count) count.textContent = "\u00b7 " + (disabled ? "0" : trades.length);
 
     // v7.0.3 \u2014 use the same summary calc Main uses so opens/closes
@@ -4985,8 +4971,7 @@
     // Open positions card ----------------------------------------------
     const posBody = execField(panel, "pos-body");
     const posCount = execField(panel, "pos-count");
-    // v9.1.77 -- show "0" not "\u2014" for disabled (same rationale as trades-count fix).
-    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "0" : positions.length);  // total = ORB + EOD (both are Alpaca positions)
+    if (posCount) posCount.textContent = "\u00b7 " + (disabled ? "0" : positions.length);  // "0" not "\u2014" when disabled; total = ORB + EOD (both Alpaca positions)
 
     if (posBody) {
       if (disabled) {
@@ -5029,9 +5014,7 @@
             };
           }
         }
-        // v9.1.65 -- EOD reversal positions keyed by ticker. v9.1.66 splits
-        // them into a separate section below the ORB table so the layout
-        // mirrors Main (ORB on top, EOD section below with teal time bar).
+        // EOD positions keyed by ticker; rendered below ORB so layout mirrors Main (ORB on top, EOD below).
         const _eodPos = (data && data.eod_positions) || {};
         const _orbPositions = positions.filter(p => !_eodPos[p.symbol]);
         const _eodPositions = positions.filter(p => !!_eodPos[p.symbol]);
@@ -5056,8 +5039,7 @@
           // (_stopInfo.entry_stop) so the 1R / target ticks don't drift
           // when the chandelier trail moves the live stop past entry.
           // _stopInfo.eff is overlaid as a separate "trail" tick.
-          // v9.1.66 -- only ORB positions reach here; EOD positions are in
-          // a separate section below. Plain ORB stop bar, no EOD branch.
+          // Only ORB positions reach here; EOD positions rendered separately below.
           var _progressRow = "";
           var _axisStopForBar = _stopInfo
               && Number.isFinite(_stopInfo.entry_stop)
@@ -5194,9 +5176,7 @@
           posBody.innerHTML = "";
         }
 
-        // v9.1.66 -- EOD reversal positions section (mirrors Main layout).
-        // Separated from ORB positions so operator sees ORB on top / EOD below.
-        // Val/Gene have live Alpaca data so mark + P&L are shown (unlike Main).
+        // EOD positions below ORB; Val/Gene use live Alpaca marks (unlike Main which uses EodReversalEngine state).
         if (_eodPositions.length > 0) {
           var _eodEtMin = (typeof window.__tgNowEtMinutes === "function") ? window.__tgNowEtMinutes() : 0;
           var _eodWS = 15 * 60, _eodWE = 15 * 60 + 59;
