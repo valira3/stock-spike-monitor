@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.64 (2026-05-14) — fix countdown stuck 5s: bypass snapshot cache for last_scan_at in SSE
+
+Root cause: `_SNAPSHOT_CACHE_TTL = 10.0s`. When the scan fires and `_last_scan_time` updates, the SSE keeps delivering the 10s-old cached `last_scan_at` until the cache expires. The client shows "00s" for up to 10s (in practice ~5s depending on cache-build timing) before the fresh timestamp arrives.
+
+Fix: in the SSE loop, after fetching the cached snapshot, inject a fresh `last_scan_at` + `scan_interval_sec` read directly from `trade_genius._last_scan_time`. This happens outside the cache, so every 2s SSE push carries the real current scan time. The countdown now resets within 2s of the scan firing instead of up to 10s.
+
+---
+
 ## v9.1.63 (2026-05-14) — add /api/executor/{name}/verify-live endpoint
 
 Read-only live Alpaca key verification endpoint. Calls `get_account()` on a live-mode client built from `{NAME}_ALPACA_LIVE_KEY` + `{NAME}_ALPACA_LIVE_SECRET` without changing the executor's current mode. Returns `{ok, account_number, status, equity, buying_power, trading_blocked}` or a descriptive error if keys are missing/invalid. Auth-gated (requires dashboard password). Used by the operator to verify live keys are correctly configured before sending `/mode val live confirm`.

@@ -4814,6 +4814,19 @@ async def h_stream(request):
             # dashboard log tail card. Errors fan out to the executor's
             # Telegram channel via report_error() instead.
             snap = await loop.run_in_executor(None, _cached_snapshot)
+            # Inject a fresh last_scan_at directly — bypasses the
+            # 10s snapshot cache so the countdown never stalls waiting
+            # for the cache to expire after a scan fires.
+            try:
+                _m = sys.modules.get("trade_genius") or __import__("trade_genius")
+                _lsa = getattr(_m, "_last_scan_time", None)
+                if _lsa is not None and hasattr(_lsa, "strftime"):
+                    snap = dict(snap)
+                    snap["gates"] = dict(snap.get("gates") or {})
+                    snap["gates"]["last_scan_at"] = _lsa.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                    snap["gates"]["scan_interval_sec"] = int(getattr(_m, "SCAN_INTERVAL", 15) or 15)
+            except Exception:
+                pass
             payload = json.dumps({"t": "state", "data": snap})
             await resp.write(f"event: state\ndata: {payload}\n\n".encode("utf-8"))
 
