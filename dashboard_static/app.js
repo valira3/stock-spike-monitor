@@ -3601,10 +3601,25 @@
     // per-second decrement needed; remaining is computed from Date.now().
     streamTickTimer = setInterval(updateNextScanLabel, 1000);
 
+    // v9.1.58 -- SSE fires every 5s; only call renderAll when the scan
+    // has produced new data (last_scan_at changed). This gives a smooth
+    // countdown on every 5s push without the 3x DOM-rebuild rate that
+    // caused "sporadic" flicker when SSE was naively at 5s before.
+    var _lastRenderedScanAt = null;
     streamConn.addEventListener("state", (ev) => {
       lastDataAt = Date.now();
       setConn("live");
-      try { renderAll(JSON.parse(ev.data).data); } catch (e) {}
+      try {
+        var _d = JSON.parse(ev.data).data;
+        var _scanAt = (_d && _d.gates && _d.gates.last_scan_at) || null;
+        // Always update countdown label (cheap, no DOM rebuild)
+        renderNextScanCountdown(_d);
+        // Only rebuild the full UI when a new scan has completed
+        if (_scanAt !== _lastRenderedScanAt) {
+          _lastRenderedScanAt = _scanAt;
+          renderAll(_d);
+        }
+      } catch (e) {}
     });
     streamConn.onerror = () => {
       setConn("polling");

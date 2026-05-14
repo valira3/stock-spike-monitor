@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.58 (2026-05-14) — fix h-tick countdown (SSE 5s + scan-change dedup)
+
+Root cause of the persistent countdown stuck at `···`: with SSE at 15s and scan at 15s on independent timers, the SSE often fires just before the scan completes. At that moment `last_scan_at` still points to the PREVIOUS scan, so `remaining = 15 - 14.9 ≈ 0` is delivered immediately. The display shows `01s` briefly then `···` for 14s every cycle.
+
+Fix: SSE reverted to 5s so the countdown gets fresh `last_scan_at` values 3× per scan cycle (at ~10s, ~5s, ~0s remaining). To avoid the "sporadic DOM flicker" that 5s SSE caused before, the SSE event handler now decouples the two operations:
+
+- **Countdown** (`renderNextScanCountdown`): runs on every 5s push — cheap, no DOM rebuild.
+- **Full UI render** (`renderAll`): runs only when `last_scan_at` changes, i.e., when a new scan completed. This fires once per 15s scan cycle, same as before.
+
+Result: smooth countdown (updated every 5s) + no extra DOM rebuilds (full render only when scan data actually changes).
+
+---
+
 ## v9.1.57 (2026-05-14) — fix "execData is not defined" ReferenceError on Val tab
 
 The real bug: line 4892 in `renderExecutor(name, data)` used `execData` — the parameter name of a completely different function (`renderV10PerPortfolio`). This caused a genuine JavaScript `ReferenceError: execData is not defined` that propagated out of `renderExecutor` to the outer `pollExecutor` try/catch and was shown as "Fetch failed: execData is not defined" in the red banner. Fixed: `execData.engine_positions` → `data.engine_positions`.

@@ -4748,7 +4748,7 @@ async def h_stream(request):
 
             # heartbeat comment to keep proxies from closing
             await resp.write(b": ping\n\n")
-            await asyncio.sleep(15.0)  # match scan interval; frontend timer handles countdown
+            await asyncio.sleep(5.0)  # 5s: smooth countdown; renderAll only fires on scan change
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     except Exception as e:
