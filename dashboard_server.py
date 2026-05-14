@@ -3846,6 +3846,11 @@ async def h_executor_verify_live(request):
                     "executor_key_present": bool(live_key),
                     "executor_secret_present": bool(live_secret),
                     "env_prefix": prefix,
+                    # All env var names visible to this process that contain
+                    # the executor name — helps catch naming discrepancies.
+                    "visible_executor_vars": sorted(
+                        k for k in _os.environ if name.upper() in k.upper()
+                    ),
                 },
             }
         try:
