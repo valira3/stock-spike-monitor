@@ -4889,7 +4889,7 @@
         // v9.1.50 \u2014 FIRE=1 independent mode: Val/Gene can hold tickers
         // not in Main's paper_state. Fill gaps from engine_positions
         // (stop/entry_stop keyed by ticker, added by dashboard_server).
-        const _engPos = (execData && execData.engine_positions) || {};
+        const _engPos = (data && data.engine_positions) || {};
         for (const [_sym, _ep] of Object.entries(_engPos)) {
           if (!_stopBySym[_sym] && Number.isFinite(_ep.stop) && _ep.stop > 0) {
             _stopBySym[_sym] = {
