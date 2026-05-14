@@ -108,6 +108,50 @@ def _run_once() -> int:
         return 99
 
 
+def _run_dashboard_analysis() -> int:
+    """Run tools.dashboard_analysis every tick.
+
+    Fetches live /api/state + /api/executor/val + /api/indices, audits
+    the bot state against Keystone strategy expectations, and saves the
+    report to data/monitor/dashboard_analysis_latest.json. Sends a
+    Telegram alert when CRIT checks are found.
+    """
+    from tools.dashboard_analysis import run_analysis, print_report, save_report, send_alert_on_crit
+
+    url = os.environ.get("DASHBOARD_BASE_URL", "https://tradegenius.up.railway.app").rstrip("/")
+    password = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+    token = os.environ.get("TELEGRAM_TP_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_TP_CHAT_ID", "").strip()
+
+    try:
+        report = run_analysis(url, password or None)
+    except Exception as e:
+        logger.exception("dashboard_analysis raised: %s", e)
+        return 99
+
+    # Always print the report to local logs.
+    try:
+        print_report(report)
+    except Exception:
+        pass
+
+    # Persist to disk alongside the unified_monitor output.
+    try:
+        save_report(report, MONITOR_DIR)
+    except Exception as e:
+        logger.warning("dashboard_analysis save failed: %s", e)
+
+    # Alert on CRIT (e.g. daily kill triggered, live mode off, EOD window wrong).
+    if token and chat_id:
+        try:
+            send_alert_on_crit(report, token, chat_id)
+        except Exception as e:
+            logger.warning("dashboard_analysis alert failed: %s", e)
+
+    overall = report.get("overall", "CRIT")
+    return 0 if overall == "OK" else (1 if overall == "WARN" else 2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--always", action="store_true", help="Run 24/7, bypass RTH gate")
@@ -146,6 +190,13 @@ def main() -> None:
             elapsed = time.time() - t0
             label = {0: "OK", 4: "INVARIANTS-FAILED"}.get(rc, f"ERR({rc})")
             logger.info("Tick done \u2014 rc=%d %s in %.1fs", rc, label, elapsed)
+
+            # Dashboard analysis: runs every tick alongside unified_monitor.
+            # Failure is non-blocking \u2014 monitor loop continues regardless.
+            try:
+                _run_dashboard_analysis()
+            except Exception as _da_e:
+                logger.warning("dashboard_analysis error (non-blocking): %s", _da_e)
 
             _sleep_to_next_tick()
 

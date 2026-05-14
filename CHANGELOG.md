@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.35 (2026-05-14) — monitor dashboard analysis (PR 5)
+
+### `tools/dashboard_analysis.py` — new live-state audit tool
+
+Fetches `/api/state` + `/api/executor/val` + `/api/indices` concurrently (shared cookie jar, single login) and runs a structured audit in ~0.8s. Checks:
+
+| Check | Description |
+|---|---|
+| `session` | ORB bootstrapped, live_mode=ON, session_date present during RTH |
+| `v10_config` | All 22 Keystone config fields match expected values |
+| `vix` | VIX gate: uses prior-day close, falls back to `vix_current` (Yahoo) |
+| `eod_*` | EOD enabled, fire_broker mode, 15:00 entry window, r17 fence |
+| `risk.*` | Per-portfolio equity, utilization%, daily kill status |
+| `positions` | Per-position risk sizing + entry window validation |
+| `cooldowns` | Active post-loss cooldowns across all portfolios |
+| `executor.*` | Val/Gene enabled status, account equity, day P&L |
+| `ingest` | WebSocket state, gap count, bars ingested |
+| `trades.*` (RTH) | Entry window correlation, win rate, count vs daily cap |
+
+Exit codes: 0=all green, 1=warnings, 2=critical issues. Sends Telegram alert on CRIT with `--alert`.
+
+Usage:
+```bash
+# Standalone (reads DASHBOARD_PASSWORD / DASHBOARD_BASE_URL from env)
+python tools/dashboard_analysis.py
+
+# During RTH: includes trade correlation
+python tools/dashboard_analysis.py --trading
+
+# Machine-readable
+python tools/dashboard_analysis.py --json --save data/monitor/
+```
+
+### Integration with `scripts/run_monitor.py`
+`_run_dashboard_analysis()` runs every tick alongside `unified_monitor`. Report saved to `data/monitor/dashboard_analysis_latest.json`. Telegram alert fired on any CRIT check. Non-blocking (monitor loop continues on any failure).
+
+---
+
 ## v9.1.34 (2026-05-14) — code quality cleanup (PR 4)
 
 - **Dead CSS deleted**: removed `.pmtx-weather-*` (Weather Check banner, v7.58.0 removed HTML) and `.pmtx-comp-*` (Pipeline Component grid, never rendered on v10 path). −265 lines.
