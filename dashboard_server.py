@@ -3808,6 +3808,56 @@ async def h_executor(request):
     return web.json_response(payload)
 
 
+async def h_executor_verify_live(request):
+    """GET /api/executor/{name}/verify-live — validate live Alpaca keys
+    read-only (calls get_account()) without switching mode. Returns the
+    live account status so the operator can confirm keys are correct
+    before sending /mode val live confirm.
+    """
+    from aiohttp import web
+
+    if not _check_auth(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    name = (request.match_info.get("name") or "").strip().lower()
+    if name not in ("val", "gene"):
+        return web.json_response({"ok": False, "error": f"unknown executor {name!r}"})
+
+    def _verify():
+        executor = _get_executor(name)
+        if executor is None:
+            return {"ok": False, "error": f"{name} executor not initialised"}
+        live_key = getattr(executor, "live_key", "").strip()
+        live_secret = getattr(executor, "live_secret", "").strip()
+        if not live_key or not live_secret:
+            return {
+                "ok": False,
+                "error": f"no live keys configured (set {name.upper()}_ALPACA_LIVE_KEY "
+                f"and {name.upper()}_ALPACA_LIVE_SECRET in Railway env)",
+            }
+        try:
+            client = executor._build_alpaca_client(mode="live")
+        except Exception as e:
+            return {"ok": False, "error": f"client build failed: {e}"}
+        try:
+            acct = client.get_account()
+            return {
+                "ok": True,
+                "account_number": str(getattr(acct, "account_number", "?")),
+                "status": str(getattr(acct, "status", "?")),
+                "equity": float(getattr(acct, "equity", 0) or 0),
+                "buying_power": float(getattr(acct, "buying_power", 0) or 0),
+                "trading_blocked": bool(getattr(acct, "trading_blocked", False)),
+                "account_blocked": bool(getattr(acct, "account_blocked", False)),
+                "note": "read-only check — mode NOT changed",
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"get_account failed: {e}"}
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _verify)
+    return web.json_response(result)
+
+
 async def h_indices(request):
     """GET /api/indices — SPY/QQQ/DIA/IWM/VIX ticker strip, cached 30s."""
     from aiohttp import web
@@ -4844,6 +4894,7 @@ def _build_app():
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.
     app.router.add_get("/api/executor/{name}", h_executor)
+    app.router.add_get("/api/executor/{name}/verify-live", h_executor_verify_live)
     app.router.add_get("/api/indices", h_indices)
     # v4.11.0 \u2014 health-pill tap-to-expand endpoint.
     app.router.add_get("/api/errors/{executor}", h_errors)

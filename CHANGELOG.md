@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.63 (2026-05-14) — add /api/executor/{name}/verify-live endpoint
+
+Read-only live Alpaca key verification endpoint. Calls `get_account()` on a live-mode client built from `{NAME}_ALPACA_LIVE_KEY` + `{NAME}_ALPACA_LIVE_SECRET` without changing the executor's current mode. Returns `{ok, account_number, status, equity, buying_power, trading_blocked}` or a descriptive error if keys are missing/invalid. Auth-gated (requires dashboard password). Used by the operator to verify live keys are correctly configured before sending `/mode val live confirm`.
+
+---
+
 ## v9.1.62 (2026-05-14) — Val/Gene tab UI parity: progress row colspan + phase badge
 
 Two divergences vs Main fixed:
