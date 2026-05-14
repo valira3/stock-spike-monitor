@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.60 (2026-05-14) — h-tick: never show ··· (clamp at 01s)
+
+The `···` appeared for ~1-2s every scan cycle when the scan was overdue but the SSE hadn't yet delivered the new `last_scan_at`. Even 1-2s of static dots looks like the countdown froze. Fix: `Math.max(1, remaining)` — the counter always shows at least "01s". Sequence is now `15, 14, ..., 01, 01` (briefly) then resets to `14, 13...` — no stuck-looking display.
+
+---
+
 ## v9.1.59 (2026-05-14) — SSE 2s + h-tick countdown color white
 
 - SSE push interval 5s → 2s: smoother countdown with more intermediate ticks between scans

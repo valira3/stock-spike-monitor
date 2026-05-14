@@ -3236,19 +3236,15 @@
     const el = $("h-tick");
     if (!el) return;
     if (window.__lastScanAt && window.__scanIntervalMs) {
-      const remaining = Math.max(0, Math.ceil(
+      // Clamp at 1 so the counter never shows ··· (which looks frozen).
+      // Shows "01s" for ~1s while the scan fires, then resets to ~14s.
+      const remaining = Math.max(1, Math.ceil(
         (window.__scanIntervalMs - (Date.now() - window.__lastScanAt)) / 1000
       ));
-      if (remaining <= 0) {
-        el.textContent = "♻ ···";
-        el.setAttribute("aria-label", "scanning now");
-        el.setAttribute("title", "scan in progress");
-      } else {
-        const ss = String(remaining).padStart(2, "0");
-        el.textContent = `♻ ${ss}s`;
-        el.setAttribute("aria-label", `next scan in ${ss}s`);
-        el.setAttribute("title", `next scan in ${ss}s`);
-      }
+      const ss = String(remaining).padStart(2, "0");
+      el.textContent = `♻ ${ss}s`;
+      el.setAttribute("aria-label", `next scan in ${ss}s`);
+      el.setAttribute("title", `next scan in ${ss}s`);
     } else {
       el.textContent = "♻ --";
       el.setAttribute("aria-label", "next scan: not scheduled");
