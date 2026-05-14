@@ -4,6 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.37 (2026-05-14) — system-check-bot: WARN alerts + trade log audit
+
+### 1. Telegram alerts now fire on WARN as well as CRIT
+CRIT = "SYSTEM CHECK CRIT" header (hard failure). WARN = "SYSTEM CHECK WARN" header (config drift, trade deviation). Both fire immediately; no more silent yellow checks.
+
+### 2. TRADE_LOG section (new 4th check section)
+Runs every 5-min tick alongside SYSTEM / INVARIANTS / STRATEGY. Pulls `/api/trade_log?limit=5000` and audits today's closed trades against strategy expectations:
+
+| Check | What it flags |
+|---|---|
+| `entry_window` | Trades entered outside 09:30-11:00 ET (ORB) or 15:00-15:59 ET (EOD) |
+| `risk_sizing` | Implied risk (|entry-stop| × shares) below $200 or above $2,500 |
+| `cooldown` | Same (ticker, side) re-entry within 30 min of a stop exit (engine should block) → CRIT |
+| `eod_reason` | EOD-window trades exiting for a non-EOD reason code |
+| `version_consistency` | Trades recorded against a prior BOT_VERSION |
+| `aggregate` | Total trades, W/L split, P&L, win rate; WARN if WR < 20% or count > daily cap |
+
+---
+
 ## v9.1.36 (2026-05-14) — system-check-bot (unified monitor)
 
 `tools/system_check_bot.py` replaces `unified_monitor.py` + `dashboard_analysis.py` as the single monitor tool. Single login, all data fetched concurrently, 48+ checks across three sections in ~0.7s.

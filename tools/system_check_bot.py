@@ -6,6 +6,8 @@ session, all data fetched concurrently, three check sections:
   SYSTEM     -- login, HTML render, static assets, version, reachability
   INVARIANTS -- 18 production invariants (from dashboard_monitor_invariants)
   STRATEGY   -- 14 config/state checks against Keystone baseline
+  TRADE_LOG  -- deep trade log audit: entry windows, risk sizing, cooldown
+                violations, EOD exit reasons, version consistency, win rate
 
 Also pulls Alpaca account snapshots and Railway forensic logs alongside
 the dashboard check, matching unified_monitor's full data surface.
@@ -824,10 +826,295 @@ def print_report(report: dict[str, Any]) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# SECTION 4 — TRADE LOG (deep comparison against strategy expectations)
+# ---------------------------------------------------------------------------
+
+# Tolerance band around expected risk per trade (1% of $100k = $1,000).
+# ATR-based stops vary by volatility so we allow 40-200% of nominal.
+_RISK_LOW_USD = 200.0  # below this = stop too tight or tiny position
+_RISK_HIGH_USD = 2500.0  # above this = stop too loose or oversized
+
+# Cooldown window: same (ticker, side) re-entry within this many minutes
+# of a stop exit is a cooldown violation (should be blocked by the engine).
+_COOLDOWN_MIN = 30
+
+
+def _parse_entry_min(entry_time: str) -> int | None:
+    """Parse 'HH:MM:SS' entry_time into minutes-past-midnight. Returns None on failure."""
+    try:
+        parts = str(entry_time).split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, IndexError, TypeError):
+        return None
+
+
+def _parse_exit_dt_et(exit_time: str) -> datetime | None:
+    """Parse ISO UTC exit_time and convert to ET datetime. Returns None on failure."""
+    try:
+        dt = datetime.fromisoformat(exit_time.replace("Z", "+00:00"))
+        return dt.astimezone(ET)
+    except Exception:
+        return None
+
+
+def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
+    """Deep trade log analysis: compare today's + recent closed trades
+    against v10 ORB + r17 EOD strategy expectations.
+
+    Checks (per-trade and aggregate):
+      1. Entry time inside ORB (09:30-11:00 ET) or EOD (15:00-15:59 ET) window
+      2. Implied risk per trade within $200-$2,500 (ATR-based stop range)
+      3. No same-(ticker, side) re-entry within 30 min of a stop exit
+         (cooldown violation -- engine should have blocked this)
+      4. No orphaned stop exits with entry_stop=0 (data quality)
+      5. Version consistency -- all today's trades on current bot_version
+      6. EOD exit reason is 'EOD' for 15:xx ET trades
+      7. Aggregate: trade count, realized P&L, win rate vs expectations
+    """
+    s = "TRADE_LOG"
+    checks: list[Check] = []
+
+    payload = raw.get("/api/trade_log?limit=5000") or {}
+    rows = payload.get("rows") or []
+    state = raw.get("/api/state") or {}
+    live_version = state.get("version", "")
+
+    # Filter to today ET
+    today_et = datetime.now(ET).date().isoformat()
+    today = [r for r in rows if r.get("date") == today_et]
+
+    if not rows and not payload.get("ok", True):
+        checks.append(Check(s, "fetch", WARN, "/api/trade_log fetch failed or empty"))
+        return checks
+
+    if not today:
+        # No trades today is normal before 09:30 or on a no-signal day
+        now_min = datetime.now(ET).hour * 60 + datetime.now(ET).minute
+        if now_min > 660:  # after 11:00 ET — would expect some activity or at least a session
+            checks.append(
+                Check(
+                    s,
+                    "today",
+                    INFO,
+                    "0 closed trades today (after 11:00 ET) -- normal if no signals fired",
+                )
+            )
+        else:
+            checks.append(
+                Check(s, "today", INFO, "0 closed trades today -- pre-window or no signals yet")
+            )
+        return checks
+
+    # ------------------------------------------------------------------ #
+    # 1. Entry time window                                                #
+    # ------------------------------------------------------------------ #
+    outside_window: list[str] = []
+    for t in today:
+        em = _parse_entry_min(t.get("entry_time", ""))
+        if em is None:
+            continue
+        in_orb = KEYSTONE["entry_open_min"] <= em <= KEYSTONE["entry_close_min"]
+        in_eod = KEYSTONE["eod_entry_min"] <= em <= KEYSTONE["eod_exit_min"]
+        if not in_orb and not in_eod:
+            outside_window.append(f"{t.get('ticker')} {t.get('side')} @{t.get('entry_time')}")
+    if outside_window:
+        checks.append(
+            Check(
+                s,
+                "entry_window",
+                WARN,
+                f"{len(outside_window)} trade(s) entered outside ORB/EOD window: "
+                + ", ".join(outside_window),
+            )
+        )
+    else:
+        checks.append(
+            Check(s, "entry_window", OK, f"all {len(today)} trade(s) in valid entry window")
+        )
+
+    # ------------------------------------------------------------------ #
+    # 2. Risk per trade sizing                                            #
+    # ------------------------------------------------------------------ #
+    risk_issues: list[str] = []
+    for t in today:
+        ep = float(t.get("entry_price") or 0)
+        stop = float(t.get("entry_stop") or 0)
+        sh = float(t.get("shares") or 0)
+        if not (ep and stop and sh):
+            continue
+        risk = abs(ep - stop) * sh
+        if risk < _RISK_LOW_USD:
+            risk_issues.append(f"{t.get('ticker')} ${risk:.0f} (too tight)")
+        elif risk > _RISK_HIGH_USD:
+            risk_issues.append(f"{t.get('ticker')} ${risk:.0f} (oversized)")
+    if risk_issues:
+        checks.append(
+            Check(
+                s,
+                "risk_sizing",
+                WARN,
+                f"{len(risk_issues)} trade(s) outside ${_RISK_LOW_USD:.0f}-${_RISK_HIGH_USD:.0f} risk band: "
+                + ", ".join(risk_issues),
+            )
+        )
+    else:
+        checks.append(Check(s, "risk_sizing", OK, f"all {len(today)} trade(s) within risk band"))
+
+    # ------------------------------------------------------------------ #
+    # 3. Cooldown violation: same (ticker, side) re-entry within 30 min  #
+    #    of a stop exit                                                   #
+    # ------------------------------------------------------------------ #
+    STOP_REASONS = {
+        "V10_STOP",
+        "sentinel_a_stop_price",
+        "sentinel_r2_hard_stop",
+        "sentinel_v651_deep_stop",
+        "v750_early_ditch",
+        "be_stop",
+    }
+    # Build timeline of stop exits keyed by (ticker, side)
+    stop_exits: dict[tuple, list[datetime]] = {}
+    for t in today:
+        reason = (t.get("reason") or "").upper()
+        if any(s_ in reason for s_ in ("STOP", "DITCH", "V750")):
+            exit_dt = _parse_exit_dt_et(t.get("exit_time", ""))
+            if exit_dt:
+                key = (t.get("ticker"), t.get("side"))
+                stop_exits.setdefault(key, []).append(exit_dt)
+
+    cooldown_violations: list[str] = []
+    for t in today:
+        em = _parse_entry_min(t.get("entry_time", ""))
+        if em is None:
+            continue
+        key = (t.get("ticker"), t.get("side"))
+        for stop_dt in stop_exits.get(key, []):
+            # Convert entry time to a comparable ET datetime
+            entry_dt = datetime.now(ET).replace(
+                hour=em // 60, minute=em % 60, second=0, microsecond=0
+            )
+            diff_min = (entry_dt - stop_dt).total_seconds() / 60
+            if 0 < diff_min < _COOLDOWN_MIN:
+                cooldown_violations.append(
+                    f"{t.get('ticker')} {t.get('side')} re-entered {diff_min:.0f}min after stop"
+                )
+    if cooldown_violations:
+        checks.append(
+            Check(
+                s,
+                "cooldown",
+                CRIT,
+                f"{len(cooldown_violations)} cooldown violation(s): "
+                + "; ".join(cooldown_violations),
+            )
+        )
+    else:
+        checks.append(Check(s, "cooldown", OK, "no cooldown violations"))
+
+    # ------------------------------------------------------------------ #
+    # 4. Data quality: entry_stop=0 on stop exits                        #
+    # ------------------------------------------------------------------ #
+    bad_stop_data = [
+        f"{t.get('ticker')} {t.get('reason')}"
+        for t in today
+        if (
+            float(t.get("entry_stop") or 0) == 0
+            and any(s_ in (t.get("reason") or "").upper() for s_ in ("STOP", "DITCH"))
+        )
+    ]
+    if bad_stop_data:
+        checks.append(
+            Check(
+                s, "data_quality", WARN, f"entry_stop=0 on stop exit(s): {', '.join(bad_stop_data)}"
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # 5. Bot version on today's trades matches live version               #
+    # ------------------------------------------------------------------ #
+    if live_version:
+        old_version_trades = [
+            f"{t.get('ticker')}@{t.get('bot_version')}"
+            for t in today
+            if t.get("bot_version") and t.get("bot_version") != live_version
+        ]
+        if old_version_trades:
+            checks.append(
+                Check(
+                    s,
+                    "version_consistency",
+                    INFO,
+                    f"trades from prior version: {', '.join(old_version_trades[:5])}",
+                )
+            )
+
+    # ------------------------------------------------------------------ #
+    # 6. EOD exit reason                                                  #
+    # ------------------------------------------------------------------ #
+    eod_trades = [
+        t
+        for t in today
+        if (_parse_entry_min(t.get("entry_time", "")) or 0) >= KEYSTONE["eod_entry_min"]
+    ]
+    eod_wrong_reason = [
+        f"{t.get('ticker')} reason={t.get('reason')}"
+        for t in eod_trades
+        if (t.get("reason") or "").upper() not in ("EOD", "EOD_EXIT", "EOD_CLOSE")
+    ]
+    if eod_wrong_reason:
+        checks.append(
+            Check(
+                s,
+                "eod_reason",
+                WARN,
+                f"EOD trade(s) with unexpected exit reason: {', '.join(eod_wrong_reason)}",
+            )
+        )
+    elif eod_trades:
+        checks.append(
+            Check(s, "eod_reason", OK, f"{len(eod_trades)} EOD trade(s) all exited correctly")
+        )
+
+    # ------------------------------------------------------------------ #
+    # 7. Aggregate: count, P&L, win rate                                 #
+    # ------------------------------------------------------------------ #
+    n = len(today)
+    wins = sum(1 for t in today if float(t.get("pnl") or 0) > 0)
+    total_pnl = sum(float(t.get("pnl") or 0) for t in today)
+    wr = (wins / n * 100) if n else 0
+
+    status = OK
+    detail = f"{n} trades W{wins}/L{n - wins} P&L=${total_pnl:+.2f} WR={wr:.0f}%"
+
+    # Cap breach (ORB_PORTFOLIO_FIRE=1 means each pid counts separately,
+    # so main alone should not exceed 5 trades).
+    main_trades = [t for t in today if t.get("portfolio") in ("paper", "main", None)]
+    if len(main_trades) > KEYSTONE["max_trades_per_day"]:
+        status = WARN
+        detail += f" -- main count {len(main_trades)} > cap {KEYSTONE['max_trades_per_day']}"
+
+    if n >= 3 and wr < 20:
+        status = WARN
+        detail += " -- win rate below 20%, review signals"
+    elif n >= 3 and wr > 90:
+        status = INFO
+        detail += " -- win rate >90%, verify data integrity"
+
+    checks.append(Check(s, "aggregate", status, detail))
+
+    return checks
+
+
 def send_telegram_alert(report: dict[str, Any]) -> None:
+    """Send Telegram alert on any CRIT or WARN check.
+
+    CRIT = urgent header; WARN = FYI header. Both fire so the operator
+    sees config drift and trade deviations as well as hard failures.
+    """
     crits = [c for c in report["checks"] if c["status"] == CRIT]
     warns = [c for c in report["checks"] if c["status"] == WARN]
-    if not crits:
+    if not crits and not warns:
         return
     token = (os.environ.get("TELEGRAM_TP_TOKEN") or "").strip()
     chat_id = (os.environ.get("TELEGRAM_TP_CHAT_ID") or "").strip()
@@ -835,15 +1122,18 @@ def send_telegram_alert(report: dict[str, Any]) -> None:
         return
     dry = os.environ.get("MONITOR_DRY_RUN") == "1"
     ver = report.get("version", "?")
-    msg = (
-        f"SYSTEM CHECK CRIT\nv{ver} | {report['ts_et']}\n\n"
-        + "\n".join(f"X [{c['section']}] {c['name']}: {c['detail']}" for c in crits)
-        + (
-            ("\n\nWarnings:\n" + "\n".join(f"! {c['name']}: {c['detail']}" for c in warns))
-            if warns
-            else ""
-        )
-    )
+    ts = report.get("ts_et", "")
+
+    if crits:
+        header = f"SYSTEM CHECK CRIT v{ver} | {ts}"
+        body = "\n".join(f"X [{c['section']}] {c['name']}: {c['detail']}" for c in crits)
+        if warns:
+            body += "\n\nWarnings:\n" + "\n".join(f"! {c['name']}: {c['detail']}" for c in warns)
+    else:
+        header = f"SYSTEM CHECK WARN v{ver} | {ts}"
+        body = "\n".join(f"! [{c['section']}] {c['name']}: {c['detail']}" for c in warns)
+
+    msg = header + "\n\n" + body
     payload = json.dumps({"chat_id": chat_id, "text": msg}).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
@@ -927,11 +1217,12 @@ def run(
     for t in threads:
         t.join(timeout=30)
 
-    # Run all three check sections
+    # Run all four check sections
     checks: list[Check] = []
     checks.extend(checks_system(raw, expected_version))
     checks.extend(checks_invariants(raw, base_url))
     checks.extend(checks_strategy(raw))
+    checks.extend(checks_trade_log(raw))
 
     return build_report(checks, raw, alpaca, railway, time.monotonic() - t0)
 
