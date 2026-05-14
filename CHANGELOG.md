@@ -4,6 +4,15 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.48 (2026-05-14) — fix no_phantom_positions for 1R runner + inv_or_locked_after_or_end during OR regime
+
+Two invariant false positives:
+
+- `no_phantom_positions`: `ORB_PARTIAL_PROFIT_AT_1R=1` clears the RiskBook ticket at 1R but paper_state retains the runner shares. Invariant now skips when `partial_profit_at_1r=True`, all positions are unrealized-profitable, and `risk.open_count=0` — confirmed runner state after a 1R partial exit.
+- `inv_or_locked_after_or_end`: removed "OR" from the checked-mode set. During the actual OR phase the engine is still building windows; the existing `or_end_min + 2` time guard already handles the production OPEN-regime check correctly.
+
+---
+
 ## v9.1.47 (2026-05-14) — fix two invariant false positives for ORB_PORTFOLIO_FIRE=1
 
 Both `val_gene_trades_match_main` and `v10_in_pos_has_internal_position` were written for FIRE=0 (mirror mode). With FIRE=1 (default since v8.3.23), Val and Main fire independently — trade counts and positions differ by design.

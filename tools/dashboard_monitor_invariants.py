@@ -173,9 +173,11 @@ def inv_val_gene_trades_match_main(ctx):
     val_alpaca_pos = len(val.get("positions") or [])
     main_paper_pos = len(s.get("positions") or [])
     if val_alpaca_pos != main_paper_pos or (val.get("enabled") and val_alpaca_pos > 0):
-        return _ok("val_gene_trades_match_main",
-                   f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
-                   f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})")
+        return _ok(
+            "val_gene_trades_match_main",
+            f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
+            f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})",
+        )
     main_count = len(s.get("trades_today") or [])
     val_count = len(val.get("trades_today") or [])
     gene_count = len(gene.get("trades_today") or [])
@@ -695,6 +697,22 @@ def inv_no_phantom_positions(ctx):
     # In mirror mode val/gene positions don't go through main's RB,
     # so we only check main here.
     if abs(main_pos - rb_open) > 0:
+        # v9.1.48 -- ORB_PARTIAL_PROFIT_AT_1R=1 pattern: the 1R partial
+        # exit closes the RiskBook ticket (open_count -> 0) but the runner
+        # (remaining shares) stays in paper_state. Detect this by checking
+        # if all open positions have unrealized > 0 (runner in profit) AND
+        # the partial_profit_at_1r config flag is enabled. This is normal
+        # behavior, not a phantom -- flag as INFO not CRIT.
+        cfg = v10.get("config") or {}
+        partial_profit = bool(cfg.get("partial_profit_at_1r"))
+        positions = s.get("positions") or []
+        all_in_profit = all(float(p.get("unrealized") or 0) > 0 for p in positions)
+        if partial_profit and all_in_profit and main_pos > 0 and rb_open == 0:
+            return _ok(
+                "no_phantom_positions",
+                f"runner state: {main_pos} position(s) in paper_state after 1R partial exit "
+                f"(partial_profit_at_1r=True, all positions profitable, RiskBook ticket cleared)",
+            )
         return _fail(
             "no_phantom_positions",
             f"main has {main_pos} positions in /api/state but RiskBook reports open_count={rb_open}",
@@ -773,13 +791,13 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
         return _ok("or_locked_after_or_end", "skipped: v10 not bootstrapped")
     regime = (_state(ctx) or {}).get("regime") or {}
     mode = (regime.get("mode") or "").upper()
-    if mode not in ("OPEN", "POWER", "OR"):
+    if mode not in ("OPEN", "POWER"):
         return _ok("or_locked_after_or_end", f"skipped: regime mode={mode!r}")
 
     # v9.1.42 -- skip check while OR window is still building. The backend
     # emits OPEN for the full RTH session (not a separate OR mode during the
     # opening range), so we derive OR end from config and current server time.
-    cfg = (v10.get("config") or {})
+    cfg = v10.get("config") or {}
     session_start_min = int(cfg.get("session_start_minutes") or 570)  # 09:30 ET
     or_minutes = int(cfg.get("or_minutes") or 30)
     or_end_min = session_start_min + or_minutes  # 10:00 ET with defaults
@@ -789,7 +807,10 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
         try:
             from datetime import datetime as _datetime
             from zoneinfo import ZoneInfo as _ZI
-            _et = _datetime.fromisoformat(server_time.replace("Z", "+00:00")).astimezone(_ZI("America/New_York"))
+
+            _et = _datetime.fromisoformat(server_time.replace("Z", "+00:00")).astimezone(
+                _ZI("America/New_York")
+            )
             current_min = _et.hour * 60 + _et.minute
             # v9.1.45: add 2-min buffer past OR end so a deploy at exactly
             # or_end_min doesn't false-positive before state rebuilds.
@@ -1018,7 +1039,7 @@ def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
         # don't trigger phantom alerts when they hold independent entries.
         if pid in ("val", "gene"):
             exec_data = _exec(ctx, pid) or {}
-            for p in (exec_data.get("positions") or []):
+            for p in exec_data.get("positions") or []:
                 if isinstance(p, dict):
                     t = p.get("symbol") or p.get("ticker")
                     if t:
@@ -1110,7 +1131,8 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
     # executor never attempts entries, so it landed in zeros -> CRIT incorrectly.
     exec_status = (_state(ctx) or {}).get("executors_status") or {}
     disabled_pids = {
-        pid for pid, st in exec_status.items()
+        pid
+        for pid, st in exec_status.items()
         if isinstance(st, dict) and st.get("enabled") is False
     }
     zeros = []
@@ -1120,8 +1142,7 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
             continue
         if pid in disabled_pids:
             # Executor explicitly disabled -- zero equity is expected.
-            dormant.append((pid, rb.get("equity"), rb.get("max_notional"),
-                            "executor disabled", 0))
+            dormant.append((pid, rb.get("equity"), rb.get("max_notional"), "executor disabled", 0))
             continue
         max_notional = rb.get("max_notional")
         equity = rb.get("equity")
