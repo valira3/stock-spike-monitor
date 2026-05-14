@@ -191,7 +191,7 @@ def inv_val_gene_trades_match_main(ctx):
     # trade-count mismatch is guaranteed. Naming this root cause
     # explicitly in the issue body lets the operator skip the
     # log-archaeology step entirely.
-    portfolios = (s.get("portfolios") or {})
+    portfolios = s.get("portfolios") or {}
     subscription_notes: list[str] = []
     for _pid in ("val", "gene"):
         _block = portfolios.get(_pid) or {}
@@ -212,11 +212,10 @@ def inv_val_gene_trades_match_main(ctx):
                 f"guaranteed."
             )
     if subscription_notes:
-        base_detail += "\n\n### Root cause likely:\n\n" + (
-            "\n\n".join(subscription_notes)
-        )
+        base_detail += "\n\n### Root cause likely:\n\n" + ("\n\n".join(subscription_notes))
     try:
         from tools.railway_log_tail import grep_logs, format_log_slice
+
         # v7.85.0 -- limit raised 1000 -> 3000 so we span a wider time
         # window. The bot logs at ~50 lines/min during RTH; 3000 lines
         # covers ~1 hour, which catches any Main fire from the last
@@ -232,14 +231,10 @@ def inv_val_gene_trades_match_main(ctx):
         # or [SIGNAL-BUS-EMIT] lines for today's actual fires. 10000
         # covers ~8h of post-RTH activity or ~3-5h of RTH activity --
         # either case reaches back to the most recent trade window.
-        bus_slice = grep_logs(r"\[SIGNAL-BUS-(EMIT|DISPATCH)\]",
-                              limit=10000, max_matches=100)
-        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]",
-                                 limit=10000, max_matches=100)
-        alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]",
-                               limit=10000, max_matches=50)
-        alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]",
-                                limit=10000, max_matches=50)
+        bus_slice = grep_logs(r"\[SIGNAL-BUS-(EMIT|DISPATCH)\]", limit=10000, max_matches=100)
+        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]", limit=10000, max_matches=100)
+        alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]", limit=10000, max_matches=50)
+        alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]", limit=10000, max_matches=50)
         log_sections: list[str] = []
         if bus_slice:
             log_sections.append(
@@ -276,8 +271,11 @@ def inv_val_gene_trades_match_main(ctx):
             # zero grep matches, the bot truly isn't emitting the
             # patterns we expect -- a real bug downstream.
             from tools.railway_log_tail import (
-                probe_railway_access, count_recent_logs, get_last_gql_errors,
+                probe_railway_access,
+                count_recent_logs,
+                get_last_gql_errors,
             )
+
             probe = probe_railway_access()
             status = probe.get("status", "unknown")
             lines_fetched = None
@@ -344,9 +342,9 @@ def inv_val_gene_trades_match_main(ctx):
             # one. SUCCESS + lines_fetched=0 would be a real
             # bot-logging issue (or a token scope problem).
             dep_suffix = ""
-            dep_id = (probe.get("deployment_id") or "")
-            dep_status = (probe.get("deployment_status") or "")
-            dep_created = (probe.get("deployment_created") or "")
+            dep_id = probe.get("deployment_id") or ""
+            dep_status = probe.get("deployment_status") or ""
+            dep_created = probe.get("deployment_created") or ""
             if dep_id or dep_status or dep_created:
                 # v7.98.0 -- include deployment_created so the operator
                 # can tell whether the resolved deployment is the
@@ -412,8 +410,7 @@ def inv_signal_bus_has_listeners(ctx):
     if gene and gene.get("enabled") is not False:
         expected_listeners += 1
     if expected_listeners == 0:
-        return _ok("signal_bus_has_listeners",
-                   "skipped: no enabled executors")
+        return _ok("signal_bus_has_listeners", "skipped: no enabled executors")
     if n_listeners >= expected_listeners:
         return _ok("signal_bus_has_listeners")
     detail = (
@@ -498,6 +495,7 @@ def _parse_trade_time_to_et_minutes(time_str):
         try:
             from datetime import datetime, timezone
             from zoneinfo import ZoneInfo
+
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
@@ -507,6 +505,7 @@ def _parse_trade_time_to_et_minutes(time_str):
             return None
     # Match the HH:MM optionally followed by a tz tag.
     import re
+
     m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*(ET|EDT|EST|CT|CDT|CST)?\s*$", s)
     if not m:
         return None
@@ -580,7 +579,7 @@ def inv_entries_inside_window(ctx):
         t_min = _parse_trade_time_to_et_minutes(t.get("time"))
         if t_min is None:
             continue
-        ticker = (t.get("ticker") or "?")
+        ticker = t.get("ticker") or "?"
         if t_min < eligible_start:
             violations.append(
                 f"{ticker} {action} at {t.get('time')} "
@@ -596,19 +595,18 @@ def inv_entries_inside_window(ctx):
     return _fail(
         "entries_inside_window",
         f"{len(violations)} of {entries_seen} entries fired "
-        f"outside [{eligible_start//60:02d}:{eligible_start%60:02d}, "
-        f"{eligible_end//60:02d}:{eligible_end%60:02d}] ET",
+        f"outside [{eligible_start // 60:02d}:{eligible_start % 60:02d}, "
+        f"{eligible_end // 60:02d}:{eligible_end % 60:02d}] ET",
         "Entries should only fire inside the v10 eligible window: "
         "after the opening-range window closes "
         f"(session_start + or_minutes = "
-        f"{eligible_start//60:02d}:{eligible_start%60:02d} ET) and "
+        f"{eligible_start // 60:02d}:{eligible_start % 60:02d} ET) and "
         f"before the EOD cutoff "
-        f"({eligible_end//60:02d}:{eligible_end%60:02d} ET). Fires "
+        f"({eligible_end // 60:02d}:{eligible_end % 60:02d} ET). Fires "
         "outside this window indicate either a gate bug (entry path "
         "wasn't blocking the OR-window or EOD-cutoff) or a config "
         "drift (the live bot's window doesn't match the snapshot).\n\n"
-        "Violations:\n"
-        + "\n".join(f"- {v}" for v in violations[:10]),
+        "Violations:\n" + "\n".join(f"- {v}" for v in violations[:10]),
     )
 
 
@@ -783,18 +781,14 @@ def inv_or_locked_after_or_end(ctx: InvariantContext) -> dict:
     if locked == 0:
         details = []
         for t, w in list(or_windows.items())[:10]:
-            details.append(
-                f"  {t}: bars_seen={w.get('bars_seen')} locked={w.get('locked')}"
-            )
+            details.append(f"  {t}: bars_seen={w.get('bars_seen')} locked={w.get('locked')}")
         return _fail(
             "or_locked_after_or_end",
-            f"0/{total} OR windows locked during {mode} "
-            f"(expected at least 1)",
+            f"0/{total} OR windows locked during {mode} (expected at least 1)",
             "Engine never closed the OR window. Likely causes: "
             "(1) bot restarted post-OR and the v7.74.0 backfill failed "
             "or skipped; (2) bar source returned None for every ticker; "
-            "(3) bucket-math drift. First 10 windows:\n"
-            + "\n".join(details),
+            "(3) bucket-math drift. First 10 windows:\n" + "\n".join(details),
         )
     return _ok(
         "or_locked_after_or_end",
@@ -826,8 +820,7 @@ def inv_or_window_data_quality(ctx: InvariantContext) -> dict:
         if bs < min_bars:
             thin.append((ticker, bs))
     if len(thin) >= 3:
-        rows = "\n".join(f"  {t}: bars_seen={b} (need {min_bars})"
-                         for t, b in thin)
+        rows = "\n".join(f"  {t}: bars_seen={b} (need {min_bars})" for t, b in thin)
         return _fail(
             "or_window_data_quality",
             f"{len(thin)} locked OR windows with bars_seen < {min_bars}",
@@ -883,8 +876,7 @@ def inv_position_count_three_way(ctx: InvariantContext) -> dict:
         )
     return _ok(
         "position_count_three_way",
-        f"main={main_count} val={val_count} gene={gene_count} "
-        f"broker_open_n={broker_open_n}",
+        f"main={main_count} val={val_count} gene={gene_count} broker_open_n={broker_open_n}",
     )
 
 
@@ -905,8 +897,7 @@ def inv_equity_self_consistent(ctx: InvariantContext) -> dict:
     cash = p.get("cash")
     long_mv = p.get("long_mv")
     short_liab = p.get("short_liab")
-    if not all(isinstance(v, (int, float))
-               for v in (eq, cash, long_mv, short_liab)):
+    if not all(isinstance(v, (int, float)) for v in (eq, cash, long_mv, short_liab)):
         return _ok("equity_self_consistent", "skipped: components missing")
     derived = float(cash) + float(long_mv) - float(short_liab)
     diff = abs(float(eq) - derived)
@@ -925,8 +916,7 @@ def inv_equity_self_consistent(ctx: InvariantContext) -> dict:
             "vice versa). Check the _state_snapshot construction in "
             "dashboard_server.py.",
         )
-    return _ok("equity_self_consistent",
-               f"eq=${eq:.2f} ≈ derived ${derived:.2f}")
+    return _ok("equity_self_consistent", f"eq=${eq:.2f} ≈ derived ${derived:.2f}")
 
 
 def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
@@ -955,12 +945,10 @@ def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
     s = _state(ctx)
     v10 = _v10(ctx)
     if not s or not v10:
-        return _ok("v10_in_pos_has_internal_position",
-                   "skipped: state or v10 missing")
+        return _ok("v10_in_pos_has_internal_position", "skipped: state or v10 missing")
     day_states = v10.get("day_states") or []
     if not day_states:
-        return _ok("v10_in_pos_has_internal_position",
-                   "skipped: no v10 day_states yet")
+        return _ok("v10_in_pos_has_internal_position", "skipped: no v10 day_states yet")
 
     def _ticker_set_for(pid: str) -> set[str]:
         # Try per-portfolio first, fall back to top-level positions
@@ -995,12 +983,15 @@ def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
         if pid not in per_pid_tickers:
             per_pid_tickers[pid] = _ticker_set_for(pid)
         if ticker not in per_pid_tickers[pid]:
-            phantom_in_pos.append({
-                "pid": pid, "ticker": ticker,
-                "phase": ds.get("phase"),
-                "in_position": ds.get("in_position"),
-                "last_entry_iso": ds.get("last_entry_iso"),
-            })
+            phantom_in_pos.append(
+                {
+                    "pid": pid,
+                    "ticker": ticker,
+                    "phase": ds.get("phase"),
+                    "in_position": ds.get("in_position"),
+                    "last_entry_iso": ds.get("last_entry_iso"),
+                }
+            )
 
     if phantom_in_pos:
         lines = []
@@ -1047,27 +1038,37 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
     """
     v10 = _v10(ctx)
     if not v10:
-        return _ok("risk_book_notional_cap_nonzero",
-                   "skipped: v10 not bootstrapped")
+        return _ok("risk_book_notional_cap_nonzero", "skipped: v10 not bootstrapped")
     regime = (_state(ctx) or {}).get("regime") or {}
     mode = (regime.get("mode") or "").upper()
     if mode not in ("OPEN", "POWER", "OR"):
-        return _ok("risk_book_notional_cap_nonzero",
-                   f"skipped: regime mode={mode!r}")
+        return _ok("risk_book_notional_cap_nonzero", f"skipped: regime mode={mode!r}")
     risk_books = v10.get("risk_books") or {}
     if not risk_books:
-        return _ok("risk_book_notional_cap_nonzero",
-                   "skipped: no risk_books in snapshot")
+        return _ok("risk_book_notional_cap_nonzero", "skipped: no risk_books in snapshot")
+    # v9.1.41 -- skip portfolios that are explicitly disabled in executors_status.
+    # Gene with ALPACA_SKIP_PORTFOLIOS=gene has equity=0, admit=0, reject=0 --
+    # the v7.83.0 dormant heuristic (reject_count>0) never fires because the
+    # executor never attempts entries, so it landed in zeros -> CRIT incorrectly.
+    exec_status = (_state(ctx) or {}).get("executors_status") or {}
+    disabled_pids = {
+        pid for pid, st in exec_status.items()
+        if isinstance(st, dict) and st.get("enabled") is False
+    }
     zeros = []
     dormant = []
     for pid, rb in risk_books.items():
         if not isinstance(rb, dict):
             continue
+        if pid in disabled_pids:
+            # Executor explicitly disabled -- zero equity is expected.
+            dormant.append((pid, rb.get("equity"), rb.get("max_notional"),
+                            "executor disabled", 0))
+            continue
         max_notional = rb.get("max_notional")
         equity = rb.get("equity")
-        is_zero = (
-            (isinstance(max_notional, (int, float)) and max_notional <= 0)
-            or (isinstance(equity, (int, float)) and equity <= 0)
+        is_zero = (isinstance(max_notional, (int, float)) and max_notional <= 0) or (
+            isinstance(equity, (int, float)) and equity <= 0
         )
         if not is_zero:
             continue
@@ -1078,21 +1079,20 @@ def inv_risk_book_notional_cap_nonzero(ctx: InvariantContext) -> dict:
         # got rejected because equity drifted to 0 -- a real bug).
         admit_count = rb.get("admit_count")
         reject_count = rb.get("reject_count")
-        if (isinstance(admit_count, int) and admit_count == 0
-                and isinstance(reject_count, int) and reject_count > 0):
+        if (
+            isinstance(admit_count, int)
+            and admit_count == 0
+            and isinstance(reject_count, int)
+            and reject_count > 0
+        ):
             # Dormant + rejecting = unconfigured portfolio.
-            dormant.append((pid, equity, max_notional,
-                            rb.get("last_reject_reason"), reject_count))
+            dormant.append((pid, equity, max_notional, rb.get("last_reject_reason"), reject_count))
         else:
-            zeros.append((pid, equity, max_notional,
-                          rb.get("last_reject_reason")))
+            zeros.append((pid, equity, max_notional, rb.get("last_reject_reason")))
     if zeros:
         lines = []
         for pid, eq, mn, reason in zeros:
-            lines.append(
-                f"  {pid}: equity={eq} max_notional={mn} "
-                f"last_reject={reason!r}"
-            )
+            lines.append(f"  {pid}: equity={eq} max_notional={mn} last_reject={reason!r}")
         return _fail(
             "risk_book_notional_cap_nonzero",
             f"{len(zeros)} RiskBook(s) have zero equity/max_notional "
@@ -1156,10 +1156,13 @@ def inv_railway_logs_clean(ctx: InvariantContext) -> dict:
             "(missing RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID or API error)",
         )
     findings = scan_for_failures(logs)
-    critical_signals = ("alpaca_error", "sentinel_critical",
-                        "uncaught_traceback")
-    soft_signals = ("insufficient_cash", "risk_reject_notional_cap",
-                    "risk_reject_other", "v15_wait_abort")
+    critical_signals = ("alpaca_error", "sentinel_critical", "uncaught_traceback")
+    soft_signals = (
+        "insufficient_cash",
+        "risk_reject_notional_cap",
+        "risk_reject_other",
+        "v15_wait_abort",
+    )
     info_signals = ("ingest_disconnect",)
     triggered: list[tuple[str, dict, str]] = []
     for name, info in findings.items():
@@ -1189,8 +1192,7 @@ def inv_railway_logs_clean(ctx: InvariantContext) -> dict:
         )
     return _ok(
         "railway_logs_clean",
-        f"scanned {len(logs)} lines, "
-        f"{len(findings)} sub-threshold signals",
+        f"scanned {len(logs)} lines, {len(findings)} sub-threshold signals",
     )
 
 

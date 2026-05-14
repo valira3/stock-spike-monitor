@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.41 (2026-05-14) — fix false-positive CRIT for disabled Gene executor
+
+`inv_risk_book_notional_cap_nonzero`: Gene with `ALPACA_SKIP_PORTFOLIOS=gene` has `equity=0, admit=0, reject=0`. The v7.83.0 dormant heuristic (`reject_count>0`) never fired because the executor never attempts entries, so it fell into `zeros` -> CRIT. Fix: check `executors_status` from the state snapshot; portfolios with `enabled:false` are now immediately classified as dormant (not zeros) regardless of admit/reject counts.
+
+---
+
 ## v9.1.40 (2026-05-14) — fix session WARN race at 09:30 ET
 
 Session reset fires on the first scan tick after 09:30 ET (empirically ~09:30:32 ET). Monitor at 09:30:29 ET caught the state 3 seconds before the reset — valid WARN at the instant but spurious. Threshold bumped from 09:30 (570 min) to 09:33 (573 min) to absorb the startup jitter.
