@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.74 (2026-05-14) — fix test contamination of /data/eod_trade_log.jsonl
+
+`test_pass_flatten_at_exit` in `test_eod_reversal_scan_integration.py` calls `scan._eod_reversal_pass` at cur_min=959 (15:59 ET), which triggers `_eod_append_trade_log(leg)` — writing fake entries (AAPL@$99, ORCL@$100.50, pnl=$0.00) to `/data/eod_trade_log.jsonl`. With today's date in `entry_iso`, 48 fake entries accumulated across multiple CI runs today and would have contaminated Main's Today's Trades with zero-P&L phantom trades.
+
+Fix: `_eod_engine` fixture now also stubs `scan._eod_append_trade_log` to a no-op via monkeypatch, before the EodReversalEngine is wired up. The local file has been cleared.
+
+---
+
 ## v9.1.73 (2026-05-14) — fix EOD positions hidden by empty ORB table on Main tab
 
 When Main had EOD positions open (15:00–15:59 ET) but no ORB morning positions, `renderPositions` always emitted the full 11-column ORB table header (with empty `<tbody>`) before appending the EOD section. This produced:

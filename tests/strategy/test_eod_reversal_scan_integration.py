@@ -26,6 +26,7 @@ fires for the production-default 15:00 ET entry AND also for any
 delayed cycle inside [15:00, 15:59) (the failure mode that lost the
 2026-05-13 trade).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -65,8 +66,7 @@ class TestScanLoopWiringStatic:
             "before calling _eod_reversal_pass (v9.1.20 fix)"
         )
         assert idx_assign < idx_call, (
-            f"cur_min assignment (pos {idx_assign}) must precede call "
-            f"(pos {idx_call})"
+            f"cur_min assignment (pos {idx_assign}) must precede call (pos {idx_call})"
         )
 
     def test_eod_pass_wrapped_in_try_except(self):
@@ -78,10 +78,9 @@ class TestScanLoopWiringStatic:
         # Just verify the V910-EOD wrapper marker is present near the
         # call site -- not a deep AST check.
         call_idx = src.find("_eod_reversal_pass(callbacks, cur_min)")
-        nearby = src[max(0, call_idx - 200):call_idx + 200]
+        nearby = src[max(0, call_idx - 200) : call_idx + 200]
         assert "[V910-EOD]" in nearby, (
-            "scan_loop must keep the [V910-EOD] wrapper try/except "
-            "around _eod_reversal_pass"
+            "scan_loop must keep the [V910-EOD] wrapper try/except around _eod_reversal_pass"
         )
 
 
@@ -103,13 +102,12 @@ class TestEodPassWiringStatic:
                 continue
             assert 'getattr(book, "current_equity"' not in line, (
                 "v9.1.21 SEV-1 regression: do NOT use "
-                "`getattr(book, \"current_equity\", ...)` -- it returns "
+                '`getattr(book, "current_equity", ...)` -- it returns '
                 "the bound method object. Call `book.current_equity()`."
             )
         # AND the correct call form must be present.
         assert "book.current_equity()" in src, (
-            "scan._eod_reversal_pass must call current_equity as a "
-            "method (v9.1.21 fix)"
+            "scan._eod_reversal_pass must call current_equity as a method (v9.1.21 fix)"
         )
 
 
@@ -126,6 +124,7 @@ class TestEntryWindowRangeStatic:
     def test_is_entry_window_uses_range_not_equality(self):
         # The implementation is in orb.eod_reversal -- not scan.py.
         from orb.eod_reversal import EodReversalEngine
+
         src = inspect.getsource(EodReversalEngine.is_entry_window)
         # Range markers MUST be present.
         assert "<=" in src and "<" in src, (
@@ -181,7 +180,8 @@ def _prior_closes(monkeypatch: pytest.MonkeyPatch):
         canned.update(values)
 
     monkeypatch.setattr(
-        scan, "_load_eod_prior_closes",
+        scan,
+        "_load_eod_prior_closes",
         lambda date_iso, universe: dict(canned),
     )
     return _set
@@ -191,7 +191,12 @@ def _prior_closes(monkeypatch: pytest.MonkeyPatch):
 def _eod_engine(monkeypatch: pytest.MonkeyPatch):
     """Provide a fresh EodReversalEngine to `_eod_reversal_pass` via
     `_orb_runtime.get_eod_engine`. Reset state between tests.
+
+    v9.1.74 -- also stubs out `_eod_append_trade_log` so tests never
+    write to /data/eod_trade_log.jsonl on disk (which contaminated the
+    Today's Trades with fake $99 AAPL / $100.50 ORCL entries during CI).
     """
+    monkeypatch.setattr(scan, "_eod_append_trade_log", lambda leg: None)
     cfg = EodReversalConfig(
         # Disable broker firing for the runtime test -- we only care
         # that the engine's per-portfolio entry_attempted flag flips.
@@ -199,7 +204,8 @@ def _eod_engine(monkeypatch: pytest.MonkeyPatch):
     )
     engine = EodReversalEngine(cfg, portfolio_ids=list(ALL_PORTFOLIO_IDS))
     monkeypatch.setattr(
-        "orb.live_runtime.get_eod_engine", lambda: engine,
+        "orb.live_runtime.get_eod_engine",
+        lambda: engine,
     )
     return engine
 
@@ -211,7 +217,9 @@ def _isolated_portfolio_books(monkeypatch: pytest.MonkeyPatch):
     paper_state.
     """
     monkeypatch.setattr(
-        PortfolioBook, "current_equity", lambda self, prices=None: 100_000.0,
+        PortfolioBook,
+        "current_equity",
+        lambda self, prices=None: 100_000.0,
     )
 
 
@@ -230,15 +238,18 @@ class TestEodReversalPassRuntime:
     UNIVERSE = ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX")
     PRIOR_CLOSES = {t: 100.0 for t in UNIVERSE}
     CURRENT_PRICES = {
-        "ORCL": 100.5,   # +50 bps  -> short pick (ORCL in short_tickers)
-        "AAPL": 99.0,    # -100 bps -> long pick  (AAPL in long_tickers)
+        "ORCL": 100.5,  # +50 bps  -> short pick (ORCL in short_tickers)
+        "AAPL": 99.0,  # -100 bps -> long pick  (AAPL in long_tickers)
         "MSFT": 100.2,
-        "AVGO": 99.5,    # -50 bps  (AVGO in long_tickers, but AAPL beats it)
+        "AVGO": 99.5,  # -50 bps  (AVGO in long_tickers, but AAPL beats it)
         "NFLX": 100.3,
     }
 
     def test_pass_admits_at_window_open(
-        self, _eod_engine, _prior_closes, _isolated_portfolio_books,
+        self,
+        _eod_engine,
+        _prior_closes,
+        _isolated_portfolio_books,
     ):
         _prior_closes(self.PRIOR_CLOSES)
         cb = _FakeCallbacks(self.CURRENT_PRICES)
@@ -248,8 +259,7 @@ class TestEodReversalPassRuntime:
         scan._eod_reversal_pass(cb, cur_min=15 * 60)
         for pid in ALL_PORTFOLIO_IDS:
             assert _eod_engine.has_attempted(pid), (
-                f"portfolio {pid} entry_attempted must be True after "
-                f"a valid window-open pass"
+                f"portfolio {pid} entry_attempted must be True after a valid window-open pass"
             )
         # At least the Main book should have admitted both legs.
         st_main = _eod_engine._states["main"]
@@ -259,7 +269,10 @@ class TestEodReversalPassRuntime:
         assert st_main.open_positions["ORCL"].side == "short"
 
     def test_pass_admits_on_delayed_cycle_inside_window(
-        self, _eod_engine, _prior_closes, _isolated_portfolio_books,
+        self,
+        _eod_engine,
+        _prior_closes,
+        _isolated_portfolio_books,
     ):
         """The 2026-05-13 failure mode: SEV-1 fixes deployed AFTER
         15:00 ET, so the first clean scan cycle didn't land until
@@ -279,18 +292,22 @@ class TestEodReversalPassRuntime:
         )
 
     def test_pass_no_op_outside_window(
-        self, _eod_engine, _prior_closes, _isolated_portfolio_books,
+        self,
+        _eod_engine,
+        _prior_closes,
+        _isolated_portfolio_books,
     ):
         _prior_closes(self.PRIOR_CLOSES)
         cb = _FakeCallbacks(self.CURRENT_PRICES)
         # cur_min = 14:00 ET -> well before entry window.
         scan._eod_reversal_pass(cb, cur_min=14 * 60)
-        assert not _eod_engine.has_attempted("main"), (
-            "Pass before window must NOT admit"
-        )
+        assert not _eod_engine.has_attempted("main"), "Pass before window must NOT admit"
 
     def test_pass_flatten_at_exit(
-        self, _eod_engine, _prior_closes, _isolated_portfolio_books,
+        self,
+        _eod_engine,
+        _prior_closes,
+        _isolated_portfolio_books,
     ):
         # First admit during the window.
         _prior_closes(self.PRIOR_CLOSES)
@@ -300,9 +317,7 @@ class TestEodReversalPassRuntime:
         # Now the exit window: pass should close every open position.
         scan._eod_reversal_pass(cb, cur_min=15 * 60 + 59)
         st = _eod_engine._states["main"]
-        assert not st.open_positions, (
-            "Exit window pass must close all open EOD positions"
-        )
+        assert not st.open_positions, "Exit window pass must close all open EOD positions"
         assert st.closed_legs, "closed_legs must record the flatten"
 
     def test_pass_does_not_crash_on_missing_engine(self, monkeypatch):
@@ -314,7 +329,8 @@ class TestEodReversalPassRuntime:
         non-actionable tracebacks.
         """
         monkeypatch.setattr(
-            "orb.live_runtime.get_eod_engine", lambda: None,
+            "orb.live_runtime.get_eod_engine",
+            lambda: None,
         )
         cb = _FakeCallbacks({})
         # Must NOT raise.
