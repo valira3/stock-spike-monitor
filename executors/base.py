@@ -415,6 +415,7 @@ class TradeGeniusBase:
         # Read this executor's equity (Alpaca account-equity).
         try:
             from engine.portfolio_equity import resolve_equity
+
             ex_equity = float(resolve_equity(self.NAME.lower()) or 0.0)
         except Exception:
             return (signal_qty, 1.0)
@@ -712,7 +713,9 @@ class TradeGeniusBase:
         try:
             order = client.submit_order(req)
             logger.info(
-                "[%s] [ALPACA-RESP] %s", self.NAME, self._summarize_order(order),
+                "[%s] [ALPACA-RESP] %s",
+                self.NAME,
+                self._summarize_order(order),
             )
             return order
         except Exception as e:
@@ -736,7 +739,8 @@ class TradeGeniusBase:
                 )
                 logger.info(
                     "[%s] [ALPACA-RESP] %s (via dup-lookup)",
-                    self.NAME, self._summarize_order(existing),
+                    self.NAME,
+                    self._summarize_order(existing),
                 )
                 return existing
             # v7.77.0 -- non-duplicate broker error. Log the structured
@@ -828,6 +832,7 @@ class TradeGeniusBase:
             return
         try:
             from engine.portfolio_book import PORTFOLIOS
+
             book = PORTFOLIOS.get(self.NAME.lower())
             if book is None:
                 return
@@ -850,7 +855,8 @@ class TradeGeniusBase:
             # Mirror is best-effort; never let it break a boot path.
             logger.exception(
                 "[%s] _mirror_position_into_book failed for %s",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
 
     def _mirror_position_into_engine(self, ticker: str) -> None:
@@ -888,6 +894,7 @@ class TradeGeniusBase:
             import orb.live_runtime as _orb_runtime
             from orb import state as _orb_state
             from orb import risk_book as _orb_risk_book
+
             engine = _orb_runtime.get_engine()
             if engine is None:
                 return
@@ -930,8 +937,7 @@ class TradeGeniusBase:
                         risk_d = 0.0
                 if risk_d <= 0.0:
                     try:
-                        risk_d = (rb._equity
-                                  * engine.cfg.risk_per_trade_pct / 100.0)
+                        risk_d = rb._equity * engine.cfg.risk_per_trade_pct / 100.0
                     except Exception:
                         risk_d = 500.0  # conservative absolute fallback
                 notional = entry_p * shares_n if (entry_p > 0 and shares_n > 0) else 0.0
@@ -945,15 +951,20 @@ class TradeGeniusBase:
             logger.info(
                 "[%s] [V836-RECOVER] mirrored %s into engine FSM + RiskBook "
                 "(shares=%d entry=%.2f stop=%s risk_d=%.2f notional=%.2f)",
-                self.NAME, ticker, shares_n, entry_p,
+                self.NAME,
+                ticker,
+                shares_n,
+                entry_p,
                 ("%.2f" % float(stop_p)) if stop_p is not None else "None",
-                risk_d, notional,
+                risk_d,
+                notional,
             )
         except Exception:
             # Mirror is best-effort; never let it break a boot path.
             logger.exception(
                 "[%s] _mirror_position_into_engine failed for %s",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
 
     def _delete_persisted_position(self, ticker: str) -> None:
@@ -1017,6 +1028,7 @@ class TradeGeniusBase:
         try:
             import orb.live_runtime as _orb_runtime
             from orb import state as _orb_state
+
             engine = _orb_runtime.get_engine()
             if engine is None:
                 return
@@ -1093,16 +1105,18 @@ class TradeGeniusBase:
                         rb._open_notional = 0.0
             if ticket is not None:
                 logger.info(
-                    "[%s] [V8312-UNRECOVER] released synthetic ticket %s "
-                    "(risk=%.2f notional=%.2f)",
-                    self.NAME, ticker,
-                    ticket.risk_dollars, ticket.notional,
+                    "[%s] [V8312-UNRECOVER] released synthetic ticket %s (risk=%.2f notional=%.2f)",
+                    self.NAME,
+                    ticker,
+                    ticket.risk_dollars,
+                    ticket.notional,
                 )
         except Exception:
             # Best-effort cleanup; never raise into the close path.
             logger.exception(
                 "[%s] _unmirror_position_from_engine failed for %s",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
 
     def _stamp_action(self, ticker: str) -> None:
@@ -1207,8 +1221,7 @@ class TradeGeniusBase:
     # within the same UTC minute. A double-fire (v10 admission + main bus
     # broadcast) would land as two separate orders, each idempotent against
     # itself -- _submit_order_idempotent handles within-bucket dupes.
-    def fire_long(self, ticker: str, price: float, shares: int,
-                  *, error_callback=None) -> bool:
+    def fire_long(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
         """Submit a LONG v10 entry directly to Alpaca.
 
         Returns True if an order was submitted (or recognized as a coid
@@ -1224,12 +1237,15 @@ class TradeGeniusBase:
             return False
         if not ticker:
             return False
-        return self._submit_v10_entry(side="LONG", ticker=ticker,
-                                      price=price, shares=int(shares),
-                                      error_callback=error_callback)
+        return self._submit_v10_entry(
+            side="LONG",
+            ticker=ticker,
+            price=price,
+            shares=int(shares),
+            error_callback=error_callback,
+        )
 
-    def fire_short(self, ticker: str, price: float, shares: int,
-                   *, error_callback=None) -> bool:
+    def fire_short(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
         """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long.
 
         v7.30.0: optional `error_callback` -- see `fire_long` docstring."""
@@ -1237,13 +1253,17 @@ class TradeGeniusBase:
             return False
         if not ticker:
             return False
-        return self._submit_v10_entry(side="SHORT", ticker=ticker,
-                                      price=price, shares=int(shares),
-                                      error_callback=error_callback)
+        return self._submit_v10_entry(
+            side="SHORT",
+            ticker=ticker,
+            price=price,
+            shares=int(shares),
+            error_callback=error_callback,
+        )
 
-    def _submit_v10_entry(self, *, side: str, ticker: str,
-                          price: float, shares: int,
-                          error_callback=None) -> bool:
+    def _submit_v10_entry(
+        self, *, side: str, ticker: str, price: float, shares: int, error_callback=None
+    ) -> bool:
         """Shared body for fire_long / fire_short.
 
         Uses MARKET DAY orders rather than the legacy LIMIT IOC path because
@@ -1252,25 +1272,51 @@ class TradeGeniusBase:
         risk-cap accounting on the RiskBook. MARKET DAY ensures the full
         v10-computed quantity fills (or rejects cleanly).
         """
+        # Post-loss cooldown gate -- mirrors the check in broker/orders.py for
+        # Main. Blocks re-entry on (ticker, side) within POST_LOSS_COOLDOWN_MIN
+        # minutes of a losing stop on this executor's portfolio book.
+        try:
+            from engine.portfolio_book import PORTFOLIOS
+
+            _pb_entry = PORTFOLIOS.get(self.NAME.lower())
+            if _pb_entry is not None:
+                _cd = _pb_entry.is_in_post_loss_cooldown(ticker, side.lower())
+                if _cd is not None:
+                    logger.info(
+                        "[%s] [V10-FIRE] COOLDOWN BLOCK %s %s -- post-loss "
+                        "cooldown active until %s (loss=$%.2f)",
+                        self.NAME,
+                        side,
+                        ticker,
+                        _cd.get("until_utc", "?"),
+                        _cd.get("loss_pnl", 0),
+                    )
+                    return False
+        except Exception:
+            logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
+
         client = self._ensure_client()
         if client is None:
             logger.warning(
                 "[%s] [V10-FIRE] skip %s %s -- no alpaca client",
-                self.NAME, side, ticker,
+                self.NAME,
+                side,
+                ticker,
             )
             return False
         try:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
         except Exception:
-            logger.exception("[%s] [V10-FIRE] alpaca imports failed",
-                             self.NAME)
+            logger.exception("[%s] [V10-FIRE] alpaca imports failed", self.NAME)
             return False
         direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
         coid = self._build_client_order_id(ticker, direction)
         order_side = OrderSide.BUY if side == "LONG" else OrderSide.SELL
         req = MarketOrderRequest(
-            symbol=ticker, qty=int(shares), side=order_side,
+            symbol=ticker,
+            qty=int(shares),
+            side=order_side,
             time_in_force=TimeInForce.DAY,
             client_order_id=coid,
         )
@@ -1279,31 +1325,38 @@ class TradeGeniusBase:
         except Exception as _exc:
             logger.exception(
                 "[%s] [V10-FIRE] submit failed %s %s qty=%d",
-                self.NAME, side, ticker, shares,
+                self.NAME,
+                side,
+                ticker,
+                shares,
             )
             # v7.30.0: escalate broker errors (5xx / timeout / conn
             # drop) through the supplied callback. Failure of the
             # callback itself must NOT raise out of the fire path.
             if error_callback is not None:
                 try:
-                    error_callback(self.NAME, side, ticker,
-                                   int(shares), _exc)
+                    error_callback(self.NAME, side, ticker, int(shares), _exc)
                 except Exception:
                     logger.exception(
-                        "[%s] [V10-FIRE] error_callback raised", self.NAME,
+                        "[%s] [V10-FIRE] error_callback raised",
+                        self.NAME,
                     )
             return False
         oid = getattr(order, "id", "?")
         logger.info(
-            "[%s] [V10-FIRE] submitted %s %s qty=%d price=%.4f "
-            "coid=%s order_id=%s",
-            self.NAME, side, ticker, shares, float(price or 0.0), coid, oid,
+            "[%s] [V10-FIRE] submitted %s %s qty=%d price=%.4f coid=%s order_id=%s",
+            self.NAME,
+            side,
+            ticker,
+            shares,
+            float(price or 0.0),
+            coid,
+            oid,
         )
         # Track on the executor's own positions map so /status + dashboard
         # surface the v10 fire. Same shape as the legacy _on_signal path.
         try:
-            self._record_position(ticker, side, int(shares),
-                                  float(price or 0.0))
+            self._record_position(ticker, side, int(shares), float(price or 0.0))
         except Exception:
             logger.exception(
                 "[%s] [V10-FIRE] _record_position raised (non-fatal)",
@@ -1494,9 +1547,9 @@ class TradeGeniusBase:
         logger.info(ok)
         self._send_own_telegram(ok)
 
-    def _partial_close_position_idempotent(self, client, ticker: str,
-                                            shares_to_close: int, label: str,
-                                            reason: str) -> None:
+    def _partial_close_position_idempotent(
+        self, client, ticker: str, shares_to_close: int, label: str, reason: str
+    ) -> None:
         """v8.1.1 -- half-close `shares_to_close` shares of an open
         position on Alpaca WITHOUT teardown.
 
@@ -1538,13 +1591,16 @@ class TradeGeniusBase:
         if side not in ("LONG", "SHORT"):
             logger.warning(
                 "[%s] [V81-ALPACA-PARTIAL] %s skipped -- unknown side=%s",
-                self.NAME, ticker, side,
+                self.NAME,
+                ticker,
+                side,
             )
             return
         if cur_qty <= 0:
             logger.info(
                 "[%s] [V81-ALPACA-PARTIAL] %s skipped -- no position tracked",
-                self.NAME, ticker,
+                self.NAME,
+                ticker,
             )
             return
         if closing >= cur_qty:
@@ -1554,7 +1610,10 @@ class TradeGeniusBase:
             logger.warning(
                 "[%s] [V81-ALPACA-PARTIAL] %s REFUSED partial=%d "
                 ">= current qty=%d (use EXIT_* for full close)",
-                self.NAME, ticker, closing, cur_qty,
+                self.NAME,
+                ticker,
+                closing,
+                cur_qty,
             )
             return
 
@@ -1575,7 +1634,11 @@ class TradeGeniusBase:
                 logger.warning(
                     "[%s] [V81-ALPACA-PARTIAL] %s already flat on broker "
                     "(%s) -- decrementing local qty %d -> %d",
-                    self.NAME, ticker, reason, cur_qty, cur_qty - closing,
+                    self.NAME,
+                    ticker,
+                    reason,
+                    cur_qty,
+                    cur_qty - closing,
                 )
                 pos["qty"] = cur_qty - closing
                 self._stamp_action(ticker)
@@ -1585,7 +1648,9 @@ class TradeGeniusBase:
             logger.exception(
                 "[%s] [V81-ALPACA-PARTIAL] %s FAILED submit -- local "
                 "qty unchanged at %d so caller can retry",
-                self.NAME, ticker, cur_qty,
+                self.NAME,
+                ticker,
+                cur_qty,
             )
             return
 
@@ -1599,7 +1664,9 @@ class TradeGeniusBase:
         except Exception:
             logger.debug(
                 "[%s] [V81-ALPACA-PARTIAL] %s persist skipped",
-                self.NAME, ticker, exc_info=True,
+                self.NAME,
+                ticker,
+                exc_info=True,
             )
         oid = getattr(order, "id", "?")
         ok = (
@@ -1618,6 +1685,7 @@ class TradeGeniusBase:
         # dashboard renders the two consistently.
         try:
             from orb.live_runtime import _record_activity
+
             _record_activity(
                 kind="partial",
                 ticker=ticker,
@@ -1909,9 +1977,13 @@ class TradeGeniusBase:
         try:
             from alpaca.trading.requests import LimitOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
+
             req = LimitOrderRequest(
-                symbol="SPY", qty=1, side=OrderSide.BUY,
-                time_in_force=TimeInForce.IOC, limit_price=1.00,
+                symbol="SPY",
+                qty=1,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.IOC,
+                limit_price=1.00,
                 all_or_none=True,
             )
             dumped = req.model_dump()
@@ -1989,7 +2061,9 @@ class TradeGeniusBase:
             # WARNING-level reconcile log lines for forensics.
             logger.exception(
                 "[%s] [V700-ZEROFILL-FOLLOWUP] failed for %s %s",
-                self.NAME, ticker, side,
+                self.NAME,
+                ticker,
+                side,
             )
 
     def _reconcile_broker_positions(self) -> None:
@@ -2147,7 +2221,11 @@ class TradeGeniusBase:
         # [V79-MIRROR-RECV] -- proof that _on_signal fired at all.
         logger.info(
             "[V79-MIRROR-RECV] %s kind=%s ticker=%s price=%s main_shares=%s",
-            self.NAME, kind, ticker, price, main_shares,
+            self.NAME,
+            kind,
+            ticker,
+            price,
+            main_shares,
         )
 
         # v8.3.23 -- skip ENTRY signals in independent mode. Exits
@@ -2158,7 +2236,9 @@ class TradeGeniusBase:
                     "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
                     "mode active; entry will fire via "
                     "_v10_dispatch_executor_fire (not legacy bus)",
-                    self.NAME, kind, ticker,
+                    self.NAME,
+                    kind,
+                    ticker,
                 )
                 return
 
@@ -2181,7 +2261,9 @@ class TradeGeniusBase:
             # v7.83.0 -- [V79-MIRROR-SKIP] makes drop-path auditable.
             logger.warning(
                 "[V79-MIRROR-SKIP] %s %s %s \u2014 no alpaca client",
-                self.NAME, kind, ticker,
+                self.NAME,
+                kind,
+                ticker,
             )
             return
 
@@ -2196,6 +2278,7 @@ class TradeGeniusBase:
                 self._last_open_pnl_ts = now_mono
                 from broker.open_pnl import snapshot_open_pnl
                 from bot_version import BOT_VERSION as _bv
+
                 snapshot_open_pnl(client, _bv)
         except Exception:
             logger.debug("[%s] open_pnl snapshot raised (non-fatal)", self.NAME, exc_info=True)
@@ -2242,13 +2325,19 @@ class TradeGeniusBase:
                             if sb and sa and sb > 0 and sa > 0:
                                 logger.warning(
                                     "[%s] [V6152-QUOTE] %s synthetic quote anchor=%.4f bid=%.4f ask=%.4f",
-                                    self.NAME, ticker, float(price), float(sb), float(sa),
+                                    self.NAME,
+                                    ticker,
+                                    float(price),
+                                    float(sb),
+                                    float(sa),
                                 )
                                 bid, ask = sb, sa
                         except Exception as _qe:
                             logger.warning(
                                 "[%s] [V6152-QUOTE] %s synthetic quote raised: %s",
-                                self.NAME, ticker, _qe,
+                                self.NAME,
+                                ticker,
+                                _qe,
                             )
                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                     limit_px = compute_strike_limit_price(
@@ -2327,7 +2416,11 @@ class TradeGeniusBase:
             if scale_ratio < 1.0:
                 logger.info(
                     "[V8317-SCALE] %s %s qty=%d -> %d (eq_ratio=%.3f)",
-                    self.NAME, ticker, signal_qty, scaled_qty, scale_ratio,
+                    self.NAME,
+                    ticker,
+                    signal_qty,
+                    scaled_qty,
+                    scale_ratio,
                 )
             signal_qty = scaled_qty
 
@@ -2341,13 +2434,18 @@ class TradeGeniusBase:
                     logger.warning(
                         "[V79-MIRROR-SKIP] %s ENTRY_LONG %s qty=0 "
                         "(main_shares=%s, local_fallback_shares_for=%d)",
-                        self.NAME, ticker, signal_qty,
+                        self.NAME,
+                        ticker,
+                        signal_qty,
                         self._shares_for(price, ticker=ticker),
                     )
                     return
                 logger.info(
                     "[V79-MIRROR-DISPATCH] %s ENTRY_LONG %s qty=%d price=%s",
-                    self.NAME, ticker, qty, price,
+                    self.NAME,
+                    ticker,
+                    qty,
+                    price,
                 )
                 coid = self._build_client_order_id(ticker, "LONG")
                 req, order_descr = _build_entry_request("LONG", qty, coid, price=price)
@@ -2377,11 +2475,15 @@ class TradeGeniusBase:
                         _reconcile_raised = True
                         logger.exception(
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s LONG",
-                            self.NAME, ticker,
+                            self.NAME,
+                            ticker,
                         )
                     self._emit_zerofill_reconcile_followup(
-                        label=label, ticker=ticker, side="LONG",
-                        requested_qty=qty, order_id=oid,
+                        label=label,
+                        ticker=ticker,
+                        side="LONG",
+                        requested_qty=qty,
+                        order_id=oid,
                         reconcile_raised=_reconcile_raised,
                     )
                     return
@@ -2395,7 +2497,10 @@ class TradeGeniusBase:
                     logger.warning(
                         "[%s] [V700-AON-SOFTWARE] %s LONG partial %d/%d "
                         "\u2014 keeping partial, engine will manage",
-                        self.NAME, ticker, filled_qty, qty,
+                        self.NAME,
+                        ticker,
+                        filled_qty,
+                        qty,
                     )
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} LONG partial "
@@ -2410,7 +2515,11 @@ class TradeGeniusBase:
                     logger.warning(
                         "[%s] [V6151-PARTIAL] %s LONG partial fill: "
                         "requested=%d filled=%d order_id=%s",
-                        self.NAME, ticker, qty, filled_qty, oid,
+                        self.NAME,
+                        ticker,
+                        qty,
+                        filled_qty,
+                        oid,
                     )
                 self._record_position(ticker, "LONG", filled_qty, price)
                 if not _aon_partial_notified:
@@ -2426,6 +2535,7 @@ class TradeGeniusBase:
                 # trading on bookkeeping failure.
                 try:
                     from engine.portfolio_book import PORTFOLIOS
+
                     _book_id = self.NAME.lower()
                     _pb = PORTFOLIOS.get(_book_id)
                     _pb.record_entry_with_fill(
@@ -2438,7 +2548,9 @@ class TradeGeniusBase:
                 except Exception:
                     logger.debug(
                         "[%s] per-book record_entry_with_fill LONG skipped: %s",
-                        self.NAME, ticker, exc_info=True,
+                        self.NAME,
+                        ticker,
+                        exc_info=True,
                     )
             elif kind == "ENTRY_SHORT":
                 qty = signal_qty if signal_qty > 0 else self._shares_for(price, ticker=ticker)
@@ -2447,13 +2559,18 @@ class TradeGeniusBase:
                     logger.warning(
                         "[V79-MIRROR-SKIP] %s ENTRY_SHORT %s qty=0 "
                         "(main_shares=%s, local_fallback_shares_for=%d)",
-                        self.NAME, ticker, signal_qty,
+                        self.NAME,
+                        ticker,
+                        signal_qty,
                         self._shares_for(price, ticker=ticker),
                     )
                     return
                 logger.info(
                     "[V79-MIRROR-DISPATCH] %s ENTRY_SHORT %s qty=%d price=%s",
-                    self.NAME, ticker, qty, price,
+                    self.NAME,
+                    ticker,
+                    qty,
+                    price,
                 )
                 coid = self._build_client_order_id(ticker, "SHORT")
                 req, order_descr = _build_entry_request("SHORT", qty, coid, price=price)
@@ -2481,11 +2598,15 @@ class TradeGeniusBase:
                         _reconcile_raised = True
                         logger.exception(
                             "[%s] [V6152-ZEROFILL] reconcile raised on %s SHORT",
-                            self.NAME, ticker,
+                            self.NAME,
+                            ticker,
                         )
                     self._emit_zerofill_reconcile_followup(
-                        label=label, ticker=ticker, side="SHORT",
-                        requested_qty=qty, order_id=oid,
+                        label=label,
+                        ticker=ticker,
+                        side="SHORT",
+                        requested_qty=qty,
+                        order_id=oid,
                         reconcile_raised=_reconcile_raised,
                     )
                     return
@@ -2499,7 +2620,10 @@ class TradeGeniusBase:
                     logger.warning(
                         "[%s] [V700-AON-SOFTWARE] %s SHORT partial %d/%d "
                         "\u2014 keeping partial, engine will manage",
-                        self.NAME, ticker, filled_qty, qty,
+                        self.NAME,
+                        ticker,
+                        filled_qty,
+                        qty,
                     )
                     msg = (
                         f"\u26a0\ufe0f {label}: {ticker} SHORT partial "
@@ -2514,7 +2638,11 @@ class TradeGeniusBase:
                     logger.warning(
                         "[%s] [V6151-PARTIAL] %s SHORT partial fill: "
                         "requested=%d filled=%d order_id=%s",
-                        self.NAME, ticker, qty, filled_qty, oid,
+                        self.NAME,
+                        ticker,
+                        qty,
+                        filled_qty,
+                        oid,
                     )
                 self._record_position(ticker, "SHORT", filled_qty, price)
                 if not _aon_partial_notified:
@@ -2528,6 +2656,7 @@ class TradeGeniusBase:
                 # PortfolioBook (symmetric with ENTRY_LONG path above).
                 try:
                     from engine.portfolio_book import PORTFOLIOS
+
                     _book_id = self.NAME.lower()
                     _pb = PORTFOLIOS.get(_book_id)
                     _pb.record_entry_with_fill(
@@ -2540,7 +2669,9 @@ class TradeGeniusBase:
                 except Exception:
                     logger.debug(
                         "[%s] per-book record_entry_with_fill SHORT skipped: %s",
-                        self.NAME, ticker, exc_info=True,
+                        self.NAME,
+                        ticker,
+                        exc_info=True,
                     )
             elif kind in ("PARTIAL_EXIT_LONG", "PARTIAL_EXIT_SHORT"):
                 # v8.1.1 -- partial-profit-at-1R mirror. main_shares
@@ -2550,7 +2681,9 @@ class TradeGeniusBase:
                 if ticker not in self.positions:
                     logger.info(
                         "[%s] %s %s skipped \u2014 no position tracked",
-                        self.NAME, kind, ticker,
+                        self.NAME,
+                        kind,
+                        ticker,
                     )
                     return
                 partial_qty = 0
@@ -2560,13 +2693,18 @@ class TradeGeniusBase:
                     partial_qty = 0
                 if partial_qty <= 0:
                     logger.warning(
-                        "[%s] [V81-MIRROR-SKIP] %s partial_qty=0 "
-                        "(main_shares=%s)",
-                        self.NAME, kind, main_shares,
+                        "[%s] [V81-MIRROR-SKIP] %s partial_qty=0 (main_shares=%s)",
+                        self.NAME,
+                        kind,
+                        main_shares,
                     )
                     return
                 self._partial_close_position_idempotent(
-                    client, ticker, partial_qty, label, reason,
+                    client,
+                    ticker,
+                    partial_qty,
+                    label,
+                    reason,
                 )
                 return
             elif kind in ("EXIT_LONG", "EXIT_SHORT"):
@@ -2594,6 +2732,7 @@ class TradeGeniusBase:
                 _exit_leg_extreme: float | None = None
                 try:
                     from engine.portfolio_book import PORTFOLIOS
+
                     _book_id_exit = self.NAME.lower()
                     _pb_exit = PORTFOLIOS.get(_book_id_exit)
                     _bpos = (
@@ -2606,7 +2745,9 @@ class TradeGeniusBase:
                 except Exception:
                     logger.debug(
                         "[%s] per-book pre-exit capture skipped: %s",
-                        self.NAME, ticker, exc_info=True,
+                        self.NAME,
+                        ticker,
+                        exc_info=True,
                     )
                 self._close_position_idempotent(client, ticker, label, reason)
                 # v5.25.0 / v6.0.7 \u2014 confirm flat on broker, with grace
@@ -2618,22 +2759,45 @@ class TradeGeniusBase:
                 # the ENTRY bookkeeping above; best-effort try/except.
                 try:
                     from engine.portfolio_book import PORTFOLIOS
+
                     _book_id_exit2 = self.NAME.lower()
                     _pb_exit2 = PORTFOLIOS.get(_book_id_exit2)
                     if _exit_side == "LONG":
-                        _pb_exit2.record_exit(
-                            ticker, "LONG", leg_high=_exit_leg_extreme
-                        )
+                        _pb_exit2.record_exit(ticker, "LONG", leg_high=_exit_leg_extreme)
                         _pb_exit2.positions.pop(ticker.upper(), None)
                     else:
-                        _pb_exit2.record_exit(
-                            ticker, "SHORT", leg_low=_exit_leg_extreme
-                        )
+                        _pb_exit2.record_exit(ticker, "SHORT", leg_low=_exit_leg_extreme)
                         _pb_exit2.short_positions.pop(ticker.upper(), None)
+                    # Post-loss cooldown: record on this book so the next
+                    # fire_long/fire_short call for (ticker, side) is blocked
+                    # for POST_LOSS_COOLDOWN_MIN minutes. Mirrors Main's path
+                    # in broker/orders.py. Only fires on stop exits (not EOD
+                    # flushes or target exits -- those are not losses by design).
+                    _stop_reasons = {
+                        "stop",
+                        "sentinel_a_stop_price",
+                        "be_stop",
+                        "v750_early_ditch",
+                        "sentinel_r2_hard_stop",
+                    }
+                    if reason.lower() in _stop_reasons or "stop" in reason.lower():
+                        _pos_rec = self.positions.get(ticker, {})
+                        _entry_px = float(_pos_rec.get("entry_price") or 0.0)
+                        _qty = int(_pos_rec.get("qty") or 0)
+                        if _entry_px > 0 and _qty > 0 and float(price) > 0:
+                            if _exit_side == "LONG":
+                                _exit_pnl = (float(price) - _entry_px) * _qty
+                            else:
+                                _exit_pnl = (_entry_px - float(price)) * _qty
+                            _pb_exit2.record_post_loss_cooldown(
+                                ticker, _exit_side.lower(), _exit_pnl
+                            )
                 except Exception:
                     logger.debug(
                         "[%s] per-book record_exit skipped: %s",
-                        self.NAME, ticker, exc_info=True,
+                        self.NAME,
+                        ticker,
+                        exc_info=True,
                     )
             elif kind == "EOD_CLOSE_ALL":
                 client.close_all_positions(cancel_orders=True)

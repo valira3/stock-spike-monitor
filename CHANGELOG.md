@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.27 (2026-05-13) — Val/Gene post-loss cooldown + dashboard cooldown chip restored
+
+### 1. Val/Gene post-loss cooldown wired (`executors/base.py`)
+
+`POST_LOSS_COOLDOWN_MIN=30` was enforced for Main via `broker/orders.py` but missing from the Val/Gene executor path (`executors/base.py:_submit_v10_entry`). Val/Gene could re-fire the same (ticker, side) immediately after a stop, bypassing the production cooldown that prevents double-fires.
+
+- **Entry gate**: `_submit_v10_entry` now checks `portfolio_book.is_in_post_loss_cooldown(ticker, side)` before submitting to Alpaca. Logs `[V10-FIRE] COOLDOWN BLOCK` when vetoed.
+- **Cooldown recording**: `_on_signal` EXIT_LONG/EXIT_SHORT handler now calls `book.record_post_loss_cooldown(ticker, side, pnl)` after a stop-class exit (stop, be\_stop, sentinel\_a\_stop\_price, v750\_early\_ditch, sentinel\_r2\_hard\_stop). Matches what Main's broker path does.
+
+Forensic tags: `[V10-FIRE] COOLDOWN BLOCK`.
+
+### 2. Dashboard cooldown chip restored (`app.js`, `index.html`)
+
+v7.58.0 removed the cooldown UI chip with the incorrect note "v10 ORB engine never consulted the cooldown registry." Main IS protected via `broker/orders.py`. The amber `cooldown N` chip now appears in the v10 day-status banner whenever any portfolio has an active (ticker, side) blocked. Tooltip shows per-entry ticker, side, remaining minutes, and loss P&L. Reads `s.active_cooldowns_by_portfolio` (backend already emitted this; nothing was reading it).
 ## v9.1.26 (2026-05-13) — Val/Gene admit independence: route real engine ticket release through `on_exit` (closes the 14-event admit gap)
 
 The 2026-05-13 audit (`/tmp/trading_audit_2026-05-13.md`) found Val.RiskBook.admit_count=3 vs Main=17 on the same OR data. Diagnosis: when Val's broker position closed via the bus EXIT path (`executors.base._on_signal` → `_close_position_idempotent` → `_unmirror_position_from_engine`), the unmirror released ONLY the synthetic `recover-{pid}-{ticker}` ticket. The REAL ticket created by `engine.try_enter` (uuid-style) leaked: FSM stayed `IN_POS` until a phantom-sweep cycle (1+ scan tick later) and `trades_today` was never incremented. The result was a structural cap on Val/Gene admit rate per day vs Main on bus-mirrored exits.

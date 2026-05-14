@@ -3305,10 +3305,34 @@
         }
       }
     });
-    // v7.58.0 -- v6.4.2 post-loss cooldown chip + popover render block
-    // removed. v10 ORB engine never consulted the cooldown registry
-    // (no refs in orb/), so this UI was vestigial. Backend still emits
-    // s.v642_flags + s.active_cooldowns but nothing reads them here.
+    // v9.1.27 -- post-loss cooldown chip restored. Shows count of active
+    // (ticker, side) cooldowns across all portfolios. Hidden when 0.
+    // Cooldown is enforced for Main via broker/orders.py and for Val/Gene
+    // via executors/base.py (wired v9.1.27). Backend emits
+    // active_cooldowns_by_portfolio: {main:[...], val:[...], gene:[...]}.
+    var cdByPid = s.active_cooldowns_by_portfolio || {};
+    var cdAll = (cdByPid.main || []).concat(cdByPid.val || []).concat(cdByPid.gene || []);
+    var cdN = cdAll.length;
+    var cdPill = document.getElementById("v10-cooldown-pill");
+    var cdDiv  = document.getElementById("v10-cooldown-pill-divider");
+    if (cdPill && cdDiv) {
+      if (cdN > 0) {
+        var cdLines = cdAll.map(function(c) {
+          var rem = c.remaining_sec || 0;
+          var remMin = Math.ceil(rem / 60);
+          return c.ticker + " " + (c.side || "").toUpperCase()
+            + " – " + remMin + "min left ($" + (c.loss_pnl || 0).toFixed(0) + ")";
+        });
+        cdPill.textContent = "cooldown " + cdN;
+        cdPill.title = "Post-loss cooldown active – same (ticker, side) entry blocked:\n"
+          + cdLines.join("\n");
+        cdPill.style.display = "";
+        cdDiv.style.display = "";
+      } else {
+        cdPill.style.display = "none";
+        cdDiv.style.display = "none";
+      }
+    }
 
     // v4.2.2 — extract tz token (ET/CDT/CT/PT/PST/\u2026) from
     // server_time_label tail, e.g. "Fri Apr 24 · 13:09:13 ET".
