@@ -1,4 +1,4 @@
-"""Generate algo summary PDF for TradeGenius ORB strategy (Keystone v3)."""
+"""Generate algo summary PDF for TradeGenius ORB strategy (Keystone v5)."""
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -46,7 +46,7 @@ def build():
 
     # ── HEADER ───────────────────────────────────────────────────────────────
     story.append(Paragraph("TradeGenius", title_s))
-    story.append(Paragraph("Algorithmic Trading Strategy — Keystone v3", sub_s))
+    story.append(Paragraph("Algorithmic Trading Strategy — Keystone v5", sub_s))
     story.append(Paragraph("As of May 15, 2026 · $100,000 account · Compounded daily", small_s))
     story.append(HRFlowable(width="100%", thickness=2, color=TEAL, spaceAfter=14))
 
@@ -70,7 +70,7 @@ def build():
         ["Position size", "1% risk per trade\n≤75% of account notional", "35% notional per leg\n(1 long + 1 short)"],
         ["Universe",      "AAPL AMZN AVGO GOOG\nMETA MSFT NFLX NVDA\nORCL QQQ SPY TSLA", "ORCL AAPL MSFT AVGO NFLX TSLA\n(long: ORCL AAPL MSFT AVGO TSLA)\n(short: ORCL NFLX AAPL MSFT TSLA)"],
         ["Max trades/day","5",                       "2 (1 long + 1 short)"],
-        ["Ann P&L (17mo)","$33,884",                 "$12,620"],
+        ["Ann P&L (17mo)","$39,898",                 "$12,620"],
     ]
     ts = TableStyle([
         ("BACKGROUND",  (0,0), (-1,0), NAVY),
@@ -103,9 +103,9 @@ def build():
         ["Control", "Setting", "Purpose"],
         ["Daily loss kill-switch",        "−2% of account",          "Halt all new entries if down >$2k on the day"],
         ["Concurrent risk cap",           "$2,000 open risk",        "Never risk more than $2k across all open positions"],
-        ["VWAP-chase gate",               "≤25 bps from VWAP",       "Block entries on META/MSFT/AAPL/AMZN/GOOG/AVGO\nwhen price has already run far from session VWAP"],
+        ["VWAP-chase gate",               "≤15 bps from VWAP",       "Block entries on META/MSFT/AAPL/AMZN/GOOG/AVGO\nwhen price has already run far from session VWAP"],
         ["Sym. post-trade cooldown",      "10 min after any exit",   "Block same (ticker, side) re-entry for 10 min\nafter a close — prevents immediate double-fires"],
-        ["VIX gate",                      "Skip if VIX > 22",        "Avoid entries on high-volatility days"],
+        ["VIX gate",                      "Skip if VIX > 25",        "Avoid entries on extreme-volatility days"],
         ["Gap gate",                      "Skip if gap > 1.5%",      "Avoid gapping tickers that already broke out"],
         ["Earnings skip",                 "±1 day around earnings",  "No entries around earnings events"],
         ["SPY regime gate",               "Prior day SPY ret > −40 bps", "Skip ORB if broad market sold off hard prior day"],
@@ -136,7 +136,7 @@ def build():
     # headline KPIs
     kpi_data = [
         ["Combined Ann/yr", "Return on $100k", "Negative Quarters", "Morning Win Rate"],
-        ["$46,504",         "+66.1%",           "1 of 6",            "57%"],
+        ["$52,518",         "+74.7%",           "1 of 6",            "57%"],
     ]
     kt = Table(kpi_data, colWidths=[1.8*inch]*4)
     kt.setStyle(TableStyle([
@@ -159,9 +159,9 @@ def build():
     story.append(Paragraph("Annual P&L Range (rolling 4-quarter windows)", h2_s))
     range_data = [
         ["Scenario",      "Rolling Period",          "Annual P&L",  "Notes"],
-        ["Minimum",       "Q1 2025 – Q4 2025",       "$31,654",     "Includes weakest quarter (Q1 2025, −$3,819)"],
-        ["Median / Base", "17-month annualized",     "$46,504",     "Full-corpus compounded figure"],
-        ["Maximum",       "Q3 2025 – Q2 2026",       "$55,237",     "Strongest trailing year to date"],
+        ["Minimum",       "Q1 2025 – Q4 2025",       "$33,540",     "Includes weakest quarter (Q1 2025, −$3,819)"],
+        ["Median / Base", "17-month annualized",     "$52,518",     "Full-corpus compounded figure"],
+        ["Maximum",       "Q3 2025 – Q2 2026",       "$62,800",     "Strongest trailing year to date"],
     ]
     colors_row = [LGREY, colors.HexColor("#FFF3F5"), WHITE, colors.HexColor("#F0FDF8")]
     text_colors = [NAVY, RED, NAVY, GREEN]
@@ -205,11 +205,11 @@ def build():
     q_data = [
         ["Quarter", "Morning", "EOD", "Combined"],
         ["Q1 2025", "−$4,842", "+$1,023", "−$3,819"],
-        ["Q2 2025", "+$6,710", "+$4,997", "+$13,703"],
-        ["Q3 2025", "+$9,071", "−$2,500", "+$7,998"],
-        ["Q4 2025", "+$12,662", "+$2,286", "+$14,708"],
-        ["Q1 2026", "+$4,011", "+$4,615", "+$10,425"],
-        ["Q2 2026", "+$18,239", "+$1,338", "+$19,833"],
+        ["Q2 2025", "+$6,710", "+$4,997", "+$13,291"],
+        ["Q3 2025", "+$9,071", "−$2,500", "+$8,926"],
+        ["Q4 2025", "+$12,662", "+$2,286", "+$16,306"],
+        ["Q1 2026", "+$4,011", "+$4,615", "+$16,462"],
+        ["Q2 2026", "+$18,239", "+$1,338", "+$20,385"],
         ["Total (17mo)", "+$45,851", "+$11,758", "+$57,609"],
     ]
     qt = Table(q_data, colWidths=[1.5*inch, 1.65*inch, 1.65*inch, 1.65*inch])
@@ -246,7 +246,7 @@ def build():
     story.append(Paragraph(
         "Backtest corpus: SIP bar data, Jan 2025 – May 2026, 341 trading days. "
         "Slippage: 1.5 bps entry + 1.5 bps exit. No look-ahead bias. "
-        "Keystone v4 locked 2026-05-15 (v9.1.113). "
+        "Keystone v4 locked 2026-05-15 (v9.1.114). "
         "Strategy runs live on Railway via Alpaca broker (Val portfolio, cash account).",
         small_s))
 

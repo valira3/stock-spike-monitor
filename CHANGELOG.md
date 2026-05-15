@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.114 (2026-05-15) — Keystone v5: VWAP gate 25->15bps, VIX ceiling 22->25
+
+85-variant 5-wave sweep found two ORB lever improvements. All other parameters tested (RR, ATR stop, cooldown, time cutoff, OR window, SPY gate, max trades, risk %) were at or near optimum.
+
+1. `ORB_MAX_VWAP_DEV_BPS`: 25 → **15** — tighter VWAP-chase gate blocks more chased entries on the 6 mega-caps; plateau confirmed flat at 12–16bps, 15 chosen as clean midpoint
+2. `ORB_SKIP_VIX_ABOVE`: 22 → **25** — higher VIX ceiling captures volatile-day breakouts that were previously skipped; VIX 24/26/27 all worse, 25 is the exact peak
+3. `tools/system_check_bot.py`: updated KEYSTONE dict to match new values
+
+**Combined Keystone v5: +$52,518/yr (+74.7% on $100k / 17mo / 1/6 neg quarters)**
+vs Keystone v4 (+$46,504): **+$6,014/yr lift**
+
+---
+
 ## v9.1.113 (2026-05-15) — EOD universe expanded: TSLA added to long+short fence
 
 Per-ticker EOD sweep showed TSLA adds +$3,930/yr (annualized, combined morning+EOD) spread across 5 of 6 quarters — not a single-quarter fluke. GOOG/NVDA tested negative and remain excluded.
