@@ -209,15 +209,26 @@ class TradeGeniusBase:
 
     # ---------- state files ----------
     def _state_file(self, mode: str = None) -> str:
-        # v9.1.78 -- write state files to the same persistent-volume directory
-        # as PAPER_STATE_FILE (/data/ on Railway) so a mode flip to "live"
-        # survives Railway redeploys. Previously the path was relative to the
-        # working directory (/app) which is ephemeral -- every deploy wiped the
-        # live-mode state file and the executor rebooted to paper default.
+        # Primary: Railway persistent volume /data/ - checked directly so the
+        # path is correct even when PAPER_STATE_FILE / PAPER_STATE_PATH env
+        # vars are absent or point to the ephemeral /app/ directory.
+        # Root cause of the persistent paper-reset bug: trade_genius.py reads
+        # PAPER_STATE_PATH; executors read PAPER_STATE_FILE - mismatched env
+        # var names meant Val/Gene state landed in /app/ and was wiped on
+        # every redeploy.
         m = (mode or self.mode).strip().lower()
         fname = f"tradegenius_{self.NAME.lower()}_{m}.json"
+        data_dir = "/data"
+        if os.path.isdir(data_dir) and os.access(data_dir, os.W_OK):
+            return os.path.join(data_dir, fname)
+        # Fallback: derive directory from whichever state-path env var is set.
+        # Check both names; PAPER_STATE_PATH is what Railway has configured.
         try:
-            paper_state = os.environ.get("PAPER_STATE_FILE", "paper_state.json")
+            paper_state = (
+                os.environ.get("PAPER_STATE_FILE")
+                or os.environ.get("PAPER_STATE_PATH")
+                or "paper_state.json"
+            )
             d = os.path.dirname(paper_state) or "."
             return os.path.join(d, fname)
         except Exception:

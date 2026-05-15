@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.83 (2026-05-14) — fix Val/Gene executor mode reverting to paper on every Railway deploy (root cause)
+
+**Root cause of the persistent paper-reset bug:** `executors/base.py` derived the state file directory from env var `PAPER_STATE_FILE`, but Railway only has `PAPER_STATE_PATH` set (the name `trade_genius.py` uses). The mismatched env var names meant `os.path.dirname` returned `""` → fell back to `.` → `/app/` (ephemeral, wiped on every redeploy). The v9.1.78/v9.1.80 fixes were correct in logic but didn't take effect because the files were still going to the wrong directory.
+
+**Fix in `_state_file`:**
+1. **Primary path**: check `/data/` directly (`os.path.isdir + os.access`). If the Railway persistent volume exists and is writable, all executor state files go there unconditionally — no env var dependency.
+2. **Fallback**: check both `PAPER_STATE_FILE` AND `PAPER_STATE_PATH` (new) so either env var name works for local/non-Railway environments.
+
+After this deploy, issue `/mode val live confirm` once in Telegram. The live state file will be written to `/data/tradegenius_val_live.json` and will survive all future redeploys.
+
+---
+
 ## v9.1.82 (2026-05-14) — phase-aware monitor cadence: 5min RTH / 15min pre-market / 60min off-hours
 
 `scripts/run_monitor.py` now varies its tick interval by market phase instead of sleeping until the next RTH window:
