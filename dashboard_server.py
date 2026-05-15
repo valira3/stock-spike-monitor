@@ -1847,6 +1847,22 @@ def snapshot() -> dict[str, Any]:
             px = _price_for(t)
             if px is not None:
                 prices[t] = px
+        # v9.1.102 -- also fetch prices for EOD open positions so
+        # _eod_positions_for_pid can populate current_price/unreal/%.
+        try:
+            import orb.live_runtime as _rt_px
+
+            _eod_eng_px = _rt_px.get_eod_engine()
+            if _eod_eng_px is not None:
+                _eod_st_px = _eod_eng_px._states.get("main")
+                if _eod_st_px and _eod_st_px.open_positions:
+                    for _etk in _eod_st_px.open_positions:
+                        if _etk.upper() not in prices:
+                            _epx = _price_for(_etk)
+                            if _epx is not None:
+                                prices[_etk.upper()] = _epx
+        except Exception:
+            pass
 
         paper_cash = float(getattr(m, "paper_cash", 0.0))
         long_mv, short_liab, equity = _equity(paper_cash, longs, shorts, prices)

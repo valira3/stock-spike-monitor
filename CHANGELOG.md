@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.102 (2026-05-15) — fix EOD position mark $ and % not showing on Main tab
+
+`eod_positions` mark price enrichment (added v9.1.69) requires EOD tickers to be in the `prices` cache. The cache was only built from `m.positions`/`m.short_positions` (ORB positions), not from EOD open positions tracked in `EodReversalEngine`. When AVGO/MSFT were open EOD positions, `prices.get("AVGO")` returned None → `current_price`/`unrealized_pnl`/`unrealized_pct` never populated → dashboard showed `—`.
+
+Fix: after building ORB prices, also call `_price_for(ticker)` for each open EOD position and add to the prices dict before passing to `_eod_positions_for_pid`.
+
+---
+
 ## v9.1.101 (2026-05-15) — fix inject: use ex.positions instead of get_all_positions()
 
 Root cause of the NFLX bar missing: `_client.get_all_positions()` in the scan loop returns 0 positions even though the executor's own reconciliation at startup correctly sees NFLX (1 match). The same client returns different results 17s apart — likely a paper/live client mismatch in the scan loop context vs executor init context.
