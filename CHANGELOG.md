@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.86 (2026-05-15) — skip position_count_three_way when scan loop not yet initialized
+
+`position_count_three_way` now skips when `last_scan_at` is None — the bot's scan loop hasn't completed its first cycle yet (typical in the 5 min after a Railway deploy). During startup, any broker positions vs empty internal books is a race condition, not a real phantom. Previously this fired a CRIT alert at every market open after a redeploy.
+
+---
+
 ## v9.1.85 (2026-05-15) — fix Railway log error detection: ignore INFO lines
 
 Railway GraphQL returns `severity="ERROR"` for all log lines regardless of actual level. v9.1.84's detection fired CRIT on every INFO request log. Fix: ignore the severity field entirely and parse the embedded log level from the message text instead — only flag lines containing `[ERROR]`, `[CRITICAL]`, `[FATAL]`, or `Traceback (most recent call last)`.

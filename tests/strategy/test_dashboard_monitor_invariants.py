@@ -5,6 +5,7 @@ These invariants are pure functions of the payload dict, so we don't
 need network or the live dashboard.  Each test constructs the minimum
 payload required to exercise the path and asserts ok/!ok + summary.
 """
+
 from __future__ import annotations
 
 from tools.dashboard_monitor_invariants import (
@@ -49,10 +50,8 @@ def _state_with_v10(or_windows, mode="OPEN", config=None):
 
 
 class TestOrLockedAfterOrEnd:
-
     def test_skips_when_v10_not_bootstrapped(self):
-        ctx = _ctx({"regime": {"mode": "OPEN"},
-                    "v10": {"available": False}})
+        ctx = _ctx({"regime": {"mode": "OPEN"}, "v10": {"available": False}})
         r = inv_or_locked_after_or_end(ctx)
         assert r["ok"]
         assert "skipped" in r["summary"]
@@ -72,21 +71,27 @@ class TestOrLockedAfterOrEnd:
     def test_fails_when_zero_locked_during_OPEN(self):
         """The exact 2026-05-11 production scenario: 0/10 LOCKED at
         10:14 ET (mode=OPEN), nothing locked."""
-        s = _state_with_v10({
-            "AAPL": {"locked": False, "bars_seen": 0},
-            "NVDA": {"locked": False, "bars_seen": 0},
-            "TSLA": {"locked": False, "bars_seen": 0},
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": False, "bars_seen": 0},
+                "NVDA": {"locked": False, "bars_seen": 0},
+                "TSLA": {"locked": False, "bars_seen": 0},
+            },
+            mode="OPEN",
+        )
         r = inv_or_locked_after_or_end(_ctx(s))
         assert not r["ok"]
         assert "0/3" in r["summary"]
         assert "OPEN" in r["summary"]
 
     def test_passes_when_at_least_one_locked(self):
-        s = _state_with_v10({
-            "AAPL": {"locked": True, "bars_seen": 30, "or_high": 101, "or_low": 99},
-            "NVDA": {"locked": False, "bars_seen": 0},
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": True, "bars_seen": 30, "or_high": 101, "or_low": 99},
+                "NVDA": {"locked": False, "bars_seen": 0},
+            },
+            mode="OPEN",
+        )
         r = inv_or_locked_after_or_end(_ctx(s))
         assert r["ok"]
         assert "1/2" in r["summary"]
@@ -104,33 +109,41 @@ class TestOrLockedAfterOrEnd:
 
 
 class TestOrWindowDataQuality:
-
     def test_passes_with_full_or_windows(self):
-        s = _state_with_v10({
-            "AAPL": {"locked": True, "bars_seen": 30},
-            "NVDA": {"locked": True, "bars_seen": 29},
-            "TSLA": {"locked": True, "bars_seen": 30},
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": True, "bars_seen": 30},
+                "NVDA": {"locked": True, "bars_seen": 29},
+                "TSLA": {"locked": True, "bars_seen": 30},
+            },
+            mode="OPEN",
+        )
         r = inv_or_window_data_quality(_ctx(s))
         assert r["ok"]
 
     def test_passes_when_single_ticker_thin(self):
         # 1 thin ticker is normal -- maybe genuinely illiquid
-        s = _state_with_v10({
-            "AAPL": {"locked": True, "bars_seen": 30},
-            "NVDA": {"locked": True, "bars_seen": 5},
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": True, "bars_seen": 30},
+                "NVDA": {"locked": True, "bars_seen": 5},
+            },
+            mode="OPEN",
+        )
         r = inv_or_window_data_quality(_ctx(s))
         assert r["ok"]
 
     def test_fails_when_three_or_more_thin_locked_windows(self):
         # 3+ thin windows -> upstream bar-source problem
-        s = _state_with_v10({
-            "AAPL": {"locked": True, "bars_seen": 5},
-            "NVDA": {"locked": True, "bars_seen": 8},
-            "TSLA": {"locked": True, "bars_seen": 10},
-            "GOOG": {"locked": True, "bars_seen": 30},  # this one OK
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": True, "bars_seen": 5},
+                "NVDA": {"locked": True, "bars_seen": 8},
+                "TSLA": {"locked": True, "bars_seen": 10},
+                "GOOG": {"locked": True, "bars_seen": 30},  # this one OK
+            },
+            mode="OPEN",
+        )
         r = inv_or_window_data_quality(_ctx(s))
         assert not r["ok"]
         assert "3" in r["summary"]
@@ -139,11 +152,14 @@ class TestOrWindowDataQuality:
 
     def test_ignores_unlocked_windows(self):
         # Unlocked windows can have any bars_seen and shouldn't trip the check
-        s = _state_with_v10({
-            "AAPL": {"locked": False, "bars_seen": 0},
-            "NVDA": {"locked": False, "bars_seen": 0},
-            "TSLA": {"locked": False, "bars_seen": 0},
-        }, mode="OPEN")
+        s = _state_with_v10(
+            {
+                "AAPL": {"locked": False, "bars_seen": 0},
+                "NVDA": {"locked": False, "bars_seen": 0},
+                "TSLA": {"locked": False, "bars_seen": 0},
+            },
+            mode="OPEN",
+        )
         r = inv_or_window_data_quality(_ctx(s))
         assert r["ok"]
 
@@ -154,26 +170,35 @@ class TestOrWindowDataQuality:
 
 
 class TestPositionCountThreeWay:
-
     def test_skips_when_state_missing(self):
         r = inv_position_count_three_way(_ctx({}))
         assert r["ok"]
-        # Note: empty {} is a valid dict so it goes through, but
-        # without portfolio key the values are 0/0/0/0 -> ok
+
+    def test_skips_when_scan_loop_not_initialized(self):
+        # last_scan_at=None means bot just deployed; broker vs empty books is
+        # a startup race, not a real phantom.
+        s = {
+            "portfolio": {"broker_open_n": 3},
+            "portfolios": {"main": {}, "val": {}, "gene": {}},
+            "positions": [],
+            "last_scan_at": None,
+        }
+        r = inv_position_count_three_way(_ctx(s))
+        assert r["ok"]
+        assert "not yet initialized" in r["summary"]
 
     def test_passes_when_all_zero(self):
         s = {
             "portfolio": {"broker_open_n": 0},
             "portfolios": {"main": {}, "val": {}, "gene": {}},
             "positions": [],
+            "last_scan_at": "2026-05-15T13:30:00Z",
         }
         r = inv_position_count_three_way(_ctx(s))
         assert r["ok"]
         assert "main=0" in r["summary"]
 
     def test_passes_when_internal_has_positions(self):
-        # Internal book has positions -- not a phantom even if broker
-        # also reports them.
         s = {
             "portfolio": {"broker_open_n": 2},
             "portfolios": {
@@ -182,17 +207,17 @@ class TestPositionCountThreeWay:
                 "gene": {"positions": []},
             },
             "positions": [{"ticker": "AAPL"}],
+            "last_scan_at": "2026-05-15T13:30:00Z",
         }
         r = inv_position_count_three_way(_ctx(s))
         assert r["ok"]
 
     def test_fails_when_broker_has_positions_but_all_books_empty(self):
-        # The exact scenario the operator is asking about:
-        # broker reports an open position but no internal book knows.
         s = {
             "portfolio": {"broker_open_n": 1},
             "portfolios": {"main": {}, "val": {}, "gene": {}},
             "positions": [],
+            "last_scan_at": "2026-05-15T13:30:00Z",
         }
         r = inv_position_count_three_way(_ctx(s))
         assert not r["ok"]
@@ -206,35 +231,40 @@ class TestPositionCountThreeWay:
 
 
 class TestEquitySelfConsistent:
-
     def test_passes_when_components_match(self):
-        s = {"portfolio": {
-            "cash": 50000.0,
-            "long_mv": 60000.0,
-            "short_liab": 5000.0,
-            "equity": 105000.0,
-        }}
+        s = {
+            "portfolio": {
+                "cash": 50000.0,
+                "long_mv": 60000.0,
+                "short_liab": 5000.0,
+                "equity": 105000.0,
+            }
+        }
         r = inv_equity_self_consistent(_ctx(s))
         assert r["ok"]
 
     def test_passes_within_float_tolerance(self):
-        s = {"portfolio": {
-            "cash": 50000.001,
-            "long_mv": 60000.002,
-            "short_liab": 5000.003,
-            "equity": 105000.0,
-        }}
+        s = {
+            "portfolio": {
+                "cash": 50000.001,
+                "long_mv": 60000.002,
+                "short_liab": 5000.003,
+                "equity": 105000.0,
+            }
+        }
         r = inv_equity_self_consistent(_ctx(s))
         assert r["ok"]
 
     def test_fails_on_large_divergence(self):
-        s = {"portfolio": {
-            "cash": 50000.0,
-            "long_mv": 60000.0,
-            "short_liab": 5000.0,
-            # eq should be 105000 but reports 99000 (off by $6000)
-            "equity": 99000.0,
-        }}
+        s = {
+            "portfolio": {
+                "cash": 50000.0,
+                "long_mv": 60000.0,
+                "short_liab": 5000.0,
+                # eq should be 105000 but reports 99000 (off by $6000)
+                "equity": 99000.0,
+            }
+        }
         r = inv_equity_self_consistent(_ctx(s))
         assert not r["ok"]
         assert "99000.00" in r["summary"]
@@ -271,7 +301,6 @@ def _state_with_v10_day_states(day_states, positions_per_pid=None):
 
 
 class TestV10InPosHasInternalPosition:
-
     def test_passes_when_no_day_states(self):
         s = _state_with_v10_day_states([])
         r = inv_v10_in_pos_has_internal_position(_ctx(s))
@@ -281,9 +310,13 @@ class TestV10InPosHasInternalPosition:
     def test_passes_when_in_pos_has_matching_position(self):
         s = _state_with_v10_day_states(
             day_states=[
-                {"portfolio_id": "main", "ticker": "AAPL",
-                 "phase": "in_pos", "in_position": True,
-                 "last_entry_iso": "2026-05-11T13:32:00Z"},
+                {
+                    "portfolio_id": "main",
+                    "ticker": "AAPL",
+                    "phase": "in_pos",
+                    "in_position": True,
+                    "last_entry_iso": "2026-05-11T13:32:00Z",
+                },
             ],
             positions_per_pid={"main": [{"ticker": "AAPL"}]},
         )
@@ -295,9 +328,13 @@ class TestV10InPosHasInternalPosition:
         the v10 ticker matrix but no entry in positions."""
         s = _state_with_v10_day_states(
             day_states=[
-                {"portfolio_id": "main", "ticker": "AAPL",
-                 "phase": "in_pos", "in_position": True,
-                 "last_entry_iso": "2026-05-11T13:32:00Z"},
+                {
+                    "portfolio_id": "main",
+                    "ticker": "AAPL",
+                    "phase": "in_pos",
+                    "in_position": True,
+                    "last_entry_iso": "2026-05-11T13:32:00Z",
+                },
             ],
             positions_per_pid={"main": []},
         )
@@ -310,10 +347,13 @@ class TestV10InPosHasInternalPosition:
         # ARMED / BLOCKED_* tickers are not checked; only IN_POS.
         s = _state_with_v10_day_states(
             day_states=[
-                {"portfolio_id": "main", "ticker": "AAPL",
-                 "phase": "armed", "in_position": False},
-                {"portfolio_id": "main", "ticker": "NVDA",
-                 "phase": "blocked_range", "in_position": False},
+                {"portfolio_id": "main", "ticker": "AAPL", "phase": "armed", "in_position": False},
+                {
+                    "portfolio_id": "main",
+                    "ticker": "NVDA",
+                    "phase": "blocked_range",
+                    "in_position": False,
+                },
             ],
             positions_per_pid={"main": []},
         )
@@ -324,8 +364,7 @@ class TestV10InPosHasInternalPosition:
         # Val's executor positions live under portfolios.val.positions
         s = _state_with_v10_day_states(
             day_states=[
-                {"portfolio_id": "val", "ticker": "TSLA",
-                 "phase": "in_pos", "in_position": True},
+                {"portfolio_id": "val", "ticker": "TSLA", "phase": "in_pos", "in_position": True},
             ],
             positions_per_pid={"val": []},
         )
@@ -344,8 +383,12 @@ class TestV10InPosHasInternalPosition:
                 "available": True,
                 "bootstrapped": True,
                 "day_states": [
-                    {"portfolio_id": "main", "ticker": "AAPL",
-                     "phase": "in_pos", "in_position": True},
+                    {
+                        "portfolio_id": "main",
+                        "ticker": "AAPL",
+                        "phase": "in_pos",
+                        "in_position": True,
+                    },
                 ],
             },
         }
@@ -370,20 +413,20 @@ def _state_with_risk_books(books, mode="OPEN"):
 
 
 class TestRiskBookNotionalCapNonzero:
-
     def test_passes_when_all_books_nonzero(self):
-        s = _state_with_risk_books({
-            "main": {"equity": 100000.0, "max_notional": 200000.0},
-            "val":  {"equity": 99273.10, "max_notional": 198546.20},
-            "gene": {"equity": 99500.0, "max_notional": 199000.0},
-        })
+        s = _state_with_risk_books(
+            {
+                "main": {"equity": 100000.0, "max_notional": 200000.0},
+                "val": {"equity": 99273.10, "max_notional": 198546.20},
+                "gene": {"equity": 99500.0, "max_notional": 199000.0},
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert r["ok"]
         assert "3" in r["summary"]
 
     def test_skips_when_v10_not_bootstrapped(self):
-        s = {"regime": {"mode": "OPEN"},
-             "v10": {"available": False}}
+        s = {"regime": {"mode": "OPEN"}, "v10": {"available": False}}
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert r["ok"]
         assert "skipped" in r["summary"]
@@ -400,24 +443,30 @@ class TestRiskBookNotionalCapNonzero:
     def test_fails_when_val_has_zero_cap(self):
         """The exact 2026-05-11 Val tab scenario: Val has equity=0
         and max_notional=0, every entry rejects on notional_cap."""
-        s = _state_with_risk_books({
-            "main": {"equity": 99552.28, "max_notional": 199104.56},
-            "val":  {"equity": 0.0, "max_notional": 0.0,
-                     "last_reject_reason":
-                     "notional_cap (would-be $293 > $0)"},
-            "gene": {"equity": 99500.0, "max_notional": 199000.0},
-        })
+        s = _state_with_risk_books(
+            {
+                "main": {"equity": 99552.28, "max_notional": 199104.56},
+                "val": {
+                    "equity": 0.0,
+                    "max_notional": 0.0,
+                    "last_reject_reason": "notional_cap (would-be $293 > $0)",
+                },
+                "gene": {"equity": 99500.0, "max_notional": 199000.0},
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert not r["ok"]
         assert "1" in r["summary"]
         assert "val: equity=0.0 max_notional=0.0" in r["detail"]
 
     def test_fails_when_all_three_have_zero(self):
-        s = _state_with_risk_books({
-            "main": {"equity": 0.0, "max_notional": 0.0},
-            "val":  {"equity": 0.0, "max_notional": 0.0},
-            "gene": {"equity": 0.0, "max_notional": 0.0},
-        })
+        s = _state_with_risk_books(
+            {
+                "main": {"equity": 0.0, "max_notional": 0.0},
+                "val": {"equity": 0.0, "max_notional": 0.0},
+                "gene": {"equity": 0.0, "max_notional": 0.0},
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert not r["ok"]
         assert "3" in r["summary"]
@@ -429,10 +478,10 @@ class TestRiskBookNotionalCapNonzero:
 
 
 class TestRailwayLogsClean:
-
     def test_skips_when_log_fetch_returns_empty(self, monkeypatch):
         # No RAILWAY_API_TOKEN / RAILWAY_SERVICE_ID -> fetch returns [].
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: [])
         r = inv_railway_logs_clean(_ctx({}))
         assert r["ok"]
@@ -440,6 +489,7 @@ class TestRailwayLogsClean:
 
     def test_passes_when_logs_have_no_signals(self, monkeypatch):
         import tools.railway_log_tail as rlt
+
         clean_logs = [
             {"timestamp": "t1", "message": "[V79-ORB-ENTRY] long X", "severity": "info"},
             {"timestamp": "t2", "message": "SCAN CYCLE done", "severity": "info"},
@@ -451,10 +501,13 @@ class TestRailwayLogsClean:
 
     def test_fails_on_critical_signal_at_count_1(self, monkeypatch):
         import tools.railway_log_tail as rlt
+
         bad_logs = [
-            {"timestamp": "t1",
-             "message": "[ALPACA-ERR] insufficient_buying_power",
-             "severity": "warning"},
+            {
+                "timestamp": "t1",
+                "message": "[ALPACA-ERR] insufficient_buying_power",
+                "severity": "warning",
+            },
         ]
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: bad_logs)
         r = inv_railway_logs_clean(_ctx({}))
@@ -464,11 +517,14 @@ class TestRailwayLogsClean:
 
     def test_soft_signal_passes_below_threshold(self, monkeypatch):
         import tools.railway_log_tail as rlt
+
         # 4 hits is below the >=5 threshold for soft signals
         soft_logs = [
-            {"timestamp": f"t{i}",
-             "message": f"[paper] skip MSFT -- insufficient cash {i}",
-             "severity": "info"}
+            {
+                "timestamp": f"t{i}",
+                "message": f"[paper] skip MSFT -- insufficient cash {i}",
+                "severity": "info",
+            }
             for i in range(4)
         ]
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: soft_logs)
@@ -477,10 +533,13 @@ class TestRailwayLogsClean:
 
     def test_soft_signal_fails_at_threshold(self, monkeypatch):
         import tools.railway_log_tail as rlt
+
         soft_logs = [
-            {"timestamp": f"t{i}",
-             "message": f"[paper] skip MSFT -- insufficient cash {i}",
-             "severity": "info"}
+            {
+                "timestamp": f"t{i}",
+                "message": f"[paper] skip MSFT -- insufficient cash {i}",
+                "severity": "info",
+            }
             for i in range(5)
         ]
         monkeypatch.setattr(rlt, "fetch_recent_logs", lambda limit=500: soft_logs)
@@ -492,6 +551,7 @@ class TestRailwayLogsClean:
     def test_handles_import_error_gracefully(self, monkeypatch):
         # Simulate the module disappearing -- should ok-skip, not crash.
         import sys
+
         # Save original to restore
         orig = sys.modules.get("tools.railway_log_tail")
         sys.modules["tools.railway_log_tail"] = None  # makes import raise
@@ -517,16 +577,29 @@ class TestRiskBookDormantSkipV783:
     quieter ok-skip rather than firing a fresh GH issue every 10 min."""
 
     def test_dormant_gene_skips_not_fails(self):
-        s = _state_with_risk_books({
-            "main": {"equity": 99552.28, "max_notional": 199104.56,
-                     "admit_count": 5, "reject_count": 1},
-            "val":  {"equity": 99500.0, "max_notional": 199000.0,
-                     "admit_count": 5, "reject_count": 1},
-            "gene": {"equity": 0.0, "max_notional": 0.0,
-                     "admit_count": 0, "reject_count": 12,
-                     "last_reject_reason":
-                     "notional_cap (would-be $440 > $0)"},
-        })
+        s = _state_with_risk_books(
+            {
+                "main": {
+                    "equity": 99552.28,
+                    "max_notional": 199104.56,
+                    "admit_count": 5,
+                    "reject_count": 1,
+                },
+                "val": {
+                    "equity": 99500.0,
+                    "max_notional": 199000.0,
+                    "admit_count": 5,
+                    "reject_count": 1,
+                },
+                "gene": {
+                    "equity": 0.0,
+                    "max_notional": 0.0,
+                    "admit_count": 0,
+                    "reject_count": 12,
+                    "last_reject_reason": "notional_cap (would-be $440 > $0)",
+                },
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert r["ok"]
         assert "dormant" in r["summary"]
@@ -536,11 +609,17 @@ class TestRiskBookDormantSkipV783:
         """If a portfolio has had admits (admit_count>0) AND now its
         equity dropped to 0, that's a real bug (not the unconfigured
         pattern). Still fail loudly."""
-        s = _state_with_risk_books({
-            "val": {"equity": 0.0, "max_notional": 0.0,
-                    "admit_count": 3, "reject_count": 0,
-                    "last_reject_reason": ""},
-        })
+        s = _state_with_risk_books(
+            {
+                "val": {
+                    "equity": 0.0,
+                    "max_notional": 0.0,
+                    "admit_count": 3,
+                    "reject_count": 0,
+                    "last_reject_reason": "",
+                },
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert not r["ok"]
         assert "val: equity=0.0" in r["detail"]
@@ -548,14 +627,18 @@ class TestRiskBookDormantSkipV783:
     def test_mixed_dormant_and_real_failure(self):
         """Gene dormant + Val actively-stuck = still a fail (Val is the
         real bug; Gene is just informational)."""
-        s = _state_with_risk_books({
-            "main": {"equity": 99552.28, "max_notional": 199104.56,
-                     "admit_count": 5, "reject_count": 0},
-            "val":  {"equity": 0.0, "max_notional": 0.0,
-                     "admit_count": 2, "reject_count": 0},
-            "gene": {"equity": 0.0, "max_notional": 0.0,
-                     "admit_count": 0, "reject_count": 12},
-        })
+        s = _state_with_risk_books(
+            {
+                "main": {
+                    "equity": 99552.28,
+                    "max_notional": 199104.56,
+                    "admit_count": 5,
+                    "reject_count": 0,
+                },
+                "val": {"equity": 0.0, "max_notional": 0.0, "admit_count": 2, "reject_count": 0},
+                "gene": {"equity": 0.0, "max_notional": 0.0, "admit_count": 0, "reject_count": 12},
+            }
+        )
         r = inv_risk_book_notional_cap_nonzero(_ctx(s))
         assert not r["ok"]
         # Val (real bug) appears in detail; Gene (dormant) does not.
@@ -576,6 +659,7 @@ class TestEquityMatchesBaselineToleranceV783:
 
     def test_500_drift_within_tolerance(self):
         from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+
         s = {"portfolio": {"equity": 99500.0}}
         proj = {"live_balance": 99100.0}  # $400 drift, sub-0.5%
         ctx = InvariantContext(
@@ -587,6 +671,7 @@ class TestEquityMatchesBaselineToleranceV783:
 
     def test_above_500_but_within_pct_tolerance(self):
         from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+
         # $1M book; $499 drift would have failed under absolute-only,
         # but 0.5% of $1M = $5000 covers it.
         s = {"portfolio": {"equity": 1_000_000.0}}
@@ -600,6 +685,7 @@ class TestEquityMatchesBaselineToleranceV783:
 
     def test_huge_drift_still_fails(self):
         from tools.dashboard_monitor_invariants import inv_equity_matches_baseline
+
         s = {"portfolio": {"equity": 99500.0}}
         proj = {"live_balance": 90000.0}  # $9500 drift = ~10%
         ctx = InvariantContext(
@@ -631,6 +717,7 @@ class TestValGeneTradesMatchMainEnrichmentV784:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+
         r = inv_val_gene_trades_match_main(ctx)
         assert r["ok"]
 
@@ -644,19 +731,26 @@ class TestValGeneTradesMatchMainEnrichmentV784:
         )
         # Stub grep_logs to return synthetic mirror lines.
         import tools.railway_log_tail as rlt
+
         def fake_grep(pattern, **kw):
             if "MIRROR" in pattern:
                 return [
-                    {"timestamp": "t1",
-                     "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG",
-                     "severity": "info"},
-                    {"timestamp": "t2",
-                     "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG qty=0",
-                     "severity": "warning"},
+                    {
+                        "timestamp": "t1",
+                        "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG",
+                        "severity": "info",
+                    },
+                    {
+                        "timestamp": "t2",
+                        "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG qty=0",
+                        "severity": "warning",
+                    },
                 ]
             return []
+
         monkeypatch.setattr(rlt, "grep_logs", fake_grep)
         from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
         assert "val=0 vs main=2" in r["summary"]
@@ -674,13 +768,14 @@ class TestValGeneTradesMatchMainEnrichmentV784:
         )
         # Stub grep_logs to return nothing (simulates missing secrets).
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
         from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
+
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
         # Detail should include the missing-secrets explainer
-        assert ("RAILWAY_API_TOKEN" in r["detail"]
-                or "No Railway log slice attached" in r["detail"])
+        assert "RAILWAY_API_TOKEN" in r["detail"] or "No Railway log slice attached" in r["detail"]
 
 
 # ---------------------------------------------------------------------
@@ -706,8 +801,7 @@ class TestValGeneTradesMatchMainSubscribedNoteV8314:
             },
         }
         val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True,
-                "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
+        gene = {"enabled": True, "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
         ctx = InvariantContext(
             payloads={"state": s, "exec_val": val, "exec_gene": gene},
             base_url="https://example.com",
@@ -716,10 +810,12 @@ class TestValGeneTradesMatchMainSubscribedNoteV8314:
         # existing v7.84.0 enrichment path (but our v8.3.14 root-cause
         # note should land FIRST).
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
         from tools.dashboard_monitor_invariants import (
             inv_val_gene_trades_match_main,
         )
+
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
         assert "val=0 vs main=2" in r["summary"]
@@ -744,10 +840,12 @@ class TestValGeneTradesMatchMainSubscribedNoteV8314:
             base_url="https://example.com",
         )
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
         from tools.dashboard_monitor_invariants import (
             inv_val_gene_trades_match_main,
         )
+
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
         assert "val.subscribed = false" in r["detail"]
@@ -771,10 +869,12 @@ class TestValGeneTradesMatchMainSubscribedNoteV8314:
             base_url="https://example.com",
         )
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
         from tools.dashboard_monitor_invariants import (
             inv_val_gene_trades_match_main,
         )
+
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
         assert "subscribed = false" not in r["detail"]
@@ -800,10 +900,12 @@ class TestValGeneTradesMatchMainSubscribedNoteV8314:
             base_url="https://example.com",
         )
         import tools.railway_log_tail as rlt
+
         monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
         from tools.dashboard_monitor_invariants import (
             inv_val_gene_trades_match_main,
         )
+
         # Must not raise
         r = inv_val_gene_trades_match_main(ctx)
         assert not r["ok"]
@@ -843,6 +945,7 @@ class TestSignalBusHasListenersV790:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert r["ok"]
 
@@ -857,6 +960,7 @@ class TestSignalBusHasListenersV790:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert not r["ok"]
         assert "subscribers=0" in r["summary"]
@@ -878,6 +982,7 @@ class TestSignalBusHasListenersV790:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert not r["ok"]
         assert "subscribers=1" in r["summary"]
@@ -901,6 +1006,7 @@ class TestSignalBusHasListenersV790:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert r["ok"]
 
@@ -915,6 +1021,7 @@ class TestSignalBusHasListenersV790:
             base_url="https://example.com",
         )
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert r["ok"]  # skipped == ok in this codebase
         assert "no enabled executors" in r.get("summary", "")
@@ -922,5 +1029,6 @@ class TestSignalBusHasListenersV790:
     def test_skipped_when_state_missing(self):
         ctx = InvariantContext(payloads={}, base_url="https://example.com")
         from tools.dashboard_monitor_invariants import inv_signal_bus_has_listeners
+
         r = inv_signal_bus_has_listeners(ctx)
         assert r["ok"]  # skipped

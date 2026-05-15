@@ -962,6 +962,10 @@ def inv_position_count_three_way(ctx: InvariantContext) -> dict:
     s = _state(ctx)
     if not s:
         return _ok("position_count_three_way", "skipped: state missing")
+    # Skip during bot startup: scan loop not yet initialized means internal books
+    # are empty by definition and any broker positions are a startup race, not a phantom.
+    if not s.get("last_scan_at"):
+        return _ok("position_count_three_way", "skipped: scan loop not yet initialized")
     portfolios = s.get("portfolios") or {}
     main = portfolios.get("main") or {}
     val = portfolios.get("val") or {}
