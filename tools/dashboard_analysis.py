@@ -234,8 +234,9 @@ def _check_eod_config(state: dict) -> list[Check]:
     # Fence check
     long_tkrs = set(cfg.get("long_tickers") or [])
     short_tkrs = set(cfg.get("short_tickers") or [])
-    exp_long = {"ORCL", "AAPL", "MSFT", "AVGO"}
-    exp_short = {"ORCL", "NFLX", "AAPL", "MSFT"}
+    # v9.1.113: TSLA added to both fences after per-ticker sweep (+$3,930/yr).
+    exp_long = {"ORCL", "AAPL", "MSFT", "AVGO", "TSLA"}
+    exp_short = {"ORCL", "NFLX", "AAPL", "MSFT", "TSLA"}
     if long_tkrs != exp_long:
         checks.append(
             Check("eod_long_fence", WARN, f"long={sorted(long_tkrs)} expected={sorted(exp_long)}")
@@ -249,7 +250,8 @@ def _check_eod_config(state: dict) -> list[Check]:
     if long_tkrs == exp_long and short_tkrs == exp_short:
         checks.append(
             Check(
-                "eod_fence", GREEN, "r17 fence: ORCL/AAPL/MSFT/AVGO long; ORCL/NFLX/AAPL/MSFT short"
+                "eod_fence", GREEN,
+                "Keystone v4 fence: ORCL/AAPL/MSFT/AVGO/TSLA long; ORCL/NFLX/AAPL/MSFT/TSLA short"
             )
         )
 
