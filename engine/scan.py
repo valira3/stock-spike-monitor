@@ -562,6 +562,48 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     )
 
 
+def _read_bars_from_archive(
+    date_iso: str, ticker: str, bucket_start: int, bucket_end: int
+) -> list[tuple]:
+    """Read 1m bars from the local bar archive for bucket range [start, end).
+
+    Returns list of (bucket, high, low, open, close, volume) tuples sorted
+    by bucket. Used for OR backfill on redeploy so the bot can always trade
+    regardless of when Railway deploys relative to the OR window.
+    """
+    import json as _json
+    import os as _os
+
+    bars_dir = _os.environ.get("BARS_BASE_DIR", "/data/bars")
+    path = _os.path.join(bars_dir, date_iso, f"{ticker}.jsonl")
+    if not _os.path.exists(path):
+        return []
+    rows: list[tuple] = []
+    try:
+        with open(path, encoding="utf-8") as _f:
+            for line in _f:
+                try:
+                    bar = _json.loads(line)
+                except Exception:
+                    continue
+                bucket = bar.get("et_bucket")
+                if bucket is None or not isinstance(bucket, int):
+                    continue
+                if bucket < bucket_start or bucket >= bucket_end:
+                    continue
+                h = bar.get("high")
+                lo = bar.get("low")
+                o = bar.get("open")
+                c = bar.get("close")
+                if None in (h, lo, o, c):
+                    continue
+                v = float(bar.get("total_volume") or bar.get("iex_volume") or 0.0)
+                rows.append((bucket, float(h), float(lo), float(o), float(c), v))
+    except Exception:
+        pass
+    return sorted(rows, key=lambda x: x[0])
+
+
 def _maybe_backfill_or_window(
     callbacks: EngineCallbacks, now_et: datetime, scan_universe: list
 ) -> None:
@@ -575,9 +617,12 @@ def _maybe_backfill_or_window(
     stuck in WARMUP, zero trades for the rest of the day.
 
     Triggered only on the FIRST scan cycle of a fresh session
-    (`ensure_session_started` returned True). No-ops when we're
-    still inside or before the OR window, since the live scan will
-    cover those bars normally.
+    (`ensure_session_started` returned True).
+
+    Auto-heal design: works at any deploy time:
+    - Pre-OR (before 09:30 ET): no-op, live scan covers it normally
+    - Mid-OR (09:30-10:00 ET): replays missed bars from /data/bars archive
+    - Post-OR (after 10:00 ET): replays full OR from archive + API fallback
 
     The fetch_1min_bars hook returns 1m bars from 08:00 ET onward
     (Alpaca IEX feed window). We filter to the OR window
@@ -591,8 +636,40 @@ def _maybe_backfill_or_window(
     or_start = cfg.session_start_minutes
     or_end = cfg.or_end_minutes
     cur_min = now_et.hour * 60 + now_et.minute
+    date_iso = now_et.strftime("%Y-%m-%d")
+
+    if cur_min < or_start:
+        # Before OR window; live scan will cover it normally.
+        return
+
     if cur_min < or_end:
-        # Still inside OR window; live scan will populate it normally.
+        # Mid-OR: bot deployed during the opening range window.
+        # Replay all bars from [or_start, cur_min) from the local archive
+        # so OR windows are populated with the data we missed.
+        backfilled = 0
+        for ticker in scan_universe:
+            rows = _read_bars_from_archive(date_iso, ticker, or_start, cur_min)
+            if not rows:
+                continue
+            for bucket, h, lo, o, c, v in rows:
+                try:
+                    _orb_runtime.feed_bar(
+                        ticker=ticker,
+                        bar_high=h,
+                        bar_low=lo,
+                        bar_open=o,
+                        bar_close=c,
+                        bar_volume=v,
+                        bar_bucket_min=bucket,
+                    )
+                except Exception as _fe:
+                    logger.debug("[V79-ORB-MID-OR] feed_bar %s b=%d: %s", ticker, bucket, _fe)
+            backfilled += 1
+        logger.info(
+            "[V79-ORB-MID-OR-BACKFILL] archive mid-OR cur_min=%d backfilled=%d tickers",
+            cur_min,
+            backfilled,
+        )
         return
     logger.info(
         "[V79-ORB-BACKFILL] start cur_min=%d or_start=%d or_end=%d tickers=%d",
@@ -738,8 +815,16 @@ def _orb_post_or_backfill_sweep(
             pass
     if not unlocked:
         return
+    date_iso = now_et.strftime("%Y-%m-%d")
+    or_start = cfg.or_start_minutes if hasattr(cfg, "or_start_minutes") else 570
     bars_by_ticker: dict = {}
     for ticker in unlocked:
+        # Primary: local bar archive (fast, no API dependency, survives redeploy).
+        rows = _read_bars_from_archive(date_iso, ticker, or_start, cur_min + 5)
+        if rows:
+            bars_by_ticker[ticker] = rows
+            continue
+        # Fallback: Alpaca API fetch when archive is empty (e.g. first day on new volume).
         try:
             bars = callbacks.fetch_1min_bars(ticker)
         except Exception as _e:
@@ -753,7 +838,7 @@ def _orb_post_or_backfill_sweep(
         lows = bars.get("lows") or []
         closes = bars.get("closes") or []
         volumes = bars.get("volumes") or []
-        rows: list = []
+        api_rows: list = []
         for i, ts in enumerate(timestamps):
             if ts is None:
                 continue
@@ -767,9 +852,9 @@ def _orb_post_or_backfill_sweep(
             if None in (o, h, lo, c):
                 continue
             v = volumes[i] if i < len(volumes) else 0.0
-            rows.append((bucket, float(h), float(lo), float(o), float(c), float(v or 0.0)))
-        if rows:
-            bars_by_ticker[ticker] = rows
+            api_rows.append((bucket, float(h), float(lo), float(o), float(c), float(v or 0.0)))
+        if api_rows:
+            bars_by_ticker[ticker] = api_rows
     if not bars_by_ticker:
         return
     result = _orb_runtime.backfill_or_windows(

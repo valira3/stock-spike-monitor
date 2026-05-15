@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.88 (2026-05-15) — auto-heal OR windows from bar archive on redeploy (any time)
+
+**Problem:** A Railway redeploy during the OR window (09:30-10:00 ET) left `bars_seen=0`, OR never locked, FSMs stuck in WARMUP, zero trades for the day. The existing `_maybe_backfill_or_window()` only handled post-OR deploys; mid-OR deploys returned early.
+
+**Fix — three-layer OR backfill:**
+
+1. **Mid-OR deploy (09:30-10:00 ET):** `_maybe_backfill_or_window` now detects `or_start <= cur_min < or_end` and replays all bars from `[09:30, now)` from the local bar archive (`/data/bars/<date>/<ticker>.jsonl`) via `_read_bars_from_archive()`. Forensic tag: `[V79-ORB-MID-OR-BACKFILL]`.
+
+2. **Post-OR deploy (after 10:00 ET) — archive first:** `_orb_post_or_backfill_sweep` now tries the local archive as the **primary** source before hitting the Alpaca API. Archive is instant, has no API dependency, and is always populated by the bar archiver running in the previous session.
+
+3. **New helper `_read_bars_from_archive(date_iso, ticker, bucket_start, bucket_end)`:** reads `/data/bars/<date>/<ticker>.jsonl`, filters to bucket range, returns sorted `(bucket, h, l, o, c, v)` tuples. Used by both paths above.
+
+**Result:** The bot can now trade regardless of when Railway deploys — before OR, mid-OR, post-OR, or deep in the entry window. As long as the bar archiver wrote bars to `/data/` before the redeploy, OR windows are fully reconstructed within one scan cycle.
+
+---
+
 ## v9.1.87 (2026-05-15) — fix position_count_three_way false CRIT for Val independent-mode entries
 
 In `ORB_PORTFOLIO_FIRE=1` mode Val fires entries independently and tracks them in the executor's `engine_positions`, not the main scan loop's portfolio state. `position_count_three_way` was counting Val's `portfolios.val.positions` (always empty in independent mode) against `broker_open_n`, generating a CRIT whenever Val had live positions. Fix: also count `exec_val.engine_positions` when computing `val_count` so broker positions covered by the executor aren't flagged as phantoms.
