@@ -79,6 +79,13 @@ class EodReversalConfig:
     # the momentum phase); 14:00-15:00 is the inflection zone.
     entry_et_minutes: int = 15 * 60  # 15:00 ET
     exit_et_minutes: int = 15 * 60 + 59  # 15:59 ET
+    # v9.1.108 -- no new admissions within 10 min of market close.
+    # Wide entry window ([15:00, 15:59)) was added in v9.1.22 so a late
+    # deploy/restart could still land the entry. But a position opened at
+    # e.g. 15:52 holds for only 7 minutes -- too little time for the
+    # reversal pattern to work. This cutoff blocks new admissions while
+    # letting existing positions run to exit_et. Env: ORB_EOD_ENTRY_CUTOFF_ET.
+    entry_cutoff_et_minutes: int = 15 * 60 + 50  # 15:50 ET
 
     # v9.1.1 -- live broker firing is now the default. v9.1.0 shipped
     # with fire_broker=False (paper-fire-observation) per the v8.3.23
@@ -106,6 +113,7 @@ class EodReversalConfig:
           ORB_EOD_NOTIONAL_PCT=35
           ORB_EOD_ENTRY_ET=15:30
           ORB_EOD_EXIT_ET=15:59
+          ORB_EOD_ENTRY_CUTOFF_ET=15:50
         """
 
         def _b(name: str, default: bool) -> bool:
@@ -151,6 +159,7 @@ class EodReversalConfig:
             notional_pct=_f("ORB_EOD_NOTIONAL_PCT", 35.0),
             entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60),
             exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 59),
+            entry_cutoff_et_minutes=_et("ORB_EOD_ENTRY_CUTOFF_ET", 15 * 60 + 50),
             fire_broker=_b("ORB_EOD_FIRE_BROKER", True),
             stop_pct=_f("ORB_EOD_STOP_PCT", 0.02),
         )
@@ -240,8 +249,13 @@ class EodReversalEngine:
         (e.g. 34 min vs design's 59 min). Net P&L impact is unknown
         and worth a follow-up sweep, but late-entry-better-than-no-
         entry is the immediate trade.
+
+        v9.1.108 -- capped at entry_cutoff_et_minutes (default 15:50 ET).
+        Positions opened within 10 min of close hold too briefly for the
+        reversal pattern to work. Existing positions are unaffected -- they
+        hold until exit_et_minutes (15:59 ET).
         """
-        return self.cfg.entry_et_minutes <= current_et_minutes < self.cfg.exit_et_minutes
+        return self.cfg.entry_et_minutes <= current_et_minutes < self.cfg.entry_cutoff_et_minutes
 
     def is_exit_window(self, current_et_minutes: int) -> bool:
         """True if at-or-past the exit minute. Allows for late ticks to

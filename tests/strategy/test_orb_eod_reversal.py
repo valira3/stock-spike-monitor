@@ -8,11 +8,15 @@ Covers:
   5. Idempotent admit (no double-fire) + idempotent reset
   6. Snapshot shape matches dashboard expectations
 """
+
 import os
 import pytest
 
 from orb.eod_reversal import (
-    EodPosition, EodReversalConfig, EodReversalEngine, EodSessionState,
+    EodPosition,
+    EodReversalConfig,
+    EodReversalEngine,
+    EodSessionState,
     _fmt_et,
 )
 
@@ -60,15 +64,21 @@ class TestConfigFromEnv:
 
     def test_env_missing_falls_back_to_defaults(self, monkeypatch):
         # Clear any inherited env vars
-        for k in ("ORB_EOD_REVERSAL_ENABLED", "ORB_EOD_UNIVERSE",
-                  "ORB_EOD_LONG_TICKERS", "ORB_EOD_SHORT_TICKERS",
-                  "ORB_EOD_TOP_N", "ORB_EOD_NOTIONAL_PCT",
-                  "ORB_EOD_ENTRY_ET", "ORB_EOD_EXIT_ET",
-                  "ORB_EOD_FIRE_BROKER"):
+        for k in (
+            "ORB_EOD_REVERSAL_ENABLED",
+            "ORB_EOD_UNIVERSE",
+            "ORB_EOD_LONG_TICKERS",
+            "ORB_EOD_SHORT_TICKERS",
+            "ORB_EOD_TOP_N",
+            "ORB_EOD_NOTIONAL_PCT",
+            "ORB_EOD_ENTRY_ET",
+            "ORB_EOD_EXIT_ET",
+            "ORB_EOD_FIRE_BROKER",
+        ):
             monkeypatch.delenv(k, raising=False)
         cfg = EodReversalConfig.from_env()
         assert cfg.enabled is True
-        assert cfg.fire_broker is True   # v9.1.1: live by default
+        assert cfg.fire_broker is True  # v9.1.1: live by default
         assert cfg.top_n == 1
 
     def test_env_can_disable_broker_fire(self, monkeypatch):
@@ -136,7 +146,8 @@ class TestSelectSignals:
         prior = {"ORCL": 100, "AAPL": 100, "MSFT": 100, "AVGO": 100, "NFLX": 100}
         current = {"ORCL": 100.5, "AAPL": 99.0, "MSFT": 100.2, "AVGO": 99.5, "NFLX": 100.3}
         longs, shorts = e.select_signals(
-            current_prices=current, prior_closes=prior,
+            current_prices=current,
+            prior_closes=prior,
         )
         # AAPL is the lowest ROD3 (-100bps) -> long pick
         assert longs[0][0] == "AAPL"
@@ -152,7 +163,8 @@ class TestSelectSignals:
         current = {"AAPL": 100, "AVGO": 100, "NFLX": 99.0, "ORCL": 100, "MSFT": 100}
         # NFLX is most-negative but not in long_tickers -> should NOT be picked
         longs, _ = e.select_signals(
-            current_prices=current, prior_closes=prior,
+            current_prices=current,
+            prior_closes=prior,
         )
         assert all(t != "NFLX" for t, _ in longs)
 
@@ -162,23 +174,26 @@ class TestSelectSignals:
         current = {"AAPL": 100, "AVGO": 101.0, "NFLX": 100, "ORCL": 100, "MSFT": 100}
         # AVGO is most-positive but not in short_tickers -> should NOT be picked
         _, shorts = e.select_signals(
-            current_prices=current, prior_closes=prior,
+            current_prices=current,
+            prior_closes=prior,
         )
         assert all(t != "AVGO" for t, _ in shorts)
 
     def test_insufficient_data_returns_empty(self):
         e = self._setup()
         longs, shorts = e.select_signals(
-            current_prices={"ORCL": 100}, prior_closes={"ORCL": 100},
+            current_prices={"ORCL": 100},
+            prior_closes={"ORCL": 100},
         )
         assert longs == [] and shorts == []
 
     def test_missing_prior_close_skipped(self):
         e = self._setup()
-        prior = {"ORCL": 100}   # only ORCL has a prior
+        prior = {"ORCL": 100}  # only ORCL has a prior
         current = {"ORCL": 100, "AAPL": 101}
         longs, shorts = e.select_signals(
-            current_prices=current, prior_closes=prior,
+            current_prices=current,
+            prior_closes=prior,
         )
         # Only 1 ticker eligible -> insufficient
         assert longs == [] and shorts == []
@@ -196,9 +211,13 @@ class TestAdmission:
     def test_admit_computes_shares_from_notional(self):
         e = self._seeded()
         pos = e.admit(
-            portfolio_id="main", ticker="ORCL", side="long",
-            entry_price=200.0, equity=100_000.0,
-            rod3_bps=-50.0, entry_iso="2026-05-13T15:30:00Z",
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="2026-05-13T15:30:00Z",
         )
         assert pos is not None
         # 35% notional of 100k = $35,000; 200 -> 175 shares
@@ -209,51 +228,72 @@ class TestAdmission:
     def test_admit_idempotent_same_ticker(self):
         e = self._seeded()
         p1 = e.admit(
-            portfolio_id="main", ticker="ORCL", side="long",
-            entry_price=200.0, equity=100_000.0,
-            rod3_bps=-50.0, entry_iso="t",
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="t",
         )
         p2 = e.admit(
-            portfolio_id="main", ticker="ORCL", side="long",
-            entry_price=205.0, equity=100_000.0,
-            rod3_bps=-60.0, entry_iso="t",
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=205.0,
+            equity=100_000.0,
+            rod3_bps=-60.0,
+            entry_iso="t",
         )
-        assert p1 is p2   # same object, no overwrite
+        assert p1 is p2  # same object, no overwrite
 
     def test_admit_zero_price_returns_none(self):
         e = self._seeded()
         pos = e.admit(
-            portfolio_id="main", ticker="ORCL", side="long",
-            entry_price=0.0, equity=100_000.0,
-            rod3_bps=-50.0, entry_iso="t",
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=0.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="t",
         )
         assert pos is None
 
     def test_close_long_pnl_correct(self):
         e = self._seeded()
-        e.admit(portfolio_id="main", ticker="ORCL", side="long",
-                entry_price=200.0, equity=100_000.0,
-                rod3_bps=-50.0, entry_iso="t")
-        leg = e.close(portfolio_id="main", ticker="ORCL",
-                      exit_price=201.0, exit_iso="t2")
+        e.admit(
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="t",
+        )
+        leg = e.close(portfolio_id="main", ticker="ORCL", exit_price=201.0, exit_iso="t2")
         assert leg is not None
         assert leg["pnl"] == pytest.approx(175 * (201.0 - 200.0))
         assert e._states["main"].realized_pnl_today == pytest.approx(175.0)
 
     def test_close_short_pnl_correct(self):
         e = self._seeded()
-        e.admit(portfolio_id="main", ticker="NFLX", side="short",
-                entry_price=500.0, equity=100_000.0,
-                rod3_bps=80.0, entry_iso="t")
+        e.admit(
+            portfolio_id="main",
+            ticker="NFLX",
+            side="short",
+            entry_price=500.0,
+            equity=100_000.0,
+            rod3_bps=80.0,
+            entry_iso="t",
+        )
         # 35% notional of 100k / 500 -> 70 shares
-        leg = e.close(portfolio_id="main", ticker="NFLX",
-                      exit_price=498.0, exit_iso="t2")
+        leg = e.close(portfolio_id="main", ticker="NFLX", exit_price=498.0, exit_iso="t2")
         assert leg["pnl"] == pytest.approx(70 * (500.0 - 498.0))
 
     def test_close_nonexistent_returns_none(self):
         e = self._seeded()
-        leg = e.close(portfolio_id="main", ticker="ORCL",
-                      exit_price=100.0, exit_iso="t")
+        leg = e.close(portfolio_id="main", ticker="ORCL", exit_price=100.0, exit_iso="t")
         assert leg is None
 
     def test_mark_attempted_flag(self):
@@ -273,25 +313,27 @@ class TestTimeWindows:
         # so a delayed scan-loop tick (deploy, cron miss, restart) can
         # still land the entry. Idempotency is via the per-portfolio
         # `entry_attempted` flag (scan.py:1390), not the time check.
+        # v9.1.108: capped at entry_cutoff_et_minutes (15:50 ET) so no
+        # new positions open within 10 min of market close.
         e = _eng()
         # Boundary BELOW entry_et stays False.
         assert e.is_entry_window(14 * 60 + 59) is False
         # Entry-minute open is True.
         assert e.is_entry_window(15 * 60) is True
-        # v9.1.22: any minute IN the [entry, exit) range is now True
-        # (was False under the single-minute design).
+        # Any minute in [entry_et, entry_cutoff_et) is True.
         assert e.is_entry_window(15 * 60 + 1) is True
         assert e.is_entry_window(15 * 60 + 30) is True
-        assert e.is_entry_window(15 * 60 + 58) is True
-        # exit_et boundary is exclusive -- at 15:59 the exit window
-        # owns the minute, not the entry window.
+        assert e.is_entry_window(15 * 60 + 49) is True
+        # v9.1.108: at/past entry_cutoff (15:50 ET) entry is blocked.
+        assert e.is_entry_window(15 * 60 + 50) is False
+        assert e.is_entry_window(15 * 60 + 58) is False
         assert e.is_entry_window(15 * 60 + 59) is False
 
     def test_exit_window_inclusive_after_15_59(self):
         e = _eng()
         assert e.is_exit_window(15 * 60 + 58) is False
         assert e.is_exit_window(15 * 60 + 59) is True
-        assert e.is_exit_window(16 * 60) is True   # late ticks still flatten
+        assert e.is_exit_window(16 * 60) is True  # late ticks still flatten
 
 
 # ----- 6. Snapshot ----------------------------------------------------
@@ -315,9 +357,15 @@ class TestSnapshot:
     def test_snapshot_includes_open_position(self):
         e = _eng()
         e.reset_for_session("2026-05-13")
-        e.admit(portfolio_id="main", ticker="ORCL", side="long",
-                entry_price=200.0, equity=100_000.0,
-                rod3_bps=-50.0, entry_iso="t")
+        e.admit(
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="t",
+        )
         snap = e.snapshot()
         positions = snap["per_portfolio"]["main"]["open_positions"]
         assert len(positions) == 1
