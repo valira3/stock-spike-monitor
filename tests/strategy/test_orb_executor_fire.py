@@ -35,8 +35,8 @@ def stub_client():
     fake_order = MagicMock()
     fake_order.id = "order-abc-123"
     c.submit_order.return_value = fake_order
-    # Stub get_account so the 95%-of-cash notional cap doesn't block tests.
-    # $200k cash gives headroom for all test order sizes (50 sh × $100.50 = $5,025).
+    # Stub get_account so the 95%-of-equity notional cap doesn't block tests.
+    # $200k equity gives headroom for all test order sizes (50 sh * $100.50 = $5,025).
     fake_acct = MagicMock()
     fake_acct.cash = 200_000.0
     fake_acct.equity = 200_000.0
