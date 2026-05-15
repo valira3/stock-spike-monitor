@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.112 (2026-05-15) — remove loss-only cooldown entirely (sym-10m is sufficient)
+
+Deleted all `POST_LOSS_COOLDOWN_MIN*` code paths. The sym-10m cooldown (`ORB_POST_TRADE_COOLDOWN_MIN=10`) covers wins and losses; loss-only added no value in the sweep and was removed from Railway env. Deleted test files: `test_v642_post_loss_cooldown.py`, `test_v643_asymmetric_cooldown.py`, `test_v7_0_1_cooldown_split.py`, `test_v6100_defaults.py`.
+
+Changes: `engine/portfolio_book.py` (removed `_post_loss_cooldown`, `record_post_loss`, `is_in_post_loss_cooldown`), `executors/base.py`, `broker/orders.py`, `dashboard_server.py` (v642_flags simplified to sym-only).
+
+---
+
 ## v9.1.111 (2026-05-15) — symmetric 10-min post-trade cooldown (new baseline)
 
 Replaces loss-only cooldown (`POST_LOSS_COOLDOWN_MIN=30`) with symmetric cooldown (`ORB_POST_TRADE_COOLDOWN_MIN=10`) that blocks re-entry on (ticker, side) for 10 min after ANY exit — win or loss. Backtest sweep (341 days, compounded, combined morning+EOD) showed sym-10m at $42,573/yr vs keystone loss-only-30m at $41,614/yr (+$959/yr). Root cause from today: ORCL closed +$125 at 10:48, immediately re-entered at 10:48, stopped -$413 — symmetric cooldown blocks that exact pattern.

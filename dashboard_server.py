@@ -280,20 +280,15 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         else:
             state = "active"
 
-        # --- cooldowns (loss + symmetric) ---
-        # v7.0.1: every book has its own _post_loss_cooldown dict.
-        # v9.1.111: also read _post_trade_cooldown (symmetric, any exit).
+        # --- cooldowns (symmetric post-trade only, v9.1.112) ---
         try:
-            _plc = getattr(book, "_post_loss_cooldown", {}) or {}
             _ptc = getattr(book, "_post_trade_cooldown", {}) or {}
-            # Union: a (ticker, side) pair is "in cooldown" if either dict holds it.
-            _cd_keys = set(_plc.keys()) | set(_ptc.keys())
             long_cd = sum(
-                1 for k in _cd_keys
+                1 for k in _ptc
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "LONG"
             )
             short_cd = sum(
-                1 for k in _cd_keys
+                1 for k in _ptc
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "SHORT"
             )
         except Exception:
@@ -2318,33 +2313,15 @@ def snapshot() -> dict[str, Any]:
             "chandelier_wide_mult": v640_chand_wide,
             "chandelier_tight_mult": v640_chand_tight,
         }
-        # v6.4.2 \u2014 post-loss cooldown surface. Reads the configurable
-        # window from eye_of_tiger.POST_LOSS_COOLDOWN_MIN (env-driven,
-        # default 30) and the live registry via
-        # trade_genius.get_active_cooldowns(). Defaults to a safe empty
-        # state so a missing v642_flags / active_cooldowns key in
-        # /api/state degrades the dashboard chip to hidden.
-        # v6.4.3 \u2014 long/short windows now resolve independently. The
-        # legacy post_loss_cooldown_min field is preserved for back-compat
-        # (older dashboard clients keep working) and reflects whichever
-        # side is currently active, preferring the larger non-zero window.
-        try:
-            from eye_of_tiger import (
-                POST_LOSS_COOLDOWN_MIN_LONG as _v643_cd_long,
-                POST_LOSS_COOLDOWN_MIN_SHORT as _v643_cd_short,
-            )
-
-            v643_cd_long = int(_v643_cd_long)
-            v643_cd_short = int(_v643_cd_short)
-        except Exception:
-            v643_cd_long, v643_cd_short = 0, 30
+        # v9.1.112: cooldown surface is now sym-only (post-trade).
+        # Legacy loss-only fields removed; active_cooldowns_by_portfolio
+        # reads from PortfolioBook.get_active_cooldowns() which returns
+        # sym entries only.
         try:
             import trade_genius as _v642_tg
 
             v642_active = list(_v642_tg.get_active_cooldowns())
-            # v7.0.1: per-portfolio breakdown for the per-book strip and
-            # tab-level cooldown panels. Main is identical to v642_active
-            # above; val/gene start empty and populate as those books take
+            # per-portfolio breakdown for the per-book strip and tab panels.
             # losses through the fanout layer.
             try:
                 v701_active_by_pid = {
@@ -2356,25 +2333,12 @@ def snapshot() -> dict[str, Any]:
         except Exception:
             v642_active = []
             v701_active_by_pid = {"main": [], "val": [], "gene": []}
-        # Legacy single-window field: prefer the active non-zero side; if
-        # both are on, take the larger; if both off, 0.
-        if v643_cd_long > 0 and v643_cd_short > 0:
-            v642_legacy_min = max(v643_cd_long, v643_cd_short)
-        else:
-            v642_legacy_min = v643_cd_long or v643_cd_short
-        # v9.1.111: symmetric post-trade cooldown config field.
         try:
             import os as _os_sym_cd
             _sym_cd_min = int(_os_sym_cd.environ.get("ORB_POST_TRADE_COOLDOWN_MIN", 0) or 0)
         except Exception:
             _sym_cd_min = 0
         v642_flags = {
-            "post_loss_cooldown_min": v642_legacy_min,
-            "post_loss_cooldown_min_long": v643_cd_long,
-            "post_loss_cooldown_min_short": v643_cd_short,
-            "post_loss_cooldown_enabled": (v643_cd_long > 0) or (v643_cd_short > 0),
-            "long_enabled": v643_cd_long > 0,
-            "short_enabled": v643_cd_short > 0,
             "post_trade_cooldown_min": _sym_cd_min,
             "post_trade_cooldown_enabled": _sym_cd_min > 0,
             "active_count": len(v642_active),

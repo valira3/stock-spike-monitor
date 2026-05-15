@@ -1167,14 +1167,8 @@ def execute_breakout(ticker, current_price, side):
     if not tg._check_new_position_cutoff(ticker):
         return
 
-    # v6.4.2 \u2014 post-loss cooldown gate. After a stop-out (any losing exit)
-    # on the same (ticker, side), block new entries for POST_LOSS_COOLDOWN_MIN
-    # minutes (default 30). Backtest at
-    # /home/user/workspace/v641_week_backtest/report.md showed 3-for-3 same-
-    # side same-ticker re-entries within 30 min of a stop all lost again.
-    # Helper logs a [V642-COOLDOWN] BLOCK line when it vetoes.
+    # v9.1.111/112: symmetric post-trade cooldown (covers wins+losses).
     _side_label = "long" if cfg.side.is_long else "short"
-    # v9.1.111: symmetric post-trade cooldown check runs first (covers wins+losses).
     try:
         from engine.portfolio_book import PORTFOLIOS as _pb_map
         _pb_main = _pb_map.get("main")
@@ -1190,8 +1184,6 @@ def execute_breakout(ticker, current_price, side):
                 return
     except Exception:
         pass
-    if not tg._check_post_loss_cooldown(ticker, _side_label):
-        return
 
     # v6.11.13 \u2014 same-ticker post-exit cooldown (broker-plumbing guardrail).
     # Independent of post-loss cooldown above. After ANY exit on this ticker
@@ -1993,13 +1985,7 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
             _cooldown_exit_ts = tg._now_utc()
         except Exception:
             _cooldown_exit_ts = None
-        tg.record_post_loss_cooldown(
-            ticker,
-            _cooldown_side,
-            float(pnl_val),
-            exit_ts_utc=_cooldown_exit_ts,
-        )
-        # v9.1.111: symmetric post-trade cooldown -- records after any exit.
+        # v9.1.111/112: symmetric post-trade cooldown after any exit.
         try:
             from engine.portfolio_book import PORTFOLIOS as _pb_map_exit
             _pb_main_exit = _pb_map_exit.get("main")

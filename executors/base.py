@@ -1342,15 +1342,6 @@ class TradeGeniusBase:
                         _cd_sym.get("until_utc", "?"), _cd_sym.get("window_min", 0),
                     )
                     return False
-                _cd = _pb_entry.is_in_post_loss_cooldown(ticker, side.lower())
-                if _cd is not None:
-                    logger.info(
-                        "[%s] [V10-FIRE] COOLDOWN BLOCK %s %s -- post-loss "
-                        "cooldown active until %s (loss=$%.2f)",
-                        self.NAME, side, ticker,
-                        _cd.get("until_utc", "?"), _cd.get("loss_pnl", 0),
-                    )
-                    return False
         except Exception:
             logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
 
@@ -2895,20 +2886,8 @@ class TradeGeniusBase:
                         "velocity_fuse",
                         "ema_trail",
                     }
-                    if reason.lower() in _stop_reasons or "stop" in reason.lower():
-                        _pos_rec = self.positions.get(ticker, {})
-                        _entry_px = float(_pos_rec.get("entry_price") or 0.0)
-                        _qty = int(_pos_rec.get("qty") or 0)
-                        if _entry_px > 0 and _qty > 0 and float(price) > 0:
-                            if _exit_side == "LONG":
-                                _exit_pnl = (float(price) - _entry_px) * _qty
-                            else:
-                                _exit_pnl = (_entry_px - float(price)) * _qty
-                            _pb_exit2.record_post_loss_cooldown(
-                                ticker, _exit_side.lower(), _exit_pnl
-                            )
-                        # v9.1.111: symmetric cooldown after ANY exit (win or loss).
-                        _pb_exit2.record_post_trade(ticker, _exit_side.lower())
+                    # v9.1.111/112: symmetric cooldown after any exit (win or loss).
+                    _pb_exit2.record_post_trade(ticker, _exit_side.lower())
                 except Exception:
                     logger.debug(
                         "[%s] per-book record_exit skipped: %s",

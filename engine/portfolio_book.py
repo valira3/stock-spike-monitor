@@ -121,16 +121,12 @@ class PortfolioBook:
         # --- v7.0.0 Phase 4: per-book configuration ---
         self.config: PortfolioConfig = PortfolioConfig()
 
-        # --- v7.0.1: per-book cooldown registries (was global on main only) ---
-        # _post_loss_cooldown maps (ticker, side_lower) -> {"until_utc": dt,
-        #   "loss_pnl": float, "loss_ts_utc": dt}.  Auto-pruned on read.
-        # For the main book this dict is identity-bound to trade_genius's
-        # module-level _post_loss_cooldown global, so every legacy call into
-        # tg.record_post_loss_cooldown / tg.is_in_post_loss_cooldown continues
-        # to mutate the same object the dashboard strip reads from.
-        # _post_exit_cooldown maps ticker -> {"until_utc", "exit_ts_utc",
-        #   "exit_reason"}; per-ticker (not per-side) per the v6.11.13 contract.
-        self._post_loss_cooldown: dict = {}
+        # --- cooldown registries ---
+        # _post_exit_cooldown: per-ticker short broker-reconciliation window
+        #   (POST_EXIT_SAME_TICKER_COOLDOWN_SEC, default 1s).
+        # _post_trade_cooldown: symmetric per-(ticker,side) entry block added
+        #   v9.1.111 (ORB_POST_TRADE_COOLDOWN_MIN=10). Replaces the retired
+        #   loss-only _post_loss_cooldown (removed v9.1.112).
         self._post_exit_cooldown: dict = {}
         # v9.1.111 -- symmetric post-trade cooldown: blocks (ticker, side)
         # re-entry for ORB_POST_TRADE_COOLDOWN_MIN minutes after ANY exit
@@ -373,30 +369,15 @@ class PortfolioBook:
         return (t in self.positions) if s == "LONG" else (t in self.short_positions)
 
     def in_cooldown(self, ticker: str, side: str) -> bool:
-        """Cooldown gate per (ticker, side).
-
-        v7.0.1: every book reads its own _post_loss_cooldown registry. For the
-        main book this dict is identity-bound to trade_genius's module-level
-        _post_loss_cooldown global, so the legacy free-function path
-        (tg.is_in_post_loss_cooldown) and this method see the same data.
-
-        Args:
+        """Cooldown gate per (ticker, side). v9.1.112: checks sym cooldown only
+        (loss-only cooldown retired). Args:
             ticker: Ticker symbol (case-insensitive).
             side:   'LONG' or 'SHORT' (case-insensitive).
 
         Returns:
-            bool: True when the ticker/side pair is in post-loss cooldown.
+            bool: True when the ticker/side pair is in sym post-trade cooldown.
         """
-        return self.is_in_post_loss_cooldown(ticker, side) is not None
-
-    # ------------------------------------------------------------------
-    # v7.0.1: per-book cooldown methods.  Every book carries its own
-    # _post_loss_cooldown / _post_exit_cooldown dict.  The main book's
-    # dicts are identity-bound to the trade_genius module globals so
-    # every legacy free-function call (tg.record_post_loss_cooldown,
-    # tg.is_in_post_loss_cooldown, tg.get_active_cooldowns) mutates and
-    # reads the same object the dashboard strip / per-book block render.
-    # ------------------------------------------------------------------
+        return self.is_in_post_trade_cooldown(ticker, side) is not None
 
     @staticmethod
     def _now_utc():
@@ -410,54 +391,6 @@ class PortfolioBook:
             return _tg._now_utc()
         except Exception:
             return datetime.now(timezone.utc)
-
-    def record_post_loss(
-        self,
-        ticker: str,
-        side: str,
-        pnl: float,
-        *,
-        exit_ts_utc: Optional[datetime] = None,
-    ) -> None:
-        """Record a stop-out so the next entry on (ticker, side) is gated.
-
-        Mirrors trade_genius.record_post_loss_cooldown verbatim except the
-        registry it mutates is THIS book's _post_loss_cooldown rather than
-        the global one.  No-op for winners (pnl >= 0) and when the
-        configured side window <= 0.
-        """
-        if pnl is None or pnl >= 0:
-            return
-        side_norm = (side or "").strip().lower()
-        if side_norm not in ("long", "short"):
-            return
-        try:
-            if side_norm == "long":
-                from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_LONG as _cd_min
-            else:
-                from eye_of_tiger import POST_LOSS_COOLDOWN_MIN_SHORT as _cd_min
-            cd_min = int(_cd_min)
-        except Exception:
-            cd_min = 0 if side_norm == "long" else 30
-        if cd_min <= 0:
-            return
-        loss_ts = exit_ts_utc or self._now_utc()
-        until = loss_ts + timedelta(minutes=cd_min)
-        self._post_loss_cooldown[(ticker, side_norm)] = {
-            "until_utc": until,
-            "loss_pnl": float(pnl),
-            "loss_ts_utc": loss_ts,
-        }
-        logger.info(
-            "[V701-COOLDOWN] RECORD pid=%s ticker=%s side=%s loss_pnl=$%.2f "
-            "until_utc=%s window_min=%d",
-            self.portfolio_id,
-            ticker,
-            side_norm,
-            float(pnl),
-            until.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            cd_min,
-        )
 
     def record_post_trade(
         self,
@@ -508,20 +441,6 @@ class PortfolioBook:
             return None
         return entry
 
-    def is_in_post_loss_cooldown(self, ticker: str, side: str):
-        """Return entry dict if (ticker, side) is cooling down on this book,
-        else None.  Auto-prunes expired entries on read.
-        """
-        side_norm = (side or "").strip().lower()
-        key = (ticker, side_norm)
-        entry = self._post_loss_cooldown.get(key)
-        if not entry:
-            return None
-        if entry["until_utc"] <= self._now_utc():
-            self._post_loss_cooldown.pop(key, None)
-            return None
-        return entry
-
     def record_post_exit(
         self,
         ticker: str,
@@ -557,32 +476,11 @@ class PortfolioBook:
         return True
 
     def get_active_cooldowns(self) -> list:
-        """Snapshot of currently-active post-loss AND post-trade (symmetric)
-        cooldowns on this book. Suitable for /api/state JSON. Auto-prunes.
+        """Snapshot of currently-active post-trade (symmetric) cooldowns.
+        Suitable for /api/state JSON. Auto-prunes. v9.1.112: loss-only removed.
         """
         now = self._now_utc()
         out = []
-        for key in list(self._post_loss_cooldown.keys()):
-            entry = self._post_loss_cooldown.get(key)
-            if not entry:
-                continue
-            if entry["until_utc"] <= now:
-                self._post_loss_cooldown.pop(key, None)
-                continue
-            ticker, side = key
-            remaining_sec = max(0, int((entry["until_utc"] - now).total_seconds()))
-            out.append(
-                {
-                    "ticker": ticker,
-                    "side": side,
-                    "kind": "loss",
-                    "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "remaining_sec": remaining_sec,
-                    "loss_pnl": round(float(entry.get("loss_pnl", 0)), 2),
-                    "loss_ts_utc": entry["loss_ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                }
-            )
-        # v9.1.111: symmetric post-trade cooldowns.
         for key in list(self._post_trade_cooldown.keys()):
             entry = self._post_trade_cooldown.get(key)
             if not entry:
@@ -606,17 +504,10 @@ class PortfolioBook:
         return out
 
     def prune_expired_cooldowns(self) -> tuple:
-        """Drop expired entries from both cooldown dicts.  Returns (n_loss_pruned,
-        n_exit_pruned) for log auditing.  Called from EOD daily reset.
+        """Drop expired entries from cooldown dicts. Returns (0, n_exit_pruned)
+        for log auditing (loss slot kept as 0 for call-site compat).
         """
         now = self._now_utc()
-        loss_stale = [
-            k
-            for k, v in list(self._post_loss_cooldown.items())
-            if v.get("until_utc") and v["until_utc"] <= now
-        ]
-        for k in loss_stale:
-            self._post_loss_cooldown.pop(k, None)
         exit_stale = [
             t
             for t, v in list(self._post_exit_cooldown.items())
@@ -624,7 +515,7 @@ class PortfolioBook:
         ]
         for t in exit_stale:
             self._post_exit_cooldown.pop(t, None)
-        return (len(loss_stale), len(exit_stale))
+        return (0, len(exit_stale))
 
     def current_equity(self, prices: Optional[dict] = None) -> float:
         """Return paper_cash + long_mv - short_liability for this book.
