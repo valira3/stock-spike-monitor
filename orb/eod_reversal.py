@@ -78,14 +78,15 @@ class EodReversalConfig:
     # produce structurally negative P&L (anti-momentum applied during
     # the momentum phase); 14:00-15:00 is the inflection zone.
     entry_et_minutes: int = 15 * 60  # 15:00 ET
-    exit_et_minutes: int = 15 * 60 + 59  # 15:59 ET
-    # v9.1.108 -- no new admissions within 10 min of market close.
+    exit_et_minutes: int = 15 * 60 + 58  # 15:58 ET -- matches eod_close flush job
+    # v9.1.108 -- no new admissions past 15:50 ET (last valid entry minute).
     # Wide entry window ([15:00, 15:59)) was added in v9.1.22 so a late
     # deploy/restart could still land the entry. But a position opened at
-    # e.g. 15:52 holds for only 7 minutes -- too little time for the
+    # e.g. 15:52 holds for only 6 minutes -- too little time for the
     # reversal pattern to work. This cutoff blocks new admissions while
     # letting existing positions run to exit_et. Env: ORB_EOD_ENTRY_CUTOFF_ET.
-    entry_cutoff_et_minutes: int = 15 * 60 + 50  # 15:50 ET
+    # Stored as 15:51 so the half-open check (cur < cutoff) includes 15:50.
+    entry_cutoff_et_minutes: int = 15 * 60 + 51  # last valid entry = 15:50 ET
 
     # v9.1.1 -- live broker firing is now the default. v9.1.0 shipped
     # with fire_broker=False (paper-fire-observation) per the v8.3.23
@@ -158,8 +159,8 @@ class EodReversalConfig:
             top_n=_i("ORB_EOD_TOP_N", 1),
             notional_pct=_f("ORB_EOD_NOTIONAL_PCT", 35.0),
             entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60),
-            exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 59),
-            entry_cutoff_et_minutes=_et("ORB_EOD_ENTRY_CUTOFF_ET", 15 * 60 + 50),
+            exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 58),
+            entry_cutoff_et_minutes=_et("ORB_EOD_ENTRY_CUTOFF_ET", 15 * 60 + 51),
             fire_broker=_b("ORB_EOD_FIRE_BROKER", True),
             stop_pct=_f("ORB_EOD_STOP_PCT", 0.02),
         )
@@ -259,7 +260,7 @@ class EodReversalEngine:
 
     def is_exit_window(self, current_et_minutes: int) -> bool:
         """True if at-or-past the exit minute. Allows for late ticks to
-        still flatten if the engine was paused at 15:59.
+        still flatten if the engine was paused at 15:58.
         """
         return current_et_minutes >= self.cfg.exit_et_minutes
 

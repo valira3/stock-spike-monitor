@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.109 (2026-05-15) — EOD window alignment: entry 15:00-15:50, all closes at 15:58
+
+1. `orb/eod_reversal.py`: `exit_et_minutes` moved 15:59 → 15:58, aligning engine broker-close (`_eod_fire_broker_close`) with the scheduled `eod_close` flush job. `entry_cutoff_et_minutes` corrected to 15:51 (exclusive) so 15:50 is the last valid entry minute as intended.
+2. `trade_genius.py`: updated comment at the 15:58 schedule entry.
+3. `tests/strategy/test_orb_eod_reversal.py`: `test_exit_window_inclusive_after_15_59` → `test_exit_window_inclusive_after_15_58`; entry assertions updated (15:50 True, 15:51 False).
+
+**Window summary**: entry [15:00, 15:50] inclusive, all broker closes at 15:58 ET.
+
+---
+
 ## v9.1.108 (2026-05-15) — EOD entry cutoff at 15:50 ET; no new positions in last 10 min
 
 1. `orb/eod_reversal.py`: Added `entry_cutoff_et_minutes` field (default 15:50 ET, env `ORB_EOD_ENTRY_CUTOFF_ET`). `is_entry_window` now returns False at or past 15:50 ET, blocking new admissions within 10 minutes of market close. Existing positions hold until 15:59 exit unchanged.

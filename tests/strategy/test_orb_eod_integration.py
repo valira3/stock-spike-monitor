@@ -7,6 +7,7 @@ the scan loop:
   - get_eod_engine() returns None when disabled
   - Full one-day simulation: reset -> select -> admit -> close -> snapshot
 """
+
 import os
 import pytest
 
@@ -56,24 +57,31 @@ class TestBootstrapIntegration:
 class TestOneDayFlow:
     def test_reset_then_admit_then_close_produces_leg(self):
         eng = EodReversalEngine(
-            EodReversalConfig(), portfolio_ids=["main"],
+            EodReversalConfig(),
+            portfolio_ids=["main"],
         )
         eng.reset_for_session("2026-05-13")
         # Long pick: ORCL down -50bps from prior close
         pos = eng.admit(
-            portfolio_id="main", ticker="ORCL", side="long",
-            entry_price=200.0, equity=100_000.0,
-            rod3_bps=-50.0, entry_iso="2026-05-13T19:30:00Z",
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="2026-05-13T19:30:00Z",
         )
         assert pos.shares == 175  # 35% notional / 200 = 175
         # Exit at 15:59 ET
         leg = eng.close(
-            portfolio_id="main", ticker="ORCL",
-            exit_price=200.50, exit_iso="2026-05-13T19:59:00Z",
+            portfolio_id="main",
+            ticker="ORCL",
+            exit_price=200.50,
+            exit_iso="2026-05-13T19:59:00Z",
             exit_reason="eod_window",
         )
         assert leg is not None
-        assert leg["pnl"] == pytest.approx(175 * 0.50)   # +$87.50
+        assert leg["pnl"] == pytest.approx(175 * 0.50)  # +$87.50
         # State is consistent
         snap = eng.snapshot()
         main = snap["per_portfolio"]["main"]
@@ -84,23 +92,28 @@ class TestOneDayFlow:
 
     def test_select_admit_close_full_pipeline(self):
         eng = EodReversalEngine(
-            EodReversalConfig(), portfolio_ids=["main"],
+            EodReversalConfig(),
+            portfolio_ids=["main"],
         )
         eng.reset_for_session("2026-05-13")
         prior = {
-            "ORCL": 200, "AAPL": 200, "MSFT": 200,
-            "AVGO": 200, "NFLX": 200,
+            "ORCL": 200,
+            "AAPL": 200,
+            "MSFT": 200,
+            "AVGO": 200,
+            "NFLX": 200,
         }
         # At 15:30, ORCL down 50bps, NFLX up 80bps, rest near prior
         current = {
-            "ORCL": 199.0,    # -50 bps
-            "AAPL": 200.20,   # +10 bps
-            "MSFT": 199.80,   # -10 bps
-            "AVGO": 200.10,   #  +5 bps
-            "NFLX": 201.60,   # +80 bps
+            "ORCL": 199.0,  # -50 bps
+            "AAPL": 200.20,  # +10 bps
+            "MSFT": 199.80,  # -10 bps
+            "AVGO": 200.10,  #  +5 bps
+            "NFLX": 201.60,  # +80 bps
         }
         longs, shorts = eng.select_signals(
-            current_prices=current, prior_closes=prior,
+            current_prices=current,
+            prior_closes=prior,
         )
         # ORCL is the most-negative -> long
         # NFLX is the most-positive (within short_tickers) -> short
@@ -108,12 +121,24 @@ class TestOneDayFlow:
         assert shorts[0][0] == "NFLX"
 
         # Admit both legs
-        eng.admit(portfolio_id="main", ticker="ORCL", side="long",
-                  entry_price=current["ORCL"], equity=100_000.0,
-                  rod3_bps=longs[0][1], entry_iso="t1")
-        eng.admit(portfolio_id="main", ticker="NFLX", side="short",
-                  entry_price=current["NFLX"], equity=100_000.0,
-                  rod3_bps=shorts[0][1], entry_iso="t1")
+        eng.admit(
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=current["ORCL"],
+            equity=100_000.0,
+            rod3_bps=longs[0][1],
+            entry_iso="t1",
+        )
+        eng.admit(
+            portfolio_id="main",
+            ticker="NFLX",
+            side="short",
+            entry_price=current["NFLX"],
+            equity=100_000.0,
+            rod3_bps=shorts[0][1],
+            entry_iso="t1",
+        )
         eng.mark_attempted("main")
 
         snap = eng.snapshot()
@@ -125,10 +150,8 @@ class TestOneDayFlow:
         # Simulate the reversal: ORCL bounces +60bps, NFLX fades -40bps
         exit_orcl = 199.0 * (1.0036)
         exit_nflx = 201.60 * (0.9960)
-        eng.close(portfolio_id="main", ticker="ORCL",
-                  exit_price=exit_orcl, exit_iso="t2")
-        eng.close(portfolio_id="main", ticker="NFLX",
-                  exit_price=exit_nflx, exit_iso="t2")
+        eng.close(portfolio_id="main", ticker="ORCL", exit_price=exit_orcl, exit_iso="t2")
+        eng.close(portfolio_id="main", ticker="NFLX", exit_price=exit_nflx, exit_iso="t2")
 
         snap = eng.snapshot()
         main = snap["per_portfolio"]["main"]
@@ -144,13 +167,20 @@ class TestOneDayFlow:
 class TestMultiPortfolio:
     def test_state_is_independent_per_portfolio(self):
         eng = EodReversalEngine(
-            EodReversalConfig(), portfolio_ids=["main", "val", "gene"],
+            EodReversalConfig(),
+            portfolio_ids=["main", "val", "gene"],
         )
         eng.reset_for_session("2026-05-13")
         # main admits, val + gene don't
-        eng.admit(portfolio_id="main", ticker="ORCL", side="long",
-                  entry_price=200.0, equity=100_000.0,
-                  rod3_bps=-50.0, entry_iso="t")
+        eng.admit(
+            portfolio_id="main",
+            ticker="ORCL",
+            side="long",
+            entry_price=200.0,
+            equity=100_000.0,
+            rod3_bps=-50.0,
+            entry_iso="t",
+        )
         snap = eng.snapshot()
         assert snap["per_portfolio"]["main"]["open_count"] == 1
         assert snap["per_portfolio"]["val"]["open_count"] == 0
@@ -158,7 +188,8 @@ class TestMultiPortfolio:
 
     def test_mark_attempted_per_portfolio_independent(self):
         eng = EodReversalEngine(
-            EodReversalConfig(), portfolio_ids=["main", "val"],
+            EodReversalConfig(),
+            portfolio_ids=["main", "val"],
         )
         eng.reset_for_session("2026-05-13")
         eng.mark_attempted("main")
@@ -183,6 +214,9 @@ class TestShipSpec:
         assert cfg.notional_pct == 35.0
         # v9.1.2: entry moved 15:30 -> 15:00 per R18c sweep.
         assert cfg.entry_et_minutes == 15 * 60
-        assert cfg.exit_et_minutes == 15 * 60 + 59
+        # v9.1.109: exit moved 15:59 -> 15:58 to align with eod_close flush.
+        assert cfg.exit_et_minutes == 15 * 60 + 58
+        # v9.1.108/9: entry cutoff 15:51 (exclusive) = last valid entry 15:50.
+        assert cfg.entry_cutoff_et_minutes == 15 * 60 + 51
         # v9.1.1: live broker firing is the default (was False in v9.1.0).
         assert cfg.fire_broker is True

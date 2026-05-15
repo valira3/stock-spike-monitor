@@ -35,7 +35,10 @@ class TestConfigDefaults:
         assert cfg.notional_pct == 35.0
         # v9.1.2: entry moved 15:30 -> 15:00 per the R18c sweep.
         assert cfg.entry_et_minutes == 15 * 60
-        assert cfg.exit_et_minutes == 15 * 60 + 59
+        # v9.1.109: exit moved 15:59 -> 15:58 to align with eod_close flush.
+        assert cfg.exit_et_minutes == 15 * 60 + 58
+        # v9.1.108/9: entry cutoff 15:51 (exclusive) = last valid entry 15:50.
+        assert cfg.entry_cutoff_et_minutes == 15 * 60 + 51
         # v9.1.1: live broker firing is the default (was False in v9.1.0).
         assert cfg.fire_broker is True
 
@@ -313,8 +316,8 @@ class TestTimeWindows:
         # so a delayed scan-loop tick (deploy, cron miss, restart) can
         # still land the entry. Idempotency is via the per-portfolio
         # `entry_attempted` flag (scan.py:1390), not the time check.
-        # v9.1.108: capped at entry_cutoff_et_minutes (15:50 ET) so no
-        # new positions open within 10 min of market close.
+        # v9.1.108/9: entry window [15:00, 15:51) -- 15:50 is last valid
+        # entry minute; 15:51+ blocked. Exit at 15:58.
         e = _eng()
         # Boundary BELOW entry_et stays False.
         assert e.is_entry_window(14 * 60 + 59) is False
@@ -323,16 +326,17 @@ class TestTimeWindows:
         # Any minute in [entry_et, entry_cutoff_et) is True.
         assert e.is_entry_window(15 * 60 + 1) is True
         assert e.is_entry_window(15 * 60 + 30) is True
-        assert e.is_entry_window(15 * 60 + 49) is True
-        # v9.1.108: at/past entry_cutoff (15:50 ET) entry is blocked.
-        assert e.is_entry_window(15 * 60 + 50) is False
+        # 15:50 is the last valid entry minute (entry_cutoff exclusive = 15:51).
+        assert e.is_entry_window(15 * 60 + 50) is True
+        # 15:51+ is blocked.
+        assert e.is_entry_window(15 * 60 + 51) is False
         assert e.is_entry_window(15 * 60 + 58) is False
-        assert e.is_entry_window(15 * 60 + 59) is False
 
-    def test_exit_window_inclusive_after_15_59(self):
+    def test_exit_window_inclusive_after_15_58(self):
+        # v9.1.109: exit_et moved 15:59 -> 15:58 to align with eod_close flush.
         e = _eng()
-        assert e.is_exit_window(15 * 60 + 58) is False
-        assert e.is_exit_window(15 * 60 + 59) is True
+        assert e.is_exit_window(15 * 60 + 57) is False
+        assert e.is_exit_window(15 * 60 + 58) is True
         assert e.is_exit_window(16 * 60) is True  # late ticks still flatten
 
 
@@ -378,7 +382,7 @@ class TestSnapshot:
         snap = e.snapshot()
         # v9.1.2: entry default moved from 15:30 to 15:00.
         assert snap["config"]["entry_et"] == "15:00"
-        assert snap["config"]["exit_et"] == "15:59"
+        assert snap["config"]["exit_et"] == "15:58"
         # v9.1.1: live broker firing is the default
         assert snap["config"]["fire_broker"] is True
         assert isinstance(snap["config"]["universe"], list)
