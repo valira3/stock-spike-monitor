@@ -3,7 +3,7 @@
 Coverage: Jan 2025 - Jun 2026 for the 12-ticker ORB universe.
 Dates are the actual report date. timing: 'bmo'=before open, 'amc'=after close.
 AMC: next day's ORB fires into post-earnings vol. BMO: same day is affected.
-Last updated: 2026-05-15.
+Last updated: 2026-05-15. Refresh quarterly before each earnings season.
 """
 
 EARNINGS_CALENDAR: dict[str, list[tuple[str, str]]] = {
