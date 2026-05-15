@@ -6,9 +6,9 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ## v9.1.91 (2026-05-15) — fix notional cap to use equity instead of cash
 
-v9.1.89 clamped order shares at `0.95 * account.cash`, but `cash` is the initial deposit and does not decrease as margin positions consume buying power. On a $30k live account with 2:1 margin, `cash` stays at $30k even after NVDA consumed $40k of buying power in the same scan cycle -- so the cap computed 147 shares correctly for ORCL but still fired when `buying_power` was already partially consumed, producing a 286-share order ($55k) against ~$31k remaining.
+v9.1.89 clamped order shares at `0.95 * account.cash`. For a cash account, `cash` and `equity` can diverge when open positions affect the account balance, leading to incorrect cap calculations. The result was a 286-share ORCL order ($55k) on a $30k account.
 
-Fix: use `account.equity` (net account value, stable across concurrent orders) as the cap basis, with `account.cash` as fallback. At $30k equity, ORCL at $193 caps at 147 shares ($28.4k) regardless of what other orders fired first. Forensic log updated: `notional cap: clamp ... (equity=%.0f ...)`.
+Fix: use `account.equity` (settled cash + unrealized P&L; stable across concurrent orders) as the cap basis, with `account.cash` as fallback. At $30k equity, ORCL at $193 caps at 147 shares ($28.4k). Forensic log updated: `notional cap: clamp ... (equity=%.0f ...)`.
 
 ---
 

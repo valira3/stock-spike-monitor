@@ -1367,10 +1367,9 @@ class TradeGeniusBase:
             return False
 
         # Hard notional cap: clamp shares so order cost never exceeds 95% of
-        # account equity. Uses equity (not cash) because cash is the initial
-        # deposit and doesn't decrease as margin positions consume buying power.
-        # Equity ($30k net value) is stable across concurrent same-cycle orders
-        # and correctly bounds the position size for a small live account.
+        # account equity. Equity = settled cash + unrealized P&L and is the
+        # correct basis for a cash account. Cash alone can diverge from actual
+        # spending power when open positions affect the account balance.
         if price > 0:
             try:
                 _acct = client.get_account()
