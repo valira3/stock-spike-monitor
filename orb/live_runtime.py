@@ -1221,10 +1221,19 @@ def inject_missing_engine_positions(
     bootstrapped (returns []).
     """
     if _engine is None or _adapters is None:
+        logger.warning("[V9197-INJECT] %s: engine or adapters not bootstrapped", portfolio_id)
         return []
     adapter = _adapters.get(portfolio_id)
     rb = _engine._risk.get(portfolio_id)
-    if adapter is None or rb is None:
+    if adapter is None:
+        logger.warning("[V9197-INJECT] %s: no adapter", portfolio_id)
+        return []
+    if rb is None:
+        logger.warning(
+            "[V9197-INJECT] %s: no risk_book (portfolio_ids=%s)",
+            portfolio_id,
+            list(_engine._risk.keys()) if _engine else "N/A",
+        )
         return []
 
     from orb import risk_book as _rb_mod
@@ -1232,6 +1241,12 @@ def inject_missing_engine_positions(
 
     # Build current set of engine-tracked tickers.
     tracked = {pos.ticker.upper() for pos in adapter._open_positions.values()}
+    logger.warning(
+        "[V9197-INJECT] %s: checking %d broker positions, tracked=%s",
+        portfolio_id,
+        len(broker_positions),
+        sorted(tracked),
+    )
     injected: list[str] = []
 
     for broker_ticker, side, entry_price, qty in broker_positions:

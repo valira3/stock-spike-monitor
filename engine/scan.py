@@ -999,9 +999,9 @@ def _orb_phantom_sweep(tg) -> None:
                         _injected,
                     )
             except Exception as _ie:
-                logger.debug("[V9199-RECONCILE] %s: %s", _pid, _ie)
+                logger.warning("[V9199-RECONCILE] %s inner: %s", _pid, _ie)
     except Exception as _rce:
-        logger.debug("[V9199-RECONCILE] outer: %s", _rce)
+        logger.warning("[V9199-RECONCILE] outer: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
     # RiskBook._open_tickets where the FSM in_position is False but
     # the ticket still consumes open_risk/open_notional budget. v8.3.15

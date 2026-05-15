@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.100 (2026-05-15) — raise inject diagnostics to WARNING for Railway visibility
+
+The inject path never appeared in logs because inner exception handlers were at DEBUG level (invisible in Railway). Raised all V9197/V9199 exception paths and the inject's pre-condition checks (no adapter, no risk_book, broker_positions count) to WARNING so Railway log scan can show exactly where the inject fails.
+
+---
+
 ## v9.1.99 (2026-05-15) — fix purge/inject fight: use Alpaca tickers for purge truth
 
 v9.1.98 purge and inject were fighting each other: `held["val"]` is `ex.positions` (the executor's paper dict, empty in live mode). Using it as the broker truth for the purge meant every cycle: purge removed NFLX (not in paper dict) then inject re-added it — a constant thrash with net `engine_positions = {}`.
