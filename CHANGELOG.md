@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.89 (2026-05-15) — fix insufficient buying power: cap order notional at 95% of account cash
+
+Val live executor was sizing positions using ORB_ACCOUNT=100000 (backtest reference equity) but Val has only $30k cash. For ORCL at $193.38 this produced 346 shares ($66.9k) against $60k buying power -- Alpaca rejected with `insufficient_buying_power`.
+
+Fix: in `_submit_v10_entry`, fetch `get_account().cash` before building the `MarketOrderRequest` and clamp shares so `shares * price <= 0.95 * cash`. Logs `[V10-FIRE] notional cap: clamp` when the clamp fires. Fail-open: if `get_account` raises, original share count is used. Forensic tag: `[V10-FIRE] notional cap`.
+
+---
+
 ## v9.1.88 (2026-05-15) — auto-heal OR windows from bar archive on redeploy (any time)
 
 **Problem:** A Railway redeploy during the OR window (09:30-10:00 ET) left `bars_seen=0`, OR never locked, FSMs stuck in WARMUP, zero trades for the day. The existing `_maybe_backfill_or_window()` only handled post-OR deploys; mid-OR deploys returned early.

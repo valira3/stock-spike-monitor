@@ -1365,6 +1365,45 @@ class TradeGeniusBase:
         except Exception:
             logger.exception("[%s] [V10-FIRE] alpaca imports failed", self.NAME)
             return False
+
+        # Hard notional cap: clamp shares so order cost never exceeds 95% of
+        # available cash. The ORB risk book sizes against ORB_ACCOUNT (default
+        # $100k) which can exceed the executor's actual cash balance when the
+        # account is smaller (e.g. Val live at $30k). Without this guard the
+        # broker rejects the order with insufficient_buying_power.
+        if price > 0:
+            try:
+                _acct = client.get_account()
+                _cash = float(getattr(_acct, "cash", 0) or 0)
+                if _cash > 0:
+                    _max_shares = int(_cash * 0.95 / price)
+                    if shares > _max_shares:
+                        logger.warning(
+                            "[%s] [V10-FIRE] notional cap: clamp %s %s"
+                            " %d->%d sh (cash=%.0f price=%.2f cap=95%%)",
+                            self.NAME,
+                            side,
+                            ticker,
+                            shares,
+                            _max_shares,
+                            _cash,
+                            price,
+                        )
+                        shares = _max_shares
+                    if shares <= 0:
+                        logger.warning(
+                            "[%s] [V10-FIRE] skip %s %s -- 0 shares after cash cap"
+                            " (cash=%.0f price=%.2f)",
+                            self.NAME,
+                            side,
+                            ticker,
+                            _cash,
+                            price,
+                        )
+                        return False
+            except Exception as _ce:
+                logger.debug("[%s] [V10-FIRE] cash cap skipped: %s", self.NAME, _ce)
+
         direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
         coid = self._build_client_order_id(ticker, direction)
         order_side = OrderSide.BUY if side == "LONG" else OrderSide.SELL

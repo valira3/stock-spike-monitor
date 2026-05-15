@@ -19,6 +19,7 @@ Three audit findings addressed:
    to Telegram/dashboard. The scan-side dispatch wires this to
    callbacks.report_error.
 """
+
 from __future__ import annotations
 
 import os
@@ -53,10 +54,10 @@ alpaca_trading = pytest.importorskip("alpaca.trading.requests")
 
 
 class TestKillSwitchOnDispatch:
-
     def _import_dispatch(self):
         try:
             from engine.scan import _v10_dispatch_executor_fire
+
             return _v10_dispatch_executor_fire
         except (ModuleNotFoundError, ImportError) as e:
             if "telegram" in str(e):
@@ -68,10 +69,8 @@ class TestKillSwitchOnDispatch:
         isolated_env.setenv("ORB_LIVE_MODE", "0")
         isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
-        with patch("executors.bootstrap.get_executor",
-                   return_value=fake_ex):
-            dispatch(pid="val", side="long", ticker="AAPL",
-                     price=100.0, shares=10)
+        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
+            dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
         fake_ex.fire_long.assert_not_called()
         fake_ex.fire_short.assert_not_called()
 
@@ -81,10 +80,8 @@ class TestKillSwitchOnDispatch:
         isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_long.return_value = True
-        with patch("executors.bootstrap.get_executor",
-                   return_value=fake_ex):
-            dispatch(pid="val", side="long", ticker="AAPL",
-                     price=100.0, shares=10)
+        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
+            dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
         fake_ex.fire_long.assert_called_once()
 
     def test_portfolio_fire_off_overrides_live_mode_on(self, isolated_env):
@@ -92,10 +89,8 @@ class TestKillSwitchOnDispatch:
         isolated_env.setenv("ORB_LIVE_MODE", "1")
         isolated_env.setenv("ORB_PORTFOLIO_FIRE", "0")
         fake_ex = MagicMock()
-        with patch("executors.bootstrap.get_executor",
-                   return_value=fake_ex):
-            dispatch(pid="val", side="long", ticker="AAPL",
-                     price=100.0, shares=10)
+        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
+            dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
         fake_ex.fire_long.assert_not_called()
 
 
@@ -103,9 +98,7 @@ class TestKillSwitchOnDispatch:
 
 
 class TestAtomicBootstrap:
-
-    def test_partial_init_does_not_leak_engine(self, isolated_env,
-                                               monkeypatch):
+    def test_partial_init_does_not_leak_engine(self, isolated_env, monkeypatch):
         """If LiveAdapterRegistry constructor raises after OrbEngine
         succeeds, the module should NOT have _engine set with no
         adapters -- _bootstrapped stays False and _engine is None.
@@ -137,6 +130,7 @@ class TestAtomicBootstrap:
         complete; subsequent state is consistent (_bootstrapped True,
         single _engine instance)."""
         from orb import live_runtime as lr
+
         barrier = threading.Barrier(2)
         results = []
 
@@ -147,8 +141,10 @@ class TestAtomicBootstrap:
 
         t1 = threading.Thread(target=_go)
         t2 = threading.Thread(target=_go)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
         assert lr._bootstrapped is True
         assert lr._engine is not None
@@ -160,7 +156,6 @@ class TestAtomicBootstrap:
 
 
 class TestSizesLock:
-
     def test_stash_and_consume_basic(self, isolated_env):
         live_runtime.bootstrap()
         live_runtime.stash_v10_size("main", "AAPL", 100)
@@ -192,8 +187,9 @@ class TestSizesLock:
                 except Exception as e:
                     errors.append(("consume", e))
 
-        threads = [threading.Thread(target=stasher) for _ in range(3)] + \
-                  [threading.Thread(target=consumer) for _ in range(3)]
+        threads = [threading.Thread(target=stasher) for _ in range(3)] + [
+            threading.Thread(target=consumer) for _ in range(3)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -207,6 +203,7 @@ class TestSizesLock:
 
 def _make_stub_base():
     from executors.base import TradeGeniusBase
+
     inst = TradeGeniusBase.__new__(TradeGeniusBase)
     inst.NAME = "VAL"
     inst.ENV_PREFIX = "VAL_"
@@ -218,14 +215,27 @@ def _make_stub_base():
     return inst
 
 
-class TestFireErrorCallback:
+def _stub_client_with_cash(cash: float = 200_000.0) -> MagicMock:
+    """Return a mock Alpaca client whose get_account() has enough cash to
+    pass the 95%-of-cash notional cap for small test orders."""
+    c = MagicMock()
+    fake_order = MagicMock()
+    fake_order.id = "order-abc-123"
+    c.submit_order.return_value = fake_order
+    fake_acct = MagicMock()
+    fake_acct.cash = cash
+    fake_acct.equity = cash
+    fake_acct.buying_power = cash * 2
+    c.get_account.return_value = fake_acct
+    return c
 
+
+class TestFireErrorCallback:
     def test_error_callback_invoked_on_broker_exception(self):
         inst = _make_stub_base()
-        fake_client = MagicMock()
+        fake_client = _stub_client_with_cash()
         inst._ensure_client = MagicMock(return_value=fake_client)
-        inst._submit_order_idempotent = MagicMock(
-            side_effect=RuntimeError("alpaca 503"))
+        inst._submit_order_idempotent = MagicMock(side_effect=RuntimeError("alpaca 503"))
         inst._build_client_order_id = MagicMock(return_value="VAL-COID")
         inst._record_position = MagicMock()
 
@@ -234,17 +244,15 @@ class TestFireErrorCallback:
         def cb(name, side, ticker, shares, exc):
             captured.append((name, side, ticker, shares, type(exc).__name__))
 
-        ok = inst.fire_long("AAPL", price=100.0, shares=50,
-                            error_callback=cb)
+        ok = inst.fire_long("AAPL", price=100.0, shares=50, error_callback=cb)
         assert ok is False
         assert captured == [("VAL", "LONG", "AAPL", 50, "RuntimeError")]
 
     def test_error_callback_failure_does_not_propagate(self):
         inst = _make_stub_base()
-        fake_client = MagicMock()
+        fake_client = _stub_client_with_cash()
         inst._ensure_client = MagicMock(return_value=fake_client)
-        inst._submit_order_idempotent = MagicMock(
-            side_effect=RuntimeError("alpaca 503"))
+        inst._submit_order_idempotent = MagicMock(side_effect=RuntimeError("alpaca 503"))
         inst._build_client_order_id = MagicMock(return_value="VAL-COID")
         inst._record_position = MagicMock()
 
@@ -252,16 +260,14 @@ class TestFireErrorCallback:
             raise ValueError("error-callback bug")
 
         # Should not propagate the bad_cb error; fire_long still returns False
-        ok = inst.fire_long("AAPL", price=100.0, shares=50,
-                            error_callback=bad_cb)
+        ok = inst.fire_long("AAPL", price=100.0, shares=50, error_callback=bad_cb)
         assert ok is False
 
     def test_no_callback_is_safe(self):
         inst = _make_stub_base()
-        fake_client = MagicMock()
+        fake_client = _stub_client_with_cash()
         inst._ensure_client = MagicMock(return_value=fake_client)
-        inst._submit_order_idempotent = MagicMock(
-            side_effect=RuntimeError("alpaca 503"))
+        inst._submit_order_idempotent = MagicMock(side_effect=RuntimeError("alpaca 503"))
         inst._build_client_order_id = MagicMock(return_value="VAL-COID")
 
         ok = inst.fire_long("AAPL", price=100.0, shares=50)
@@ -283,18 +289,21 @@ class TestFireErrorCallback:
         # error_callback the dispatch supplies.
         def fake_fire_long(ticker, price, shares, *, error_callback=None):
             if error_callback:
-                error_callback("VAL", "LONG", ticker, shares,
-                               RuntimeError("alpaca 503"))
+                error_callback("VAL", "LONG", ticker, shares, RuntimeError("alpaca 503"))
             return False
+
         fake_ex = MagicMock()
         fake_ex.fire_long.side_effect = fake_fire_long
 
         callbacks = MagicMock()
-        with patch("executors.bootstrap.get_executor",
-                   return_value=fake_ex):
+        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             _v10_dispatch_executor_fire(
-                pid="val", side="long", ticker="AAPL",
-                price=100.0, shares=10, callbacks=callbacks,
+                pid="val",
+                side="long",
+                ticker="AAPL",
+                price=100.0,
+                shares=10,
+                callbacks=callbacks,
             )
 
         callbacks.report_error.assert_called_once()
