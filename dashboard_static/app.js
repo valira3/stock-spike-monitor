@@ -378,7 +378,7 @@
     const _mainPosN = positions.length + _eodMainTickers.length;
     $("pos-count").textContent = `· ${_mainPosN}`;
     const _mainBadge = document.getElementById("tg-badge-main");
-    if (_mainBadge) _mainBadge.textContent = _mainPosN > 0 ? `[${_mainPosN}]` : "";
+    if (_mainBadge) _mainBadge.textContent = _mainPosN > 0 ? `${_mainPosN}` : "";
     const body = $("pos-body");
     // v7.89.0 -- port-strip / port-strip-empty footer blocks were
     // retired from the Open Positions card. Equity now lives in the
@@ -4653,7 +4653,7 @@
     const mode = (data.mode === "live") ? "live" : "paper";
     const _posN = Array.isArray(data.positions) ? data.positions.length : 0;
     const _posTag = _posN > 0
-      ? `<span style="color:#fbbf24;font-weight:600;margin-left:5px">[${_posN}]</span>`
+      ? `<span style="color:#fbbf24;font-weight:600;margin-left:5px">${_posN}</span>`
       : "";
     if (mode === "live") {
       el.innerHTML =

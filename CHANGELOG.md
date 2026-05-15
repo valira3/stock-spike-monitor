@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.94 (2026-05-15) — drop brackets from tab position count
+
+Follow-up to v9.1.93: bare number instead of `[N]`. `Val live 1` not `Val live [1]`.
+
+---
+
 ## v9.1.93 (2026-05-15) — show open position count on each tab
 
 Tab headings now show a gold `[N]` badge when a portfolio has open positions:
