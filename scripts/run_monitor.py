@@ -74,12 +74,10 @@ _RAILWAY_HEADERS = {
     "Referer": "https://railway.app/",
 }
 
-# Patterns that indicate a real error in Railway logs (not just INFO traffic)
-_RAILWAY_ERROR_PATTERNS = (
-    "Traceback (most recent call last)",
-    "CRITICAL",
-    "FATAL",
-)
+# Railway returns severity="ERROR" for ALL log lines regardless of actual level.
+# Detect real errors by parsing the embedded log level in the message content.
+_RAILWAY_ERROR_MSG_MARKERS = ("[ERROR]", "[CRITICAL]", "[FATAL]")
+_RAILWAY_ERROR_CONTENT = ("Traceback (most recent call last)",)
 
 
 def _railway_gql(query: str) -> dict:
@@ -152,8 +150,10 @@ def _check_railway_logs() -> list[dict]:
             if ts_epoch <= _railway_log_cursor:
                 continue
 
-            is_error = sev in ("ERROR", "CRITICAL", "EMERGENCY", "ALERT") or any(
-                p in msg for p in _RAILWAY_ERROR_PATTERNS
+            # Railway severity field is unreliable (returns ERROR for INFO lines).
+            # Parse the actual level embedded in the message text instead.
+            is_error = any(m in msg for m in _RAILWAY_ERROR_MSG_MARKERS) or any(
+                p in msg for p in _RAILWAY_ERROR_CONTENT
             )
             if is_error:
                 errors.append(

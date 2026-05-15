@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.85 (2026-05-15) — fix Railway log error detection: ignore INFO lines
+
+Railway GraphQL returns `severity="ERROR"` for all log lines regardless of actual level. v9.1.84's detection fired CRIT on every INFO request log. Fix: ignore the severity field entirely and parse the embedded log level from the message text instead — only flag lines containing `[ERROR]`, `[CRITICAL]`, `[FATAL]`, or `Traceback (most recent call last)`.
+
+---
+
 ## v9.1.84 (2026-05-15) — monitor: Railway log error detection on every tick
 
 `scripts/run_monitor.py` now fetches the last 40 Railway deployment log lines on every tick via the GraphQL API (`RAILWAY_API_TOKEN` + `RAILWAY_SERVICE_ID` from `.env.monitor`). Any line matching ERROR/CRITICAL severity or containing `Traceback`, `CRITICAL`, or `FATAL` is injected as a `CRIT` check into the report and triggers a Telegram alert (subject to the existing 30-min dedup window). Cursor is seeded to "now" at startup so only errors occurring after the monitor starts are reported.
