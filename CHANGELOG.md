@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.110 (2026-05-15) — fix Main Day P&L missing EOD P&L after redeploy
+
+Root cause: both Day P&L paths (`snapshot()` legacy block + `_build_portfolio_block`) read `_eod_eng._states["main"].realized_pnl_today` from in-memory engine state, which resets to 0 on every Railway redeploy. Today's Trades correctly fell back to `eod_trade_log.jsonl`, so EOD trades appeared in the table but NOT in the P&L tile.
+
+1. `dashboard_server.py`: Added `_eod_realized_pnl_today(pid, today_s)` — tries in-memory first; if 0, reads `eod_trade_log.jsonl` filtered by pid + exit_iso ET date. Wired into both `snapshot()` and `_build_portfolio_block` replacing the direct `realized_pnl_today` reads. Unrealized from open EOD positions still reads from in-memory (correct — no open positions post-close, so 0).
+
+---
+
 ## v9.1.109 (2026-05-15) — EOD window alignment: entry 15:00-15:50, all closes at 15:58
 
 1. `orb/eod_reversal.py`: `exit_et_minutes` moved 15:59 → 15:58, aligning engine broker-close (`_eod_fire_broker_close`) with the scheduled `eod_close` flush job. `entry_cutoff_et_minutes` corrected to 15:51 (exclusive) so 15:50 is the last valid entry minute as intended.

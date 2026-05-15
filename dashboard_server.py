@@ -407,8 +407,11 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
             # v8.3.7 -- realized P&L now merges in-memory + on-disk.
             realized = _compute_realized_pnl_today(m, today_s)
             unreal = sum(r.get("unrealized", 0.0) for r in _serialize_positions(longs, shorts, _px))
-            # v9.1.105 -- add EOD reversal P&L so Main's Day P&L tile
+            # v9.1.105/110 -- add EOD reversal P&L so Main's Day P&L tile
             # reflects both morning ORB and EOD contributions.
+            # v9.1.110: _eod_realized_pnl_today() falls back to
+            # eod_trade_log.jsonl so P&L survives Railway redeploys.
+            realized += _eod_realized_pnl_today("main", today_s)
             try:
                 import orb.live_runtime as _rt_eod_pnl
 
@@ -416,7 +419,6 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
                 if _eod_eng_pnl is not None:
                     _eod_st_pnl = _eod_eng_pnl._states.get("main")
                     if _eod_st_pnl is not None:
-                        realized += float(_eod_st_pnl.realized_pnl_today or 0)
                         for _ep_pnl in _eod_st_pnl.open_positions.values():
                             _epx_pnl = (_px or {}).get(_ep_pnl.ticker.upper())
                             if isinstance(_epx_pnl, (int, float)) and _epx_pnl > 0:
@@ -846,6 +848,68 @@ def _compute_realized_pnl_today(m, today_s: str) -> float:
             continue
         realized_keys.add((tk, exit_et))
     return realized
+
+
+def _eod_realized_pnl_today(pid: str, today_s: str) -> float:
+    """v9.1.110 -- EOD reversal realized P&L for today, with JSONL fallback.
+
+    Primary: _eod_eng._states[pid].realized_pnl_today (fast, in-memory).
+    Fallback: eod_trade_log.jsonl filtered by pid + exit_iso date in ET.
+
+    The in-memory state resets to 0 on every Railway redeploy. The JSONL
+    is written synchronously per close by _eod_append_trade_log in
+    engine/scan.py and survives redeploys. This mirrors the pattern used
+    by _compute_realized_pnl_today for ORB trades.
+    """
+    try:
+        import orb.live_runtime as _rt_eod_r
+
+        _eod_eng_r = _rt_eod_r.get_eod_engine()
+        if _eod_eng_r is not None:
+            _eod_st_r = _eod_eng_r._states.get(pid)
+            if _eod_st_r is not None and _eod_st_r.realized_pnl_today != 0:
+                return float(_eod_st_r.realized_pnl_today)
+    except Exception:
+        pass
+    # Fallback: read from persistent JSONL.
+    try:
+        import json as _json_eod
+        import os as _os_eod
+        from datetime import datetime as _dt_eod
+        from zoneinfo import ZoneInfo as _tz_eod
+
+        _et_zone = _tz_eod("US/Eastern")
+        _path = _os_eod.environ.get("EOD_TRADE_LOG_FILE", "/data/eod_trade_log.jsonl")
+        if not _os_eod.path.exists(_path):
+            return 0.0
+        total = 0.0
+        with open(_path, encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _leg = _json_eod.loads(_line)
+                except Exception:
+                    continue
+                if (_leg.get("portfolio_id") or "").lower() != pid.lower():
+                    continue
+                _exit_iso = _leg.get("exit_iso") or ""
+                try:
+                    _exit_et_date = _dt_eod.fromisoformat(
+                        _exit_iso.replace("Z", "+00:00")
+                    ).astimezone(_et_zone).strftime("%Y-%m-%d")
+                except Exception:
+                    continue
+                if _exit_et_date != today_s:
+                    continue
+                try:
+                    total += float(_leg.get("pnl", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    pass
+        return total
+    except Exception:
+        return 0.0
 
 
 def _today_trades() -> list[dict]:
@@ -1909,8 +1973,10 @@ def snapshot() -> dict[str, Any]:
         unreal_sum = 0.0
         for row in _serialize_positions(longs, shorts, prices):
             unreal_sum += row["unrealized"]
-        # v9.1.105 -- add EOD P&L to top-level Day P&L tile (same fix
-        # as _build_portfolio_block for portfolios.main).
+        # v9.1.105/110 -- add EOD P&L to top-level Day P&L tile.
+        # v9.1.110: uses _eod_realized_pnl_today() which falls back to
+        # eod_trade_log.jsonl after a redeploy (in-memory resets to 0).
+        realized += _eod_realized_pnl_today("main", today)
         try:
             import orb.live_runtime as _rt_eod_snap
 
@@ -1918,7 +1984,6 @@ def snapshot() -> dict[str, Any]:
             if _eod_eng_snap is not None:
                 _eod_st_snap = _eod_eng_snap._states.get("main")
                 if _eod_st_snap is not None:
-                    realized += float(_eod_st_snap.realized_pnl_today or 0)
                     for _ep_snap in _eod_st_snap.open_positions.values():
                         _epx_snap = prices.get(_ep_snap.ticker.upper())
                         if isinstance(_epx_snap, (int, float)) and _epx_snap > 0:
