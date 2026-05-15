@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.99 (2026-05-15) — fix purge/inject fight: use Alpaca tickers for purge truth
+
+v9.1.98 purge and inject were fighting each other: `held["val"]` is `ex.positions` (the executor's paper dict, empty in live mode). Using it as the broker truth for the purge meant every cycle: purge removed NFLX (not in paper dict) then inject re-added it — a constant thrash with net `engine_positions = {}`.
+
+Fix: fetch Alpaca positions first, build `_alpaca_tickers` set, use that for both purge (authoritative broker truth) and inject. Now NFLX stays in `engine_positions` across cycles because it IS in the Alpaca set → not purged + not re-injected.
+
+---
+
 ## v9.1.98 (2026-05-15) — fix reconciliation missing state-restored phantoms + None entry price
 
 Two bugs in v9.1.96/v9.1.97 reconciliation:

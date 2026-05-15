@@ -945,9 +945,11 @@ def _orb_phantom_sweep(tg) -> None:
             len(cleared),
             cleared,
         )
-    # v9.1.96/v9.1.97 -- bi-directional engine ↔ broker reconciliation.
-    # Purge phantom engine positions (in engine, not in broker) and inject
-    # missing ones (in broker, not in engine). Uses executor Alpaca positions.
+    # v9.1.96/v9.1.97/v9.1.99 -- bi-directional engine ↔ broker reconciliation.
+    # Key fix: held["val"] = ex.positions (paper dict, empty in live mode), NOT
+    # Alpaca positions. Using it for the purge caused every injected position to
+    # be re-purged on the next cycle. Now we fetch Alpaca positions first and use
+    # them as the authoritative broker truth for BOTH purge and inject.
     try:
         from orb.live_runtime import (
             purge_phantom_engine_positions,
@@ -956,49 +958,50 @@ def _orb_phantom_sweep(tg) -> None:
         from executors.bootstrap import get_executor as _get_ex
 
         for _pid in ("val", "gene"):
-            _broker_held = held.get(_pid)
-            if _broker_held is None:
-                continue  # executor unavailable
-            # Purge: engine has it, broker doesn't.
-            _purged = purge_phantom_engine_positions(_pid, frozenset(_broker_held))
-            if _purged:
-                logger.warning(
-                    "[V9196-RECONCILE] %s: purged %d phantom adapter position(s): %s",
-                    _pid,
-                    len(_purged),
-                    _purged,
-                )
-            # Inject: broker has it, engine doesn't.
+            if held.get(_pid) is None:
+                continue  # executor unavailable (get_executor returned None)
             _ex = _get_ex(_pid)
-            if _ex is not None:
-                try:
-                    _client = _ex._ensure_client()
-                    if _client is not None:
-                        _alpaca_pos = _client.get_all_positions()
-                        _broker_tuples = []
-                        for _bp in _alpaca_pos or []:
-                            _sym = (getattr(_bp, "symbol", "") or "").upper()
-                            _side = str(getattr(_bp, "side", "") or "").lower()
-                            # avg_entry_price is sometimes None for restored positions;
-                            # fall back to current_price as a reasonable entry proxy.
-                            _entry = float(getattr(_bp, "avg_entry_price", 0) or 0)
-                            if not _entry:
-                                _entry = float(getattr(_bp, "current_price", 0) or 0)
-                            _qty = int(float(getattr(_bp, "qty", 0) or 0))
-                            if _sym and _qty > 0:
-                                _broker_tuples.append((_sym, _side, _entry, _qty))
-                        _injected = inject_missing_engine_positions(_pid, _broker_tuples)
-                        if _injected:
-                            logger.warning(
-                                "[V9197-INJECT] %s: injected %d missing engine position(s): %s",
-                                _pid,
-                                len(_injected),
-                                _injected,
-                            )
-                except Exception as _ie:
-                    logger.debug("[V9197-INJECT] %s fetch failed: %s", _pid, _ie)
+            if _ex is None:
+                continue
+            try:
+                _client = _ex._ensure_client()
+                if _client is None:
+                    continue
+                _alpaca_pos = _client.get_all_positions()
+                _broker_tuples = []
+                _alpaca_tickers: set[str] = set()
+                for _bp in _alpaca_pos or []:
+                    _sym = (getattr(_bp, "symbol", "") or "").upper()
+                    _side = str(getattr(_bp, "side", "") or "").lower()
+                    _entry = float(getattr(_bp, "avg_entry_price", 0) or 0)
+                    if not _entry:
+                        _entry = float(getattr(_bp, "current_price", 0) or 0)
+                    _qty = int(float(getattr(_bp, "qty", 0) or 0))
+                    if _sym and _qty > 0:
+                        _broker_tuples.append((_sym, _side, _entry, _qty))
+                        _alpaca_tickers.add(_sym)
+                # Purge uses ALPACA tickers as truth (not paper positions).
+                _purged = purge_phantom_engine_positions(_pid, frozenset(_alpaca_tickers))
+                if _purged:
+                    logger.warning(
+                        "[V9196-RECONCILE] %s: purged %d phantom adapter position(s): %s",
+                        _pid,
+                        len(_purged),
+                        _purged,
+                    )
+                # Inject Alpaca positions missing from engine.
+                _injected = inject_missing_engine_positions(_pid, _broker_tuples)
+                if _injected:
+                    logger.warning(
+                        "[V9197-INJECT] %s: injected %d missing engine position(s): %s",
+                        _pid,
+                        len(_injected),
+                        _injected,
+                    )
+            except Exception as _ie:
+                logger.debug("[V9199-RECONCILE] %s: %s", _pid, _ie)
     except Exception as _rce:
-        logger.debug("[V9196-RECONCILE] failed: %s", _rce)
+        logger.debug("[V9199-RECONCILE] outer: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
     # RiskBook._open_tickets where the FSM in_position is False but
     # the ticket still consumes open_risk/open_notional budget. v8.3.15
