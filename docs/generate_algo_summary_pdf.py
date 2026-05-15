@@ -64,11 +64,11 @@ def build():
     strat_data = [
         ["", "Morning ORB", "EOD Reversal"],
         ["Window",        "9:30 – 11:00 ET",       "15:00 – 15:58 ET"],
-        ["Entry signal",  "30-min opening range\nbreakout (long or short)", "Mean-reversion rank\n(ROD3 across 5 tickers)"],
+        ["Entry signal",  "30-min opening range\nbreakout (long or short)", "Mean-reversion rank\n(ROD3 across 6 tickers)"],
         ["Exit",          "2.5R target · ATR stop\nPartial at 1R → BE runner", "Market-on-close\nat 15:58 ET"],
         ["Stop",          "ATR(14) × 1.75 from entry", "2% from entry price"],
         ["Position size", "1% risk per trade\n≤75% of account notional", "35% notional per leg\n(1 long + 1 short)"],
-        ["Universe",      "AAPL AMZN AVGO GOOG\nMETA MSFT NFLX NVDA\nORCL QQQ SPY TSLA", "ORCL AAPL MSFT AVGO NFLX\n(long fence: ORCL AAPL MSFT AVGO)\n(short fence: ORCL NFLX AAPL MSFT)"],
+        ["Universe",      "AAPL AMZN AVGO GOOG\nMETA MSFT NFLX NVDA\nORCL QQQ SPY TSLA", "ORCL AAPL MSFT AVGO NFLX TSLA\n(long: ORCL AAPL MSFT AVGO TSLA)\n(short: ORCL NFLX AAPL MSFT TSLA)"],
         ["Max trades/day","5",                       "2 (1 long + 1 short)"],
         ["Ann P&L (17mo)","$33,884",                 "$12,620"],
     ]
