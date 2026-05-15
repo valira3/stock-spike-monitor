@@ -649,6 +649,7 @@
           var _unrTxt = Number.isFinite(_unrNum) ? fmtUsd(_unrNum) : '—';
           var _pctTxt = Number.isFinite(ep.unrealized_pct) ? fmtPct(ep.unrealized_pct) : '—';
           var _unrCls = Number.isFinite(_unrNum) ? (_unrNum >= 0 ? 'delta-up' : 'delta-down') : '';
+          var _stopTxt = (ep.stop_price != null && Number.isFinite(ep.stop_price)) ? fmtPx(ep.stop_price) : '—';
           return '<tr data-pos-ticker="' + escapeHtml(tk) + '">' +
             '<td><span class="ticker">' + escapeHtml(tk) + '</span><span class="eod-badge">EOD</span></td>' +
             '<td><span class="' + _sc + '">' + _sl + '</span></td>' +
@@ -656,7 +657,7 @@
             '<td class="right">' + fmtPx(ep.entry_price) + '</td>' +
             '<td class="right">' + _markTxt + '</td>' +
             '<td class="right">' + _nt + '</td>' +
-            '<td class="right">—</td>' +
+            '<td class="right">' + _stopTxt + '</td>' +
             '<td class="right">—</td>' +
             '<td class="right ' + _unrCls + '">' + _unrTxt + '</td>' +
             '<td class="right ' + _unrCls + '">' + _pctTxt + '</td>' +

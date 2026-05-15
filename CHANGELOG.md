@@ -4,6 +4,19 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.104 (2026-05-15) — EOD intraday stop at 2% + stop shown on UI
+
+Backtest sweep confirmed 2% is the optimal EOD stop (14,218/yr vs 13,953 at 1.5%, 14,074 at 2.5%). Production `EodReversalEngine` previously had no intraday stop — positions just held to 15:59 ET regardless of price movement.
+
+Changes:
+- `EodReversalConfig.stop_pct = 0.02` (default, env: `ORB_EOD_STOP_PCT`); set to 0 to disable.
+- `EodPosition.stop_price` computed at admit time: `entry * (1 ± stop_pct)`.
+- `_eod_reversal_pass` in `engine/scan.py`: stop checked every scan cycle during hold window (15:00-15:58 ET). If current_price breaches stop, closes position and fires broker close. Forensic tag: `[V910-EOD-STOP]`.
+- `_eod_positions_for_pid` now includes `stop_price` field in API response.
+- Dashboard EOD position row: STOP column now shows actual stop price instead of `—`.
+
+---
+
 ## v9.1.103 (2026-05-15) — fix cumulative notional cap: check total open notional vs equity
 
 v9.1.91 capped each individual order at 95% of equity, but didn't account for positions already open. A small account (Val at $30k) could have NFLX SHORT ($28k notional) and then an EOD position fires at $35k — combined total $63k >> $30k equity.

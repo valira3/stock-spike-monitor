@@ -1655,6 +1655,48 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                     _eod_fire_broker(callbacks, pid, ticker, "short", price, pos.shares)
             eod.mark_attempted(pid)
 
+    # --- v9.1.104: intraday stop check (runs every scan cycle during hold) ---
+    if not eod.is_exit_window(cur_min):
+        from datetime import datetime as _dt_s, timezone as _tz_s
+
+        _stop_iso = _dt_s.now(_tz_s.utc).isoformat()
+        for _spid, _sst in list(eod._states.items()):
+            for _stk, _spos in list(_sst.open_positions.items()):
+                if _spos.stop_price <= 0:
+                    continue
+                try:
+                    _sbars = callbacks.fetch_1min_bars(_stk)
+                    _spx = _sbars.get("current_price") if _sbars else None
+                    if not isinstance(_spx, (int, float)) or _spx <= 0:
+                        continue
+                    _hit = (_spos.side == "long" and _spx <= _spos.stop_price) or (
+                        _spos.side == "short" and _spx >= _spos.stop_price
+                    )
+                    if _hit:
+                        logger.warning(
+                            "[V910-EOD-STOP] %s %s %s stop=%.4f mark=%.4f",
+                            _spid,
+                            _stk,
+                            _spos.side,
+                            _spos.stop_price,
+                            _spx,
+                        )
+                        _sleg = eod.close(
+                            portfolio_id=_spid,
+                            ticker=_stk,
+                            exit_price=float(_spx),
+                            exit_iso=_stop_iso,
+                            exit_reason="stop",
+                        )
+                        if _sleg is not None:
+                            _eod_append_trade_log(_sleg)
+                        if _sleg is not None and eod.cfg.fire_broker:
+                            _eod_fire_broker_close(
+                                callbacks, _spid, _stk, _spos.side, float(_spx), _spos.shares
+                            )
+                except Exception as _se:
+                    logger.debug("[V910-EOD-STOP] %s/%s check failed: %s", _spid, _stk, _se)
+
     # --- exit window ---
     if eod.is_exit_window(cur_min):
         from datetime import datetime as _dt3, timezone as _tz3

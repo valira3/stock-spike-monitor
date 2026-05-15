@@ -30,6 +30,7 @@ Look-ahead audit (rule #7b):
   - Selection runs at 15:30 ET; entries fill on the 15:30 bar open.
   - Exit fires at 15:59 ET on the close print of that minute.
 """
+
 from __future__ import annotations
 
 import logging
@@ -76,8 +77,8 @@ class EodReversalConfig:
     # $+31,282/yr / 0/5 neg quarters. Entry windows before 14:00
     # produce structurally negative P&L (anti-momentum applied during
     # the momentum phase); 14:00-15:00 is the inflection zone.
-    entry_et_minutes: int = 15 * 60        # 15:00 ET
-    exit_et_minutes: int = 15 * 60 + 59    # 15:59 ET
+    entry_et_minutes: int = 15 * 60  # 15:00 ET
+    exit_et_minutes: int = 15 * 60 + 59  # 15:59 ET
 
     # v9.1.1 -- live broker firing is now the default. v9.1.0 shipped
     # with fire_broker=False (paper-fire-observation) per the v8.3.23
@@ -87,6 +88,10 @@ class EodReversalConfig:
     # existing executor surface. Operator can revert by setting
     # ORB_EOD_FIRE_BROKER=0 in Railway env (no redeploy required).
     fire_broker: bool = True
+    # v9.1.104 -- intraday stop. 2% from entry matches the backtest
+    # default (AFT_STOP_PCT=0.02) which is the sweep-optimal value.
+    # Set ORB_EOD_STOP_PCT=0 to disable.
+    stop_pct: float = 0.02
 
     @classmethod
     def from_env(cls) -> "EodReversalConfig":
@@ -102,6 +107,7 @@ class EodReversalConfig:
           ORB_EOD_ENTRY_ET=15:30
           ORB_EOD_EXIT_ET=15:59
         """
+
         def _b(name: str, default: bool) -> bool:
             v = os.environ.get(name)
             if v is None:
@@ -138,17 +144,15 @@ class EodReversalConfig:
 
         return cls(
             enabled=_b("ORB_EOD_REVERSAL_ENABLED", True),
-            universe=_t("ORB_EOD_UNIVERSE",
-                       ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX")),
-            long_tickers=_t("ORB_EOD_LONG_TICKERS",
-                            ("ORCL", "AAPL", "MSFT", "AVGO")),
-            short_tickers=_t("ORB_EOD_SHORT_TICKERS",
-                             ("ORCL", "NFLX", "AAPL", "MSFT")),
+            universe=_t("ORB_EOD_UNIVERSE", ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX")),
+            long_tickers=_t("ORB_EOD_LONG_TICKERS", ("ORCL", "AAPL", "MSFT", "AVGO")),
+            short_tickers=_t("ORB_EOD_SHORT_TICKERS", ("ORCL", "NFLX", "AAPL", "MSFT")),
             top_n=_i("ORB_EOD_TOP_N", 1),
             notional_pct=_f("ORB_EOD_NOTIONAL_PCT", 35.0),
             entry_et_minutes=_et("ORB_EOD_ENTRY_ET", 15 * 60),
             exit_et_minutes=_et("ORB_EOD_EXIT_ET", 15 * 60 + 59),
             fire_broker=_b("ORB_EOD_FIRE_BROKER", True),
+            stop_pct=_f("ORB_EOD_STOP_PCT", 0.02),
         )
 
 
@@ -158,26 +162,29 @@ class EodReversalConfig:
 @dataclass
 class EodPosition:
     """A single open EOD reversal leg. Tracked per-portfolio."""
+
     portfolio_id: str
     ticker: str
-    side: str                   # "long" | "short"
+    side: str  # "long" | "short"
     entry_price: float
     shares: int
     entry_iso: str
-    rod3_bps: float             # signal magnitude at entry
+    rod3_bps: float  # signal magnitude at entry
     notional_at_entry: float
+    stop_price: float = 0.0  # v9.1.104 -- intraday stop; 0 = disabled
 
 
 @dataclass
 class EodSessionState:
     """Per-portfolio state for one trading session."""
+
     portfolio_id: str
     date_iso: str = ""
-    entry_attempted: bool = False    # set once we've evaluated 15:30 signal
+    entry_attempted: bool = False  # set once we've evaluated 15:30 signal
     open_positions: dict = field(default_factory=dict)  # ticker -> EodPosition
     realized_pnl_today: float = 0.0
-    closed_legs: list = field(default_factory=list)     # exit records
-    rejected_count: int = 0          # tickers that signaled but didn't fire
+    closed_legs: list = field(default_factory=list)  # exit records
+    rejected_count: int = 0  # tickers that signaled but didn't fire
 
 
 # ---------- engine ----------
@@ -193,8 +200,7 @@ class EodReversalEngine:
         self.cfg = cfg
         self.portfolio_ids = list(portfolio_ids)
         self._states: dict[str, EodSessionState] = {
-            pid: EodSessionState(portfolio_id=pid)
-            for pid in self.portfolio_ids
+            pid: EodSessionState(portfolio_id=pid) for pid in self.portfolio_ids
         }
         self._session_date: str = ""
 
@@ -205,10 +211,10 @@ class EodReversalEngine:
         self._session_date = date_iso
         for pid in self.portfolio_ids:
             self._states[pid] = EodSessionState(
-                portfolio_id=pid, date_iso=date_iso,
+                portfolio_id=pid,
+                date_iso=date_iso,
             )
-        logger.info("[V910-EOD-RESET] date=%s portfolios=%s",
-                    date_iso, self.portfolio_ids)
+        logger.info("[V910-EOD-RESET] date=%s portfolios=%s", date_iso, self.portfolio_ids)
 
     def is_entry_window(self, current_et_minutes: int) -> bool:
         """True if current ET minute is at-or-after entry_et AND before exit_et.
@@ -235,11 +241,7 @@ class EodReversalEngine:
         and worth a follow-up sweep, but late-entry-better-than-no-
         entry is the immediate trade.
         """
-        return (
-            self.cfg.entry_et_minutes
-            <= current_et_minutes
-            < self.cfg.exit_et_minutes
-        )
+        return self.cfg.entry_et_minutes <= current_et_minutes < self.cfg.exit_et_minutes
 
     def is_exit_window(self, current_et_minutes: int) -> bool:
         """True if at-or-past the exit minute. Allows for late ticks to
@@ -247,9 +249,12 @@ class EodReversalEngine:
         """
         return current_et_minutes >= self.cfg.exit_et_minutes
 
-    def select_signals(self, *, current_prices: dict[str, float],
-                       prior_closes: dict[str, float],
-                       ) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    def select_signals(
+        self,
+        *,
+        current_prices: dict[str, float],
+        prior_closes: dict[str, float],
+    ) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
         """Compute ROD3 for each universe ticker, rank, and return the
         per-side (ticker, rod3_bps) selections.
 
@@ -281,12 +286,20 @@ class EodReversalEngine:
             eligible_short = list(rod_signals)
 
         long_picks = eligible_long[: self.cfg.top_n]
-        short_picks = eligible_short[-self.cfg.top_n:][::-1]  # highest first
+        short_picks = eligible_short[-self.cfg.top_n :][::-1]  # highest first
         return long_picks, short_picks
 
-    def admit(self, *, portfolio_id: str, ticker: str, side: str,
-              entry_price: float, equity: float, rod3_bps: float,
-              entry_iso: str) -> Optional[EodPosition]:
+    def admit(
+        self,
+        *,
+        portfolio_id: str,
+        ticker: str,
+        side: str,
+        entry_price: float,
+        equity: float,
+        rod3_bps: float,
+        entry_iso: str,
+    ) -> Optional[EodPosition]:
         """Compute shares + record the open position. Returns None on
         bad geometry (e.g. zero price). Idempotent per (portfolio, ticker):
         if a position already exists, returns it unchanged.
@@ -301,6 +314,14 @@ class EodReversalEngine:
         notional_target = equity * self.cfg.notional_pct / 100.0
         shares = max(1, int(notional_target / entry_price))
         notional = entry_price * shares
+        # v9.1.104 -- intraday stop at stop_pct from entry.
+        if self.cfg.stop_pct > 0:
+            if side == "long":
+                _stop = entry_price * (1.0 - self.cfg.stop_pct)
+            else:
+                _stop = entry_price * (1.0 + self.cfg.stop_pct)
+        else:
+            _stop = 0.0
         pos = EodPosition(
             portfolio_id=portfolio_id,
             ticker=ticker,
@@ -310,18 +331,30 @@ class EodReversalEngine:
             entry_iso=entry_iso,
             rod3_bps=rod3_bps,
             notional_at_entry=notional,
+            stop_price=_stop,
         )
         st.open_positions[ticker] = pos
         logger.info(
-            "[V910-EOD-ENTRY] %s %s %s shares=%d entry=%.4f rod3=%.1fbps "
-            "notional=$%.0f",
-            portfolio_id, ticker, side, shares, entry_price, rod3_bps,
+            "[V910-EOD-ENTRY] %s %s %s shares=%d entry=%.4f rod3=%.1fbps notional=$%.0f",
+            portfolio_id,
+            ticker,
+            side,
+            shares,
+            entry_price,
+            rod3_bps,
             notional,
         )
         return pos
 
-    def close(self, *, portfolio_id: str, ticker: str, exit_price: float,
-              exit_iso: str, exit_reason: str = "eod") -> Optional[dict]:
+    def close(
+        self,
+        *,
+        portfolio_id: str,
+        ticker: str,
+        exit_price: float,
+        exit_iso: str,
+        exit_reason: str = "eod",
+    ) -> Optional[dict]:
         """Close an open position. Returns a closed-leg dict or None when
         no matching position exists.
         """
@@ -351,10 +384,14 @@ class EodReversalEngine:
         }
         st.closed_legs.append(leg)
         logger.info(
-            "[V910-EOD-EXIT] %s %s %s shares=%d exit=%.4f pnl=%+.2f "
-            "reason=%s",
-            portfolio_id, pos.ticker, pos.side, pos.shares, exit_price,
-            pnl, exit_reason,
+            "[V910-EOD-EXIT] %s %s %s shares=%d exit=%.4f pnl=%+.2f reason=%s",
+            portfolio_id,
+            pos.ticker,
+            pos.side,
+            pos.shares,
+            exit_price,
+            pnl,
+            exit_reason,
         )
         return leg
 
@@ -380,7 +417,8 @@ class EodReversalEngine:
                 "open_count": len(st.open_positions),
                 "open_positions": [
                     {
-                        "ticker": p.ticker, "side": p.side,
+                        "ticker": p.ticker,
+                        "side": p.side,
                         "shares": p.shares,
                         "entry_price": round(p.entry_price, 4),
                         "rod3_bps": round(p.rod3_bps, 1),
@@ -392,9 +430,12 @@ class EodReversalEngine:
                 "entry_attempted": st.entry_attempted,
                 "rejected_count": st.rejected_count,
                 "closed_legs": [
-                    {**leg, "pnl": round(leg["pnl"], 2),
-                     "entry_price": round(leg["entry_price"], 4),
-                     "exit_price": round(leg["exit_price"], 4)}
+                    {
+                        **leg,
+                        "pnl": round(leg["pnl"], 2),
+                        "entry_price": round(leg["entry_price"], 4),
+                        "exit_price": round(leg["exit_price"], 4),
+                    }
                     for leg in st.closed_legs
                 ],
             }

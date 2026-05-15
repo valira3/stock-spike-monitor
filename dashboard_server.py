@@ -3276,6 +3276,7 @@ def _eod_positions_for_pid(pid: str, prices: dict | None = None) -> dict:
                 "shares": _shares,
                 "entry_iso": str(_ep.entry_iso or ""),
                 "notional_at_entry": _notional,
+                "stop_price": float(_ep.stop_price) if _ep.stop_price > 0 else None,
             }
             # v9.1.69 -- enrich with live mark when price cache provided.
             _mark = (prices or {}).get(_tk.upper()) if prices else None
