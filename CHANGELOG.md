@@ -4,6 +4,20 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.97 (2026-05-15) — inject missing engine positions from broker (fixes NFLX bar)
+
+Complement to v9.1.96's purge. When the broker (Alpaca) holds a real position that the ORB engine lost tracking of — e.g. NFLX SHORT after today's mid-rollback state mismatch — the engine shows no stop/bar for that position.
+
+New `inject_missing_engine_positions(pid, broker_positions)` in `orb/live_runtime.py`:
+- Called from `engine/scan.py` alongside the v9.1.96 purge, using live Alpaca position data
+- For each Alpaca position not in `adapter._open_positions`, injects an OrbPosition with a synthetic stop at 1.5% from avg_entry_price (enough to render the bar; actual exit management still flows via the Main bus EXIT signal)
+- Also updates `_ticker_to_ticket` reverse lookup and flushes state to disk
+- Forensic tag: `[V9197-INJECT]`
+
+Together v9.1.96 + v9.1.97 close the bi-directional engine ↔ broker desync gap: v9.1.96 removes phantoms, v9.1.97 adds missing positions.
+
+---
+
 ## v9.1.96 (2026-05-15) — fix phantom engine positions after mid-rollback redeploy
 
 Two bugs in tandem caused today's Val state mismatch (phantom NVDA in engine, real NFLX invisible to engine):

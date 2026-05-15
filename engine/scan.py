@@ -945,25 +945,54 @@ def _orb_phantom_sweep(tg) -> None:
             len(cleared),
             cleared,
         )
-    # v9.1.96 -- purge phantom engine_positions (adapter._open_positions)
-    # where the ORB engine tracks a ticker as open but the broker has no
-    # matching position. Root cause: rollback_admit used wrong key (ticker
-    # instead of risk_ticket_id) so it never actually cleared the adapter,
-    # and stale state restored after a redeploy during mid-rollback window.
+    # v9.1.96/v9.1.97 -- bi-directional engine ↔ broker reconciliation.
+    # Purge phantom engine positions (in engine, not in broker) and inject
+    # missing ones (in broker, not in engine). Uses executor Alpaca positions.
     try:
-        from orb.live_runtime import purge_phantom_engine_positions
+        from orb.live_runtime import (
+            purge_phantom_engine_positions,
+            inject_missing_engine_positions,
+        )
+        from executors.bootstrap import get_executor as _get_ex
 
         for _pid in ("val", "gene"):
             _broker_held = held.get(_pid)
-            if _broker_held is not None:  # None = executor unavailable; skip
-                _purged = purge_phantom_engine_positions(_pid, frozenset(_broker_held))
-                if _purged:
-                    logger.warning(
-                        "[V9196-RECONCILE] %s: purged %d phantom adapter position(s): %s",
-                        _pid,
-                        len(_purged),
-                        _purged,
-                    )
+            if _broker_held is None:
+                continue  # executor unavailable
+            # Purge: engine has it, broker doesn't.
+            _purged = purge_phantom_engine_positions(_pid, frozenset(_broker_held))
+            if _purged:
+                logger.warning(
+                    "[V9196-RECONCILE] %s: purged %d phantom adapter position(s): %s",
+                    _pid,
+                    len(_purged),
+                    _purged,
+                )
+            # Inject: broker has it, engine doesn't.
+            _ex = _get_ex(_pid)
+            if _ex is not None:
+                try:
+                    _client = _ex._ensure_client()
+                    if _client is not None:
+                        _alpaca_pos = _client.get_all_positions()
+                        _broker_tuples = []
+                        for _bp in _alpaca_pos or []:
+                            _sym = (getattr(_bp, "symbol", "") or "").upper()
+                            _side = str(getattr(_bp, "side", "") or "").lower()
+                            _entry = float(getattr(_bp, "avg_entry_price", 0) or 0)
+                            _qty = int(float(getattr(_bp, "qty", 0) or 0))
+                            if _sym and _qty > 0:
+                                _broker_tuples.append((_sym, _side, _entry, _qty))
+                        _injected = inject_missing_engine_positions(_pid, _broker_tuples)
+                        if _injected:
+                            logger.warning(
+                                "[V9197-INJECT] %s: injected %d missing engine position(s): %s",
+                                _pid,
+                                len(_injected),
+                                _injected,
+                            )
+                except Exception as _ie:
+                    logger.debug("[V9197-INJECT] %s fetch failed: %s", _pid, _ie)
     except Exception as _rce:
         logger.debug("[V9196-RECONCILE] failed: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in

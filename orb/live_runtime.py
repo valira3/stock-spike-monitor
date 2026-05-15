@@ -1187,6 +1187,113 @@ def purge_phantom_engine_positions(
     return purged
 
 
+def inject_missing_engine_positions(
+    portfolio_id: str,
+    broker_positions: "list[tuple[str, str, float, int]]",
+) -> list[str]:
+    """v9.1.97 -- inject Alpaca positions that are missing from the engine.
+
+    Complement to purge_phantom_engine_positions: handles the reverse
+    case where the broker holds a real position that the ORB engine lost
+    track of (e.g. NFLX SHORT surviving after a mid-rollback state
+    mismatch). Without injection the position card shows no stop/bar.
+
+    Args:
+        portfolio_id: "val" or "gene".
+        broker_positions: list of (ticker, side, entry_price, qty) tuples
+            from the Alpaca client (avg_entry_price for entry_price).
+            Use 0.0 for entry_price when Alpaca doesn't provide it —
+            the synthetic stop will fall back to a fixed-pct estimate
+            from current adapter close price.
+
+    Uses a synthetic stop at 1.5% from entry (enough to render the bar;
+    actual stop management still flows through the Main bus EXIT signal).
+
+    Returns list of ticker names that were injected. Safe when not
+    bootstrapped (returns []).
+    """
+    if _engine is None or _adapters is None:
+        return []
+    adapter = _adapters.get(portfolio_id)
+    rb = _engine._risk.get(portfolio_id)
+    if adapter is None or rb is None:
+        return []
+
+    from orb import risk_book as _rb_mod
+    from orb.exits import make_position as _make_pos
+
+    # Build current set of engine-tracked tickers.
+    tracked = {pos.ticker.upper() for pos in adapter._open_positions.values()}
+    injected: list[str] = []
+
+    for broker_ticker, side, entry_price, qty in broker_positions:
+        tk = broker_ticker.upper()
+        if tk in tracked:
+            continue  # already in engine
+        if qty <= 0:
+            continue
+
+        # Estimate entry from adapter's last close if not provided.
+        ep = float(entry_price or 0.0)
+        if ep <= 0:
+            ep = adapter._last_5m_close.get(tk, 0.0)
+        if ep <= 0:
+            logger.warning(
+                "[V9197-INJECT] %s/%s: no entry price available, skipping", portfolio_id, tk
+            )
+            continue
+
+        # Synthetic stop at 1.5% from entry (renders the bar; not used for exit decisions).
+        side_lo = (side or "").lower()
+        if side_lo in ("short", "sell"):
+            synth_stop = ep * 1.015
+        else:
+            synth_stop = ep * 0.985
+
+        rr = float(getattr(_engine.cfg, "rr", 2.5) or 2.5)
+        recover_tid = f"recover-inject-{tk}-{portfolio_id}"
+        try:
+            pos = _make_pos(
+                portfolio_id=portfolio_id,
+                ticker=tk,
+                side="short" if side_lo in ("short", "sell") else "long",
+                entry_price=ep,
+                stop=synth_stop,
+                rr=rr,
+                shares=int(qty),
+                risk_ticket_id=recover_tid,
+            )
+            with rb._lock:
+                rb._open_tickets[recover_tid] = _rb_mod._Ticket(
+                    ticket_id=recover_tid,
+                    risk_dollars=pos.risk_dollars,
+                    notional=pos.notional,
+                )
+                rb._open_risk += pos.risk_dollars
+                rb._open_notional += pos.notional
+            adapter._open_positions[recover_tid] = pos
+            adapter._ticker_to_ticket[tk] = recover_tid
+            injected.append(tk)
+            logger.warning(
+                "[V9197-INJECT] injected missing engine position %s/%s %s entry=%.4f stop=%.4f shares=%d",
+                portfolio_id,
+                tk,
+                side_lo,
+                ep,
+                synth_stop,
+                int(qty),
+            )
+        except Exception as _ie:
+            logger.warning("[V9197-INJECT] %s/%s failed: %s", portfolio_id, tk, _ie)
+
+    if injected:
+        try:
+            persist_engine_state()
+        except Exception as _fe:
+            logger.debug("[V9197-INJECT] state flush failed: %s", _fe)
+    return injected
+
+
 def check_exit_by_ticker(
     *,
     portfolio_id: str,
