@@ -72,7 +72,7 @@ simple. The dispatch pattern is the standard GHA lever-sweep — see
 - `step_2r` — hard stop steps up to +1R profit at 2R (no full trail, just a step)
 - `step_1_5r_and_2r` — stop steps to +0.5R at 1.5R, then to +1R at 2R
 
-Run full-year sweep via GHA lever sweep. Compare to keystone baseline.
+Run full-year sweep locally via `python tools/orb_backtest.py` with env var overrides. Compare to keystone baseline.
 
 **Owner.** Next research round.
 
