@@ -47,6 +47,35 @@ simple. The dispatch pattern is the standard GHA lever-sweep — see
 
 **Owner.** Next research round.
 
+---
+
+### Trailing stop on runner after 1R (2026-05-15)
+
+**Source.** Operator question during live session: on a genuinely explosive breakout, the current exit logic leaves significant P&L on the table because the runner's stop is hard-pinned at break-even (entry price) from 1R onward with a fixed 2.5R target.
+
+**Current behavior.** After partial profit at 1R:
+- Stop moves to entry (break-even) and stays there permanently
+- Runner exits at 2.5R target or at entry (be_stop) — no further trailing
+
+**Hypothesis.** On days with strong directional momentum, a chandelier-style trail on the runner from 1R onward (e.g. `entry + N * ATR` trailing, or a fixed % trail from the high-water mark) could capture more on explosive moves without meaningfully hurting the median case. The risk: tighter trails get shaken out on the normal "move, pause, continue" ORB pattern and convert winning runners into break-even exits.
+
+**Questions to answer in backtest:**
+1. Does any trailing variant (ATR-trail, % from HWM, step-up at 1.5R/2R) improve annual P&L vs the fixed 2.5R target?
+2. What is the win-rate cost — does trailing increase or decrease the runner close rate?
+3. Is there an asymmetry by ticker (NVDA/TSLA explosive movers benefit more than MSFT/AAPL)?
+4. Does the improvement survive the 30-min post-loss cooldown and VWAP gate interactions?
+
+**Action.** Add `ORB_TRAIL_AFTER_1R` env lever to `tools/orb_backtest.py` (default off). Variants to sweep:
+- `off` (current production, baseline)
+- `hwm_atr_1x` — trail at HWM minus 1x ATR(14)
+- `hwm_atr_1_5x` — trail at HWM minus 1.5x ATR(14)
+- `step_2r` — hard stop steps up to +1R profit at 2R (no full trail, just a step)
+- `step_1_5r_and_2r` — stop steps to +0.5R at 1.5R, then to +1R at 2R
+
+Run full-year sweep via GHA lever sweep. Compare to keystone baseline.
+
+**Owner.** Next research round.
+
 **Falsification criteria.** A sweep variant must improve FY net P&L AND keep
 the 0/4 negative-quarter property of the v13 winner. If TSLA/NVDA inclusion
 drops a quarter into the red, mark this hypothesis as falsified and document
