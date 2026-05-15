@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.105 (2026-05-15) — fix Main Day P&L to include EOD realized + unrealized
+
+`day_pnl` in both the top-level `portfolio` block (Day P&L tile) and `portfolios.main` was computed from morning ORB only. EOD realized P&L (closed legs) and EOD unrealized P&L (open positions during the hold window) were not included. With AVGO +$86 and MSFT +$1.68 open, the tile showed -$287 instead of -$199.
+
+Fix: in both computation sites, add `EodReversalEngine._states["main"].realized_pnl_today` to `realized` and sum open EOD positions' mark-based P&L into `unreal_sum`. Fail-safe: wrapped in try/except so any EOD engine error silently falls back to ORB-only.
+
+---
+
 ## v9.1.104 (2026-05-15) — EOD intraday stop at 2% + stop shown on UI
 
 Backtest sweep confirmed 2% is the optimal EOD stop (14,218/yr vs 13,953 at 1.5%, 14,074 at 2.5%). Production `EodReversalEngine` previously had no intraday stop — positions just held to 15:59 ET regardless of price movement.

@@ -407,6 +407,25 @@ def _build_portfolio_block(book, executor=None, prices: dict | None = None) -> d
             # v8.3.7 -- realized P&L now merges in-memory + on-disk.
             realized = _compute_realized_pnl_today(m, today_s)
             unreal = sum(r.get("unrealized", 0.0) for r in _serialize_positions(longs, shorts, _px))
+            # v9.1.105 -- add EOD reversal P&L so Main's Day P&L tile
+            # reflects both morning ORB and EOD contributions.
+            try:
+                import orb.live_runtime as _rt_eod_pnl
+
+                _eod_eng_pnl = _rt_eod_pnl.get_eod_engine()
+                if _eod_eng_pnl is not None:
+                    _eod_st_pnl = _eod_eng_pnl._states.get("main")
+                    if _eod_st_pnl is not None:
+                        realized += float(_eod_st_pnl.realized_pnl_today or 0)
+                        for _ep_pnl in _eod_st_pnl.open_positions.values():
+                            _epx_pnl = (_px or {}).get(_ep_pnl.ticker.upper())
+                            if isinstance(_epx_pnl, (int, float)) and _epx_pnl > 0:
+                                if _ep_pnl.side == "long":
+                                    unreal += (_epx_pnl - _ep_pnl.entry_price) * _ep_pnl.shares
+                                else:
+                                    unreal += (_ep_pnl.entry_price - _epx_pnl) * _ep_pnl.shares
+            except Exception:
+                pass
             day_pnl = realized + unreal
             positions_list = _serialize_positions(longs, shorts, _px)
             trades_today = _today_trades()
@@ -1890,6 +1909,25 @@ def snapshot() -> dict[str, Any]:
         unreal_sum = 0.0
         for row in _serialize_positions(longs, shorts, prices):
             unreal_sum += row["unrealized"]
+        # v9.1.105 -- add EOD P&L to top-level Day P&L tile (same fix
+        # as _build_portfolio_block for portfolios.main).
+        try:
+            import orb.live_runtime as _rt_eod_snap
+
+            _eod_eng_snap = _rt_eod_snap.get_eod_engine()
+            if _eod_eng_snap is not None:
+                _eod_st_snap = _eod_eng_snap._states.get("main")
+                if _eod_st_snap is not None:
+                    realized += float(_eod_st_snap.realized_pnl_today or 0)
+                    for _ep_snap in _eod_st_snap.open_positions.values():
+                        _epx_snap = prices.get(_ep_snap.ticker.upper())
+                        if isinstance(_epx_snap, (int, float)) and _epx_snap > 0:
+                            if _ep_snap.side == "long":
+                                unreal_sum += (_epx_snap - _ep_snap.entry_price) * _ep_snap.shares
+                            else:
+                                unreal_sum += (_ep_snap.entry_price - _epx_snap) * _ep_snap.shares
+        except Exception:
+            pass
         day_pnl = realized + unreal_sum
 
         # v6.15.0 \u2014 broker-side (Alpaca) running P/L for parity with
