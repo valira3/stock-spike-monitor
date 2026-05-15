@@ -3436,6 +3436,8 @@
     // Cooldown is enforced for Main via broker/orders.py and for Val/Gene
     // via executors/base.py (wired v9.1.27). Backend emits
     // active_cooldowns_by_portfolio: {main:[...], val:[...], gene:[...]}.
+    // v9.1.111: cooldown chip now covers both loss (asymmetric) and sym
+    // (post-trade symmetric) cooldowns. kind="loss"|"sym" from API.
     var cdByPid = s.active_cooldowns_by_portfolio || {};
     var cdAll = (cdByPid.main || []).concat(cdByPid.val || []).concat(cdByPid.gene || []);
     var cdN = cdAll.length;
@@ -3446,23 +3448,23 @@
         var cdLines = cdAll.map(function(c) {
           var rem = c.remaining_sec || 0;
           var remMin = Math.ceil(rem / 60);
-          return c.ticker + " " + (c.side || "").toUpperCase()
-            + " – " + remMin + "min left ($" + (c.loss_pnl || 0).toFixed(0) + ")";
+          var kind = c.kind === "sym" ? "sym" : "loss";
+          var detail = c.kind === "sym"
+            ? (c.window_min || 0) + "min sym"
+            : "$" + (c.loss_pnl || 0).toFixed(0);
+          return kind + " | " + c.ticker + " " + (c.side || "").toUpperCase()
+            + " – " + remMin + "min left (" + detail + ")";
         });
         cdPill.textContent = "cooldown " + cdN;
-        cdPill.title = "Post-loss cooldown active – same (ticker, side) entry blocked:\n"
-          + cdLines.join("\n");
+        cdPill.title = "Cooldown active – entry blocked:\n" + cdLines.join("\n");
         cdPill.style.display = "";
         cdDiv.style.display = "";
       } else {
-        // v9.1.32 -- during RTH show a dim "cooldown 0" so the operator
-        // can distinguish "no cooldowns active" from "tracking broken".
-        // Off-hours: hide entirely (no trades possible, no confusion).
         var _mode = ((s.regime || {}).mode || "CLOSED");
         var _isRth = (_mode === "OPEN" || _mode === "OR" || _mode === "POWER");
         if (_isRth) {
           cdPill.textContent = "cooldown 0";
-          cdPill.title = "No active post-loss cooldowns.";
+          cdPill.title = "No active cooldowns.";
           cdPill.style.background = "transparent";
           cdPill.style.color = "var(--text-dim)";
           cdPill.style.display = "";

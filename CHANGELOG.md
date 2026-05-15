@@ -4,6 +4,21 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.111 (2026-05-15) — symmetric 10-min post-trade cooldown (new baseline)
+
+Replaces loss-only cooldown (`POST_LOSS_COOLDOWN_MIN=30`) with symmetric cooldown (`ORB_POST_TRADE_COOLDOWN_MIN=10`) that blocks re-entry on (ticker, side) for 10 min after ANY exit — win or loss. Backtest sweep (341 days, compounded, combined morning+EOD) showed sym-10m at $42,573/yr vs keystone loss-only-30m at $41,614/yr (+$959/yr). Root cause from today: ORCL closed +$125 at 10:48, immediately re-entered at 10:48, stopped -$413 — symmetric cooldown blocks that exact pattern.
+
+1. `engine/portfolio_book.py`: Added `_post_trade_cooldown` dict, `record_post_trade()`, `is_in_post_trade_cooldown()`. Updated `get_active_cooldowns()` to include sym entries with `"kind":"sym"`.
+2. `executors/base.py`: Sym cooldown check runs before loss-only check in `_submit_v10_entry()`; `record_post_trade()` called on every exit.
+3. `broker/orders.py`: Same pattern for Main's entry/exit paths.
+4. `dashboard_server.py`: `_build_portfolio_strip()` unions `_post_loss_cooldown + _post_trade_cooldown` for count; `v642_flags` now includes `post_trade_cooldown_min` + `post_trade_cooldown_enabled`.
+5. `dashboard_static/app.js`: Cooldown chip tooltip shows `kind: loss|sym` and remaining time for each active cooldown.
+
+**New Railway env**: Set `ORB_POST_TRADE_COOLDOWN_MIN=10`. Keep `POST_LOSS_COOLDOWN_MIN=30` for defense-in-depth on prolonged losing streaks.
+**Forensic**: `[V9111-SYM-CD] RECORD/BLOCK`.
+
+---
+
 ## v9.1.110 (2026-05-15) — fix Main Day P&L missing EOD P&L after redeploy
 
 Root cause: both Day P&L paths (`snapshot()` legacy block + `_build_portfolio_block`) read `_eod_eng._states["main"].realized_pnl_today` from in-memory engine state, which resets to 0 on every Railway redeploy. Today's Trades correctly fell back to `eod_trade_log.jsonl`, so EOD trades appeared in the table but NOT in the P&L tile.

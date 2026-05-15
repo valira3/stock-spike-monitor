@@ -1327,24 +1327,28 @@ class TradeGeniusBase:
         risk-cap accounting on the RiskBook. MARKET DAY ensures the full
         v10-computed quantity fills (or rejects cleanly).
         """
-        # Post-loss cooldown gate -- mirrors the check in broker/orders.py for
-        # Main. Blocks re-entry on (ticker, side) within POST_LOSS_COOLDOWN_MIN
-        # minutes of a losing stop on this executor's portfolio book.
+        # Cooldown gate: post-loss (asymmetric) + post-trade (symmetric v9.1.111).
+        # Symmetric check runs first -- it covers both wins and losses.
         try:
             from engine.portfolio_book import PORTFOLIOS
 
             _pb_entry = PORTFOLIOS.get(self.NAME.lower())
             if _pb_entry is not None:
+                _cd_sym = _pb_entry.is_in_post_trade_cooldown(ticker, side.lower())
+                if _cd_sym is not None:
+                    logger.info(
+                        "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
+                        self.NAME, side, ticker,
+                        _cd_sym.get("until_utc", "?"), _cd_sym.get("window_min", 0),
+                    )
+                    return False
                 _cd = _pb_entry.is_in_post_loss_cooldown(ticker, side.lower())
                 if _cd is not None:
                     logger.info(
                         "[%s] [V10-FIRE] COOLDOWN BLOCK %s %s -- post-loss "
                         "cooldown active until %s (loss=$%.2f)",
-                        self.NAME,
-                        side,
-                        ticker,
-                        _cd.get("until_utc", "?"),
-                        _cd.get("loss_pnl", 0),
+                        self.NAME, side, ticker,
+                        _cd.get("until_utc", "?"), _cd.get("loss_pnl", 0),
                     )
                     return False
         except Exception:
@@ -2903,6 +2907,8 @@ class TradeGeniusBase:
                             _pb_exit2.record_post_loss_cooldown(
                                 ticker, _exit_side.lower(), _exit_pnl
                             )
+                        # v9.1.111: symmetric cooldown after ANY exit (win or loss).
+                        _pb_exit2.record_post_trade(ticker, _exit_side.lower())
                 except Exception:
                     logger.debug(
                         "[%s] per-book record_exit skipped: %s",

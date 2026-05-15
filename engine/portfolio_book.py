@@ -45,13 +45,14 @@ class PortfolioConfig:
     tickers in universe. Main book overrides earnings_watcher_enabled=True
     after registry setup. Val/Gene leave it False until validated.
     """
+
     enabled: bool = True
-    tickers: Optional[set] = None          # None = all tickers in universe
+    tickers: Optional[set] = None  # None = all tickers in universe
     sides_allowed: set = field(default_factory=lambda: {"LONG", "SHORT"})
     dollars_per_entry: float = 10000.0
     daily_loss_limit_dollars: float = 1000.0
-    portfolio_equity_floor: float = 100000.0   # sizing reference, not enforced
-    earnings_watcher_enabled: bool = False     # main overrides to True
+    portfolio_equity_floor: float = 100000.0  # sizing reference, not enforced
+    earnings_watcher_enabled: bool = False  # main overrides to True
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,10 @@ class PortfolioBook:
         #   "exit_reason"}; per-ticker (not per-side) per the v6.11.13 contract.
         self._post_loss_cooldown: dict = {}
         self._post_exit_cooldown: dict = {}
+        # v9.1.111 -- symmetric post-trade cooldown: blocks (ticker, side)
+        # re-entry for ORB_POST_TRADE_COOLDOWN_MIN minutes after ANY exit
+        # (win or loss).  Supersedes post-loss for the loss case when set.
+        self._post_trade_cooldown: dict = {}
 
     # ------------------------------------------------------------------
     # Phase 2A: chandelier reset on entry boundary (AVGO bug fix).
@@ -174,9 +179,7 @@ class PortfolioBook:
         # Locate the position dict (may be absent on a very first entry if
         # execute_breakout hasn't yet inserted it; record_entry is idempotent
         # and installs a fresh trail_state regardless).
-        pos_dict = (
-            self.short_positions if side_u == "SHORT" else self.positions
-        )
+        pos_dict = self.short_positions if side_u == "SHORT" else self.positions
         pos = pos_dict.get(ticker_u)
 
         # Capture old trail state values for the audit log line.
@@ -403,6 +406,7 @@ class PortfolioBook:
         # trade_genius isn't loaded yet (book unit tests).
         try:
             import trade_genius as _tg
+
             return _tg._now_utc()
         except Exception:
             return datetime.now(timezone.utc)
@@ -447,9 +451,62 @@ class PortfolioBook:
         logger.info(
             "[V701-COOLDOWN] RECORD pid=%s ticker=%s side=%s loss_pnl=$%.2f "
             "until_utc=%s window_min=%d",
-            self.portfolio_id, ticker, side_norm, float(pnl),
+            self.portfolio_id,
+            ticker,
+            side_norm,
+            float(pnl),
+            until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            cd_min,
+        )
+
+    def record_post_trade(
+        self,
+        ticker: str,
+        side: str,
+        *,
+        exit_ts_utc=None,
+    ) -> None:
+        """v9.1.111 -- record a symmetric post-trade cooldown after ANY exit.
+
+        Reads ORB_POST_TRADE_COOLDOWN_MIN from env (default 0 = off).
+        When set, blocks re-entry on (ticker, side) for that many minutes
+        regardless of whether the trade was a win or a loss.
+        """
+        import os as _os_ptc
+        try:
+            cd_min = int(_os_ptc.environ.get("ORB_POST_TRADE_COOLDOWN_MIN", 0) or 0)
+        except (TypeError, ValueError):
+            cd_min = 0
+        if cd_min <= 0:
+            return
+        side_norm = (side or "").strip().lower()
+        if side_norm not in ("long", "short"):
+            return
+        exit_ts = exit_ts_utc or self._now_utc()
+        until = exit_ts + timedelta(minutes=cd_min)
+        self._post_trade_cooldown[(ticker, side_norm)] = {
+            "until_utc": until,
+            "exit_ts_utc": exit_ts,
+            "window_min": cd_min,
+        }
+        logger.info(
+            "[V9111-SYM-CD] RECORD pid=%s ticker=%s side=%s until_utc=%s window_min=%d",
+            self.portfolio_id, ticker, side_norm,
             until.strftime("%Y-%m-%dT%H:%M:%SZ"), cd_min,
         )
+
+    def is_in_post_trade_cooldown(self, ticker: str, side: str):
+        """v9.1.111 -- return entry dict if (ticker, side) is in symmetric
+        post-trade cooldown, else None.  Auto-prunes expired entries.
+        """
+        side_norm = (side or "").strip().lower()
+        entry = self._post_trade_cooldown.get((ticker, side_norm))
+        if not entry:
+            return None
+        if entry["until_utc"] <= self._now_utc():
+            self._post_trade_cooldown.pop((ticker, side_norm), None)
+            return None
+        return entry
 
     def is_in_post_loss_cooldown(self, ticker: str, side: str):
         """Return entry dict if (ticker, side) is cooling down on this book,
@@ -475,6 +532,7 @@ class PortfolioBook:
         """Record a post-exit broker-reconciliation window for this book."""
         try:
             from eye_of_tiger import POST_EXIT_SAME_TICKER_COOLDOWN_SEC as _cd_sec
+
             cd_sec = int(_cd_sec)
         except Exception:
             cd_sec = 10
@@ -499,8 +557,8 @@ class PortfolioBook:
         return True
 
     def get_active_cooldowns(self) -> list:
-        """Snapshot of currently-active post-loss cooldowns on this book,
-        suitable for /api/state JSON.  Auto-prunes expired entries on read.
+        """Snapshot of currently-active post-loss AND post-trade (symmetric)
+        cooldowns on this book. Suitable for /api/state JSON. Auto-prunes.
         """
         now = self._now_utc()
         out = []
@@ -513,14 +571,37 @@ class PortfolioBook:
                 continue
             ticker, side = key
             remaining_sec = max(0, int((entry["until_utc"] - now).total_seconds()))
-            out.append({
-                "ticker": ticker,
-                "side": side,
-                "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "remaining_sec": remaining_sec,
-                "loss_pnl": round(float(entry.get("loss_pnl", 0)), 2),
-                "loss_ts_utc": entry["loss_ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-            })
+            out.append(
+                {
+                    "ticker": ticker,
+                    "side": side,
+                    "kind": "loss",
+                    "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "remaining_sec": remaining_sec,
+                    "loss_pnl": round(float(entry.get("loss_pnl", 0)), 2),
+                    "loss_ts_utc": entry["loss_ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+            )
+        # v9.1.111: symmetric post-trade cooldowns.
+        for key in list(self._post_trade_cooldown.keys()):
+            entry = self._post_trade_cooldown.get(key)
+            if not entry:
+                continue
+            if entry["until_utc"] <= now:
+                self._post_trade_cooldown.pop(key, None)
+                continue
+            ticker, side = key
+            remaining_sec = max(0, int((entry["until_utc"] - now).total_seconds()))
+            out.append(
+                {
+                    "ticker": ticker,
+                    "side": side,
+                    "kind": "sym",
+                    "until_utc": entry["until_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "remaining_sec": remaining_sec,
+                    "window_min": entry.get("window_min", 0),
+                }
+            )
         out.sort(key=lambda r: r["remaining_sec"])
         return out
 
@@ -529,12 +610,18 @@ class PortfolioBook:
         n_exit_pruned) for log auditing.  Called from EOD daily reset.
         """
         now = self._now_utc()
-        loss_stale = [k for k, v in list(self._post_loss_cooldown.items())
-                      if v.get("until_utc") and v["until_utc"] <= now]
+        loss_stale = [
+            k
+            for k, v in list(self._post_loss_cooldown.items())
+            if v.get("until_utc") and v["until_utc"] <= now
+        ]
         for k in loss_stale:
             self._post_loss_cooldown.pop(k, None)
-        exit_stale = [t for t, v in list(self._post_exit_cooldown.items())
-                      if v.get("until_utc") and v["until_utc"] <= now]
+        exit_stale = [
+            t
+            for t, v in list(self._post_exit_cooldown.items())
+            if v.get("until_utc") and v["until_utc"] <= now
+        ]
         for t in exit_stale:
             self._post_exit_cooldown.pop(t, None)
         return (len(loss_stale), len(exit_stale))
@@ -579,6 +666,7 @@ class PortfolioBook:
         if self.portfolio_id == "main":
             try:
                 import trade_genius as tg
+
                 return bool(getattr(tg, "_trading_halted", False))
             except Exception:
                 return False

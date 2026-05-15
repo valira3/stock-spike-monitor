@@ -280,20 +280,20 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         else:
             state = "active"
 
-        # --- cooldowns ---
-        # v7.0.1: every book has its own _post_loss_cooldown dict (main's
-        # is identity-bound to the trade_genius module global, so legacy
-        # callers stay green). Read directly from the book passed in.
+        # --- cooldowns (loss + symmetric) ---
+        # v7.0.1: every book has its own _post_loss_cooldown dict.
+        # v9.1.111: also read _post_trade_cooldown (symmetric, any exit).
         try:
             _plc = getattr(book, "_post_loss_cooldown", {}) or {}
+            _ptc = getattr(book, "_post_trade_cooldown", {}) or {}
+            # Union: a (ticker, side) pair is "in cooldown" if either dict holds it.
+            _cd_keys = set(_plc.keys()) | set(_ptc.keys())
             long_cd = sum(
-                1
-                for k in _plc
+                1 for k in _cd_keys
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "LONG"
             )
             short_cd = sum(
-                1
-                for k in _plc
+                1 for k in _cd_keys
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "SHORT"
             )
         except Exception:
@@ -2362,6 +2362,12 @@ def snapshot() -> dict[str, Any]:
             v642_legacy_min = max(v643_cd_long, v643_cd_short)
         else:
             v642_legacy_min = v643_cd_long or v643_cd_short
+        # v9.1.111: symmetric post-trade cooldown config field.
+        try:
+            import os as _os_sym_cd
+            _sym_cd_min = int(_os_sym_cd.environ.get("ORB_POST_TRADE_COOLDOWN_MIN", 0) or 0)
+        except Exception:
+            _sym_cd_min = 0
         v642_flags = {
             "post_loss_cooldown_min": v642_legacy_min,
             "post_loss_cooldown_min_long": v643_cd_long,
@@ -2369,6 +2375,8 @@ def snapshot() -> dict[str, Any]:
             "post_loss_cooldown_enabled": (v643_cd_long > 0) or (v643_cd_short > 0),
             "long_enabled": v643_cd_long > 0,
             "short_enabled": v643_cd_short > 0,
+            "post_trade_cooldown_min": _sym_cd_min,
+            "post_trade_cooldown_enabled": _sym_cd_min > 0,
             "active_count": len(v642_active),
         }
 

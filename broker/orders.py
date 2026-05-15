@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from broker.order_types import order_type_for_reason
 import logging as _logging_orders
+
 _orders_logger = _logging_orders.getLogger("trade_genius")
 
 # v7.6.0 — Filter #7 (post-v750 cooldown) and Filter #8 (opening delay).
@@ -26,10 +27,13 @@ try:
 except Exception:  # pragma: no cover — defensive fall-through
     V770_POST_DITCH_COOLDOWN_ENABLED = False
     SKIP_REASON_V770_COOLDOWN = "v770_post_ditch_cooldown"
+
     def _v770_record_fire(*a, **kw):
         return None
+
     def _v770_is_in_cooldown(*a, **kw):
         return (False, None)
+
 
 try:
     from engine.v780_flags import (
@@ -40,8 +44,10 @@ try:
 except Exception:  # pragma: no cover — defensive fall-through
     V780_OPENING_DELAY_ENABLED = False
     SKIP_REASON_V780_OPENING_DELAY = "v780_opening_delay"
+
     def _v780_is_before_open_delay(*a, **kw):
         return (False, None)
+
 
 try:
     from engine.v750_flags import EXIT_REASON_V750_EARLY_DITCH as _V750_EXIT_REASON_FOR_V770
@@ -132,6 +138,7 @@ def _build_cancel_first_client():
         return None
     try:
         from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+
         return _ATC(key, secret, paper=True)
     except Exception:
         return None
@@ -178,7 +185,8 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
     except Exception as _imp_exc:
         logger.warning(
             "[V6140-CANCEL-FIRST] %s: alpaca SDK not importable (%s); fail-open",
-            ticker, _imp_exc,
+            ticker,
+            _imp_exc,
         )
         return True
 
@@ -188,7 +196,8 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
     except Exception as _ge:
         logger.warning(
             "[V6140-CANCEL-FIRST] %s: get_orders failed (%s); fail-open",
-            ticker, _ge,
+            ticker,
+            _ge,
         )
         return True
 
@@ -203,9 +212,8 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
         # Alpaca side enum values: "buy" (long) and "sell" (short / cover).
         # An opposing-side hazard for a new LONG is any open SELL order;
         # for a new SHORT, any open BUY order.
-        is_opposing = (
-            (target == "long" and o_side == "sell")
-            or (target == "short" and o_side == "buy")
+        is_opposing = (target == "long" and o_side == "sell") or (
+            target == "short" and o_side == "buy"
         )
         if is_opposing:
             opposing.append(o)
@@ -229,12 +237,16 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
             cancel_ids.append(str(oid))
             logger.info(
                 "[V6140-CANCEL-FIRST] %s: cancel issued for opposing order %s (side=%s)",
-                ticker, oid, getattr(getattr(o, "side", None), "value", "?"),
+                ticker,
+                oid,
+                getattr(getattr(o, "side", None), "value", "?"),
             )
         except Exception as _ce:
             logger.warning(
                 "[V6140-CANCEL-FIRST] %s: cancel_order_by_id(%s) failed: %s",
-                ticker, oid, _ce,
+                ticker,
+                oid,
+                _ce,
             )
 
     if not cancel_ids:
@@ -247,8 +259,9 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
         for oid in list(pending):
             try:
                 status_obj = tc.get_order_by_id(oid)
-                status = getattr(getattr(status_obj, "status", None), "value", None) \
-                    or str(getattr(status_obj, "status", "") or "")
+                status = getattr(getattr(status_obj, "status", None), "value", None) or str(
+                    getattr(status_obj, "status", "") or ""
+                )
             except Exception:
                 status = ""
             if str(status).strip().lower() in _CANCEL_FIRST_TERMINAL_STATUSES:
@@ -260,13 +273,17 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
         logger.warning(
             "[V6140-CANCEL-FIRST] %s: cancel-ack timeout for %d/%d orders "
             "(timeout=%dms); skipping entry",
-            ticker, len(pending), len(cancel_ids), int(_timeout_ms),
+            ticker,
+            len(pending),
+            len(cancel_ids),
+            int(_timeout_ms),
         )
         return False
 
     logger.info(
         "[V6140-CANCEL-FIRST] %s: %d opposing order(s) cancelled, entry cleared",
-        ticker, len(cancel_ids),
+        ticker,
+        len(cancel_ids),
     )
     return True
 
@@ -322,11 +339,9 @@ def check_breakout(ticker, side):
     _blocklist = getattr(tg, "TICKER_SIDE_BLOCKLIST", {})
     if _side_str in _blocklist.get(str(ticker).upper(), []):
         import logging as _log_c2
-        _log_c2.getLogger(__name__).debug(
-            "[C2] ticker_side_blocked: %s %s", ticker, _side_str
-        )
-        return False, None
 
+        _log_c2.getLogger(__name__).debug("[C2] ticker_side_blocked: %s %s", ticker, _side_str)
+        return False, None
 
     # v5.31.0 \u2014 forensic decision-stack latency timer. Captures the
     # wall-time cost of the gate stack from entry through emission.
@@ -878,14 +893,13 @@ def check_breakout(ticker, side):
     # *reject* trades when the spec demands it. FAIL is logged inside
     # the helper as [V6_14_10-VOLGATE-FAIL].
     try:
-        _vol_res = tg.eot_glue.evaluate_volume_bucket_live(
-            ticker, now_et, bars
-        )
+        _vol_res = tg.eot_glue.evaluate_volume_bucket_live(ticker, now_et, bars)
         _vol_ok = bool(_vol_res.get("ok", True))
     except Exception as _vol_err:
         tg.logger.warning(
             "[V6_14_10-VOLGATE-ERR] %s eval error: %s; passing",
-            ticker, _vol_err,
+            ticker,
+            _vol_err,
         )
         _vol_ok = True
 
@@ -896,13 +910,15 @@ def check_breakout(ticker, side):
     # current_low (SHORT) strictly past every prior leg's extreme.
     try:
         _highs_r = (bars or {}).get("highs") or []
-        _lows_r  = (bars or {}).get("lows") or []
+        _lows_r = (bars or {}).get("lows") or []
         _cur_high_for_ratchet = _highs_r[-1] if _highs_r else current_price
-        _cur_low_for_ratchet  = _lows_r[-1]  if _lows_r  else current_price
+        _cur_low_for_ratchet = _lows_r[-1] if _lows_r else current_price
         from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+
         _ratchet_book_e1 = PORTFOLIOS.get(PORTFOLIO_MAIN)
         _ratchet_ok, _ratchet_detail = _ratchet_book_e1.re_entry_ratchet_ok(
-            ticker, side_label,
+            ticker,
+            side_label,
             current_high=_cur_high_for_ratchet,
             current_low=_cur_low_for_ratchet,
         )
@@ -942,7 +958,9 @@ def check_breakout(ticker, side):
                 try:
                     tg.logger.info(
                         "[V780-OPENING-DELAY] ticker=%s side=%s et=%s blocked",
-                        ticker, side_label, _v780_et,
+                        ticker,
+                        side_label,
+                        _v780_et,
                     )
                 except Exception:
                     pass
@@ -965,9 +983,7 @@ def check_breakout(ticker, side):
                 _v770_now_utc = tg._now_utc()
             except Exception:
                 _v770_now_utc = datetime.now(timezone.utc)
-            _v770_blocked, _v770_remain = _v770_is_in_cooldown(
-                ticker, side_label, _v770_now_utc
-            )
+            _v770_blocked, _v770_remain = _v770_is_in_cooldown(ticker, side_label, _v770_now_utc)
             if _v770_blocked:
                 tg._v561_log_skip(
                     ticker=ticker,
@@ -978,7 +994,9 @@ def check_breakout(ticker, side):
                 try:
                     tg.logger.info(
                         "[V770-COOLDOWN] ticker=%s side=%s remaining=%.0fs blocked",
-                        ticker, side_label, float(_v770_remain or 0.0),
+                        ticker,
+                        side_label,
+                        float(_v770_remain or 0.0),
                     )
                 except Exception:
                     pass
@@ -1031,8 +1049,7 @@ def check_breakout(ticker, side):
     return True, bars
 
 
-def paper_shares_for(price: float, ticker: str | None = None,
-                     portfolio_id: str = "main") -> int:
+def paper_shares_for(price: float, ticker: str | None = None, portfolio_id: str = "main") -> int:
     """Dollar-sized paper order for Entry-1: floor(
     PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT / price), min 1.
     Returns 0 only when price <= 0 (invalid).
@@ -1054,6 +1071,7 @@ def paper_shares_for(price: float, ticker: str | None = None,
     if ticker is not None:
         try:
             from orb.live_runtime import consume_v10_size, is_live_mode_on
+
             if is_live_mode_on():
                 v10_shares = consume_v10_size(portfolio_id, ticker)
                 if v10_shares is not None and v10_shares > 0:
@@ -1066,16 +1084,18 @@ def paper_shares_for(price: float, ticker: str | None = None,
     try:
         from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
         from eye_of_tiger import ENTRY_1_SIZE_PCT
+
         return PORTFOLIOS.get(PORTFOLIO_MAIN).size_for(
-            ticker="?", price=price, entry_size_pct=ENTRY_1_SIZE_PCT,
+            ticker="?",
+            price=price,
+            entry_size_pct=ENTRY_1_SIZE_PCT,
         )
     except Exception:
         # Fallback to legacy path on any import error.
         from eye_of_tiger import ENTRY_1_SIZE_PCT
+
         dollars = _tg().PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT
         return max(1, int(dollars // price))
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1125,6 +1145,7 @@ def _maybe_apply_regime_b_short_amp(
     )
     return new_shares
 
+
 def execute_breakout(ticker, current_price, side):
     """Side-parameterized entry executor.
 
@@ -1153,6 +1174,22 @@ def execute_breakout(ticker, current_price, side):
     # side same-ticker re-entries within 30 min of a stop all lost again.
     # Helper logs a [V642-COOLDOWN] BLOCK line when it vetoes.
     _side_label = "long" if cfg.side.is_long else "short"
+    # v9.1.111: symmetric post-trade cooldown check runs first (covers wins+losses).
+    try:
+        from engine.portfolio_book import PORTFOLIOS as _pb_map
+        _pb_main = _pb_map.get("main")
+        if _pb_main is not None:
+            _sym_cd = _pb_main.is_in_post_trade_cooldown(ticker, _side_label)
+            if _sym_cd is not None:
+                import logging as _lg_cd
+                _lg_cd.getLogger(__name__).info(
+                    "[V9111-SYM-CD] BLOCK main %s %s -- sym cooldown until %s (%dmin)",
+                    _side_label, ticker,
+                    _sym_cd.get("until_utc", "?"), _sym_cd.get("window_min", 0),
+                )
+                return
+    except Exception:
+        pass
     if not tg._check_post_loss_cooldown(ticker, _side_label):
         return
 
@@ -1183,19 +1220,24 @@ def execute_breakout(ticker, current_price, side):
     # Decision A5: enforce flip requires Val+Devi+Reese sign-off via v6.6.1.
     try:
         from engine.ingest_gate import evaluate_gate as _eval_gate
+
         _gate = _eval_gate(ticker)
         if _gate.decision == "block":
             import logging as _lg
+
             _lg.getLogger(__name__).warning(
                 "[INGEST-GATE] %s entry for %s: %s (mode=%s)",
                 "DRY_RUN" if _gate.gate_mode == "dry_run" else "ENFORCED",
-                ticker, _gate.reason, _gate.gate_mode,
+                ticker,
+                _gate.reason,
+                _gate.gate_mode,
             )
             if _gate.gate_mode == "enforce":
                 return  # hard block (v6.6.1+ only after sign-off)
             # dry_run: log above, allow through
     except Exception as _ge:
         import logging as _lg
+
         _lg.getLogger(__name__).debug("[INGEST-GATE] gate check failed (fail-open): %s", _ge)
 
     now_et = tg._now_et()
@@ -1256,6 +1298,7 @@ def execute_breakout(ticker, current_price, side):
     _v10_supplied_size = False
     try:
         from orb.live_runtime import peek_v10_size, is_live_mode_on
+
         if is_live_mode_on() and peek_v10_size("main", ticker) is not None:
             _v10_supplied_size = True
     except Exception:
@@ -1339,6 +1382,7 @@ def execute_breakout(ticker, current_price, side):
             V611_REGIME_B_SHORT_DISARM_HHMM_ET as _v611_disarm,
         )
         from trade_genius import _SPY_REGIME as _v611_regime, _now_et as _v611_now_et
+
         shares = _maybe_apply_regime_b_short_amp(
             cfg=cfg,
             shares=shares,
@@ -1403,7 +1447,9 @@ def execute_breakout(ticker, current_price, side):
             return
     except Exception as _exc:
         tg.logger.warning(
-            "[paper] exposure-cap check raised for %s: %s", ticker, _exc,
+            "[paper] exposure-cap check raised for %s: %s",
+            ticker,
+            _exc,
         )
 
     # Long entry needs cash to buy; short entry credits cash on open.
@@ -1519,7 +1565,9 @@ def execute_breakout(ticker, current_price, side):
         try:
             tg.logger.warning(
                 "[V700-CHANDELIER-RESET] record_entry failed %s %s: %s",
-                ticker, _v570_side_label, _re_err,
+                ticker,
+                _v570_side_label,
+                _re_err,
             )
         except Exception:
             pass
@@ -1910,6 +1958,7 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     # (Eugene's rule: 2nd and 3rd strikes have to be on a new HOD/LOD).
     try:
         from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
+
         _ratchet_book = PORTFOLIOS.get(PORTFOLIO_MAIN)
         _max_fav = pos.get("v531_max_favorable_price")
         if cfg.side.is_long:
@@ -1945,9 +1994,21 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
         except Exception:
             _cooldown_exit_ts = None
         tg.record_post_loss_cooldown(
-            ticker, _cooldown_side, float(pnl_val),
+            ticker,
+            _cooldown_side,
+            float(pnl_val),
             exit_ts_utc=_cooldown_exit_ts,
         )
+        # v9.1.111: symmetric post-trade cooldown -- records after any exit.
+        try:
+            from engine.portfolio_book import PORTFOLIOS as _pb_map_exit
+            _pb_main_exit = _pb_map_exit.get("main")
+            if _pb_main_exit is not None:
+                _pb_main_exit.record_post_trade(
+                    ticker, _cooldown_side, exit_ts_utc=_cooldown_exit_ts
+                )
+        except Exception:
+            pass
     except Exception:
         # Cooldown is a guardrail \u2014 never let it block an exit from settling.
         pass
@@ -2154,9 +2215,7 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     # post-v750 ticker cooldown. Best-effort — a registration error
     # MUST NOT block close_breakout. Match canonical reason string.
     try:
-        if str(reason or "").strip().lower() == str(
-            _V750_EXIT_REASON_FOR_V770
-        ).strip().lower():
+        if str(reason or "").strip().lower() == str(_V750_EXIT_REASON_FOR_V770).strip().lower():
             _v770_record_fire(
                 ticker=ticker,
                 side=("LONG" if cfg.side.is_long else "SHORT"),
@@ -2382,8 +2441,7 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
 # ======================================================================
 
 
-def partial_close_breakout(ticker, shares_to_close, price, side,
-                           reason="PARTIAL_1R"):
+def partial_close_breakout(ticker, shares_to_close, price, side, reason="PARTIAL_1R"):
     """Half-close an open breakout position WITHOUT teardown.
 
     v8.1.0 -- companion to close_breakout(). Whereas close_breakout()
@@ -2456,7 +2514,9 @@ def partial_close_breakout(ticker, shares_to_close, price, side,
         tg._sync_main_book_cash()
     except Exception as _e:
         tg.logger.warning(
-            "[V81-ORB-PARTIAL] cash sync %s: %s", ticker, _e,
+            "[V81-ORB-PARTIAL] cash sync %s: %s",
+            ticker,
+            _e,
         )
 
     # Mutate the open position in place -- reduce shares.
@@ -2503,25 +2563,29 @@ def partial_close_breakout(ticker, shares_to_close, price, side,
             tg.short_trade_history.append(trade)
     except Exception as _e:
         tg.logger.warning(
-            "[V81-ORB-PARTIAL] history append %s: %s", ticker, _e,
+            "[V81-ORB-PARTIAL] history append %s: %s",
+            ticker,
+            _e,
         )
 
     try:
         _verb = "PARTIAL_SELL" if cfg.side.is_long else "PARTIAL_COVER"
         tg.paper_log(
             "%s %s %d @ $%.2f reason=%s pnl=$%.2f (%.1f%%) remaining=%d"
-            % (_verb, ticker, closing, partial_price, reason,
-               pnl_val, pnl_pct, pos["shares"])
+            % (_verb, ticker, closing, partial_price, reason, pnl_val, pnl_pct, pos["shares"])
         )
     except Exception:
         pass
 
     try:
         tg.logger.info(
-            "[V81-ORB-PARTIAL] %s %s closed=%d @ $%.4f remaining=%d "
-            "partial_pnl=$%.2f reason=%s",
+            "[V81-ORB-PARTIAL] %s %s closed=%d @ $%.4f remaining=%d partial_pnl=$%.2f reason=%s",
             ("long" if cfg.side.is_long else "short"),
-            ticker, closing, partial_price, pos["shares"], pnl_val,
+            ticker,
+            closing,
+            partial_price,
+            pos["shares"],
+            pnl_val,
             str(reason),
         )
     except Exception:
@@ -2534,16 +2598,20 @@ def partial_close_breakout(ticker, shares_to_close, price, side,
     # for exactly the right qty.
     try:
         _kind = "PARTIAL_EXIT_LONG" if cfg.side.is_long else "PARTIAL_EXIT_SHORT"
-        tg._emit_signal({
-            "kind": _kind,
-            "ticker": ticker,
-            "price": float(partial_price),
-            "reason": str(reason),
-            "main_shares": int(closing),
-            "timestamp_utc": tg._utc_now_iso(),
-        })
+        tg._emit_signal(
+            {
+                "kind": _kind,
+                "ticker": ticker,
+                "price": float(partial_price),
+                "reason": str(reason),
+                "main_shares": int(closing),
+                "timestamp_utc": tg._utc_now_iso(),
+            }
+        )
     except Exception as _e:
         tg.logger.warning(
-            "[V81-ORB-PARTIAL] signal-bus emit %s: %s", ticker, _e,
+            "[V81-ORB-PARTIAL] signal-bus emit %s: %s",
+            ticker,
+            _e,
         )
     return True

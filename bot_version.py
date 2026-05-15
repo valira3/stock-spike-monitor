@@ -5,4 +5,4 @@ version-bump-check CI workflow and existing imports. The preflight.sh
 local-CI mirror reads this file as the source of truth for the
 version-bump consistency check."""
 
-BOT_VERSION = "9.1.110"
+BOT_VERSION = "9.1.111"
