@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.101 (2026-05-15) — fix inject: use ex.positions instead of get_all_positions()
+
+Root cause of the NFLX bar missing: `_client.get_all_positions()` in the scan loop returns 0 positions even though the executor's own reconciliation at startup correctly sees NFLX (1 match). The same client returns different results 17s apart — likely a paper/live client mismatch in the scan loop context vs executor init context.
+
+Fix: read from `ex.positions` (the executor's pre-reconciled position dict, populated by `_reconcile_broker_positions()` at boot and updated on every new entry). This dict already has NFLX with `entry_price=87.49, side=SHORT, qty=325` — exactly what the inject needs. Bypasses the unreliable Alpaca API call entirely.
+
+---
+
 ## v9.1.100 (2026-05-15) — raise inject diagnostics to WARNING for Railway visibility
 
 The inject path never appeared in logs because inner exception handlers were at DEBUG level (invisible in Railway). Raised all V9197/V9199 exception paths and the inject's pre-condition checks (no adapter, no risk_book, broker_positions count) to WARNING so Railway log scan can show exactly where the inject fails.

@@ -964,22 +964,22 @@ def _orb_phantom_sweep(tg) -> None:
             if _ex is None:
                 continue
             try:
-                _client = _ex._ensure_client()
-                if _client is None:
-                    continue
-                _alpaca_pos = _client.get_all_positions()
+                # Use ex.positions (pre-reconciled at startup) instead of
+                # get_all_positions() which returns empty in scan context
+                # for unknown reasons (possibly auth/mode issue). ex.positions
+                # is populated by _reconcile_broker_positions() at boot and
+                # updated on every new entry -- always accurate.
+                _ex_pos = getattr(_ex, "positions", {}) or {}
                 _broker_tuples = []
                 _alpaca_tickers: set[str] = set()
-                for _bp in _alpaca_pos or []:
-                    _sym = (getattr(_bp, "symbol", "") or "").upper()
-                    _side = str(getattr(_bp, "side", "") or "").lower()
-                    _entry = float(getattr(_bp, "avg_entry_price", 0) or 0)
-                    if not _entry:
-                        _entry = float(getattr(_bp, "current_price", 0) or 0)
-                    _qty = int(float(getattr(_bp, "qty", 0) or 0))
-                    if _sym and _qty > 0:
-                        _broker_tuples.append((_sym, _side, _entry, _qty))
-                        _alpaca_tickers.add(_sym)
+                for _sym, _pos in _ex_pos.items():
+                    _sym_u = (_sym or "").upper()
+                    _side = str(_pos.get("side") or "long").lower()
+                    _entry = float(_pos.get("entry_price") or 0)
+                    _qty = int(_pos.get("qty") or 0)
+                    if _sym_u and _qty > 0:
+                        _broker_tuples.append((_sym_u, _side, _entry, _qty))
+                        _alpaca_tickers.add(_sym_u)
                 # Purge uses ALPACA tickers as truth (not paper positions).
                 _purged = purge_phantom_engine_positions(_pid, frozenset(_alpaca_tickers))
                 if _purged:
