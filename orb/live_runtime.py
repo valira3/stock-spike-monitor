@@ -1094,9 +1094,27 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
             ticker,
             e,
         )
+    # 3. Remove from LiveAdapter._open_positions so engine_positions on
+    # the dashboard clears and the tiker isn't shown as an open position
+    # when the broker order was never filled.
+    try:
+        adapter = get_adapter(portfolio_id)
+        if adapter is not None:
+            tk_upper = ticker.upper()
+            if tk_upper in adapter._open_positions:
+                del adapter._open_positions[tk_upper]
+                any_change = True
+    except Exception as e:
+        logger.warning(
+            "[V79-ORB-ROLLBACK] adapter clear %s/%s: %s",
+            portfolio_id,
+            ticker,
+            e,
+        )
+
     if any_change:
         logger.warning(
-            "[V79-ORB-ROLLBACK] %s/%s ticket=%s reason=%s -- FSM->ARMED, RiskBook released",
+            "[V79-ORB-ROLLBACK] %s/%s ticket=%s reason=%s -- FSM->ARMED, RiskBook released, adapter cleared",
             portfolio_id,
             ticker,
             ticket_id[:8] if ticket_id else "?",

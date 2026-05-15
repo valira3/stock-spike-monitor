@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.90 (2026-05-15) — fix phantom engine_positions after broker fire failure
+
+`rollback_admit` rolled back FSM + RiskBook on a failed broker fire, but never cleared `LiveAdapter._open_positions`. Result: tickers showed as open in `engine_positions` on the dashboard even when the Alpaca order was rejected (e.g. insufficient buying power), blocking re-entry and exhausting the concurrent risk budget.
+
+Fix: `rollback_admit` now also removes the ticker from `adapter._open_positions` (step 3). After a failed fire, the ticker immediately drops from `engine_positions`, FSM returns to ARMED, RiskBook is released, and the bot can re-enter on the next scan cycle. Forensic tag: `[V79-ORB-ROLLBACK] ... adapter cleared`.
+
+---
+
 ## v9.1.89 (2026-05-15) — fix insufficient buying power: cap order notional at 95% of account cash
 
 Val live executor was sizing positions using ORB_ACCOUNT=100000 (backtest reference equity) but Val has only $30k cash. For ORCL at $193.38 this produced 346 shares ($66.9k) against $60k buying power -- Alpaca rejected with `insufficient_buying_power`.
