@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.98 (2026-05-15) — fix reconciliation missing state-restored phantoms + None entry price
+
+Two bugs in v9.1.96/v9.1.97 reconciliation:
+
+1. **Purge missed state-restored phantoms**: `purge_phantom_engine_positions` iterated only `_ticker_to_ticket`, but positions restored from state write only `_open_positions` (not `_ticker_to_ticket`). NVDA was never in `_ticker_to_ticket` so the purge never found it. Fix: build a complete ticker map from both `_ticker_to_ticket` and `_open_positions.values()` before iterating.
+
+2. **Inject skipped when `avg_entry_price=None`**: Alpaca sometimes returns `avg_entry_price=None` for state-restored positions. The injector fell back to `_last_5m_close` which may not be populated early in the cycle. Fix: also try `current_price` from the Alpaca position object as a second fallback (broker's live mark is a reasonable entry proxy for the bar display).
+
+---
+
 ## v9.1.97 (2026-05-15) — inject missing engine positions from broker (fixes NFLX bar)
 
 Complement to v9.1.96's purge. When the broker (Alpaca) holds a real position that the ORB engine lost tracking of — e.g. NFLX SHORT after today's mid-rollback state mismatch — the engine shows no stop/bar for that position.

@@ -979,7 +979,11 @@ def _orb_phantom_sweep(tg) -> None:
                         for _bp in _alpaca_pos or []:
                             _sym = (getattr(_bp, "symbol", "") or "").upper()
                             _side = str(getattr(_bp, "side", "") or "").lower()
+                            # avg_entry_price is sometimes None for restored positions;
+                            # fall back to current_price as a reasonable entry proxy.
                             _entry = float(getattr(_bp, "avg_entry_price", 0) or 0)
+                            if not _entry:
+                                _entry = float(getattr(_bp, "current_price", 0) or 0)
                             _qty = int(float(getattr(_bp, "qty", 0) or 0))
                             if _sym and _qty > 0:
                                 _broker_tuples.append((_sym, _side, _entry, _qty))

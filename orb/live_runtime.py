@@ -1160,8 +1160,16 @@ def purge_phantom_engine_positions(
         return []
     purged: list[str] = []
     broker_upper = frozenset(t.upper() for t in (broker_tickers or []))
-    # Snapshot the reverse lookup to avoid mutation-during-iteration.
-    for tk, tid in list(adapter._ticker_to_ticket.items()):
+    # Build a complete ticker→ticket map including positions that were
+    # restored from state without _ticker_to_ticket being populated
+    # (state restore only writes _open_positions, not the reverse lookup).
+    _full_map: dict[str, str] = dict(adapter._ticker_to_ticket)
+    for tid, pos in list(adapter._open_positions.items()):
+        tk_from_pos = (getattr(pos, "ticker", None) or "").upper()
+        if tk_from_pos and tk_from_pos not in _full_map:
+            _full_map[tk_from_pos] = tid
+    # Snapshot the complete map to avoid mutation-during-iteration.
+    for tk, tid in list(_full_map.items()):
         if tk.upper() not in broker_upper:
             # Phantom: engine thinks it's open but broker doesn't.
             adapter._open_positions.pop(tid, None)
