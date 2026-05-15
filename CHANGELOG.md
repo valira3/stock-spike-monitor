@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.96 (2026-05-15) — fix phantom engine positions after mid-rollback redeploy
+
+Two bugs in tandem caused today's Val state mismatch (phantom NVDA in engine, real NFLX invisible to engine):
+
+**Bug 1 — rollback_admit used wrong key (v9.1.90 fix was a no-op):** `adapter._open_positions` is keyed by `risk_ticket_id`, not ticker. The v9.1.90 fix did `del adapter._open_positions[ticker]` which never matched anything, leaving the engine position intact after every broker fire failure.
+
+Fix: use `adapter._ticker_to_ticket[ticker]` to look up the correct key, then delete both the position and the reverse-lookup entry.
+
+**Bug 2 — no state flush after rollback:** `rollback_admit` cleared in-memory state but did not call `persist_engine_state()`. If a redeploy happened between the broker failure and the state save interval (30s), the stale pre-rollback state was restored, recreating the phantom position.
+
+Fix: call `persist_engine_state()` at the end of every successful `rollback_admit` to make the cleared state durable immediately.
+
+**New: `purge_phantom_engine_positions(pid, broker_tickers)` + scan-loop reconciliation:** After each phantom-FSM sweep, `engine/scan.py` now also calls `purge_phantom_engine_positions` with the set of tickers the executor actually holds in Alpaca. Any engine_position not matching a real broker position is cleared (position dict, reverse lookup, and RiskBook ticket). Forensic tag: `[V9196-RECONCILE]`.
+
+---
+
 ## v9.1.95 (2026-05-15) — fix tab position count flickering
 
 `renderHeader` (IIFE-1, main state poll) and `renderBadge` (IIFE-2, executor poll) both write the Val/Gene tab badge but only `renderBadge` included the position count. They fire on independent timers so the count flickered in/out every ~15-30s.

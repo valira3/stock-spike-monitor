@@ -945,6 +945,27 @@ def _orb_phantom_sweep(tg) -> None:
             len(cleared),
             cleared,
         )
+    # v9.1.96 -- purge phantom engine_positions (adapter._open_positions)
+    # where the ORB engine tracks a ticker as open but the broker has no
+    # matching position. Root cause: rollback_admit used wrong key (ticker
+    # instead of risk_ticket_id) so it never actually cleared the adapter,
+    # and stale state restored after a redeploy during mid-rollback window.
+    try:
+        from orb.live_runtime import purge_phantom_engine_positions
+
+        for _pid in ("val", "gene"):
+            _broker_held = held.get(_pid)
+            if _broker_held is not None:  # None = executor unavailable; skip
+                _purged = purge_phantom_engine_positions(_pid, frozenset(_broker_held))
+                if _purged:
+                    logger.warning(
+                        "[V9196-RECONCILE] %s: purged %d phantom adapter position(s): %s",
+                        _pid,
+                        len(_purged),
+                        _purged,
+                    )
+    except Exception as _rce:
+        logger.debug("[V9196-RECONCILE] failed: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
     # RiskBook._open_tickets where the FSM in_position is False but
     # the ticket still consumes open_risk/open_notional budget. v8.3.15

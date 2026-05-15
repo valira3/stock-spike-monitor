@@ -1095,14 +1095,23 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
             e,
         )
     # 3. Remove from LiveAdapter._open_positions so engine_positions on
-    # the dashboard clears and the tiker isn't shown as an open position
+    # the dashboard clears and the ticker isn't shown as an open position
     # when the broker order was never filled.
+    # v9.1.96: _open_positions is keyed by risk_ticket_id (not ticker).
+    # Use _ticker_to_ticket to find the correct key. v9.1.90's ticker-key
+    # lookup was a no-op; this is the correct version.
     try:
         adapter = get_adapter(portfolio_id)
         if adapter is not None:
             tk_upper = ticker.upper()
-            if tk_upper in adapter._open_positions:
-                del adapter._open_positions[tk_upper]
+            tid = adapter._ticker_to_ticket.get(tk_upper)
+            if tid and tid in adapter._open_positions:
+                del adapter._open_positions[tid]
+                adapter._ticker_to_ticket.pop(tk_upper, None)
+                any_change = True
+            elif tk_upper in adapter._ticker_to_ticket:
+                # Dangling reverse-lookup with no position — clean it up.
+                adapter._ticker_to_ticket.pop(tk_upper, None)
                 any_change = True
     except Exception as e:
         logger.warning(
@@ -1120,7 +1129,62 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
             ticket_id[:8] if ticket_id else "?",
             reason or "<none>",
         )
+        # Flush state immediately so a redeploy mid-rollback restores the
+        # post-rollback state, not the pre-rollback (stale) state.
+        try:
+            persist_engine_state()
+        except Exception as _fe:
+            logger.debug("[V79-ORB-ROLLBACK] state flush failed: %s", _fe)
     return any_change
+
+
+def purge_phantom_engine_positions(
+    portfolio_id: str,
+    broker_tickers: "frozenset[str]",
+) -> list[str]:
+    """v9.1.96 -- remove engine positions that don't exist in the broker.
+
+    Called from engine/scan.py after fetching executor Alpaca positions
+    so that phantom state (positions tracked by the ORB engine that were
+    never filled, or were force-closed by the broker) can be cleaned up
+    without waiting for an EOD flush.
+
+    Returns a list of ticker names that were purged.
+
+    Safe to call when the runtime isn't bootstrapped (returns []).
+    """
+    if _engine is None or _adapters is None:
+        return []
+    adapter = _adapters.get(portfolio_id)
+    if adapter is None:
+        return []
+    purged: list[str] = []
+    broker_upper = frozenset(t.upper() for t in (broker_tickers or []))
+    # Snapshot the reverse lookup to avoid mutation-during-iteration.
+    for tk, tid in list(adapter._ticker_to_ticket.items()):
+        if tk.upper() not in broker_upper:
+            # Phantom: engine thinks it's open but broker doesn't.
+            adapter._open_positions.pop(tid, None)
+            adapter._ticker_to_ticket.pop(tk, None)
+            # Release the RiskBook ticket so concurrent risk flows back.
+            try:
+                rb = _engine._risk.get(portfolio_id)
+                if rb is not None:
+                    rb.release_by_id(tid)
+            except Exception as _re:
+                logger.debug("[V9196-RECONCILE] RiskBook release %s/%s: %s", portfolio_id, tk, _re)
+            purged.append(tk)
+            logger.warning(
+                "[V9196-RECONCILE] purged phantom engine position %s/%s (not in broker positions)",
+                portfolio_id,
+                tk,
+            )
+    if purged:
+        try:
+            persist_engine_state()
+        except Exception as _fe:
+            logger.debug("[V9196-RECONCILE] state flush failed: %s", _fe)
+    return purged
 
 
 def check_exit_by_ticker(
