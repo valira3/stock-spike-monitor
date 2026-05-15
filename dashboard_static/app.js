@@ -3394,26 +3394,34 @@
       // no intermediate state during polling.
       const badge = document.getElementById(`tg-badge-${name}`);
       if (badge) {
+        // Read count stored by renderBadge (IIFE-2) so both write paths
+        // stay in sync — prevents the count flickering out on every state poll.
+        const _posN = ((window.__tgExecPosN || {})[name]) || 0;
+        const _posTag = _posN > 0
+          ? `<span style="color:#fbbf24;font-weight:600;margin-left:5px">${_posN}</span>`
+          : "";
         if (enabled) {
           const isLive = (mode === "live");
           if (isLive) {
             // Dark-green dot + "live" text — readable on dark theme without being garish.
             badge.innerHTML =
               '<span style="color:#22c55e;font-size:8px;vertical-align:middle">●</span>' +
-              '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
+              '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>' +
+              _posTag;
             badge.setAttribute(
-              "title", `${label} executor enabled (live mode)`,
+              "title", `${label} executor enabled (live mode)` + (_posN > 0 ? ` · ${_posN} open` : ""),
             );
           } else {
             badge.innerHTML =
-              '<span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">\ud83d\udcc4 Paper</span>';
+              '<span style="color:#5b6572;font-size:10.5px" title="Paper-trading mode">📄 Paper</span>' +
+              _posTag;
             badge.setAttribute(
-              "title", `${label} executor enabled (paper mode)`,
+              "title", `${label} executor enabled (paper mode)` + (_posN > 0 ? ` · ${_posN} open` : ""),
             );
           }
           badge.style.color = "";
         } else {
-          badge.innerHTML = "\u2717";
+          badge.innerHTML = "✗";
           badge.style.color = "#9aa6b2"; // dim grey
           badge.setAttribute(
             "title",
@@ -4652,6 +4660,9 @@
     if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
     const _posN = Array.isArray(data.positions) ? data.positions.length : 0;
+    // Publish to window so renderHeader (IIFE-1) can read the same count.
+    window.__tgExecPosN = window.__tgExecPosN || {};
+    window.__tgExecPosN[name] = _posN;
     const _posTag = _posN > 0
       ? `<span style="color:#fbbf24;font-weight:600;margin-left:5px">${_posN}</span>`
       : "";

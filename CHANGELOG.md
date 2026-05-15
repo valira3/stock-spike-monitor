@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.95 (2026-05-15) — fix tab position count flickering
+
+`renderHeader` (IIFE-1, main state poll) and `renderBadge` (IIFE-2, executor poll) both write the Val/Gene tab badge but only `renderBadge` included the position count. They fire on independent timers so the count flickered in/out every ~15-30s.
+
+Fix: `renderBadge` now publishes position counts to `window.__tgExecPosN`; `renderHeader` reads from that same object so both write paths produce identical output.
+
+---
+
 ## v9.1.94 (2026-05-15) — drop brackets from tab position count
 
 Follow-up to v9.1.93: bare number instead of `[N]`. `Val live 1` not `Val live [1]`.
