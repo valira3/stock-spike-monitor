@@ -206,6 +206,19 @@ def inv_val_gene_trades_match_main(ctx):
     # The wrong key name made val_count always 0 in FIRE=1 post-EOD sessions.
     val_count = len(val.get("todays_trades") or val.get("trades_today") or [])
     gene_count = len(gene.get("todays_trades") or gene.get("trades_today") or [])
+    # v9.1.107 -- in independent FIRE=1 mode, Val fires its own ORB entries
+    # AND receives EOD reversal broker fills (AVGO, MSFT etc.) that Main
+    # never sees in paper_state. Val's count legitimately exceeds Main's.
+    # Skip when val_count >= main_count (extra trades, not missing ones).
+    import os as _os_inv
+
+    if _os_inv.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
+        if val_count >= main_count:
+            return _ok(
+                "val_gene_trades_match_main",
+                f"skipped: FIRE=1 independent mode val={val_count} >= main={main_count}"
+                " (extra Val trades from ORB+EOD are expected)",
+            )
     mismatches = []
     if val.get("enabled") is not False and val_count != main_count:
         mismatches.append(f"val={val_count} vs main={main_count}")

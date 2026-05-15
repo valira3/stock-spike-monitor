@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.107 (2026-05-15) — change EOD flush to 15:58; fix val_gene trade mismatch CRIT
+
+1. EOD flush schedule: 15:57 → 15:58 ET (one minute before EOD reversal engine exit at 15:59).
+
+2. `inv_val_gene_trades_match_main`: in `ORB_PORTFOLIO_FIRE=1` independent mode, Val legitimately has more trades than Main (ORB independent entries + EOD reversal broker fills like AVGO/MSFT). Skip the CRIT when `val_count >= main_count` in FIRE=1 mode — extra Val trades are expected, only fewer Val trades than Main would indicate a real mirror failure.
+
+---
+
 ## v9.1.106 (2026-05-15) — move EOD flush to 15:57 + skip close_all in independent mode
 
 Two fixes for the 15:49 ET early-close issue:
