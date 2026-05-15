@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.87 (2026-05-15) — fix position_count_three_way false CRIT for Val independent-mode entries
+
+In `ORB_PORTFOLIO_FIRE=1` mode Val fires entries independently and tracks them in the executor's `engine_positions`, not the main scan loop's portfolio state. `position_count_three_way` was counting Val's `portfolios.val.positions` (always empty in independent mode) against `broker_open_n`, generating a CRIT whenever Val had live positions. Fix: also count `exec_val.engine_positions` when computing `val_count` so broker positions covered by the executor aren't flagged as phantoms.
+
+---
+
 ## v9.1.86 (2026-05-15) — skip position_count_three_way when scan loop not yet initialized
 
 `position_count_three_way` now skips when `last_scan_at` is None — the bot's scan loop hasn't completed its first cycle yet (typical in the 5 min after a Railway deploy). During startup, any broker positions vs empty internal books is a race condition, not a real phantom. Previously this fired a CRIT alert at every market open after a redeploy.

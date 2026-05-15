@@ -219,10 +219,23 @@ class TestPositionCountThreeWay:
             "positions": [],
             "last_scan_at": "2026-05-15T13:30:00Z",
         }
-        r = inv_position_count_three_way(_ctx(s))
+        r = inv_position_count_three_way(_ctx(s, exec_val={"engine_positions": {}}))
         assert not r["ok"]
         assert "phantom at broker" in r["summary"]
         assert "broker_open_n=1" in r["detail"]
+
+    def test_passes_when_val_has_independent_engine_positions(self):
+        # ORB_PORTFOLIO_FIRE=1: Val fired 3 entries independently; main books empty.
+        # engine_positions on the executor covers the broker count.
+        s = {
+            "portfolio": {"broker_open_n": 3},
+            "portfolios": {"main": {}, "val": {}, "gene": {}},
+            "positions": [],
+            "last_scan_at": "2026-05-15T13:30:00Z",
+        }
+        exec_val = {"engine_positions": {"AAPL": {}, "NVDA": {}, "TSLA": {}}}
+        r = inv_position_count_three_way(_ctx(s, exec_val=exec_val))
+        assert r["ok"]
 
 
 # ---------------------------------------------------------------------

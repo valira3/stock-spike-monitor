@@ -973,8 +973,14 @@ def inv_position_count_three_way(ctx: InvariantContext) -> dict:
     portfolio = s.get("portfolio") or {}
     broker_open_n = int(portfolio.get("broker_open_n") or 0)
     main_count = len(main.get("positions") or s.get("positions") or [])
-    val_count = len(val.get("positions") or [])
-    gene_count = len(gene.get("positions") or [])
+    # In ORB_PORTFOLIO_FIRE=1 mode, Val/Gene fire entries independently. Their
+    # positions live in the executor's engine_positions, not the main scan loop
+    # state. Pull from executor snapshots so independent-mode entries aren't
+    # counted as phantom broker positions.
+    val_exec = _exec(ctx, "val") or {}
+    gene_exec = _exec(ctx, "gene") or {}
+    val_count = len(val.get("positions") or []) + len(val_exec.get("engine_positions") or {})
+    gene_count = len(gene.get("positions") or []) + len(gene_exec.get("engine_positions") or {})
     internal_total = main_count + val_count + gene_count
     if broker_open_n > 0 and internal_total == 0:
         # v9.1.71 -- post-market: EOD positions in Val's Alpaca paper account
