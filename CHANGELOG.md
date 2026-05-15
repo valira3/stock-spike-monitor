@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.106 (2026-05-15) — move EOD flush to 15:57 + skip close_all in independent mode
+
+Two fixes for the 15:49 ET early-close issue:
+
+1. **Schedule moved 15:49 → 15:57 ET**: The legacy `eod_close` job (Tiger Sovereign v15.0 artifact) was firing at 15:49 and sending `EOD_CLOSE_ALL` on the signal bus, closing Val's EOD reversal positions (AVGO, MSFT) 10 minutes before their 15:59 exit. Moved to 15:57 — after the ORB EOD cutoff (15:55) and before the EOD reversal exit (15:59). This gives both engines room to handle their own exits.
+
+2. **`EOD_CLOSE_ALL` skips `close_all_positions` in independent mode** (`ORB_PORTFOLIO_FIRE=1`): In independent mode, Val/Gene own their position exits — ORB morning positions close via the ORB engine's `ORB_EOD_CUTOFF_ET=15:55` sentinel, and EOD reversal positions close via the EOD reversal engine at 15:59. The legacy `close_all_positions` call now only fires in mirror mode (`ORB_PORTFOLIO_FIRE=0`). Local tracking is still cleared in both modes. Forensic log: `[VAL/GENE] EOD_CLOSE_ALL: independent mode -- skipping close_all_positions`.
+
+---
+
 ## v9.1.105 (2026-05-15) — fix Main Day P&L to include EOD realized + unrealized
 
 `day_pnl` in both the top-level `portfolio` block (Day P&L tile) and `portfolios.main` was computed from morning ORB only. EOD realized P&L (closed legs) and EOD unrealized P&L (open positions during the hold window) were not included. With AVGO +$86 and MSFT +$1.68 open, the tile showed -$287 instead of -$199.

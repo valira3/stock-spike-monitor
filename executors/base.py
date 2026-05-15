@@ -2911,15 +2911,30 @@ class TradeGeniusBase:
                         exc_info=True,
                     )
             elif kind == "EOD_CLOSE_ALL":
-                client.close_all_positions(cancel_orders=True)
-                # v5.5.10 \u2014 wipe every local + persisted row.
+                import os as _os_eod
+
+                # v9.1.106 -- in independent mode (ORB_PORTFOLIO_FIRE=1),
+                # Val/Gene manage their own exits via the ORB engine's
+                # EOD cutoff (15:55) and the EOD reversal engine (15:59).
+                # Calling close_all_positions here would flatten EOD reversal
+                # positions early. Skip the Alpaca close; just clear local
+                # tracking so phantom rows don't linger.
+                _independent = _os_eod.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1"
+                if _independent:
+                    logger.info(
+                        "[%s] EOD_CLOSE_ALL: independent mode -- skipping"
+                        " close_all_positions (ORB+EOD engines own their exits)",
+                        self.NAME,
+                    )
+                else:
+                    client.close_all_positions(cancel_orders=True)
+                    msg = f"\u2705 {label}: EOD close_all_positions"
+                    logger.info(msg)
+                    self._send_own_telegram(msg)
+                # Always wipe local tracking so no stale rows remain.
                 for tkr in list(self.positions.keys()):
                     self._remove_position(tkr)
-                msg = f"\u2705 {label}: EOD close_all_positions"
-                logger.info(msg)
-                self._send_own_telegram(msg)
-                # v5.25.0 \u2014 full sweep so any laggard fills or stale
-                # rows get reconciled against the now-flat broker book.
+                # v5.25.0 -- reconcile to catch laggard fills.
                 try:
                     self._reconcile_broker_positions()
                 except Exception:

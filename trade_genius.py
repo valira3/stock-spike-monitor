@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "9.1.105"
+BOT_VERSION = "9.1.106"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7224,8 +7224,12 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        # R-4: EOD flush at 15:49:59 ET per Tiger Sovereign v15.0.
-        ("daily", "15:49", eod_close),
+        # R-4: EOD flush moved 15:49 -> 15:57 ET (v9.1.106).
+        # Original 15:49 was per Tiger Sovereign v15.0 (retired).
+        # 15:57 fires AFTER the ORB EOD cutoff (15:55) and before the
+        # EOD reversal engine's 15:59 exit, giving independent executors
+        # room to close their own positions without being overridden.
+        ("daily", "15:57", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
         # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
