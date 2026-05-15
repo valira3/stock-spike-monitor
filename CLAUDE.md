@@ -105,26 +105,26 @@ sweep runs.
 
 ## Keystone — canonical production baseline
 
-**Keystone** is the locked production strategy benchmark as of 2026-05-15 (v9.1.111).
+**Keystone** is the locked production strategy benchmark as of 2026-05-15 (v9.1.113).
 
-**Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate on 6 mega-caps. Symmetric 10-min post-trade cooldown only (no loss-only cooldown).
+**Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate on 6 mega-caps. Sym-10m post-trade cooldown. EOD universe: 6 tickers (TSLA added v9.1.113 after sweep showed +$3,930/yr).
 
 **Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr):**
 
 | Component | Ann/yr | Notes |
 |---|---:|---|
 | Morning ORB | +$33,884 | VWAP 25bps gate + sym-10m cooldown |
-| EOD reversal (r17) | +$8,689 | ORCL/AAPL/MSFT/AVGO fence, 35% notional, 15:00-15:58 ET |
-| **Combined** | **+$42,573** | **+60.5% on $100k / 17mo / 1/6 neg quarters** |
+| EOD reversal | +$12,620 | ORCL/AAPL/MSFT/AVGO/TSLA fence, 35% notional, 15:00-15:58 ET |
+| **Combined** | **+$46,504** | **+66.1% on $100k / 17mo / 1/6 neg quarters** |
 
 | Quarter | Morning | EOD | Combined |
 |---|---:|---:|---:|
-| 2025-Q1 | -$4,842 | +$1,023 | -$3,819 |
-| 2025-Q2 | +$6,710 | +$4,997 | +$11,706 |
-| 2025-Q3 | +$9,071 | -$2,500 | +$6,571 |
-| 2025-Q4 | +$12,662 | +$2,286 | +$14,948 |
-| 2026-Q1 | +$4,011 | +$4,615 | +$8,625 |
-| 2026-Q2 | +$18,239 | +$1,338 | +$19,577 |
+| 2025-Q1 | -$4,842 | +$1,023 | -$3,740 |
+| 2025-Q2 | +$6,710 | +$6,993 | +$13,703 |
+| 2025-Q3 | +$9,071 | -$1,073 | +$7,998 |
+| 2025-Q4 | +$12,662 | +$2,046 | +$14,708 |
+| 2026-Q1 | +$4,011 | +$6,414 | +$10,425 |
+| 2026-Q2 | +$18,239 | +$1,594 | +$19,833 |
 
 **Standard backtest approach (combined, compounded, annualized):**
 Run morning + EOD in parallel, sum P&Ls, annualize by `× (252/341)`. Always use `ORB_COMPOUND_DAILY=1` and `AFT_COMPOUND_DAILY=1`.
@@ -151,8 +151,8 @@ python tools/orb_backtest.py --corpus data --out results/keystone_verify \
 
 **How to run (EOD r17):**
 ```bash
-AFT_STRATEGY=eod_reversal AFT_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX \
-AFT_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO AFT_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT \
+AFT_STRATEGY=eod_reversal AFT_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX,TSLA \
+AFT_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO,TSLA AFT_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT,TSLA \
 AFT_EOD_TOP_N=1 AFT_NOTIONAL_PCT=35 AFT_SIZING_MODE=fixed_notional \
 AFT_ENTRY_BUCKET=900 AFT_EXIT_BUCKET=958 \
 AFT_ENTRY_SLIP_BPS=1.5 AFT_EXIT_SLIP_BPS=1.5 AFT_ACCOUNT=100000 AFT_COMPOUND_DAILY=1 \
@@ -169,7 +169,7 @@ python tools/afternoon_backtest.py --strategy eod_reversal \
 | `ORB_POST_TRADE_COOLDOWN_MIN=10` | Symmetric cooldown (v9.1.111) | Blocks same-(ticker,side) re-entry for 10min after ANY exit (win or loss). Eliminates immediate double-fires. Sweep winner — $42,573/yr vs loss-only-30m $41,614/yr. |
 | `ORB_ATR_STOP_MULT=1.75` | Volatility-adaptive stop | ATR(14) × 1.75 instead of OR-edge ± buffer; wider on volatile days, tighter on quiet days |
 | `ORB_PARTIAL_PROFIT_AT_1R=1` | Partial exit at 1R | Half-close at 1R, runner rides to 2.5R target with BE stop |
-| r17 EOD fence | ORCL/AAPL/MSFT/AVGO long, ORCL/NFLX/AAPL/MSFT short | Per-(ticker,side) fence discovered in r17 forensic; drops retail-momentum stocks that reverse momentum instead of mean-reverting |
+| r17 EOD fence | ORCL/AAPL/MSFT/AVGO/TSLA long, ORCL/NFLX/AAPL/MSFT/TSLA short | Per-ticker sweep; TSLA added v9.1.113 (+$3,930/yr). GOOG/NVDA remain excluded (tested negative). |
 
 **Backtest speed — pkl cache:**
 - First run: ~30s (reads JSONL, writes `data/.bt_cache/<TICKER>.pkl`)

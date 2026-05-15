@@ -207,9 +207,10 @@ class TestShipSpec:
         """
         cfg = EodReversalConfig()
         assert cfg.enabled is True, "EOD should default ON for v9.1.0"
-        assert set(cfg.universe) == {"ORCL", "AAPL", "MSFT", "AVGO", "NFLX"}
-        assert set(cfg.long_tickers) == {"ORCL", "AAPL", "MSFT", "AVGO"}
-        assert set(cfg.short_tickers) == {"ORCL", "NFLX", "AAPL", "MSFT"}
+        # v9.1.113: TSLA added after per-ticker sweep showed +$3,930/yr.
+        assert set(cfg.universe) == {"ORCL", "AAPL", "MSFT", "AVGO", "NFLX", "TSLA"}
+        assert set(cfg.long_tickers) == {"ORCL", "AAPL", "MSFT", "AVGO", "TSLA"}
+        assert set(cfg.short_tickers) == {"ORCL", "NFLX", "AAPL", "MSFT", "TSLA"}
         assert cfg.top_n == 1
         assert cfg.notional_pct == 35.0
         # v9.1.2: entry moved 15:30 -> 15:00 per R18c sweep.

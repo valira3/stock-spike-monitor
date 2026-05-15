@@ -70,7 +70,7 @@ def build():
         ["Position size", "1% risk per trade\n≤75% of account notional", "35% notional per leg\n(1 long + 1 short)"],
         ["Universe",      "AAPL AMZN AVGO GOOG\nMETA MSFT NFLX NVDA\nORCL QQQ SPY TSLA", "ORCL AAPL MSFT AVGO NFLX\n(long fence: ORCL AAPL MSFT AVGO)\n(short fence: ORCL NFLX AAPL MSFT)"],
         ["Max trades/day","5",                       "2 (1 long + 1 short)"],
-        ["Ann P&L (17mo)","$33,884",                 "$8,689"],
+        ["Ann P&L (17mo)","$33,884",                 "$12,620"],
     ]
     ts = TableStyle([
         ("BACKGROUND",  (0,0), (-1,0), NAVY),
@@ -136,7 +136,7 @@ def build():
     # headline KPIs
     kpi_data = [
         ["Combined Ann/yr", "Return on $100k", "Negative Quarters", "Morning Win Rate"],
-        ["$42,573",         "+60.5%",           "1 of 6",            "57%"],
+        ["$46,504",         "+66.1%",           "1 of 6",            "57%"],
     ]
     kt = Table(kpi_data, colWidths=[1.8*inch]*4)
     kt.setStyle(TableStyle([
@@ -159,9 +159,9 @@ def build():
     story.append(Paragraph("Annual P&L Range (rolling 4-quarter windows)", h2_s))
     range_data = [
         ["Scenario",      "Rolling Period",          "Annual P&L",  "Notes"],
-        ["Minimum",       "Q1 2025 – Q4 2025",       "$29,406",     "Includes weakest quarter (Q1 2025, −$3,819)"],
-        ["Median / Base", "17-month annualized",     "$42,573",     "Full-corpus compounded figure"],
-        ["Maximum",       "Q3 2025 – Q2 2026",       "$49,721",     "Strongest trailing year to date"],
+        ["Minimum",       "Q1 2025 – Q4 2025",       "$31,654",     "Includes weakest quarter (Q1 2025, −$3,819)"],
+        ["Median / Base", "17-month annualized",     "$46,504",     "Full-corpus compounded figure"],
+        ["Maximum",       "Q3 2025 – Q2 2026",       "$55,237",     "Strongest trailing year to date"],
     ]
     colors_row = [LGREY, colors.HexColor("#FFF3F5"), WHITE, colors.HexColor("#F0FDF8")]
     text_colors = [NAVY, RED, NAVY, GREEN]
@@ -205,11 +205,11 @@ def build():
     q_data = [
         ["Quarter", "Morning", "EOD", "Combined"],
         ["Q1 2025", "−$4,842", "+$1,023", "−$3,819"],
-        ["Q2 2025", "+$6,710", "+$4,997", "+$11,706"],
-        ["Q3 2025", "+$9,071", "−$2,500", "+$6,571"],
-        ["Q4 2025", "+$12,662", "+$2,286", "+$14,948"],
-        ["Q1 2026", "+$4,011", "+$4,615", "+$8,625"],
-        ["Q2 2026", "+$18,239", "+$1,338", "+$19,577"],
+        ["Q2 2025", "+$6,710", "+$4,997", "+$13,703"],
+        ["Q3 2025", "+$9,071", "−$2,500", "+$7,998"],
+        ["Q4 2025", "+$12,662", "+$2,286", "+$14,708"],
+        ["Q1 2026", "+$4,011", "+$4,615", "+$10,425"],
+        ["Q2 2026", "+$18,239", "+$1,338", "+$19,833"],
         ["Total (17mo)", "+$45,851", "+$11,758", "+$57,609"],
     ]
     qt = Table(q_data, colWidths=[1.5*inch, 1.65*inch, 1.65*inch, 1.65*inch])
@@ -246,7 +246,7 @@ def build():
     story.append(Paragraph(
         "Backtest corpus: SIP bar data, Jan 2025 – May 2026, 341 trading days. "
         "Slippage: 1.5 bps entry + 1.5 bps exit. No look-ahead bias. "
-        "Keystone v3 locked 2026-05-15 (v9.1.112). "
+        "Keystone v4 locked 2026-05-15 (v9.1.113). "
         "Strategy runs live on Railway via Alpaca broker (Val portfolio, cash account).",
         small_s))
 

@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.113 (2026-05-15) — EOD universe expanded: TSLA added to long+short fence
+
+Per-ticker EOD sweep showed TSLA adds +$3,930/yr (annualized, combined morning+EOD) spread across 5 of 6 quarters — not a single-quarter fluke. GOOG/NVDA tested negative and remain excluded.
+
+- `orb/eod_reversal.py`: universe `ORCL,AAPL,MSFT,AVGO,NFLX` → `ORCL,AAPL,MSFT,AVGO,NFLX,TSLA`; long fence adds TSLA; short fence adds TSLA.
+- Railway env: `ORB_EOD_UNIVERSE`, `ORB_EOD_LONG_TICKERS`, `ORB_EOD_SHORT_TICKERS` updated.
+- New keystone v4: combined +$46,504/yr (+$3,930 vs v3).
+
+---
+
 ## v9.1.112 (2026-05-15) — remove loss-only cooldown entirely (sym-10m is sufficient)
 
 Deleted all `POST_LOSS_COOLDOWN_MIN*` code paths. The sym-10m cooldown (`ORB_POST_TRADE_COOLDOWN_MIN=10`) covers wins and losses; loss-only added no value in the sweep and was removed from Railway env. Deleted test files: `test_v642_post_loss_cooldown.py`, `test_v643_asymmetric_cooldown.py`, `test_v7_0_1_cooldown_split.py`, `test_v6100_defaults.py`.

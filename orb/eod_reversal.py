@@ -52,13 +52,16 @@ class EodReversalConfig:
 
     enabled: bool = True
 
-    # Universe: every ticker eligible for ROD3 ranking
-    universe: tuple = ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX")
+    # Universe: every ticker eligible for ROD3 ranking.
+    # v9.1.113 -- TSLA added after per-ticker sweep showed +$3,930/yr lift
+    # spread across 5 of 6 quarters. TSLA exhibits institutional mean-reversion
+    # near close despite retail-momentum label in r17 forensic.
+    universe: tuple = ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX", "TSLA")
 
     # Per-side fence: only these (ticker, side) pairs admitted. Empty
     # tuple = use the full universe for that side.
-    long_tickers: tuple = ("ORCL", "AAPL", "MSFT", "AVGO")
-    short_tickers: tuple = ("ORCL", "NFLX", "AAPL", "MSFT")
+    long_tickers: tuple = ("ORCL", "AAPL", "MSFT", "AVGO", "TSLA")
+    short_tickers: tuple = ("ORCL", "NFLX", "AAPL", "MSFT", "TSLA")
 
     # Selection: top-N losers (long) + top-N winners (short). 1 = single
     # best per side per day.
@@ -107,9 +110,9 @@ class EodReversalConfig:
 
         Env vars:
           ORB_EOD_REVERSAL_ENABLED=1
-          ORB_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX
-          ORB_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO
-          ORB_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT
+          ORB_EOD_UNIVERSE=ORCL,AAPL,MSFT,AVGO,NFLX,TSLA
+          ORB_EOD_LONG_TICKERS=ORCL,AAPL,MSFT,AVGO,TSLA
+          ORB_EOD_SHORT_TICKERS=ORCL,NFLX,AAPL,MSFT,TSLA
           ORB_EOD_TOP_N=1
           ORB_EOD_NOTIONAL_PCT=35
           ORB_EOD_ENTRY_ET=15:30

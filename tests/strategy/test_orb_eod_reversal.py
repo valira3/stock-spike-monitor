@@ -28,9 +28,10 @@ class TestConfigDefaults:
     def test_defaults_match_r17_winner(self):
         cfg = EodReversalConfig()
         assert cfg.enabled is True
-        assert cfg.universe == ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX")
-        assert cfg.long_tickers == ("ORCL", "AAPL", "MSFT", "AVGO")
-        assert cfg.short_tickers == ("ORCL", "NFLX", "AAPL", "MSFT")
+        # v9.1.113: TSLA added after per-ticker sweep showed +$3,930/yr.
+        assert cfg.universe == ("ORCL", "AAPL", "MSFT", "AVGO", "NFLX", "TSLA")
+        assert cfg.long_tickers == ("ORCL", "AAPL", "MSFT", "AVGO", "TSLA")
+        assert cfg.short_tickers == ("ORCL", "NFLX", "AAPL", "MSFT", "TSLA")
         assert cfg.top_n == 1
         assert cfg.notional_pct == 35.0
         # v9.1.2: entry moved 15:30 -> 15:00 per the R18c sweep.
