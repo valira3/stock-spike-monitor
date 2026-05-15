@@ -1366,10 +1366,12 @@ class TradeGeniusBase:
             logger.exception("[%s] [V10-FIRE] alpaca imports failed", self.NAME)
             return False
 
-        # Hard notional cap: clamp shares so order cost never exceeds 95% of
-        # account equity. Equity = settled cash + unrealized P&L and is the
-        # correct basis for a cash account. Cash alone can diverge from actual
-        # spending power when open positions affect the account balance.
+        # Hard notional cap: clamp shares so (existing_notional + new_order_notional)
+        # never exceeds 95% of account equity. Uses equity (not cash/buying_power)
+        # since equity is stable regardless of which positions are already open.
+        # The TOTAL check (long_mv + abs(short_mv) + new_notional <= equity * 0.95)
+        # ensures a small account (e.g. Val at $30k) can't accumulate NFLX SHORT
+        # ($28k) AND an EOD position that pushes combined notional above equity.
         if price > 0:
             try:
                 _acct = client.get_account()
@@ -1377,28 +1379,37 @@ class TradeGeniusBase:
                     getattr(_acct, "cash", 0) or 0
                 )
                 if _equity > 0:
-                    _max_shares = int(_equity * 0.95 / price)
+                    # Cumulative check: account for positions already open.
+                    _long_mv = abs(float(getattr(_acct, "long_market_value", 0) or 0))
+                    _short_mv = abs(float(getattr(_acct, "short_market_value", 0) or 0))
+                    _used_notional = _long_mv + _short_mv
+                    _cap = _equity * 0.95
+                    _remaining = max(0.0, _cap - _used_notional)
+                    _max_shares = int(_remaining / price) if price > 0 else 0
                     if shares > _max_shares:
                         logger.warning(
                             "[%s] [V10-FIRE] notional cap: clamp %s %s"
-                            " %d->%d sh (equity=%.0f price=%.2f cap=95%%)",
+                            " %d->%d sh (equity=%.0f used=%.0f remaining=%.0f price=%.2f cap=95%%)",
                             self.NAME,
                             side,
                             ticker,
                             shares,
                             _max_shares,
                             _equity,
+                            _used_notional,
+                            _remaining,
                             price,
                         )
                         shares = _max_shares
                     if shares <= 0:
                         logger.warning(
-                            "[%s] [V10-FIRE] skip %s %s -- 0 shares after equity cap"
-                            " (equity=%.0f price=%.2f)",
+                            "[%s] [V10-FIRE] skip %s %s -- 0 shares after cumulative notional cap"
+                            " (equity=%.0f used=%.0f price=%.2f)",
                             self.NAME,
                             side,
                             ticker,
                             _equity,
+                            _used_notional,
                             price,
                         )
                         return False

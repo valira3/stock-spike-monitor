@@ -226,6 +226,8 @@ def _stub_client_with_cash(cash: float = 200_000.0) -> MagicMock:
     fake_acct.cash = cash
     fake_acct.equity = cash
     fake_acct.buying_power = cash * 2
+    fake_acct.long_market_value = 0.0
+    fake_acct.short_market_value = 0.0
     c.get_account.return_value = fake_acct
     return c
 

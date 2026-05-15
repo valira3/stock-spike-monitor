@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.103 (2026-05-15) — fix cumulative notional cap: check total open notional vs equity
+
+v9.1.91 capped each individual order at 95% of equity, but didn't account for positions already open. A small account (Val at $30k) could have NFLX SHORT ($28k notional) and then an EOD position fires at $35k — combined total $63k >> $30k equity.
+
+Fix: in `_submit_v10_entry`, fetch `account.long_market_value + abs(account.short_market_value)` to compute currently-used notional, then cap the new order at `max(0, equity*0.95 - used_notional)`. If the remaining budget is 0 after existing positions, the order is skipped. Forensic log: `[V10-FIRE] notional cap: ... (equity=X used=Y remaining=Z ...)`.
+
+---
+
 ## v9.1.102 (2026-05-15) — fix EOD position mark $ and % not showing on Main tab
 
 `eod_positions` mark price enrichment (added v9.1.69) requires EOD tickers to be in the `prices` cache. The cache was only built from `m.positions`/`m.short_positions` (ORB positions), not from EOD open positions tracked in `EodReversalEngine`. When AVGO/MSFT were open EOD positions, `prices.get("AVGO")` returned None → `current_price`/`unrealized_pnl`/`unrealized_pct` never populated → dashboard showed `—`.

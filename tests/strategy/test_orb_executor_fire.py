@@ -41,6 +41,8 @@ def stub_client():
     fake_acct.cash = 200_000.0
     fake_acct.equity = 200_000.0
     fake_acct.buying_power = 400_000.0
+    fake_acct.long_market_value = 0.0
+    fake_acct.short_market_value = 0.0
     c.get_account.return_value = fake_acct
     return c
 
