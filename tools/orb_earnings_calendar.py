@@ -1,60 +1,40 @@
-"""Earnings calendar for ORB backtest -- manually compiled from public sources.
+"""Earnings calendar for ORB backtest -- auto-refreshed from yfinance.
 
-Coverage: Jan 2025 - Jun 2026 for the 12-ticker ORB universe.
-Dates are the actual report date. timing: 'bmo'=before open, 'amc'=after close.
-AMC: next day's ORB fires into post-earnings vol. BMO: same day is affected.
-Last updated: 2026-05-15. Refresh quarterly before each earnings season.
+Coverage: rolling ~20 weeks window for the 12-ticker ORB universe.
+timing: 'bmo'=before market open (same day affected),
+        'amc'=after market close (next day's ORB fires into post-earnings vol).
+
+Refresh: run scripts/refresh_earnings_calendar.py weekly.
+Last refreshed: 2026-05-15 23:31 UTC.
 """
 
 EARNINGS_CALENDAR: dict[str, list[tuple[str, str]]] = {
-    "AAPL": [
-        ("2025-01-30", "amc"), ("2025-05-01", "amc"), ("2025-07-31", "amc"),
-        ("2025-10-30", "amc"), ("2026-01-29", "amc"), ("2026-05-01", "amc"),
-    ],
-    "MSFT": [
-        ("2025-01-29", "amc"), ("2025-04-30", "amc"), ("2025-07-30", "amc"),
-        ("2025-10-29", "amc"), ("2026-01-29", "amc"), ("2026-04-29", "amc"),
-    ],
-    "NVDA": [
-        ("2025-02-26", "amc"), ("2025-05-28", "amc"), ("2025-08-27", "amc"),
-        ("2025-11-19", "amc"), ("2026-02-25", "amc"),
-    ],
-    "TSLA": [
-        ("2025-01-29", "amc"), ("2025-04-22", "amc"), ("2025-07-23", "amc"),
-        ("2025-10-23", "amc"), ("2026-01-29", "amc"), ("2026-04-22", "amc"),
-    ],
-    "META": [
-        ("2025-01-29", "amc"), ("2025-04-30", "amc"), ("2025-07-30", "amc"),
-        ("2025-10-29", "amc"), ("2026-01-29", "amc"), ("2026-04-29", "amc"),
-    ],
-    "GOOG": [
-        ("2025-02-04", "amc"), ("2025-04-29", "amc"), ("2025-07-29", "amc"),
-        ("2025-10-29", "amc"), ("2026-02-04", "amc"), ("2026-04-29", "amc"),
-    ],
-    "AMZN": [
-        ("2025-02-06", "amc"), ("2025-05-01", "amc"), ("2025-08-01", "amc"),
-        ("2025-10-31", "amc"), ("2026-02-05", "amc"), ("2026-04-30", "amc"),
-    ],
-    "AVGO": [
-        ("2025-03-06", "amc"), ("2025-06-12", "amc"), ("2025-09-04", "amc"),
-        ("2025-12-11", "amc"), ("2026-03-05", "amc"),
-    ],
-    "NFLX": [
-        ("2025-01-21", "amc"), ("2025-04-17", "amc"), ("2025-07-17", "amc"),
-        ("2025-10-15", "amc"), ("2026-01-21", "amc"), ("2026-04-15", "amc"),
-    ],
-    "ORCL": [
-        ("2025-03-11", "amc"), ("2025-06-10", "amc"), ("2025-09-09", "amc"),
-        ("2025-12-09", "amc"), ("2026-03-10", "amc"),
-    ],
+    "AAPL": [('2026-04-30', 'amc'), ('2026-07-30', 'amc')],
+    "MSFT": [('2026-04-29', 'amc'), ('2026-07-29', 'amc')],
+    "NVDA": [('2026-05-20', 'amc')],
+    "TSLA": [('2026-04-22', 'amc'), ('2026-07-22', 'amc')],
+    "META": [('2026-04-29', 'amc'), ('2026-07-29', 'amc')],
+    "GOOG": [('2026-04-29', 'amc'), ('2026-07-23', 'amc')],
+    "AMZN": [('2026-04-29', 'amc'), ('2026-07-30', 'amc')],
+    "AVGO": [('2026-06-03', 'amc')],
+    "NFLX": [('2026-07-16', 'amc')],
+    "ORCL": [('2026-06-10', 'amc')],
     "SPY": [],
     "QQQ": [],
 }
 
 
-def is_earnings_window(ticker, date, days_before=1, days_after=0):
-    """True if date falls in an earnings blackout window."""
+def is_earnings_window(
+    ticker: str, date: str, days_before: int = 1, days_after: int = 0
+) -> bool:
+    """True if date falls in an earnings blackout window.
+
+    AMC reports: window is shifted forward 1 day (the event that matters
+    for the next morning's ORB is the overnight report, not the prior session).
+    BMO reports: the event day itself is the primary risk day.
+    """
     from datetime import date as _date, timedelta
+
     sched = EARNINGS_CALENDAR.get(ticker, [])
     if not sched:
         return False
@@ -67,7 +47,7 @@ def is_earnings_window(ticker, date, days_before=1, days_after=0):
             ed = _date.fromisoformat(ed_str)
         except ValueError:
             continue
-        if when == "amc":
+        if when == 'amc':
             ed = ed + timedelta(days=1)
         if ed - timedelta(days=days_before) <= d <= ed + timedelta(days=days_after):
             return True
