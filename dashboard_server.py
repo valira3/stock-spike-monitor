@@ -877,15 +877,30 @@ def _today_trades() -> list[dict]:
         # exit_time) and the in-memory history_record (also carries
         # exit_time per broker/orders.py:2008) agree. For open
         # actions, prefer entry_time symmetrically.
+        #
+        # v9.1.92 -- normalize time to HH:MM for the key.
+        # paper_trades (rehydrated from paper_state.json) stores time as
+        # "10:26 ET"; trade_log.jsonl synthesis stores entry_time as
+        # "10:26:34". Different string -> dedup miss -> same trade
+        # appears twice after a redeploy. Normalizing to HH:MM (strip
+        # ":SS" and " ET" suffix) makes both paths produce identical
+        # keys so the seen-set dedup works.
         action = (t.get("action") or "").upper()
         is_close = action in ("SELL", "COVER", "PARTIAL_SELL", "PARTIAL_COVER")
         if is_close:
-            time_key = t.get("exit_time") or t.get("time") or t.get("entry_time") or ""
+            time_raw = t.get("exit_time") or t.get("time") or t.get("entry_time") or ""
         else:
-            time_key = t.get("entry_time") or t.get("time") or t.get("exit_time") or ""
+            time_raw = t.get("entry_time") or t.get("time") or t.get("exit_time") or ""
+        # Normalize "10:26 ET", "10:26:34", "10:26" -> "10:26"
+        s = str(time_raw)
+        if ":" in s:
+            _parts = s.split(":")
+            time_key = _parts[0] + ":" + _parts[1][:2]
+        else:
+            time_key = s
         return (
             (t.get("ticker") or "").upper(),
-            str(time_key),
+            time_key,
             side,
             action,
         )

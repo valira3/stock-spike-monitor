@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.92 (2026-05-15) — fix double-counted trades in Today's Trades after redeploy
+
+Today's Trades was showing each ORCL entry twice after the v9.1.91 redeploy. Root cause: `_today_trades()` deduplicates via a `seen` set keyed on `(ticker, time, side, action)`, but `paper_trades` (rehydrated from `paper_state.json`) stores time as `"10:26 ET"` while `trade_log.jsonl` synthesis stores `entry_time` as `"10:26:34"`. Different string formats produced different keys, so the seen-set dedup missed and both paths emitted a row for the same trade.
+
+Fix: normalize the time component to `HH:MM` in `_key()` before building the tuple. Strips `" ET"` suffix and `":SS"` seconds so all sources agree: `"10:26 ET"`, `"10:26:34"`, and `"10:26"` all map to `"10:26"`.
+
+---
+
 ## v9.1.91 (2026-05-15) — fix notional cap to use equity instead of cash
 
 v9.1.89 clamped order shares at `0.95 * account.cash`. For a cash account, `cash` and `equity` can diverge when open positions affect the account balance, leading to incorrect cap calculations. The result was a 286-share ORCL order ($55k) on a $30k account.
