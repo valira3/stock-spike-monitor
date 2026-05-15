@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.84 (2026-05-15) — monitor: Railway log error detection on every tick
+
+`scripts/run_monitor.py` now fetches the last 40 Railway deployment log lines on every tick via the GraphQL API (`RAILWAY_API_TOKEN` + `RAILWAY_SERVICE_ID` from `.env.monitor`). Any line matching ERROR/CRITICAL severity or containing `Traceback`, `CRITICAL`, or `FATAL` is injected as a `CRIT` check into the report and triggers a Telegram alert (subject to the existing 30-min dedup window). Cursor is seeded to "now" at startup so only errors occurring after the monitor starts are reported.
+
+---
+
 ## v9.1.83 (2026-05-14) — fix Val/Gene executor mode reverting to paper on every Railway deploy (root cause)
 
 **Root cause of the persistent paper-reset bug:** `executors/base.py` derived the state file directory from env var `PAPER_STATE_FILE`, but Railway only has `PAPER_STATE_PATH` set (the name `trade_genius.py` uses). The mismatched env var names meant `os.path.dirname` returned `""` → fell back to `.` → `/app/` (ephemeral, wiped on every redeploy). The v9.1.78/v9.1.80 fixes were correct in logic but didn't take effect because the files were still going to the wrong directory.

@@ -20,11 +20,13 @@ data/monitor/system_check_latest.json. Telegram alert on any CRIT check.
 from __future__ import annotations
 
 import argparse
+import json as _json
 import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+import urllib.request as _urllib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -59,6 +61,119 @@ _last_alerted: dict[tuple[str, str], float] = {}
 _REPO_ROOT = Path(__file__).parent.parent
 ENV_FILE = _REPO_ROOT / ".env.monitor"
 MONITOR_DIR = _REPO_ROOT / "data" / "monitor"
+
+# Railway log monitoring state
+_railway_dep_id: str | None = None
+_railway_log_cursor: float = 0.0  # Unix timestamp of last log line seen
+
+_RAILWAY_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+    "Origin": "https://railway.app",
+    "Referer": "https://railway.app/",
+}
+
+# Patterns that indicate a real error in Railway logs (not just INFO traffic)
+_RAILWAY_ERROR_PATTERNS = (
+    "Traceback (most recent call last)",
+    "CRITICAL",
+    "FATAL",
+)
+
+
+def _railway_gql(query: str) -> dict:
+    token = os.environ.get("RAILWAY_API_TOKEN", "").strip()
+    if not token:
+        return {}
+    headers = {**_RAILWAY_HEADERS, "Authorization": f"Bearer {token}"}
+    req = _urllib.Request(
+        "https://backboard.railway.app/graphql/v2",
+        data=_json.dumps({"query": query}).encode(),
+        headers=headers,
+    )
+    resp = _urllib.urlopen(req, timeout=6)
+    return _json.loads(resp.read())
+
+
+def _get_railway_dep_id() -> str | None:
+    global _railway_dep_id
+    if _railway_dep_id:
+        return _railway_dep_id
+    svc_id = os.environ.get("RAILWAY_SERVICE_ID", "").strip()
+    if not svc_id:
+        return None
+    try:
+        d = _railway_gql('{deployments(input:{serviceId:"%s"}){edges{node{id status}}}}' % svc_id)
+        edges = ((d.get("data") or {}).get("deployments") or {}).get("edges", [])
+        if edges:
+            _railway_dep_id = edges[0]["node"]["id"]
+    except Exception:
+        pass
+    return _railway_dep_id
+
+
+def _check_railway_logs() -> list[dict]:
+    """Fetch recent Railway deployment logs and return CRIT checks for any errors found."""
+    global _railway_log_cursor, _railway_dep_id
+
+    if not os.environ.get("RAILWAY_API_TOKEN", "").strip():
+        return []
+    try:
+        dep_id = _get_railway_dep_id()
+        if not dep_id:
+            return []
+
+        d = _railway_gql(
+            '{deploymentLogs(deploymentId:"%s",limit:40){message timestamp severity}}' % dep_id
+        )
+        logs = ((d.get("data") or {}).get("deploymentLogs")) or []
+        if not logs:
+            return []
+
+        errors = []
+        new_cursor = _railway_log_cursor
+
+        for entry in logs:
+            ts_str = entry.get("timestamp") or ""
+            msg = (entry.get("message") or "").strip()
+            sev = (entry.get("severity") or "").upper()
+
+            ts_epoch = 0.0
+            if ts_str:
+                try:
+                    ts_epoch = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    pass
+
+            new_cursor = max(new_cursor, ts_epoch)
+
+            # Skip logs we've already seen
+            if ts_epoch <= _railway_log_cursor:
+                continue
+
+            is_error = sev in ("ERROR", "CRITICAL", "EMERGENCY", "ALERT") or any(
+                p in msg for p in _RAILWAY_ERROR_PATTERNS
+            )
+            if is_error:
+                errors.append(
+                    {
+                        "section": "RAILWAY",
+                        "name": "log_error",
+                        "status": "CRIT",
+                        "detail": msg[:200],
+                    }
+                )
+
+        _railway_log_cursor = new_cursor
+
+        if errors:
+            logger.warning("Railway log errors: %d new entries", len(errors))
+        return errors
+
+    except Exception as e:
+        logger.debug("Railway log check skipped: %s", e)
+        return []
 
 
 def _load_env(path: Path) -> None:
@@ -134,6 +249,14 @@ def _run_once() -> int:
         logger.exception("system_check_bot raised: %s", e)
         return 99
 
+    # Inject Railway log errors as additional CRIT checks
+    railway_errors = _check_railway_logs()
+    if railway_errors:
+        report = dict(report)
+        report["checks"] = list(report.get("checks") or []) + railway_errors
+        if report.get("overall") == "OK":
+            report["overall"] = "CRIT"
+
     try:
         print_report(report)
     except Exception:
@@ -188,6 +311,11 @@ def main() -> None:
 
     _load_env(ENV_FILE)
     MONITOR_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Seed Railway log cursor to now so we only alert on errors that occur
+    # after the monitor starts, not historical log lines.
+    global _railway_log_cursor
+    _railway_log_cursor = time.time()
 
     if args.once:
         sys.exit(_run_once())
