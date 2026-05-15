@@ -603,15 +603,16 @@ def checks_strategy(raw: dict[str, Any]) -> list[Check]:
         )
     long_t = set(eod_cfg.get("long_tickers") or [])
     short_t = set(eod_cfg.get("short_tickers") or [])
-    exp_l = {"ORCL", "AAPL", "MSFT", "AVGO"}
-    exp_s = {"ORCL", "NFLX", "AAPL", "MSFT"}
+    # v9.1.113: TSLA added to both fences after per-ticker sweep (+$3,930/yr).
+    exp_l = {"ORCL", "AAPL", "MSFT", "AVGO", "TSLA"}
+    exp_s = {"ORCL", "NFLX", "AAPL", "MSFT", "TSLA"}
     if long_t == exp_l and short_t == exp_s:
         out.append(
             Check(
                 s,
                 "eod.fence",
                 OK,
-                "r17 fence correct (long ORCL/AAPL/MSFT/AVGO, short ORCL/NFLX/AAPL/MSFT)",
+                "Keystone v4 fence (long ORCL/AAPL/MSFT/AVGO/TSLA, short ORCL/NFLX/AAPL/MSFT/TSLA)",
             )
         )
     else:
