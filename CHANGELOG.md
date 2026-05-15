@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.93 (2026-05-15) — show open position count on each tab
+
+Tab headings now show a gold `[N]` badge when a portfolio has open positions:
+- **Main**: `Main PAPER [1]` when 1 position open (ORB + EOD counted together)
+- **Val/Gene**: `● live [1]` or `📄 Paper [1]` — driven by the Alpaca positions array from `/api/executor/<name>`
+- Badge is hidden (no brackets) when no positions are open
+- Badge tooltip also shows the count for accessibility
+
+---
+
 ## v9.1.92 (2026-05-15) — fix double-counted trades in Today's Trades after redeploy
 
 Today's Trades was showing each ORCL entry twice after the v9.1.91 redeploy. Root cause: `_today_trades()` deduplicates via a `seen` set keyed on `(ticker, time, side, action)`, but `paper_trades` (rehydrated from `paper_state.json`) stores time as `"10:26 ET"` while `trade_log.jsonl` synthesis stores `entry_time` as `"10:26:34"`. Different string formats produced different keys, so the seen-set dedup missed and both paths emitted a row for the same trade.

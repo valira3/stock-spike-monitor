@@ -375,7 +375,10 @@
     // EOD reversal positions from EodReversalEngine (separate from paper_state ORB). Keyed by ticker.
     const _eodMain = s.eod_positions || {};
     const _eodMainTickers = Object.keys(_eodMain);
-    $("pos-count").textContent = `· ${positions.length + _eodMainTickers.length}`;
+    const _mainPosN = positions.length + _eodMainTickers.length;
+    $("pos-count").textContent = `· ${_mainPosN}`;
+    const _mainBadge = document.getElementById("tg-badge-main");
+    if (_mainBadge) _mainBadge.textContent = _mainPosN > 0 ? `[${_mainPosN}]` : "";
     const body = $("pos-body");
     // v7.89.0 -- port-strip / port-strip-empty footer blocks were
     // retired from the Open Positions card. Equity now lives in the
@@ -4648,16 +4651,21 @@
     const _tabBtn = el.closest(".tg-tab");
     if (_tabBtn) _tabBtn.style.opacity = "";
     const mode = (data.mode === "live") ? "live" : "paper";
+    const _posN = Array.isArray(data.positions) ? data.positions.length : 0;
+    const _posTag = _posN > 0
+      ? `<span style="color:#fbbf24;font-weight:600;margin-left:5px">[${_posN}]</span>`
+      : "";
     if (mode === "live") {
-      // Dot + word style; matches renderHeader (Main IIFE-1).
       el.innerHTML =
         '<span style="color:#22c55e;font-size:8px;vertical-align:middle">&#9679;</span>' +
-        '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>';
+        '<span style="color:#86efac;font-size:10px;font-weight:500;margin-left:3px">live</span>' +
+        _posTag;
     } else {
-      el.innerHTML = '\ud83d\udcc4 <span style="color:#5b6572">Paper</span>';
+      el.innerHTML = '\ud83d\udcc4 <span style="color:#5b6572">Paper</span>' + _posTag;
     }
     el.style.color = "";
-    el.setAttribute("title", `${label} executor enabled (${mode} mode)`);
+    el.setAttribute("title", `${label} executor enabled (${mode} mode)` +
+      (_posN > 0 ? ` \u00b7 ${_posN} open position${_posN > 1 ? "s" : ""}` : ""));
   }
 
   // Render helpers shared across Val/Gene. These mirror the formatters
