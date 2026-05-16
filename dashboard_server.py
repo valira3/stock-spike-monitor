@@ -3070,6 +3070,43 @@ async def h_version(request):
 
 
 # ─────────────────────────────────────────────────────────────
+# Replay Today — build a live-data replay from today's snapshots.
+# POST /api/replay/today   {"date": "YYYY-MM-DD"} (optional)
+# Returns {"ok": true, "url": "<presigned-R2-url>", "snapshots": N}
+# ─────────────────────────────────────────────────────────────
+async def h_replay_today(request):
+    from aiohttp import web
+    import asyncio
+
+    if not _check_auth(request):
+        return web.Response(status=401)
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    date = body.get("date") or None
+
+    try:
+        loop = asyncio.get_event_loop()
+        # Run the sync build function in a thread to avoid blocking the event loop
+        def _build():
+            import sys, pathlib
+            sys.path.insert(0, str(pathlib.Path(__file__).parent))
+            from scripts.replay_today import build_today_replay
+            return build_today_replay(date)
+
+        url = await loop.run_in_executor(None, _build)
+        if url:
+            return web.json_response({"ok": True, "url": url})
+        else:
+            return web.json_response({"ok": False, "error": "No snapshots found"}, status=404)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+# ─────────────────────────────────────────────────────────────
 # v7.19.0 — v10 ORB projection card
 # ─────────────────────────────────────────────────────────────
 # Static reference numbers shown on the "v10 Backtest Baseline" plate.
@@ -5251,6 +5288,7 @@ def _build_app():
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/ws_state", h_ws_state)
     app.router.add_get("/api/version", h_version)
+    app.router.add_post("/api/replay/today", h_replay_today)
     app.router.add_get("/api/v10/projection", h_v10_projection)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.

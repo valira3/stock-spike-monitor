@@ -23,7 +23,7 @@
      contrast). Operator first-glance should answer "what am I
      holding?" not "what's SPY doing?". Smaller font + dim text +
      less padding makes it secondary context. -->
-<div id="idx-strip" class="idx-strip idx-strip-demoted" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:10.5px;color:#9ca3af;padding:4px 14px;white-space:nowrap;position:relative">
+<div id="idx-strip" class="idx-strip idx-strip-demoted" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;color:#9ca3af;padding:6px 14px;white-space:nowrap;position:relative">
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
@@ -81,6 +81,26 @@
     <div id="tg-health-list" class="tg-health-list"><div class="tg-health-empty">No errors today.</div></div>
   </div>
   <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
+  <!-- Replay Day button: builds a live-data replay from today's snapshots -->
+  <button type="button" id="tg-replay-btn"
+    title="Build a time-travel replay of today's trading session"
+    onclick="(function(){
+      var btn = document.getElementById('tg-replay-btn');
+      btn.disabled = true; btn.textContent = '&#8987; Building…';
+      fetch('/api/replay/today', {method:'POST', headers:{'Content-Type':'application/json'},
+            credentials:'include', body:'{}'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d.ok && d.url) { window.open(d.url, '_blank'); }
+          else { alert('Replay failed: ' + (d.error || 'unknown')); }
+        })
+        .catch(function(e){ alert('Error: ' + e); })
+        .finally(function(){ btn.disabled = false; btn.textContent = '🎬 Replay Day'; });
+    })()"
+    style="margin-left:4px;padding:4px 10px;background:#111827;color:#7dd3fc;
+           border:1px solid #1d4ed8;border-radius:6px;cursor:pointer;
+           font-size:10px;font-family:inherit;white-space:nowrap;
+           font-weight:600;letter-spacing:.3px">&#127916; Replay Day</button>
 </div>
 
 <!-- v4.0.0-beta / v5.3.0 / v5.14.0 — tab switcher (Main / Val / Gene / Lifecycle).
