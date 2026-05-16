@@ -1,0 +1,125 @@
+name: Backup Results to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: "R2 key prefix (default: backups/YYYY-MM-DD)"
+        required: false
+        default: ""
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3
+        run: pip install boto3 --quiet
+
+      - name: Set backup prefix
+        id: prefix
+        run: |
+          PREFIX="${{ github.event.inputs.prefix }}"
+          if [ -z "$PREFIX" ]; then
+            PREFIX="backups/$(date -u +%Y-%m-%d)"
+          fi
+          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
+          echo "Backup prefix: $PREFIX"
+
+      - name: Upload docs/ to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          python3 - <<'PYEOF'
+          import boto3, os, pathlib
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+          )
+          bucket = os.environ["R2_BUCKET"]
+          prefix = "${{ steps.prefix.outputs.prefix }}"
+          root = pathlib.Path("docs")
+          uploaded = 0
+          for f in root.rglob("*"):
+              if f.is_file() and f.suffix in (".md", ".pdf", ".py", ".json"):
+                  key = f"{prefix}/docs/{f.relative_to(root)}"
+                  s3.upload_file(str(f), bucket, key)
+                  uploaded += 1
+                  print(f"  {key}")
+          print(f"Uploaded {uploaded} docs files")
+          PYEOF
+
+      - name: Create results tarball and upload
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          # Results are not in git -- but the backtest grid and summary docs are
+          # For the pkl cache and sweep outputs, those only exist locally
+          # This workflow backs up what IS in git (docs/, scripts/, tools/)
+          python3 - <<'PYEOF'
+          import boto3, os, pathlib, json
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+          )
+          bucket = os.environ["R2_BUCKET"]
+          prefix = "${{ steps.prefix.outputs.prefix }}"
+
+          # Upload the backtest grid
+          grid = pathlib.Path("docs/backtest_grid_2026-05-15.md")
+          if grid.exists():
+              key = f"{prefix}/backtest_grid_2026-05-15.md"
+              s3.upload_file(str(grid), bucket, key)
+              print(f"Grid uploaded: {key}")
+
+          # Upload PDF
+          pdf = pathlib.Path("docs/TradeGenius_Algo_Summary.pdf")
+          if pdf.exists():
+              key = f"{prefix}/TradeGenius_Algo_Summary.pdf"
+              s3.upload_file(str(pdf), bucket, key)
+              print(f"PDF uploaded: {key}")
+
+          # Write manifest
+          manifest = {
+              "backup_date": "${{ steps.prefix.outputs.prefix }}",
+              "commit": os.environ.get("GITHUB_SHA", "unknown"),
+              "branch": os.environ.get("GITHUB_REF_NAME", "unknown"),
+              "note": "Local sweep results (results/, data/.bt_cache/) must be backed up manually from the dev machine",
+          }
+          import io
+          s3.put_object(
+              Bucket=bucket,
+              Key=f"{prefix}/manifest.json",
+              Body=json.dumps(manifest, indent=2).encode(),
+              ContentType="application/json",
+          )
+          print("Manifest uploaded")
+          PYEOF
+
+      - name: Summary
+        run: |
+          echo "## Backup complete" >> $GITHUB_STEP_SUMMARY
+          echo "Prefix: ${{ steps.prefix.outputs.prefix }}" >> $GITHUB_STEP_SUMMARY
+          echo "Note: Local sweep results (results/, data/.bt_cache/) need manual upload from dev machine" >> $GITHUB_STEP_SUMMARY
+          echo "Use: python scripts/backup_results_r2.py" >> $GITHUB_STEP_SUMMARY
