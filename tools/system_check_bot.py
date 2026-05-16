@@ -1580,14 +1580,28 @@ def send_telegram_alert(report: dict[str, Any]) -> None:
     ver = report.get("version", "?")
     ts = report.get("ts_et", "")
 
+    # Routing guidance appended to every alert so operator knows where to fix.
+    # CRIT = hotfix directly on main (prod session).
+    # WARN = fix on staging branch first, then promote.
+    is_staging = os.environ.get("MONITOR_ENV", "").strip().lower() == "staging"
+    env_label = "STAGING" if is_staging else "PROD"
+
     if crits:
-        header = f"SYSTEM CHECK CRIT v{ver} | {ts}"
+        header = f"🚨 CRIT [{env_label}] v{ver} | {ts}"
         body = "\n".join(f"X [{c['section']}] {c['name']}: {c['detail']}" for c in crits)
         if warns:
-            body += "\n\nWarnings:\n" + "\n".join(f"! {c['name']}: {c['detail']}" for c in warns)
+            body += "\n\nAlso:\n" + "\n".join(f"! {c['name']}: {c['detail']}" for c in warns)
+        if not is_staging:
+            body += "\n\n→ HOTFIX: fix on main, push direct to prod."
+        else:
+            body += "\n\n→ Fix on staging branch, validate, then promote."
     else:
-        header = f"SYSTEM CHECK WARN v{ver} | {ts}"
+        header = f"⚠️ WARN [{env_label}] v{ver} | {ts}"
         body = "\n".join(f"! [{c['section']}] {c['name']}: {c['detail']}" for c in warns)
+        if not is_staging:
+            body += "\n\n→ STAGING: open staging session, fix on staging branch."
+        else:
+            body += "\n\n→ Fix here on staging, then promote to prod."
 
     msg = header + "\n\n" + body
     payload = json.dumps({"chat_id": chat_id, "text": msg}).encode()
