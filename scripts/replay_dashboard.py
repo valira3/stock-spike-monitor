@@ -153,6 +153,20 @@ _HEAD_PATCH = """\
     return s;
   }
 
+  /* Override __tgNowEtMinutes so the EOD time-bar uses scenario time instead of
+     real wall clock. app.js defines this with new Date() which ignores our Date.now
+     patch. We override it here, after currentState() is defined, so it can read
+     the scenario server_time_label for the current scrubber position. */
+  window.__tgNowEtMinutes = function() {
+    var s = currentState();
+    var tMatch = (s.server_time_label || '').match(/([0-9]{2}):([0-9]{2}):[0-9]{2}/);
+    if (tMatch) return parseInt(tMatch[1],10)*60 + parseInt(tMatch[2],10);
+    /* Fallback: parse server_time UTC and subtract 4h for ET */
+    var stMatch = (s.server_time || '').match(/T([0-9]{2}):([0-9]{2}):/);
+    if (stMatch) return ((parseInt(stMatch[1],10) - 4 + 24) % 24) * 60 + parseInt(stMatch[2],10);
+    return 0;
+  };
+
   /* Generate realistic fake 1m OHLC bars from OR levels.
      Uses a seeded PRNG so the same ticker always produces the same bars. */
   /* chartStartMin: first bar to INCLUDE in output. PRNG always advances from 570
@@ -322,16 +336,22 @@ _HEAD_PATCH = """\
       var _valDayPnl = Math.round(((_mainEq - 100000) * _VAL_RATIO) * 100) / 100;
       var _valEq   = Math.round((_VAL_EQUITY + _valDayPnl) * 100) / 100;
       /* Include ALL positions (morning + EOD) scaled to Val's account size.
-         EOD positions were previously filtered but Val runs the same EOD engine. */
+         Executor renderer uses avg_entry (not entry_price) for entry/notional/progress bar.
+         EOD positions also need to be in the eod_positions dict for the EOD time-bar. */
       var _valPos = (s.positions||[]).map(function(p) {
         var _sh  = Math.max(1, Math.round((p.shares||1) * _VAL_RATIO));
         var _unr = Math.round((p.unrealized != null ? p.unrealized : (p.unrealized_pnl||0)) * _VAL_RATIO * 100) / 100;
         var _pct = (p.entry && _sh) ? _unr / (p.entry * _sh) * 100 : 0;
+        var _pctRounded = Math.round(_pct * 100) / 100;
         return {
           symbol: p.ticker, ticker: p.ticker,
-          side: (p.side||'LONG').toLowerCase(),
-          entry_price: p.entry, current_price: p.mark, limit_price: p.entry,
-          unrealized_pnl: _unr, unrealized_pct: _pct,
+          side: (p.side||'LONG').toUpperCase(),   /* executor renderer expects UPPER */
+          entry_price: p.entry,
+          avg_entry:   p.entry,                   /* executor renderer uses avg_entry for Entry/Notional/progress */
+          current_price: p.mark, limit_price: p.entry,
+          unrealized_pnl: _unr,
+          unrealized_pct: _pctRounded,
+          unrealized_pnl_pct: _pctRounded,        /* executor renderer reads unrealized_pnl_pct */
           shares: _sh, qty: _sh,
           stop_price: p.stop, held_seconds: p.held_seconds || 0,
           entry_ts_utc: p.entry_ts_utc,
@@ -341,12 +361,19 @@ _HEAD_PATCH = """\
           eod: !!p.eod
         };
       });
+      /* eod_positions dict: executor renderer uses this to classify positions as EOD
+         (renders time-based progress bar instead of ORB stop-based bar). */
+      var _eodPosDict = {};
+      _valPos.forEach(function(vp) {
+        if (vp.eod) _eodPosDict[vp.symbol] = {eod: true, entry_price: vp.avg_entry};
+      });
       /* All trades (morning + EOD) scaled; executor renderer reads todays_trades */
       var _valTrades = (s.trades_today||[]).map(function(t){
         return Object.assign({}, t, {portfolio: t.eod ? 'val-eod' : 'val',
           shares: Math.max(1, Math.round((t.shares||1)*_VAL_RATIO))});
       });
-      return {ok:true, positions:_valPos, todays_trades:_valTrades, trades_today:_valTrades,
+      return {ok:true, positions:_valPos, eod_positions:_eodPosDict,
+              todays_trades:_valTrades, trades_today:_valTrades,
               account:{equity:_valEq, cash:_valEq, portfolio_value:_valEq,
                        day_pnl:_valDayPnl, status:'ACTIVE'}};
     }

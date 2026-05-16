@@ -5891,6 +5891,12 @@
         detail: "v10 daily-loss kill triggered. New entries blocked; " +
                 "existing positions still managed to exit. ",
         pid_chips: killed_pids.map(function (k) {
+          // When P&L has recovered to positive after the kill, show "+$X recovered"
+          // instead of "$X / $-threshold" (which implies an ongoing loss).
+          if (k.realized >= 0) {
+            return k.pid.toUpperCase() + " +" +
+                   "$" + Math.round(k.realized).toLocaleString() + " recovered";
+          }
           return k.pid.toUpperCase() + " $" +
                  Math.round(k.realized).toLocaleString() +
                  " / $" + Math.round(-k.threshold).toLocaleString();

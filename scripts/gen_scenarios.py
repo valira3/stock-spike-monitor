@@ -399,30 +399,51 @@ def build_and_upload(state: dict, label: str, date: str = "2026-05-16") -> str:
 # ---------------------------------------------------------------------------
 
 # Ordered activity events for May 15 — shown in the Recent Activity feed
+def _act(kind, ticker, pid, ts_et, detail, time=None):
+    """Build an activity event with ts_iso for proper time display in executor tab."""
+    hh, mm = int(ts_et[:2]), int(ts_et[3:5])
+    utc_h, utc_m = divmod(hh * 60 + mm + 240, 60)  # ET -> UTC (+4h EDT)
+    ts_iso = f"2026-05-15T{utc_h:02d}:{utc_m:02d}:{ts_et[6:]}Z"
+    return {"kind": kind, "ticker": ticker, "pid": pid,
+            "ts_et": ts_et, "ts_iso": ts_iso,
+            "time": time or ts_et[:5], "detail": detail}
+
 _ACTIVITY_MAY15 = [
-    {"kind":"SESSION_START","ticker":"","pid":"main","ts_et":"09:30:00","time":"09:30","detail":"v10 session started -- LONG_BIAS"},
-    {"kind":"OR_LOCK","ticker":"ORCL","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=194.20 L=191.80 rng=1.24%"},
-    {"kind":"OR_LOCK","ticker":"META","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=614.09 L=609.49 rng=0.75%"},
-    {"kind":"OR_LOCK","ticker":"AVGO","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=432.62 L=424.44 rng=1.93%"},
-    {"kind":"OR_LOCK","ticker":"AAPL","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=302.80 L=298.10 rng=1.57%"},
-    {"kind":"OR_LOCK","ticker":"MSFT","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=425.40 L=420.10 rng=1.26%"},
-    {"kind":"OR_LOCK","ticker":"GOOG","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=393.20 L=389.87 rng=0.85%"},
-    {"kind":"OR_LOCK","ticker":"NVDA","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=230.00 L=226.41 rng=1.58%"},
-    {"kind":"OR_LOCK","ticker":"AMZN","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=267.40 L=261.20 rng=2.37%"},
-    {"kind":"OR_LOCK","ticker":"NFLX","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=89.40 L=85.20 rng=4.93%"},
-    {"kind":"OR_LOCK","ticker":"TSLA","pid":"main","ts_et":"10:00:01","time":"10:00","detail":"OR locked: H=428.60 L=418.20 rng=2.49%"},
-    {"kind":"REJECT","ticker":"META","pid":"main","ts_et":"10:01:44","time":"10:01","detail":"vwap_chase: 19bps > 15bps gate"},
-    {"kind":"REJECT","ticker":"GOOG","pid":"main","ts_et":"10:03:22","time":"10:03","detail":"mbr_reject: break 3bps < 5bps min_break"},
-    {"kind":"ADMIT","ticker":"NVDA","pid":"main","ts_et":"10:08:15","time":"10:08","detail":"LONG 209sh @ 228.35 stop=226.75 risk=$334"},
-    {"kind":"ADMIT","ticker":"ORCL","pid":"main","ts_et":"10:26:34","time":"10:26","detail":"LONG 349sh @ 193.375 stop=192.41 risk=$337"},
-    {"kind":"EXIT","ticker":"ORCL","pid":"main","ts_et":"10:48:30","time":"10:48","detail":"stop: fill=193.735 pnl=+$125.64"},
-    {"kind":"ADMIT","ticker":"ORCL","pid":"main","ts_et":"10:48:32","time":"10:48","detail":"LONG 377sh @ 193.735 stop=192.77 risk=$364"},
-    {"kind":"EXIT","ticker":"ORCL","pid":"main","ts_et":"11:07:43","time":"11:07","detail":"stop: fill=192.64 pnl=-$412.82"},
-    {"kind":"KILL","ticker":"","pid":"main","ts_et":"11:07:43","time":"11:07","detail":"daily_loss_kill: realized -$287.18 (ORCL) | NVDA still running +$255 unr"},
-    {"kind":"EXIT","ticker":"NVDA","pid":"main","ts_et":"11:30:00","time":"11:30","detail":"target 1R: fill=229.95 pnl=+$166.40 (104sh partial)"},
-    {"kind":"EXIT","ticker":"NVDA","pid":"main","ts_et":"12:45:00","time":"12:45","detail":"target 2.5R: fill=232.35 pnl=+$420.00 (105sh runner)"},
-    {"kind":"EOD_ENTRY","ticker":"AVGO+MSFT+ORCL","pid":"main","ts_et":"15:30:00","time":"15:30","detail":"EOD: LONG AVGO 84sh @ 426.03, SHORT MSFT 84sh @ 423.50, LONG ORCL 181sh @ 192.80"},
-    {"kind":"EOD_EXIT","ticker":"AVGO+MSFT+ORCL","pid":"main","ts_et":"15:59:00","time":"15:59","detail":"EOD closed: AVGO -$48.71, MSFT +$135.24, ORCL +$108.60"},
+    # ── Main events ──────────────────────────────────────────────────────────
+    _act("SESSION_START","","main","09:30:00","v10 session started -- LONG_BIAS"),
+    _act("OR_LOCK","ORCL","main","10:00:01","OR locked: H=194.20 L=191.80 rng=1.24%","10:00"),
+    _act("OR_LOCK","META","main","10:00:01","OR locked: H=614.09 L=609.49 rng=0.75%","10:00"),
+    _act("OR_LOCK","AVGO","main","10:00:01","OR locked: H=432.62 L=424.44 rng=1.93%","10:00"),
+    _act("OR_LOCK","AAPL","main","10:00:01","OR locked: H=302.80 L=298.10 rng=1.57%","10:00"),
+    _act("OR_LOCK","MSFT","main","10:00:01","OR locked: H=425.40 L=420.10 rng=1.26%","10:00"),
+    _act("OR_LOCK","GOOG","main","10:00:01","OR locked: H=393.20 L=389.87 rng=0.85%","10:00"),
+    _act("OR_LOCK","NVDA","main","10:00:01","OR locked: H=230.00 L=226.41 rng=1.58%","10:00"),
+    _act("OR_LOCK","AMZN","main","10:00:01","OR locked: H=267.40 L=261.20 rng=2.37%","10:00"),
+    _act("OR_LOCK","NFLX","main","10:00:01","OR locked: H=89.40 L=85.20 rng=4.93%","10:00"),
+    _act("OR_LOCK","TSLA","main","10:00:01","OR locked: H=428.60 L=418.20 rng=2.49%","10:00"),
+    _act("REJECT","META","main","10:01:44","vwap_chase: 19bps > 15bps gate","10:01"),
+    _act("REJECT","GOOG","main","10:03:22","mbr_reject: break 3bps < 5bps min_break","10:03"),
+    _act("ADMIT","NVDA","main","10:08:15","LONG 209sh @ 228.35 stop=226.75 risk=$334","10:08"),
+    _act("ADMIT","ORCL","main","10:26:34","LONG 349sh @ 193.375 stop=192.41 risk=$337","10:26"),
+    _act("EXIT","ORCL","main","10:48:30","stop: fill=193.735 pnl=+$125.64","10:48"),
+    _act("ADMIT","ORCL","main","10:48:32","LONG 377sh @ 193.735 stop=192.77 risk=$364","10:48"),
+    _act("EXIT","ORCL","main","11:07:43","stop: fill=192.64 pnl=-$412.82","11:07"),
+    _act("KILL","","main","11:07:43","daily_loss_kill: realized -$287.18 (ORCL) | NVDA still running +$255 unr","11:07"),
+    _act("EXIT","NVDA","main","11:30:00","target 1R: fill=229.95 pnl=+$166.40 (104sh partial)","11:30"),
+    _act("EXIT","NVDA","main","12:45:00","target 2.5R: fill=232.35 pnl=+$420.00 (105sh runner)","12:45"),
+    _act("EOD_ENTRY","AVGO+MSFT+ORCL","main","15:30:00","EOD: LONG AVGO 84sh @ 426.03, SHORT MSFT 84sh @ 423.50, LONG ORCL 181sh @ 192.80","15:30"),
+    _act("EOD_EXIT","AVGO+MSFT+ORCL","main","15:59:00","EOD closed: AVGO -$48.71, MSFT +$135.24, ORCL +$108.60","15:59"),
+    # ── Val events (same trades, ~30% share size) ─────────────────────────────
+    _act("SESSION_START","","val","09:30:00","v10 session started -- LONG_BIAS (paper)"),
+    _act("ADMIT","NVDA","val","10:08:15","LONG 63sh @ 228.35 stop=226.75 risk=$101","10:08"),
+    _act("ADMIT","ORCL","val","10:26:34","LONG 105sh @ 193.375 stop=192.41 risk=$102","10:26"),
+    _act("EXIT","ORCL","val","10:48:30","stop: fill=193.735 pnl=+$37.93","10:48"),
+    _act("ADMIT","ORCL","val","10:48:32","LONG 114sh @ 193.735 stop=192.77 risk=$110","10:48"),
+    _act("EXIT","ORCL","val","11:07:43","stop: fill=192.64 pnl=-$124.63","11:07"),
+    _act("EXIT","NVDA","val","11:30:00","target 1R: fill=229.95 pnl=+$50.22 (31sh partial)","11:30"),
+    _act("EXIT","NVDA","val","12:45:00","target 2.5R: fill=232.35 pnl=+$126.78 (32sh runner)","12:45"),
+    _act("EOD_ENTRY","AVGO+MSFT+ORCL","val","15:30:00","EOD: LONG AVGO 25sh @ 426.03, SHORT MSFT 25sh @ 423.50, LONG ORCL 55sh @ 192.80","15:30"),
+    _act("EOD_EXIT","AVGO+MSFT+ORCL","val","15:59:00","EOD closed: AVGO -$14.70, MSFT +$40.82, ORCL +$32.77","15:59"),
 ]
 
 # May 15 real trades (used for position simulation)
