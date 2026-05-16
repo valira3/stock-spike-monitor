@@ -577,35 +577,44 @@
             + '<div class="pos-chart-mount" data-chart-mount="' + escapeHtml(p.ticker) + '"></div>'
             + '</td></tr>'
           : '';
+        /* Compact held: "67m" under 1h, "1h7m" at 1h+, no caption */
+        var _heldSec = Number(p.held_seconds) || 0;
+        var _heldMin = Math.round(_heldSec / 60);
+        var _heldShort = _heldMin < 60
+          ? _heldMin + 'm'
+          : Math.floor(_heldMin/60) + 'h' + (_heldMin%60 > 0 ? (_heldMin%60) + 'm' : '');
+        /* Morning vs EOD session badge */
+        var _sessionBadge = p.eod
+          ? '<span style="font-size:9px;color:#a78bfa;background:rgba(139,92,246,0.15);'
+            + 'padding:1px 5px;border-radius:3px;margin-left:4px;font-weight:600">EOD</span>'
+          : '<span style="font-size:9px;color:#6b7280;background:rgba(75,85,99,0.15);'
+            + 'padding:1px 5px;border-radius:3px;margin-left:4px">Morning</span>';
+
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-expanded="${_expanded ? 'true' : 'false'}" style="cursor:pointer">
-          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
-          <td><span class="${sideCls}">${p.side}</span></td>
-          <td class="right">${p.shares}${_partialBadge}</td>
-          <td class="right">${fmtPx(p.entry)}</td>
-          <td class="right">${fmtPx(p.mark)}</td>
-          <td class="right" title="Notional at cost: shares × entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap.">${_notionalTxt}</td>
-          <td class="right">${fmtPx(eff)}${trailBadge}</td>
-          <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
-          <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
-          <td class="right ${pnlCls}">${pctTxt}</td>
-          <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
+          <td colspan="4">
+            <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+              <span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>
+              ${_sessionBadge}${phaseBadge}
+              <span class="${pnlCls}" style="font-weight:600;margin-left:auto">${pctTxt}</span>
+              <span class="${pnlCls}">${fmtUsd(p.unrealized)}</span>
+              <span style="color:#6b7280;font-size:11px">${_heldShort}</span>
+            </div>
+          </td>
+          <td class="right" style="font-size:11px;color:#6b7280">${p.shares}${_partialBadge}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.entry)}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.mark)}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(eff)}${trailBadge}</td>
         </tr>${progressRow}${_chartRow}`;
       }).join("");
       // Only render the ORB table when there are actual ORB rows \u2014 an empty table
       // pushes the EOD section below an orphaned header, making positions appear
       // to "appear and disappear" on refresh. EOD table gets its own headers when standalone.
       var _posTableHeaders = '<thead><tr>' +
-        '<th title="Symbol \u00b7 colored dot shows side">Ticker</th>' +
-        '<th title="LONG = bought to open. SHORT = sold to open.">Side</th>' +
-        '<th class="right" title="Number of shares">Sh</th>' +
-        '<th class="right" title="Average fill price when the position opened">Entry</th>' +
-        '<th class="right" title="Latest mark price">Mark</th>' +
-        '<th class="right" title="Notional at cost: shares \u00d7 entry.">Notional</th>' +
+        '<th colspan="4">Ticker \u00b7 Session \u00b7 P&L \u00b7 Held</th>' +
+        '<th class="right" title="Shares">Sh</th>' +
+        '<th class="right" title="Entry price">Entry</th>' +
+        '<th class="right" title="Current mark">Mark</th>' +
         '<th class="right" title="Effective stop">Stop</th>' +
-        '<th class="right" title="Risk dollars at the effective stop.">Risk</th>' +
-        '<th class="right" title="Unrealized profit/loss in dollars">Unreal.</th>' +
-        '<th class="right" title="Unrealized P&L as a percent of cost basis">%</th>' +
-        '<th class="right" title="Time in position since entry">Held</th>' +
         '</tr></thead>';
       if (positions.length > 0) {
         body.innerHTML = '<table>' + _posTableHeaders + '<tbody>' + rows + '</tbody></table>';

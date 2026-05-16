@@ -1992,8 +1992,23 @@ body.v10-live .legacy-v10-hidden {
   color: #64748b;
   border-color: #334155;
 }
-/* Permanently hide backtest baseline — static numbers, no operator value */
-#v10-baseline { display: none !important; }
+/* Permanently hide backtest baseline + EOD reversal section */
+#v10-baseline    { display: none !important; }
+#v10-eod-section { display: none !important; }
+
+/* Hide | pipe dividers in the v10 ORB header — spacing comes from flex gap */
+#v10-day-status .v10-divider { display: none !important; }
+
+/* Compact ORB gauges: tighter padding, smaller label font */
+.v10-gauge { padding: 6px 10px !important; }
+.v10-gauge-head { margin-bottom: 4px !important; }
+.v10-gauge-label { font-size: 10px !important; letter-spacing: .3px !important; color: #6b7280 !important; }
+.v10-gauge-value { font-size: 11px !important; font-weight: 600 !important; }
+.v10-gauge-bar   { height: 3px !important; }
+
+/* Position row: compact secondary info */
+#pos-body td { padding: 4px 8px !important; }
+#pos-body thead th { font-size: 10px !important; padding: 4px 8px !important; color: #4b5563 !important; }
 .killswitch-banner .ks-icon {
   font-size: 22px;
   color: #ef4444;
