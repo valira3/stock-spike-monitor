@@ -4041,12 +4041,11 @@
       const sign = up ? "+" : "";
       const chg = (r.change === null || r.change === undefined) ? "—" : sign + fmtNum(r.change, 2);
       const pct = (r.change_pct === null || r.change_pct === undefined) ? "—" : sign + fmtNum(r.change_pct, 2) + "%";
-      // v4.12.0 — after-hours layer. Backend tags r.ah=true outside RTH
-      // when the latest trade differs from the relevant base close. We
-      // append a small `AH` badge plus the AH delta so the user can
-      // tell at a glance how much the index has moved since the close.
+      // AH badge: only shown outside RTH. During RTH the cash market is live
+      // so pre/after-hours deltas are redundant and add visual noise.
       let ahHtml = "";
-      if (r.ah && r.ah_change !== null && r.ah_change !== undefined) {
+      const isRth = session === "rth";
+      if (!isRth && r.ah && r.ah_change !== null && r.ah_change !== undefined) {
         const ahUp = r.ah_change >= 0;
         const ahColor = ahUp ? "#34d399" : "#f87171";
         const ahSign = ahUp ? "+" : "";
@@ -4056,11 +4055,10 @@
         const sessLabel = session === "pre" ? "PRE" : "AH";
         ahHtml = ` <span class="idx-ah" title="After-hours move vs close">${sessLabel} <span style="color:${ahColor};font-weight:500">${ahChg}${ahPct}</span></span>`;
       }
-      // v4.13.0 — inline futures badge for cash indices. Reuses the
-      // .idx-ah class for consistent styling, painted in the future's own
-      // direction color so green/red read independently of the cash row.
+      // Futures badge: only shown outside RTH. When the cash market is open
+      // the live cash price already reflects futures; the badge is redundant.
       let futHtml = "";
-      if (r.future && r.future.change_pct !== null && r.future.change_pct !== undefined) {
+      if (!isRth && r.future && r.future.change_pct !== null && r.future.change_pct !== undefined) {
         const fUp = r.future.change_pct >= 0;
         const fColor = fUp ? "#34d399" : "#f87171";
         const fSign = fUp ? "+" : "";
@@ -5823,52 +5821,69 @@
 
     if (conditions.length === 0) {
       banner.classList.add("hide");
-      banner.classList.remove("killswitch-banner--info");
+      banner.classList.remove("killswitch-banner--info", "killswitch-banner--soft");
       banner.innerHTML = "";
       return;
     }
     banner.classList.remove("hide");
-    // v7.50.0 -- soften the red styling when the ONLY active condition
-    // is "outside market hours" (just informational, not a kill state).
-    // Any of the actual alarm conditions (operator-pause, day-block,
-    // daily-kill, v10 disabled, legacy halt) brings the red back.
+
     var informationalOnly = (conditions.length === 1
                               && conditions[0].title === "OUTSIDE MARKET HOURS");
+    // "Soft" state: only scan-paused + daily-kill active (expected mid-day — not critical).
+    // The kill already fired, positions are still managed. This is NOT an emergency;
+    // the operator doesn't need a bright red alarm for the rest of the afternoon.
+    var SOFT_TITLES = {"SCAN PAUSED": true, "DAILY-LOSS KILL ACTIVE": true};
+    var softPause = !informationalOnly && conditions.length >= 1
+      && conditions.every(function(c) { return !!SOFT_TITLES[c.title]; });
+
     if (informationalOnly) {
       banner.classList.add("killswitch-banner--info");
-    } else {
+      banner.classList.remove("killswitch-banner--soft");
+    } else if (softPause) {
+      banner.classList.add("killswitch-banner--soft");
       banner.classList.remove("killswitch-banner--info");
+    } else {
+      banner.classList.remove("killswitch-banner--info", "killswitch-banner--soft");
     }
-    // Pick the icon: ℹ for the calm informational state, ⚠ otherwise.
+
+    if (softPause) {
+      // Condensed one-liner: no alarm icon, no heading, no button.
+      var killCond = null;
+      conditions.forEach(function(c) {
+        if (c.title === "DAILY-LOSS KILL ACTIVE") killCond = c;
+      });
+      var chipHtml = '';
+      if (killCond && killCond.pid_chips && killCond.pid_chips.length) {
+        killCond.pid_chips.forEach(function(chip) {
+          chipHtml += '<span class="ks-portfolio-chip">' + esc(chip) + '</span>';
+        });
+      }
+      banner.innerHTML = '<span class="ks-icon" aria-hidden="true">&#9646;</span>'
+        + '<div class="ks-text"><div class="ks-detail">Scanner paused'
+        + (killCond ? ' &mdash; daily-loss limit reached' + (chipHtml ? ' ' + chipHtml : '') : '')
+        + ' &middot; existing positions still managed</div></div>';
+      return;
+    }
+
     var icon = informationalOnly ? 'ℹ' : '⚠';
     var html = '<span class="ks-icon" aria-hidden="true">' + icon + '</span>'
              + '<div class="ks-text">';
     conditions.forEach(function (c, i) {
-      var sep = (i > 0) ? ' · ' : '';
-      html += (i === 0
-                ? '<div class="ks-title">' + esc(c.title) + '</div>'
-                : '');
-      if (i === 0) {
-        html += '<div class="ks-detail">';
-      }
-      if (i > 0) {
-        html += sep + '<b>' + esc(c.title) + ':</b> ';
-      }
+      html += (i === 0 ? '<div class="ks-title">' + esc(c.title) + '</div>' : '');
+      if (i === 0) html += '<div class="ks-detail">';
+      if (i > 0)  html += ' · <b>' + esc(c.title) + ':</b> ';
       html += esc(c.detail);
       if (c.pid_chips && c.pid_chips.length) {
         html += ' ';
-        c.pid_chips.forEach(function (chip) {
-          html += '<span class="ks-portfolio-chip">'
-               + esc(chip) + '</span>';
+        c.pid_chips.forEach(function(chip) {
+          html += '<span class="ks-portfolio-chip">' + esc(chip) + '</span>';
         });
       }
     });
     html += '</div></div>';
-    html += '<div class="ks-actions">'
-         + '<button type="button" class="ks-btn" '
+    html += '<div class="ks-actions"><button type="button" class="ks-btn" '
          + 'onclick="window.scrollTo({top:document.body.scrollHeight,behavior:\'smooth\'})">'
-         + 'View activity</button>'
-         + '</div>';
+         + 'View activity</button></div>';
     banner.innerHTML = html;
   }
 
@@ -5899,14 +5914,22 @@
     var statusEl = document.getElementById("v10-eod-status");
     var fireEl = document.getElementById("v10-eod-fire-pill");
     if (!section || !body) return;
+    var orbSection = document.getElementById("v10-day-status");
     if (!eod || !eod.enabled) {
       section.style.display = "none";
+      /* Restore full rounding on ORB card when EOD is hidden */
+      if (orbSection) { orbSection.style.borderRadius = "10px"; orbSection.style.borderBottom = ""; }
       return;
     }
-    // v9.1.32 -- always show the EOD card when enabled so the operator
-    // can verify config before 15:00 ET. Previously hidden until activity
-    // started, leaving no indication the engine was armed.
+    // v9.1.32 -- always show the EOD card when enabled.
     section.style.display = "";
+    /* Fuse ORB + EOD into one visual block: share borders, no gap between them */
+    if (orbSection) {
+      orbSection.style.borderRadius = "10px 10px 0 0";
+      orbSection.style.borderBottom = "1px solid #374151";
+    }
+    section.style.borderRadius = "0 0 10px 10px";
+    section.style.borderTop = "none";
     _v10EodFillBody(eod, "main", body, statusEl, fireEl, s);
   }
 
@@ -6064,7 +6087,8 @@
     var _showGatePills = _sessionActive || _isMarketHours;
     // Hide the full gate section (VIX | Day rows) when off-hours and
     // session not yet started. IDs are the v10-day-status pill spans.
-    ["v10-vix", "v10-vix-pass", "v10-day-state",
+    ["v10-vix-divider", "v10-vix-label", "v10-vix", "v10-vix-pass",
+     "v10-day-divider", "v10-day-label", "v10-day-state",
      "v10-atr-pill", "v10-atr-pill-divider",
      "v10-partial-pill", "v10-partial-pill-divider",
      "v10-wash-pill", "v10-wash-pill-divider",

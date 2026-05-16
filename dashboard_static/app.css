@@ -739,12 +739,14 @@
      trim padding, and add scroll-snap so swipes settle on a clean item
      boundary. Tabular nums keep widths stable while values change. */
   .idx-strip { font-variant-numeric: tabular-nums lining-nums; }
+  /* Mobile compact: hide absolute $ change (keeps %, symbol, price).
+     Slightly smaller than desktop (13px) but still readable at arm's length. */
+  .idx-strip.idx-compact { font-size: 12px !important; scroll-snap-type: x mandatory; }
   .idx-strip.idx-compact .idx-chg { display: none; }
   .idx-strip.idx-compact .idx-item {
-    padding: 0 8px !important;
+    padding: 0 10px !important;
     scroll-snap-align: start;
   }
-  .idx-strip.idx-compact { scroll-snap-type: x mandatory; }
 
   /* v4.10.1 — defeat .grid-2's `align-items: stretch` so the empty
      Open Positions card sizes to its (header + one-row strip) content
@@ -814,21 +816,21 @@
   .idx-strip .idx-ah {
     display: inline-block;
     margin-left: 6px;
-    padding: 0 4px;
+    padding: 1px 5px;
     border: 1px solid #5b4920;
     border-radius: 3px;
     background: #1f1707;
     color: #f59e0b;
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
     vertical-align: 1px;
   }
-  /* Compact phone width: narrower AH badge + tighter padding. */
+  /* Compact phone width: narrower AH badge. */
   .idx-strip.idx-compact .idx-ah {
     margin-left: 4px;
-    padding: 0 3px;
-    font-size: 9px;
+    padding: 0 4px;
+    font-size: 10px;
   }
   @media (prefers-reduced-motion: reduce) {
     .idx-strip.idx-marquee .idx-track { animation: none; }
@@ -1961,11 +1963,37 @@ body.v10-live .legacy-v10-hidden {
 }
 .killswitch-banner.killswitch-banner--info .ks-icon {
   color: #60a5fa;
-  animation: none; /* no pulse for the informational variant */
+  animation: none;
 }
 .killswitch-banner.killswitch-banner--info .ks-title {
   color: #93c5fd;
 }
+/* --soft: expected mid-day scan pause (daily-kill fired, positions still managed).
+   Not an emergency — use muted slate styling so it doesn't alarm unnecessarily. */
+.killswitch-banner.killswitch-banner--soft {
+  background: rgba(17, 24, 39, 0.5);
+  border-color: #1e293b;
+  box-shadow: none;
+  padding: 8px 16px;
+}
+.killswitch-banner.killswitch-banner--soft .ks-icon {
+  color: #475569;
+  font-size: 16px;
+  animation: none;
+}
+.killswitch-banner.killswitch-banner--soft .ks-title { display: none; }
+.killswitch-banner.killswitch-banner--soft .ks-detail {
+  color: #64748b;
+  font-size: 12px;
+}
+.killswitch-banner.killswitch-banner--soft .ks-actions { display: none; }
+.killswitch-banner.killswitch-banner--soft .ks-portfolio-chip {
+  background: #1e293b;
+  color: #64748b;
+  border-color: #334155;
+}
+/* Permanently hide backtest baseline — static numbers, no operator value */
+#v10-baseline { display: none !important; }
 .killswitch-banner .ks-icon {
   font-size: 22px;
   color: #ef4444;
