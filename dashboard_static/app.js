@@ -5937,9 +5937,18 @@
           chipHtml += '<span class="ks-portfolio-chip">' + esc(chip) + '</span>';
         });
       }
+      // When kill fired but P&L has since recovered to positive, "daily-loss limit
+      // reached" is misleading — the loss that triggered the kill was temporary.
+      var _killLabel = '';
+      if (killCond) {
+        var _pnlPositive = realized_total > 0;
+        _killLabel = ' &mdash; '
+          + (_pnlPositive ? 'morning session ended' : 'daily-loss limit reached')
+          + (chipHtml ? ' ' + chipHtml : '');
+      }
       banner.innerHTML = '<span class="ks-icon" aria-hidden="true">&#9646;</span>'
         + '<div class="ks-text"><div class="ks-detail">Scanner paused'
-        + (killCond ? ' &mdash; daily-loss limit reached' + (chipHtml ? ' ' + chipHtml : '') : '')
+        + _killLabel
         + ' &middot; existing positions still managed</div></div>';
       return;
     }
