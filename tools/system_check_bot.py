@@ -851,6 +851,14 @@ def build_report(
 
 
 def print_report(report: dict[str, Any]) -> None:
+    # Reconfigure stdout to UTF-8 so Unicode chars in check details (e.g. ≈)
+    # don't crash on Windows cp1252 consoles.
+    import sys as _sys
+    if hasattr(_sys.stdout, "reconfigure"):
+        try:
+            _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     overall = report["overall"]
     icon = {"OK": "[OK]", "WARN": "[WARN]", "CRIT": "[CRIT]"}.get(overall, "[?]")
     print(f"\n=== System Check Bot {icon} ===  {report['ts_et']}  v{report['version']}")
@@ -861,7 +869,8 @@ def print_report(report: dict[str, Any]) -> None:
             print(f"\n  -- {c['section']} --")
             prev_section = c["section"]
         icon_ = status_icon.get(c["status"], "?")
-        print(f"  {icon_}  [{c['status']:<4}]  {c['name']:<38}  {c['detail']}")
+        detail = str(c["detail"]).encode("utf-8", errors="replace").decode("utf-8")
+        print(f"  {icon_}  [{c['status']:<4}]  {c['name']:<38}  {detail}")
     sm = report["summary"]
     print(
         f"\n  {sm['ok']} ok  {sm['warn']} warn  {sm['crit']} crit  "
@@ -880,7 +889,7 @@ _RISK_HIGH_USD = 2500.0  # above this = stop too loose or oversized
 
 # Cooldown window: same (ticker, side) re-entry within this many minutes
 # of a stop exit is a cooldown violation (should be blocked by the engine).
-_COOLDOWN_MIN = 30
+_COOLDOWN_MIN = 10  # sym-10m cooldown (ORB_POST_TRADE_COOLDOWN_MIN=10, deployed v9.1.111)
 
 
 def _parse_entry_min(entry_time: str) -> int | None:
