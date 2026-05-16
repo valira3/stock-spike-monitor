@@ -239,21 +239,30 @@ _HEAD_PATCH = """\
       } else {
         lcOpen.push({et_min:en.etMin, entry_price:en.price, side:en.side});
       }
-      /* Stop/1R/target refs — prefer actual position data over OR-level approximation */
+      /* Chart overlay refs.
+         Morning ORB: stop / 1R / 2.5R target lines from OR levels.
+         EOD reversal: no stop-based system — just show entry + mark. */
       var isLong = en.side !== 'short';
-      var origStopPx = (openPos && openPos.entry_stop != null) ? openPos.entry_stop
-                       : (orHigh && orLow ? (isLong ? orLow : orHigh) : null);
-      var currStopPx = (openPos && openPos.stop != null && !ex) ? openPos.stop : origStopPx;
-      var markPx     = (openPos && openPos.mark != null && !ex) ? openPos.mark : null;
-      var risk = (origStopPx != null) ? Math.abs(en.price - origStopPx) : 0;
+      var isEod  = openPos && !!openPos.eod;
+      var markPx = (openPos && openPos.mark != null && !ex) ? openPos.mark : null;
+      var origStopPx = null, currStopPx = null, bePx = null, targPx = null;
+      if (!isEod) {
+        /* Morning ORB: use actual position stop → 1R → 2.5R */
+        origStopPx = (openPos && openPos.entry_stop != null) ? openPos.entry_stop
+                     : (orHigh && orLow ? (isLong ? orLow : orHigh) : null);
+        currStopPx = (openPos && openPos.stop != null && !ex) ? openPos.stop : origStopPx;
+        var risk = origStopPx != null ? Math.abs(en.price - origStopPx) : 0;
+        bePx  = risk > 0 ? en.price + (isLong ? 1 : -1) * risk       : null;
+        targPx = risk > 0 ? en.price + (isLong ? 1 : -1) * 2.5*risk  : null;
+      }
       stopRefs.push({
         entry_et_min:  en.etMin, exit_et_min: ex ? ex.etMin : null,
         entry_price:   en.price,
-        stop_price:    currStopPx,
-        orig_stop:     origStopPx,
-        be_price:      risk > 0 ? en.price + (isLong ? 1 : -1) * risk        : null,
-        target_price:  risk > 0 ? en.price + (isLong ? 1 : -1) * 2.5 * risk : null,
-        mark_price:    markPx
+        stop_price:    currStopPx,  /* null for EOD */
+        be_price:      bePx,        /* null for EOD */
+        target_price:  targPx,      /* null for EOD */
+        mark_price:    markPx,
+        is_eod:        isEod
       });
     });
 
@@ -277,22 +286,35 @@ _HEAD_PATCH = """\
        The executor renderer uses symbol/entry_price/current_price/unrealized_pnl
        (not ticker/entry/mark/unrealized as the main state uses). */
     if (u.indexOf('/api/executor/val')  >= 0) {
+      /* Val paper account: equity $30,185.24, scale positions proportionally vs Main $100k */
+      var _VAL_EQUITY  = 30185.24;
+      var _VAL_RATIO   = _VAL_EQUITY / 100000;
+      var _mainEq = ((s.portfolio||{}).equity) || 100000;
+      var _valDayPnl = Math.round(((_mainEq - 100000) * _VAL_RATIO) * 100) / 100;
+      var _valEq   = Math.round((_VAL_EQUITY + _valDayPnl) * 100) / 100;
       var _valPos = (s.positions||[]).filter(function(p){ return !p.eod; }).map(function(p) {
-        var _unr = p.unrealized != null ? p.unrealized : (p.unrealized_pnl || 0);
-        var _pct = (p.entry && p.shares) ? _unr / (p.entry * p.shares) * 100 : 0;
+        var _sh  = Math.max(1, Math.round((p.shares||1) * _VAL_RATIO));
+        var _unr = Math.round((p.unrealized != null ? p.unrealized : (p.unrealized_pnl||0)) * _VAL_RATIO * 100) / 100;
+        var _pct = (p.entry && _sh) ? _unr / (p.entry * _sh) * 100 : 0;
         return {
           symbol: p.ticker, ticker: p.ticker,
           side: (p.side||'LONG').toLowerCase(),
           entry_price: p.entry, current_price: p.mark, limit_price: p.entry,
           unrealized_pnl: _unr, unrealized_pct: _pct,
-          shares: p.shares, qty: p.shares,
+          shares: _sh, qty: _sh,
           stop_price: p.stop, held_seconds: p.held_seconds || 0,
           entry_ts_utc: p.entry_ts_utc,
           phase: p.phase || 'A', entry_num: p.entry_num || 1,
-          portfolio: 'val', cost: p.cost || 0
+          portfolio: 'val', cost: Math.round(p.entry * _sh * 100) / 100
         };
       });
-      return {ok:true,positions:_valPos,trades_today:s.trades_today||[],trades:s.trades_today||[]};
+      var _valTrades = (s.trades_today||[]).filter(function(t){return !t.eod;}).map(function(t){
+        return Object.assign({}, t, {portfolio:'val',
+          shares: Math.max(1, Math.round((t.shares||1)*_VAL_RATIO))});
+      });
+      return {ok:true, positions:_valPos, trades_today:_valTrades, trades:_valTrades,
+              account:{equity:_valEq, cash:_valEq, portfolio_value:_valEq,
+                       day_pnl:_valDayPnl, status:'ACTIVE'}};
     }
     if (u.indexOf('/api/executor/gene') >= 0) return {ok:true,positions:[],trades_today:[],trades:[]};
     if (u.indexOf('/api/trade_log')     >= 0) return {ok:true,count:(s.trades_today||[]).length,rows:[]};
@@ -455,14 +477,24 @@ _NAV_SCRIPT = """\
               ctx.fillText(lbl+'  $'+price.toFixed(2), PAD_L+plotW-2, yOf(price)-3);
               ctx.restore();
             }
-            /* stop — red dashed */
-            hline(ref.stop_price,   '#ef4444',[5,3],'stop');
-            /* entry — slate dashed */
-            hline(ref.entry_price,  '#94a3b8',[2,3],'entry');
-            /* 1R (move-to-BE) — amber dashed */
-            hline(ref.be_price,     '#fbbf24',[4,3],'1R');
-            /* +2.5R target — green dashed */
-            hline(ref.target_price, '#22c55e',[5,3],'+2.5R');
+            if (ref.is_eod) {
+              /* EOD reversal: entry + "close 15:59" tick. No stop/1R/target. */
+              hline(ref.entry_price, '#94a3b8',[2,3],'entry');
+              var xClose = xOf(Math.min(959, X_MAX));
+              ctx.save();
+              ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+              ctx.beginPath(); ctx.moveTo(xClose,PAD_T); ctx.lineTo(xClose,PAD_T+priceH); ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.fillStyle='#a78bfa'; ctx.font='8px system-ui'; ctx.textAlign='center';
+              ctx.fillText('exit 15:59', xClose, PAD_T+priceH-3);
+              ctx.restore();
+            } else {
+              /* Morning ORB: stop / entry / 1R / +2.5R target */
+              hline(ref.stop_price,   '#ef4444',[5,3],'stop');
+              hline(ref.entry_price,  '#94a3b8',[2,3],'entry');
+              hline(ref.be_price,     '#fbbf24',[4,3],'1R');
+              hline(ref.target_price, '#22c55e',[5,3],'+2.5R');
+            }
             /* mark — sky-blue solid with circle + price badge */
             if (ref.mark_price!=null) {
               var mp=ref.mark_price, my=yOf(mp), mx=x2;
@@ -580,59 +612,81 @@ _NAV_SCRIPT = """\
     if (spdEl) spdEl.textContent = labels[speedI];
   }
 
-  /* Inject a day P&L sparkline (full day trajectory) below the DAY P&L KPI */
+  /* P&L sparkline: draws history up to current snapshot, dims future trajectory.
+     Re-draws on every navigation so the "filled" portion tracks the scrubber. */
   function _pnlSparkline() {
     var kpnl = document.getElementById('k-pnl');
     if (!kpnl) return;
     var card = kpnl.closest('.card, [class*="kpi"], [class*="pnl"]') || kpnl.parentElement;
-    if (!card || card.__pnlSpark) return;
-    card.__pnlSpark = true;
-    /* Collect all P&L values across snapshots */
+    if (!card) return;
     var diffs = window.__TT_DIFFS || [];
-    var points = diffs.map(function(d) {
+    /* Build full day P&L series (all snapshots) for scale */
+    var allPoints = diffs.map(function(d) {
       return (d.portfolio && d.portfolio.day_pnl != null) ? d.portfolio.day_pnl : null;
-    }).filter(function(v){ return v !== null; });
-    if (points.length < 2) return;
-    /* Create sparkline canvas */
-    var cv = document.createElement('canvas');
+    });
+    var validPoints = allPoints.filter(function(v){ return v !== null; });
+    if (validPoints.length < 2) return;
+
+    /* Create or reuse canvas */
+    var cv = card.__pnlSparkCv;
+    if (!cv) {
+      cv = document.createElement('canvas');
+      cv.style.cssText = 'display:block;width:100%;height:28px;margin-top:4px;opacity:0.9;';
+      kpnl.parentElement.insertBefore(cv, kpnl.nextSibling);
+      card.__pnlSparkCv = cv;
+    }
     cv.width = Math.min(card.clientWidth || 140, 140);
     cv.height = 28;
-    cv.style.cssText = 'display:block;width:100%;height:28px;margin-top:4px;opacity:0.9;';
-    /* Insert after the P&L value */
-    kpnl.parentElement.insertBefore(cv, kpnl.nextSibling);
     var ctx2 = cv.getContext('2d');
     var w = cv.width, h = cv.height, pad = 2;
-    var lo = Math.min.apply(null,points), hi = Math.max.apply(null,points);
+    var curIdx = Math.min(window.__TT_IDX || 0, diffs.length - 1);
+
+    /* Y scale uses the FULL day range so scale doesn't jump */
+    var lo = Math.min.apply(null, validPoints);
+    var hi = Math.max.apply(null, validPoints);
     var rng = hi - lo || 1;
-    var xOf3 = function(i){ return pad + i/(points.length-1)*(w-2*pad); };
+    var xOf3 = function(i){ return pad + i/(diffs.length-1)*(w-2*pad); };
     var yOf3 = function(v){ return pad + (1-(v-lo)/rng)*(h-2*pad); };
-    var curIdx = window.__TT_IDX || 0;
-    /* Shade area under curve */
-    var lastPnl = points[Math.min(curIdx, points.length-1)];
-    var fillColor = lastPnl >= 0 ? 'rgba(62,194,143,0.12)' : 'rgba(239,68,68,0.12)';
-    var lineColor = lastPnl >= 0 ? '#3ec28f' : '#ef4444';
-    /* Draw zero line */
+
+    ctx2.clearRect(0, 0, w, h);
+
+    /* Zero baseline */
     if (lo < 0 && hi > 0) {
       var y0 = yOf3(0);
-      ctx2.strokeStyle = 'rgba(255,255,255,0.1)'; ctx2.lineWidth = 0.5;
+      ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 0.5;
+      ctx2.setLineDash([2,3]);
       ctx2.beginPath(); ctx2.moveTo(pad,y0); ctx2.lineTo(w-pad,y0); ctx2.stroke();
+      ctx2.setLineDash([]);
     }
-    /* Filled area */
+
+    /* Full-day ghost line (dim) — gives context for the full trajectory */
+    ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 1;
     ctx2.beginPath();
-    ctx2.moveTo(xOf3(0), yOf3(lo));
-    for (var i=0;i<points.length;i++) ctx2.lineTo(xOf3(i),yOf3(points[i]));
-    ctx2.lineTo(xOf3(points.length-1), yOf3(lo)); ctx2.closePath();
-    ctx2.fillStyle = fillColor; ctx2.fill();
-    /* Line */
+    var _started = false;
+    for (var k=0;k<diffs.length;k++) {
+      var v = allPoints[k]; if (v == null) continue;
+      if (!_started){ ctx2.moveTo(xOf3(k),yOf3(v)); _started=true; }
+      else ctx2.lineTo(xOf3(k),yOf3(v));
+    }
+    if (_started) ctx2.stroke();
+
+    /* History line up to curIdx (solid, colored) */
+    var pnlAtCur = allPoints[curIdx];
+    var lineColor = (pnlAtCur != null && pnlAtCur >= 0) ? '#3ec28f' : '#ef4444';
     ctx2.strokeStyle = lineColor; ctx2.lineWidth = 1.5; ctx2.lineJoin = 'round';
     ctx2.beginPath();
-    ctx2.moveTo(xOf3(0), yOf3(points[0]));
-    for (var j=1;j<points.length;j++) ctx2.lineTo(xOf3(j),yOf3(points[j]));
-    ctx2.stroke();
-    /* Current position marker */
-    if (curIdx < points.length) {
+    var _hStarted = false;
+    for (var m=0;m<=curIdx;m++) {
+      var hv = allPoints[m]; if (hv == null) continue;
+      if (!_hStarted){ ctx2.moveTo(xOf3(m),yOf3(hv)); _hStarted=true; }
+      else ctx2.lineTo(xOf3(m),yOf3(hv));
+    }
+    if (_hStarted) ctx2.stroke();
+
+    /* Current position dot */
+    if (pnlAtCur != null) {
       ctx2.fillStyle = lineColor;
-      ctx2.beginPath(); ctx2.arc(xOf3(curIdx),yOf3(points[curIdx]),3,0,Math.PI*2); ctx2.fill();
+      ctx2.beginPath(); ctx2.arc(xOf3(curIdx),yOf3(pnlAtCur),3,0,Math.PI*2); ctx2.fill();
     }
   }
 
