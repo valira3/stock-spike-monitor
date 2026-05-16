@@ -3090,19 +3090,37 @@ async def h_replay_today(request):
 
     try:
         loop = asyncio.get_event_loop()
-        # Run the sync build function in a thread to avoid blocking the event loop
+
         def _build():
-            import sys, pathlib
+            import sys, pathlib, traceback
             sys.path.insert(0, str(pathlib.Path(__file__).parent))
-            from scripts.replay_today import build_today_replay
-            return build_today_replay(date)
+            # Load .env.monitor so R2/GitHub vars are available
+            _env = pathlib.Path(__file__).parent / ".env.monitor"
+            if _env.exists():
+                import os
+                for line in _env.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            try:
+                from scripts.replay_today import build_today_replay
+                return build_today_replay(date)
+            except Exception:
+                traceback.print_exc()
+                raise
 
         url, actual_date = await loop.run_in_executor(None, _build)
         if url:
             return web.json_response({"ok": True, "url": url, "date": actual_date})
         else:
-            return web.json_response({"ok": False, "error": "No snapshots found"}, status=404)
+            return web.json_response(
+                {"ok": False, "error": "No snapshot data found for recent trading days. "
+                 "Snapshots are captured every 5 min during RTH — try again after 09:30 ET."},
+                status=404)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
