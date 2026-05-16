@@ -594,7 +594,7 @@
           <td colspan="4">
             <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
               <span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>
-              ${_sessionBadge}${phaseBadge}
+              ${_sessionBadge}${phase !== 'A' ? phaseBadge : ''}
               <span class="${pnlCls}" style="font-weight:600;margin-left:auto">${pctTxt}</span>
               <span class="${pnlCls}">${fmtUsd(p.unrealized)}</span>
               <span style="color:#6b7280;font-size:11px">${_heldShort}</span>
@@ -603,6 +603,7 @@
           <td class="right" style="font-size:11px;color:#6b7280">${p.shares}${_partialBadge}</td>
           <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.entry)}</td>
           <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.mark)}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${_notionalTxt}</td>
           <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(eff)}${trailBadge}</td>
         </tr>${progressRow}${_chartRow}`;
       }).join("");
@@ -614,6 +615,7 @@
         '<th class="right" title="Shares">Sh</th>' +
         '<th class="right" title="Entry price">Entry</th>' +
         '<th class="right" title="Current mark">Mark</th>' +
+        '<th class="right" title="Notional at cost">Notional</th>' +
         '<th class="right" title="Effective stop">Stop</th>' +
         '</tr></thead>';
       if (positions.length > 0) {
