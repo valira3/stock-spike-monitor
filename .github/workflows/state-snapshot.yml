@@ -1,0 +1,74 @@
+name: State Snapshot
+
+# Captures /api/state + executor + trade_log every 5 min during RTH.
+# Output committed to the snapshots-live branch as data/snapshots/YYYY-MM-DD.jsonl
+# (one appended JSON line per run).
+#
+# replay_dashboard.py --share reads these files to build time-travel replays
+# without hitting the live API.
+#
+# Schedule: every 5 min Mon-Fri 13:25-21:05 UTC (9:25am-5:05pm ET).
+# GitHub cron minimum is 1 min but dense schedules queue; 5 min is reliable.
+# The 13:25 start (5 min before 9:30 ET open) captures pre-open state.
+
+on:
+  schedule:
+    - cron: "*/5 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment (prod or staging)"
+        required: false
+        default: "prod"
+
+permissions:
+  contents: write   # push to snapshots-live branch
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout snapshots-live branch
+        uses: actions/checkout@v4
+        with:
+          ref: snapshots-live
+          # Fetch only the branch we need — no full history
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Capture state
+        env:
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          TARGET_ENV: ${{ github.event.inputs.env || 'prod' }}
+        run: |
+          python scripts/snapshot_state.py \
+            --env "$TARGET_ENV" \
+            --out data/snapshots
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage only the snapshots directory (never touch other files)
+          git add data/snapshots/
+
+          # Skip commit if nothing changed (e.g. duplicate run within same minute)
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (duplicate tick)"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          git commit -m "snapshot: ${TIMESTAMP}"
+
+          # Pull-rebase in case a parallel run pushed first, then retry once
+          git pull --rebase origin snapshots-live || true
+          git push origin snapshots-live
