@@ -119,12 +119,29 @@ _HEAD_PATCH = """\
       var _realPnl     = diff.v10_realized_pnl   != null ? diff.v10_realized_pnl    : null;
       var _admitCount  = diff.v10_admit_count     != null ? diff.v10_admit_count     : null;
       var _rejectCount = diff.v10_reject_count    != null ? diff.v10_reject_count    : null;
+      /* Val has its own separate account ($30,185.24). Its realized P&L is scaled
+         proportionally (~30%) and its kill threshold is 2% of $30k = ~$604, so
+         the morning scenario never triggers Val's kill (worst Val P&L = -$14). */
+      var _VAL_BASE_EQ = 30185.24;
+      var _VAL_RATIO   = _VAL_BASE_EQ / 100000;
+      var _valRealPnl  = _realPnl !== null ? Math.round(_realPnl * _VAL_RATIO * 100) / 100 : null;
+      var _valKillThresh = Math.round(_VAL_BASE_EQ * 0.02 * 10) / 10; /* ~$603.70 */
       Object.keys(s.v10.risk_books).forEach(function(pid) {
         s.v10.risk_books[pid] = Object.assign({}, s.v10.risk_books[pid]);
-        if (_kill        !== null) s.v10.risk_books[pid].daily_kill_triggered = _kill;
-        if (_realPnl     !== null) s.v10.risk_books[pid].realized_pnl_today   = _realPnl;
-        if (_admitCount  !== null) s.v10.risk_books[pid].admit_count           = _admitCount;
-        if (_rejectCount !== null) s.v10.risk_books[pid].reject_count          = _rejectCount;
+        if (pid === 'main') {
+          if (_kill        !== null) s.v10.risk_books[pid].daily_kill_triggered = _kill;
+          if (_realPnl     !== null) s.v10.risk_books[pid].realized_pnl_today   = _realPnl;
+          if (_admitCount  !== null) s.v10.risk_books[pid].admit_count           = _admitCount;
+          if (_rejectCount !== null) s.v10.risk_books[pid].reject_count          = _rejectCount;
+        } else if (pid === 'val') {
+          /* Val: scale P&L to account size, never trigger kill in this scenario */
+          if (_valRealPnl  !== null) s.v10.risk_books[pid].realized_pnl_today   = _valRealPnl;
+          s.v10.risk_books[pid].daily_kill_triggered = false;
+          s.v10.risk_books[pid].daily_kill_threshold = _valKillThresh;
+          s.v10.risk_books[pid].max_risk_dollars     = _valKillThresh;
+          s.v10.risk_books[pid].equity = Math.round((_VAL_BASE_EQ + (_valRealPnl||0)) * 100) / 100;
+        }
+        /* gene: leave unchanged (no active positions in this scenario) */
       });
     }
     /* Inject a unique last_scan_at so app.js's SSE optimization
@@ -138,8 +155,11 @@ _HEAD_PATCH = """\
 
   /* Generate realistic fake 1m OHLC bars from OR levels.
      Uses a seeded PRNG so the same ticker always produces the same bars. */
-  function _fakeBars(ticker, orHigh, orLow, endEtMin, date) {
+  /* chartStartMin: first bar to INCLUDE in output. PRNG always advances from 570
+     so price continuity is maintained even when zooming to 14:00 for EOD-only tickers. */
+  function _fakeBars(ticker, orHigh, orLow, endEtMin, date, chartStartMin) {
     var barDate = date || '2026-05-15';
+    var chartStart = (chartStartMin != null) ? chartStartMin : 570;
     var seed = 0;
     for (var i = 0; i < ticker.length; i++) seed = (seed * 31 + ticker.charCodeAt(i)) | 0;
     function rand() {
@@ -149,24 +169,24 @@ _HEAD_PATCH = """\
     var vol = (orHigh - orLow) / 40;
     var price = orLow + (orHigh - orLow) * 0.25;
     var bars = [];
-    var startMin = 570; /* 9:30 ET */
     var end = endEtMin || 615;
-    for (var m = startMin; m <= end; m++) {
+    for (var m = 570; m <= end; m++) {
       var open = price;
-      /* Slight upward drift in OR (570-600), then settle */
       var drift = (m < 600) ? vol * 0.15 : vol * 0.02;
       var chg = (rand() - 0.47) * vol * 2 + drift;
       var close = open + chg;
       var hi = Math.max(open, close) + rand() * vol * 0.8;
       var lo = Math.min(open, close) - rand() * vol * 0.8;
-      var hh = Math.floor(m / 60), mm = m % 60;
-      var ts = barDate + 'T' + (hh<10?'0':'') + hh + ':' + (mm<10?'0':'') + mm + ':00-04:00';
-      bars.push({
-        ts:ts, et_min:m,
-        o:+open.toFixed(2), h:+hi.toFixed(2), l:+lo.toFixed(2), c:+close.toFixed(2),
-        v: Math.floor(rand()*80000+15000),
-        avwap:null, avwap_hi:null, avwap_lo:null, pm_avwap:null, ema9_5m:null
-      });
+      if (m >= chartStart) {
+        var hh = Math.floor(m / 60), mm = m % 60;
+        var ts = barDate + 'T' + (hh<10?'0':'') + hh + ':' + (mm<10?'0':'') + mm + ':00-04:00';
+        bars.push({
+          ts:ts, et_min:m,
+          o:+open.toFixed(2), h:+hi.toFixed(2), l:+lo.toFixed(2), c:+close.toFixed(2),
+          v: Math.floor(rand()*80000+15000),
+          avwap:null, avwap_hi:null, avwap_lo:null, pm_avwap:null, ema9_5m:null
+        });
+      }
       price = close;
     }
     return bars;
@@ -197,7 +217,6 @@ _HEAD_PATCH = """\
     var dtMatch = (s.server_time || '').match(/^(\d{4}-\d{2}-\d{2})/);
     if (dtMatch) sceneDate = dtMatch[1];
     if (!orHigh || !orLow) return {ok:true,ticker:ticker,date:sceneDate,bars:[],or_high:null,or_low:null,or_fresh:false,pdc:null,trades:[],sentinel_events:[],lifecycle:{},bar_count:0};
-    var bars = _fakeBars(ticker, orHigh, orLow, endMin, sceneDate);
 
     /* Build lifecycle overlay data from trades.
        IMPORTANT: do NOT put entry_ts/exit_ts in payload.trades.
@@ -210,7 +229,7 @@ _HEAD_PATCH = """\
     (s.trades_today || []).forEach(function(t) {
       if ((t.ticker||'').toUpperCase() !== ticker) return;
       var action = (t.action||'').toUpperCase();
-      var tm2 = (t.time||'').replace('ET','').match(/([0-9]+):([0-9]+)/);
+      var tm2 = (t.time||'').replace(' ET','').replace('ET','').match(/([0-9]+):([0-9]+)/);
       if (!tm2) return;
       var etMin = parseInt(tm2[1],10)*60 + parseInt(tm2[2],10);
       if (action === 'BUY' || action === 'SHORT') {
@@ -219,6 +238,16 @@ _HEAD_PATCH = """\
         _rawExits.push({etMin:etMin, price:t.price});
       }
     });
+
+    /* EOD zoom: if ticker has ANY morning entries (before 14:00 = 840 ET min),
+       show the full day so morning + EOD context is both visible (e.g. ORCL).
+       Pure EOD-only tickers (AVGO, MSFT) zoom chart to 14:00-16:00 so the
+       29-min trade window isn't squashed into the rightmost 7% of the axis. */
+    var _hasMorningActivity = _rawEntries.some(function(e){ return e.etMin < 840; });
+    var _chartStartMin = _hasMorningActivity ? 570 : 840;
+
+    var bars = _fakeBars(ticker, orHigh, orLow, endMin, sceneDate, _chartStartMin);
+
     /* Find open position for this ticker — gives us actual stop/mark prices */
     var openPos = null;
     (s.positions || []).forEach(function(p) {
@@ -239,30 +268,30 @@ _HEAD_PATCH = """\
       } else {
         lcOpen.push({et_min:en.etMin, entry_price:en.price, side:en.side});
       }
-      /* Chart overlay refs.
-         Morning ORB: stop / 1R / 2.5R target lines from OR levels.
-         EOD reversal: no stop-based system — just show entry + mark. */
+      /* Chart overlay style: use entry time not openPos.eod so ORCL morning trades
+         get ORB-style overlays even when an EOD ORCL position is also open.
+         EOD entries are those placed at or after 15:00 ET (900 min). */
+      var isEodEntry = en.etMin >= 900;
       var isLong = en.side !== 'short';
-      var isEod  = openPos && !!openPos.eod;
       var markPx = (openPos && openPos.mark != null && !ex) ? openPos.mark : null;
       var origStopPx = null, currStopPx = null, bePx = null, targPx = null;
-      if (!isEod) {
+      if (!isEodEntry) {
         /* Morning ORB: use actual position stop → 1R → 2.5R */
         origStopPx = (openPos && openPos.entry_stop != null) ? openPos.entry_stop
                      : (orHigh && orLow ? (isLong ? orLow : orHigh) : null);
         currStopPx = (openPos && openPos.stop != null && !ex) ? openPos.stop : origStopPx;
         var risk = origStopPx != null ? Math.abs(en.price - origStopPx) : 0;
-        bePx  = risk > 0 ? en.price + (isLong ? 1 : -1) * risk       : null;
+        bePx   = risk > 0 ? en.price + (isLong ? 1 : -1) * risk       : null;
         targPx = risk > 0 ? en.price + (isLong ? 1 : -1) * 2.5*risk  : null;
       }
       stopRefs.push({
         entry_et_min:  en.etMin, exit_et_min: ex ? ex.etMin : null,
         entry_price:   en.price,
-        stop_price:    currStopPx,  /* null for EOD */
-        be_price:      bePx,        /* null for EOD */
-        target_price:  targPx,      /* null for EOD */
+        stop_price:    currStopPx,  /* null for EOD entries */
+        be_price:      bePx,        /* null for EOD entries */
+        target_price:  targPx,      /* null for EOD entries */
         mark_price:    markPx,
-        is_eod:        isEod
+        is_eod:        isEodEntry
       });
     });
 
@@ -292,7 +321,9 @@ _HEAD_PATCH = """\
       var _mainEq = ((s.portfolio||{}).equity) || 100000;
       var _valDayPnl = Math.round(((_mainEq - 100000) * _VAL_RATIO) * 100) / 100;
       var _valEq   = Math.round((_VAL_EQUITY + _valDayPnl) * 100) / 100;
-      var _valPos = (s.positions||[]).filter(function(p){ return !p.eod; }).map(function(p) {
+      /* Include ALL positions (morning + EOD) scaled to Val's account size.
+         EOD positions were previously filtered but Val runs the same EOD engine. */
+      var _valPos = (s.positions||[]).map(function(p) {
         var _sh  = Math.max(1, Math.round((p.shares||1) * _VAL_RATIO));
         var _unr = Math.round((p.unrealized != null ? p.unrealized : (p.unrealized_pnl||0)) * _VAL_RATIO * 100) / 100;
         var _pct = (p.entry && _sh) ? _unr / (p.entry * _sh) * 100 : 0;
@@ -305,14 +336,17 @@ _HEAD_PATCH = """\
           stop_price: p.stop, held_seconds: p.held_seconds || 0,
           entry_ts_utc: p.entry_ts_utc,
           phase: p.phase || 'A', entry_num: p.entry_num || 1,
-          portfolio: 'val', cost: Math.round(p.entry * _sh * 100) / 100
+          portfolio: p.eod ? 'val-eod' : 'val',
+          cost: Math.round(p.entry * _sh * 100) / 100,
+          eod: !!p.eod
         };
       });
-      var _valTrades = (s.trades_today||[]).filter(function(t){return !t.eod;}).map(function(t){
-        return Object.assign({}, t, {portfolio:'val',
+      /* All trades (morning + EOD) scaled; executor renderer reads todays_trades */
+      var _valTrades = (s.trades_today||[]).map(function(t){
+        return Object.assign({}, t, {portfolio: t.eod ? 'val-eod' : 'val',
           shares: Math.max(1, Math.round((t.shares||1)*_VAL_RATIO))});
       });
-      return {ok:true, positions:_valPos, trades_today:_valTrades, trades:_valTrades,
+      return {ok:true, positions:_valPos, todays_trades:_valTrades, trades_today:_valTrades,
               account:{equity:_valEq, cash:_valEq, portfolio_value:_valEq,
                        day_pnl:_valDayPnl, status:'ACTIVE'}};
     }
