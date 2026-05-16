@@ -101,48 +101,17 @@
   <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 </div>
 
-<!-- Session timeline bar — shows trading session zones + real-time ET cursor.
-     Populated by renderSessionBar(s) in app.js on each state poll.
-     In replay mode this element is hidden (the replay bar replaces it).
-     The Replay Day button lives at the right end of this bar. -->
-<div id="tg-session-bar" style="display:flex;align-items:center;gap:0;
-     background:#070a0f;border-bottom:1px solid #0d1117;position:sticky;top:0;z-index:100">
-  <!-- Timeline track -->
-  <div id="tg-stl-track" style="flex:1;position:relative;height:22px;overflow:hidden;cursor:default">
-    <!-- Zone bands — filled by renderSessionBar() -->
-    <div id="tg-stl-zones" style="position:absolute;inset:0"></div>
-    <!-- Event dots — filled by renderSessionBar() -->
+<!-- Session timeline bar — full-width, zones + real-time ET cursor only.
+     Populated by renderSessionBar(s) in app.js on each state poll. -->
+<div id="tg-session-bar" style="background:#070a0f;border-bottom:1px solid #0d1117;
+     position:sticky;top:0;z-index:100">
+  <div id="tg-stl-track" style="position:relative;height:22px;overflow:hidden">
+    <div id="tg-stl-zones"  style="position:absolute;inset:0"></div>
     <div id="tg-stl-events" style="position:absolute;inset:0;pointer-events:none"></div>
-    <!-- Live ET cursor -->
     <div id="tg-stl-cursor" style="position:absolute;top:0;bottom:0;left:0;width:2px;
          background:rgba(255,255,255,0.7);box-shadow:0 0 6px rgba(255,255,255,0.5);
          transform:translateX(-50%);pointer-events:none;transition:left .5s linear"></div>
   </div>
-  <!-- Replay Day button at the right end of the bar -->
-  <button type="button" id="tg-replay-btn"
-    title="Replay most recent trading day"
-    onclick="(function(btn){
-      if (btn.disabled) return;
-      btn.disabled = true;
-      var orig = btn.innerHTML;
-      btn.innerHTML = '<span style=&quot;animation:spin 1s linear infinite;display:inline-block&quot;>&#8987;</span>';
-      fetch('/api/replay/today', {method:'POST',
-            headers:{'Content-Type':'application/json'},
-            credentials:'include', body:'{}'})
-        .then(function(r){ return r.ok ? r.json() : {ok:false,error:'HTTP '+r.status}; })
-        .then(function(d){
-          if (d.ok && d.url) { window.open(d.url, '_blank', 'noopener'); }
-          else { alert('Replay unavailable: ' + (d.error || 'no snapshots found')); }
-        })
-        .catch(function(e){ alert('Replay error: ' + e.message); })
-        .finally(function(){ btn.disabled = false; btn.innerHTML = orig; });
-    })(this)"
-    style="padding:4px 8px;background:transparent;color:#374151;
-           border:none;border-left:1px solid #0d1117;cursor:pointer;
-           font-size:14px;line-height:1;flex-shrink:0;height:22px;
-           transition:color .15s"
-    onmouseover="this.style.color='#60a5fa'"
-    onmouseout="this.style.color='#374151'">&#127916;</button>
 </div>
 
 <!-- v4.0.0-beta / v5.3.0 / v5.14.0 — tab switcher (Main / Val / Gene / Lifecycle).
