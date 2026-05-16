@@ -4,6 +4,22 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.116 (2026-05-16) — Dashboard replay system + live staging improvements
+
+Full-day time-travel replay (scripts/replay_dashboard.py, gen_scenarios.py):
+session timeline bar with OR/ACTIVE/QUIET/EOD zones, event markers (entry/exit/kill),
+white scrubbing cursor tracking ET time. Chart overlays: stop (red), 1R (amber),
++2.5R target (green), current mark (blue) — bypasses TDZ bug in app.js line 1962.
+Auto-expanded inline charts for open positions; progress bar above chart; EOD
+positions with OR-anchored stops so progress bars render. Val tab now shows
+positions (field mapping fix). Day P&L sparkline. Proximity matrix sparklines.
+"Replay Day" button in staging header → POST /api/replay/today endpoint builds
+live-data replay from snapshots-live branch snapshots (falls back up to 7 trading
+days). Scan-paused banner: slate/soft styling for expected mid-day state, concise
+one-line text. ||| divider elements hidden off-hours. ORB + EOD sections fused into
+one card. Backtest baseline hidden globally. Startup notification updated: v10 ORB
+description instead of retired Tiger Sovereign; [STAGING] prefix for staging env.
+
 ## v9.1.115 (2026-05-16) — RTH state snapshot logging + time-travel dashboard replay
 
 Adds automated 5-min state capture during RTH and a self-contained dashboard
