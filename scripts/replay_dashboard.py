@@ -90,9 +90,18 @@ _HEAD_PATCH = """\
       s.v10 = Object.assign({}, s.v10);
       s.v10.activity = diff.v10_activity;
     }
-    if ('gates_scan_paused' in diff && s.gates) {
-      s.gates = Object.assign({}, s.gates);
-      s.gates.scan_paused = diff.gates_scan_paused;
+    /* Override ALL gates flags so no base-state leakage into replay.
+       scan_paused_user / trading_halted / scan_idle_hours from the midday
+       production fetch can bleed into early snapshots and show the kill
+       banner when no kill has actually occurred in the scenario. */
+    if (s.gates) {
+      var _scanPaused = (diff.gates_scan_paused != null) ? !!diff.gates_scan_paused : false;
+      s.gates = Object.assign({}, s.gates, {
+        scan_paused:       _scanPaused,
+        scan_paused_user:  _scanPaused,   /* mirrors scan state in scenario */
+        scan_idle_hours:   false,          /* always a live trading day */
+        trading_halted:    false,          /* legacy flag, not used in v10 */
+      });
     }
     /* Override v10.day_states so TRADES TODAY / top-ticker counts are correct
        for each scenario time point (the gauge reads day_states, not risk_books). */
@@ -1007,10 +1016,10 @@ def _bar_html(diffs: list[dict], start_idx: int) -> str:
     btn = ("background:#111827;color:#d1d5db;border:1px solid #374151;"
            "border-radius:5px;cursor:pointer;font:11px/1 inherit;padding:5px 11px;")
 
-    return f"""<div id="__tt_bar" style="position:fixed;top:0;left:0;right:0;z-index:2147483647;
+    return f"""<div id="__tt_bar" style="position:sticky;top:0;left:0;right:0;z-index:999;
 background:#070a0f;color:#d1d5db;
 font:11px/1 'JetBrains Mono',ui-monospace,monospace;
-border-bottom:1px solid #1a2535;box-shadow:0 4px 20px rgba(0,0,0,.98)">
+border-bottom:1px solid #1a2535;box-shadow:0 2px 12px rgba(0,0,0,.8)">
 
   <!-- Row 1: Controls + timestamp -->
   <div style="display:flex;align-items:center;gap:8px;padding:5px 10px 4px">
@@ -1029,11 +1038,12 @@ border-bottom:1px solid #1a2535;box-shadow:0 4px 20px rgba(0,0,0,.98)">
       <div style="position:absolute;inset:0">{zones_html}</div>
       <!-- Event markers + kill dots -->
       <div style="position:absolute;inset:0;overflow:hidden">{events_html}
-        <!-- Cursor: white vertical line tracking current time -->
+        <!-- Cursor: thick white bar, easy to grab/drag via the range input -->
         <div id="__tt_cursor" style="position:absolute;top:0;bottom:0;
-          left:{init_pct:.1f}%;width:2px;
-          background:rgba(255,255,255,0.9);
-          box-shadow:0 0 8px rgba(255,255,255,0.6);
+          left:{init_pct:.1f}%;width:4px;
+          background:rgba(255,255,255,0.95);
+          box-shadow:0 0 10px rgba(255,255,255,0.7),0 0 3px rgba(255,255,255,1);
+          border-radius:2px;
           z-index:13;transform:translateX(-50%);pointer-events:none"></div>
       </div>
       <!-- Invisible range input overlaid for drag interaction -->
@@ -1100,7 +1110,8 @@ def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
 
     # Suppress reconnect banner via CSS
     replay_css = """<style id='__tt_css'>
-body{margin-top:90px!important}
+/* Replay bar is sticky in-page, no body top-margin needed */
+#tg-replay-btn{display:none!important}  /* hide Replay Day btn in replay mode */
 /* Hide static backtest baseline — no live data in replay */
 #v10-baseline{display:none!important}
 /* Hide empty ||| gauge placeholders in v10 ORB header */

@@ -3580,6 +3580,73 @@
     } catch (e) { /* parse / storage failure: render whatever came in */ }
   }
 
+  /* Session timeline bar — shows zone bands + real-time ET cursor.
+     Renders into #tg-stl-zones / #tg-stl-cursor / #tg-stl-events.
+     Called on every state poll; cursor moves to current ET time. */
+  function renderSessionBar(s) {
+    var track  = document.getElementById("tg-stl-track");
+    var zones  = document.getElementById("tg-stl-zones");
+    var events = document.getElementById("tg-stl-events");
+    var cursor = document.getElementById("tg-stl-cursor");
+    if (!track || !zones) return;
+
+    var START = 570, SPAN = 390; /* 9:30=570 .. 16:00=960 */
+    function pct(etMin) { return Math.max(0, Math.min(100, (etMin - START) / SPAN * 100)); }
+
+    /* Draw zones once (idempotent via innerHTML guard) */
+    if (!zones.__drawn) {
+      zones.__drawn = true;
+      var ZONE_DEF = [
+        [570, 600, "rgba(120,53,15,0.65)",  "OR"],
+        [600, 660, "rgba(6,78,59,0.65)",    "ACTIVE"],
+        [660, 900, "rgba(15,23,42,0.4)",    ""],
+        [900, 960, "rgba(76,29,149,0.65)",  "EOD"],
+      ];
+      var zh = "";
+      ZONE_DEF.forEach(function(z) {
+        var l = pct(z[0]), w = pct(z[1]) - l;
+        zh += '<div style="position:absolute;top:0;bottom:0;left:' + l.toFixed(1) + '%;width:' + w.toFixed(1) + '%;'
+            + 'background:' + z[2] + ';pointer-events:none;display:flex;align-items:center;'
+            + 'justify-content:flex-end;padding-right:4px">'
+            + (z[3] ? '<span style="font-size:7px;font-weight:700;color:rgba(255,255,255,0.4);'
+              + 'letter-spacing:.5px">' + z[3] + '</span>' : '')
+            + '</div>';
+      });
+      /* Boundary ticks */
+      [600, 660, 900].forEach(function(m) {
+        zh += '<div style="position:absolute;top:0;bottom:0;left:' + pct(m).toFixed(1) + '%;'
+            + 'width:1px;background:rgba(255,255,255,0.08);pointer-events:none"></div>';
+      });
+      zones.innerHTML = zh;
+    }
+
+    /* Move cursor to current ET time derived from server_time_label */
+    if (cursor) {
+      var nowMin = null;
+      /* Try server_time_label: "Fri May 16 | 10:26:00 ET" */
+      var stl = (s && s.server_time_label) || "";
+      var tm = stl.match(/([0-9]{2}):([0-9]{2}):[0-9]{2}/);
+      if (tm) nowMin = parseInt(tm[1], 10) * 60 + parseInt(tm[2], 10);
+      /* Fallback: real wall clock */
+      if (nowMin === null) {
+        try {
+          var now = new Date();
+          var etParts = new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York", hour12: false,
+            hour: "2-digit", minute: "2-digit"
+          }).formatToParts(now);
+          var hh = 0, mm2 = 0;
+          etParts.forEach(function(p) {
+            if (p.type === "hour")   hh  = parseInt(p.value, 10);
+            if (p.type === "minute") mm2 = parseInt(p.value, 10);
+          });
+          nowMin = hh * 60 + mm2;
+        } catch (_e) { nowMin = 630; }
+      }
+      cursor.style.left = pct(nowMin).toFixed(1) + "%";
+    }
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
@@ -3594,6 +3661,7 @@
     } catch (e) {}
     const sl = paperSlice(s);
     renderHeader(s);
+    renderSessionBar(s);
     renderKPIs(s, sl);
     renderPositions(s, sl);
     renderTrades(s, sl);
