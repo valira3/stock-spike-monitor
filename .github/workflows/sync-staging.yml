@@ -1,0 +1,117 @@
+name: Sync staging with main
+
+# Fires on every push to main (including hotfixes and regular promotions).
+# Keeps staging from drifting behind main.
+#
+# Logic:
+#   1. Try git merge --ff-only main into staging (works when staging has no WIP).
+#   2. If staging has diverged, cherry-pick just the new main commits onto staging.
+#   3. If cherry-pick conflicts, open a PR so the operator resolves manually.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "valira3"
+          git config user.email "valira3@gmail.com"
+
+      - name: Try fast-forward merge
+        id: ff
+        run: |
+          git checkout staging
+          git fetch origin main
+          if git merge --ff-only origin/main 2>/dev/null; then
+            echo "result=fast-forwarded" >> $GITHUB_OUTPUT
+            git push origin staging
+            echo "Staging fast-forwarded to match main."
+          else
+            echo "result=diverged" >> $GITHUB_OUTPUT
+            echo "Staging has diverged from main -- will cherry-pick new commits."
+          fi
+
+      - name: Cherry-pick new main commits onto staging
+        id: cherrypick
+        if: steps.ff.outputs.result == 'diverged'
+        run: |
+          # Find commits on main since staging diverged
+          MERGE_BASE=$(git merge-base origin/main staging)
+          NEW_COMMITS=$(git log --oneline $MERGE_BASE..origin/main --reverse | awk '{print $1}')
+          echo "New commits to backport: $NEW_COMMITS"
+
+          if [ -z "$NEW_COMMITS" ]; then
+            echo "result=up-to-date" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          FAILED=""
+          for SHA in $NEW_COMMITS; do
+            if git cherry-pick $SHA --no-commit 2>/dev/null; then
+              git commit --no-edit || true
+            else
+              git cherry-pick --abort 2>/dev/null || true
+              FAILED="$FAILED $SHA"
+            fi
+          done
+
+          if [ -z "$FAILED" ]; then
+            git push origin staging
+            echo "result=cherry-picked" >> $GITHUB_OUTPUT
+            echo "Cherry-picked $NEW_COMMITS onto staging."
+          else
+            echo "result=conflict" >> $GITHUB_OUTPUT
+            echo "FAILED_SHAS=$FAILED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Open PR for manual resolution if conflict
+        if: steps.cherrypick.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FAILED="${{ steps.cherrypick.outputs.FAILED_SHAS }}"
+          gh pr create \
+            --base staging \
+            --head main \
+            --title "sync: backport main hotfix to staging (conflict)" \
+            --body "$(cat <<EOF
+          ## Staging sync required
+
+          A hotfix landed on \`main\` that could not be automatically cherry-picked onto \`staging\` due to a conflict.
+
+          **Failed commits:** $FAILED
+
+          **Action required:** Resolve the merge conflict and merge this PR to keep staging in sync.
+
+          This prevents staging from drifting and ensures the next staging→main promotion includes the hotfix.
+          EOF
+          )" 2>/dev/null || echo "PR already exists or branch is ahead"
+
+      - name: Summary
+        run: |
+          FF="${{ steps.ff.outputs.result }}"
+          CP="${{ steps.cherrypick.outputs.result }}"
+          if [ "$FF" = "fast-forwarded" ]; then
+            echo "✅ Staging fast-forwarded to match main." >> $GITHUB_STEP_SUMMARY
+          elif [ "$CP" = "cherry-picked" ]; then
+            echo "✅ Hotfix cherry-picked onto staging." >> $GITHUB_STEP_SUMMARY
+          elif [ "$CP" = "conflict" ]; then
+            echo "⚠️ Conflict detected — PR opened for manual resolution." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ Staging already up to date." >> $GITHUB_STEP_SUMMARY
+          fi
