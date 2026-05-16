@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.115 (2026-05-16) — RTH state snapshot logging + time-travel dashboard replay
+
+Adds automated 5-min state capture during RTH and a self-contained dashboard
+replay tool for forensic review of any past trading session.
+
+- `scripts/snapshot_state.py` -- lightweight capturer: login + fetch /api/state,
+  /api/executor/val, /api/executor/gene, /api/trade_log; appends one JSON line to
+  data/snapshots/YYYY-MM-DD.jsonl. Stdlib only, no external deps.
+- `.github/workflows/state-snapshot.yml` -- GHA cron every 5 min Mon-Fri
+  13:25-21:05 UTC (9:25am-5:05pm ET). Checks out snapshots-live branch, calls
+  snapshot_state.py, commits. Uses existing DASHBOARD_PASSWORD secret.
+- `scripts/replay_dashboard.py` -- builds a self-contained offline HTML from
+  captured snapshots (or live API fallback), uploads to R2, returns a 1-hour
+  shareable URL. --share flag: `python scripts/replay_dashboard.py --share --env prod`.
+  Time-travel bar with colored dots (amber=entry, green=win, red=loss) + prev/next
+  + keyboard arrows. Patches window.fetch + EventSource in <head> before app.js.
+  Base+diff architecture keeps file size ~540KB vs 1.2MB naive approach.
+- `scripts/promote_staging.py` -- staging->main promotion pre-flight: branch check,
+  commits-ahead check, RTH gate, local CI, gh auth. --merge flag waits for CI
+  then squash-merges.
+
 ## v9.1.114 (2026-05-15) — Keystone v5: VWAP gate 25->15bps, VIX ceiling 22->25
 
 85-variant 5-wave sweep found two ORB lever improvements. All other parameters tested (RR, ATR stop, cooldown, time cutoff, OR window, SPY gate, max trades, risk %) were at or near optimum.
