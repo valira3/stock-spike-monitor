@@ -59,8 +59,11 @@ _ALERT_DEDUP_SECS = 1800  # 30 minutes
 _last_alerted: dict[tuple[str, str], float] = {}
 
 _REPO_ROOT = Path(__file__).parent.parent
-ENV_FILE = _REPO_ROOT / ".env.monitor"
-MONITOR_DIR = _REPO_ROOT / "data" / "monitor"
+# MONITOR_ENV=staging loads .env.monitor.staging instead of .env.monitor.
+# Use this when monitoring the staging Railway environment.
+_MONITOR_ENV = os.environ.get("MONITOR_ENV", "").strip().lower()
+ENV_FILE = _REPO_ROOT / (f".env.monitor.{_MONITOR_ENV}" if _MONITOR_ENV else ".env.monitor")
+MONITOR_DIR = _REPO_ROOT / "data" / ("monitor-staging" if _MONITOR_ENV == "staging" else "monitor")
 
 # Railway log monitoring state
 _railway_dep_id: str | None = None

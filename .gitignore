@@ -4,6 +4,7 @@ results/
 CODE_REVIEW.md
 .env
 .env.monitor
+.env.monitor.*
 
 *.log
 dashboard_secret.key
