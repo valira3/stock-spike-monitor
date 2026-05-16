@@ -227,7 +227,7 @@ def build_today_replay(date: str | None = None) -> tuple[str | None, str | None]
     body = html.encode("utf-8")
     key  = f"replay/live_{actual_date}.html"
 
-    print(f"  Uploading ({len(body)//1024} KB) → {key}...")
+    print(f"  Uploading ({len(body)//1024} KB) -> {key}...")
     rd.upload_r2(body, key)
     url = rd.presigned(key, expires=28800)
     print(f"  Done.")
