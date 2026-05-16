@@ -486,14 +486,22 @@ _NAV_SCRIPT = """\
     /* sync range input */
     var rng = document.getElementById('__tt_range');
     if (rng) rng.value = idx;
-    /* update timestamp label */
+    /* update timestamp label — show "May 15 · HH:MM ET" */
     var d   = DIFFS[idx] || {};
     var raw = d.ts_et || '';
-    /* extract HH:MM from "2026-05-15T10:26:00 ET" */
     var tm  = raw.match(/T([0-9]{2}:[0-9]{2})/);
-    var lbl = tm ? tm[1] + ' ET' : raw;
+    var timePart = tm ? tm[1] + ' ET' : raw;
+    /* Extract date for label */
+    var dateLabel = '';
+    var dm = raw.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})/);
+    if (dm) {
+      var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      dateLabel = MONTHS[parseInt(dm[2],10)-1] + ' ' + parseInt(dm[3],10) + ' · ';
+    }
     var tsEl = document.getElementById('__tt_ts');
-    if (tsEl) tsEl.textContent = lbl;
+    if (tsEl) {
+      tsEl.innerHTML = '<span style="color:#4b5563;font-size:11px;font-weight:400">' + dateLabel + '</span>' + timePart;
+    }
     /* update counter */
     var cntEl = document.getElementById('__tt_cnt');
     if (cntEl) cntEl.textContent = (idx+1)+' / '+DIFFS.length;
@@ -511,6 +519,22 @@ _NAV_SCRIPT = """\
       cursor2.style.left = _pct2.toFixed(1) + '%';
     }
     if (!skipRefresh) refresh();
+    /* Simplify verbose scan-paused banner to a short one-liner */
+    setTimeout(function() {
+      var b = document.getElementById('banner');
+      if (!b || b.classList.contains('hide')) return;
+      /* Replace the inner HTML with a compact version */
+      var inner = b.innerHTML || '';
+      if (inner.indexOf('SCAN PAUSED') >= 0 || inner.indexOf('KILL') >= 0 ||
+          inner.indexOf('scan_paused') >= 0) {
+        var kill = inner.indexOf('kill') >= 0 || inner.indexOf('KILL') >= 0;
+        b.innerHTML = '<div style="padding:6px 16px;font-size:11px;color:#64748b;display:flex;align-items:center;gap:8px">'
+          + '<span style="font-size:13px">&#9646;</span>'          /* ▐ pause glyph */
+          + (kill ? '<span>Scanner paused &mdash; daily-loss limit reached &middot; existing positions still managed</span>'
+                  : '<span>Scanner paused &mdash; outside trading window</span>')
+          + '</div>';
+      }
+    }, 750);
     /* Auto-show charts for all open positions after render settles */
     setTimeout(_autoExpandCharts, 600);
     /* Inject mini sparklines into OR Proximity matrix rows */
@@ -1086,6 +1110,23 @@ body{margin-top:90px!important}
 /* Remove redundant "main" portfolio badge from trade/position rows on Main tab */
 .trade-row td[data-col="portfolio"] span,
 tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
+/* Scan-paused / kill banner: muted in replay — expected mid-day, not a crisis.
+   Replace red with subtle slate so the operator eye isn't drawn to a false alarm. */
+#banner:not(.hide){
+  background:rgba(17,24,39,0.55)!important;
+  border:1px solid #1e293b!important;
+  box-shadow:none!important;
+}
+#banner:not(.hide) *{color:#64748b!important;}
+#banner:not(.hide) strong,
+#banner:not(.hide) b{color:#94a3b8!important;font-weight:600!important;}
+#banner:not(.hide) .banner-pill,
+#banner:not(.hide) [style*="#ef4444"],
+#banner:not(.hide) [style*="#dc2626"]{
+  background:#1e293b!important;color:#94a3b8!important;
+  border-color:#334155!important;}
+/* Remove error health pill — not used */
+#tg-health-pill,#tg-health-pop{display:none!important}
 </style>\n"""
 
     # Data + patch script goes in <head> BEFORE anything else

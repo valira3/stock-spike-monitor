@@ -178,29 +178,60 @@ def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
 # Build + upload
 # ---------------------------------------------------------------------------
 
-def build_today_replay(date: str | None = None) -> str | None:
-    """Build a replay from today's live snapshots. Returns presigned R2 URL."""
-    if not date:
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _is_trading_day(date_str: str) -> bool:
+    from datetime import date as _date
+    return _date.fromisoformat(date_str).weekday() < 5  # Mon-Fri
 
-    print(f"\nBuilding replay for {date}...")
-    snaps = fetch_snapshots(date)
+
+def find_most_recent_snapshots(start_date: str | None = None,
+                               max_lookback: int = 7
+                               ) -> tuple[str | None, list[dict]]:
+    """Find the most recent trading day with snapshot data.
+    Falls back up to max_lookback weekdays before start_date (or today)."""
+    from datetime import timedelta
+    base_dt = (datetime.fromisoformat(start_date) if start_date
+               else datetime.now(timezone.utc))
+
+    for i in range(max_lookback + 1):
+        candidate = base_dt.date() if i == 0 else (base_dt - timedelta(days=i)).date()
+        date_str = candidate.strftime("%Y-%m-%d")
+        if not _is_trading_day(date_str):
+            continue
+        snaps = fetch_snapshots(date_str)
+        if snaps:
+            return date_str, snaps
+        print(f"  {date_str}: no snapshots — looking earlier")
+
+    return None, []
+
+
+def build_today_replay(date: str | None = None) -> tuple[str | None, str | None]:
+    """Build a replay from the most recent available trading-day snapshots.
+
+    Returns (presigned_url, date_used) or (None, None) on failure.
+    Automatically falls back to the most recent weekday with snapshots.
+    """
+    print(f"\nLooking for replay data (start={date or 'today'})...")
+    actual_date, snaps = find_most_recent_snapshots(date)
+
     if not snaps:
-        print("  Aborting — no snapshots")
-        return None
+        print("  No snapshots found in recent trading days")
+        return None, None
+
+    print(f"  Found {len(snaps)} snapshots for {actual_date}")
 
     diffs, base_state = snapshots_to_diffs(snaps)
-    print(f"  {len(diffs)} diffs, base from midday")
+    print(f"  {len(diffs)} diffs")
 
     html = rd.build_html(diffs, base_state, start_idx=0)
     body = html.encode("utf-8")
-    key  = f"replay/live_{date}.html"
+    key  = f"replay/live_{actual_date}.html"
 
     print(f"  Uploading ({len(body)//1024} KB) → {key}...")
     rd.upload_r2(body, key)
-    url = rd.presigned(key, expires=28800)  # 8-hour link
+    url = rd.presigned(key, expires=28800)
     print(f"  Done.")
-    return url
+    return url, actual_date
 
 
 # ---------------------------------------------------------------------------
@@ -209,18 +240,17 @@ def build_today_replay(date: str | None = None) -> str | None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build live-data replay for a trading day")
-    parser.add_argument("--date", default=None, help="YYYY-MM-DD (default: today)")
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD (default: most recent trading day with data)")
     parser.add_argument("--local", action="store_true", help="Use local snapshot file only")
     args = parser.parse_args()
 
-    if args.local and args.date:
-        # Force local by blanking token
+    if args.local:
         os.environ["GITHUB_TOKEN"] = ""
 
-    url = build_today_replay(args.date)
+    url, actual_date = build_today_replay(args.date)
     if url:
         print(f"\n{'='*60}")
-        print(f"LIVE REPLAY URL (8 hours):")
+        print(f"LIVE REPLAY URL ({actual_date}, 8 hours):")
         print(f"{url}")
         print(f"{'='*60}")
     else:

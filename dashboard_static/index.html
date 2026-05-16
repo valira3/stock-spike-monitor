@@ -70,37 +70,35 @@
     <span style="color:#e7ecf3">Live</span>
     <span id="h-tick" style="color:#e7ecf3;font-variant-numeric:tabular-nums" title="Seconds until next scan loop iteration" aria-label="next scan countdown">&mdash;</span>
   </span>
-  <!-- v4.11.0 — per-executor health pill. Tap to expand last 10 errors.
-       Bound to whichever tab is active (main/val/gene). -->
-  <button type="button" id="tg-health-pill" class="tg-health-pill h-green" aria-haspopup="true" aria-expanded="false" aria-label="Errors today" title="Errors today">
-    <span id="tg-health-dot" class="tg-health-dot"></span>
-    <span id="tg-health-count" class="tg-health-count">0</span>
-  </button>
-  <div id="tg-health-pop" class="tg-health-pop" role="dialog" aria-label="Recent errors" style="display:none">
-    <div class="tg-health-pop-head"><span id="tg-health-pop-title">Errors today</span><button type="button" id="tg-health-close" aria-label="Close">&times;</button></div>
-    <div id="tg-health-list" class="tg-health-list"><div class="tg-health-empty">No errors today.</div></div>
-  </div>
   <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
-  <!-- Replay Day button: builds a live-data replay from today's snapshots -->
+  <!-- Replay Day icon button — builds a scrubable replay from the most recent trading day's snapshots -->
   <button type="button" id="tg-replay-btn"
-    title="Build a time-travel replay of today's trading session"
-    onclick="(function(){
-      var btn = document.getElementById('tg-replay-btn');
-      btn.disabled = true; btn.textContent = '&#8987; Building…';
-      fetch('/api/replay/today', {method:'POST', headers:{'Content-Type':'application/json'},
+    title="Replay most recent trading day (time-travel scrubbing)"
+    onclick="(function(btn){
+      if (btn.disabled) return;
+      btn.disabled = true;
+      var orig = btn.innerHTML;
+      btn.innerHTML = '<span style=&quot;animation:spin 1s linear infinite;display:inline-block&quot;>&#8987;</span>';
+      fetch('/api/replay/today', {method:'POST',
+            headers:{'Content-Type':'application/json'},
             credentials:'include', body:'{}'})
-        .then(function(r){ return r.json(); })
+        .then(function(r){ return r.ok ? r.json() : {ok:false,error:'HTTP '+r.status}; })
         .then(function(d){
-          if (d.ok && d.url) { window.open(d.url, '_blank'); }
-          else { alert('Replay failed: ' + (d.error || 'unknown')); }
+          if (d.ok && d.url) {
+            window.open(d.url, '_blank', 'noopener');
+          } else {
+            alert('Replay unavailable: ' + (d.error || 'no snapshots found'));
+          }
         })
-        .catch(function(e){ alert('Error: ' + e); })
-        .finally(function(){ btn.disabled = false; btn.textContent = '🎬 Replay Day'; });
-    })()"
-    style="margin-left:4px;padding:4px 10px;background:#111827;color:#7dd3fc;
-           border:1px solid #1d4ed8;border-radius:6px;cursor:pointer;
-           font-size:10px;font-family:inherit;white-space:nowrap;
-           font-weight:600;letter-spacing:.3px">&#127916; Replay Day</button>
+        .catch(function(e){ alert('Replay error: ' + e.message); })
+        .finally(function(){ btn.disabled = false; btn.innerHTML = orig; });
+    })(this)"
+    style="padding:5px 7px;background:transparent;color:#374151;
+           border:1px solid #1f2937;border-radius:5px;cursor:pointer;
+           font-size:15px;line-height:1;transition:color .15s,border-color .15s"
+    onmouseover="this.style.color='#60a5fa';this.style.borderColor='#1d4ed8'"
+    onmouseout="this.style.color='#374151';this.style.borderColor='#1f2937'">&#127916;</button>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 </div>
 
 <!-- v4.0.0-beta / v5.3.0 / v5.14.0 — tab switcher (Main / Val / Gene / Lifecycle).

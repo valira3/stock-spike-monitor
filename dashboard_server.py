@@ -3097,9 +3097,9 @@ async def h_replay_today(request):
             from scripts.replay_today import build_today_replay
             return build_today_replay(date)
 
-        url = await loop.run_in_executor(None, _build)
+        url, actual_date = await loop.run_in_executor(None, _build)
         if url:
-            return web.json_response({"ok": True, "url": url})
+            return web.json_response({"ok": True, "url": url, "date": actual_date})
         else:
             return web.json_response({"ok": False, "error": "No snapshots found"}, status=404)
     except Exception as e:
