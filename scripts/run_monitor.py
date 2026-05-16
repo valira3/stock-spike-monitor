@@ -324,7 +324,7 @@ def main() -> None:
         sys.exit(_run_once())
 
     logger.info(
-        "Monitor loop started \u2014 RTH=5min pre-market=15min off-hours=60min window=%s",
+        "Monitor loop started \u2014 RTH=5min pre-market=15min off-hours=60min (checks every hour) window=%s",
         "24/7" if args.always else "Mon-Fri %02d:00-%02d:00 ET" % (PRE_MARKET_START, RTH_END),
     )
 
@@ -334,13 +334,18 @@ def main() -> None:
 
             if phase == "offhours":
                 secs = _seconds_until_next_window()
+                sleep_secs = min(secs, OFF_HOURS_INTERVAL)
                 eta = datetime.fromtimestamp(time.time() + secs, ET)
                 logger.info(
-                    "Off-hours \u2014 sleeping until %s ET (%.0f min)",
-                    eta.strftime("%a %H:%M"),
-                    secs / 60,
+                    "=== tick %s ET [off-hours] ===", datetime.now(ET).strftime("%H:%M:%S")
                 )
-                time.sleep(min(secs, OFF_HOURS_INTERVAL))
+                _run_once()
+                logger.info(
+                    "Off-hours \u2014 sleeping %d min (next window %s ET)",
+                    sleep_secs // 60,
+                    eta.strftime("%a %H:%M"),
+                )
+                time.sleep(sleep_secs)
                 continue
 
             interval = RTH_INTERVAL if phase == "rth" else PRE_MARKET_INTERVAL
