@@ -1,0 +1,25 @@
+# Enforce LF line endings for all text files on checkout and commit.
+# Anyone editing on Windows still gets LF in the repo.
+* text=auto eol=lf
+
+# Binary file types — never normalize line endings, never diff as text.
+*.parquet binary
+*.pkl     binary
+*.db      binary
+*.sqlite  binary
+*.pdf     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
+*.eot     binary
+*.zip     binary
+*.gz      binary
+*.tar     binary
+*.whl     binary
+*.so      binary
+*.pyc     binary
