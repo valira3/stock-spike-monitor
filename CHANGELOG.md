@@ -4,6 +4,79 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.120 (2026-05-17) — patch alpaca-py to stop ghost-slot SIP lockout
+
+The v9.1.119 startup delay reduced the post-redeploy WS-error volume, but
+the bot stayed `ws_state=CONNECTING` with `bars_today=0` indefinitely on
+production. Deep investigation traced this to an unfixed bug in alpaca-py
+0.43.x (incl. the latest 0.43.4) -- `DataStream._run_forever`, when
+`_auth` raises a `ValueError` whose message is anything other than
+"insufficient subscription", logs the error but does NOT call `close()`
+on the half-open socket and does NOT back off. The finally clause yields
+to the event loop with `await asyncio.sleep(0)` (no delay), so the next
+iteration immediately re-opens a fresh WebSocket via `_start_ws()`.
+
+Per Alpaca support (forum thread 10896), the server holds half-open SIP
+sessions for 90 seconds before releasing the per-key slot. The SDK's
+tight retry generates hundreds of ghost slots per second, which
+permanently locks the account out of the SIP feed -- the bot can never
+recover even though credentials are valid and Algo Trader Plus is
+active. This explained why prod `/api/state.ingest_status` showed
+`bars_today: 0, ws_state: "CONNECTING"` even 30+ min after a deploy.
+
+- `ingest/algo_plus.py:_patch_alpaca_connection_limit_bug` -- monkey-patch
+  applied at module-import time. Wraps `DataStream._auth` so that when
+  it raises with "connection limit exceeded", we (a) `await self.close()`
+  on the half-open socket so no fresh ghost slot is added on top of
+  whatever's already there, and (b) `await asyncio.sleep(100)` (>
+  Alpaca's 90s expiry) before re-raising. The SDK's outer `_run_forever`
+  still re-attempts, but at ~100s spacing -- enough for prior ghost
+  slots to expire naturally so a subsequent attempt actually wins the
+  slot.
+- Idempotent (sets `DataStream._tg_auth_patched = True`).
+- No-op if `alpaca` package is not importable (e.g. tests, REST_ONLY
+  fallback path).
+- Emits `[INGEST] applied alpaca-py connection-limit patch` on patch
+  application; `[INGEST] alpaca SIP slot busy ... sleeping 100s for
+  ghost-slot expiry` on each contention event.
+
+## v9.1.119 (2026-05-17) — ingest startup delay eliminates Alpaca WS reconnect storm
+
+Adds a Railway-only startup delay before `ingest_loop` opens its first Alpaca
+SIP WebSocket, so the previous container's per-account slot has time to be
+reaped. Without this, every redeploy fired a 3-traceback burst (alpaca-py's
+internal `_run_forever -> _start_ws -> _auth` retry loop) that tripped the
+`railway_logs_clean` monitor invariant and Telegram-alerted on every push.
+
+- `ingest/algo_plus.py:ingest_loop` -- sleeps `INGEST_STARTUP_DELAY_S` seconds
+  (default 20 on Railway, 0 elsewhere) before the first WS connect. Detection
+  via `RAILWAY_SERVICE_ID` env. Env var lets the operator tune or disable.
+- Logs `[INGEST] startup delay <N>s before first WS connect` so the wait is
+  observable in Railway logs.
+- No effect on local runs or tests (default 0 outside Railway -- 25/25 ingest
+  unit tests still pass in 0.11s).
+
+Root cause: Railway's `drainingSeconds`/`overlapSeconds` are unset on this
+service, so a new container can start before the old one's Alpaca slot is
+released. The ingest delay is the application-side workaround. A
+belt-and-suspenders Railway-side drain config change is being applied
+separately (operator action, no code).
+
+Bundled test-isolation fix:
+
+- `tests/strategy/conftest.py` -- new autouse fixture
+  `_strategy_isolate_orb_persistence` patches
+  `orb.persistence._default_path_template` to a per-test tmp dir. Without
+  this, `engine.scan.persist_engine_state` from `test_orb_entry_route.py`
+  (and any other test that exercises the scan path) wrote
+  `orb_state_2026-01-02.json` to the repo root. Later tests then ran
+  `live_runtime.ensure_session_started -> _try_rehydrate_engine_state` and
+  the stale file overlaid the fresh fixture's equity, silently failing
+  `test_bootstrap_compounding_default_on`,
+  `test_bootstrap_then_session_then_feed`, and
+  `test_three_portfolios_independent`. Function-patch (not env var)
+  because per-file `isolated_env` fixtures iterate `os.environ` and wipe
+  every `ORB_*` key, which would have nuked an env-var-based override.
 ## v9.1.118 (2026-05-17) — Replay parity: Val/Gene tabs get the same scrubber decorations as Main
 
 The replay nav script targeted three Main-only ID selectors, so operators on the

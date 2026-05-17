@@ -42,11 +42,77 @@ from typing import Optional, Tuple
 # stays operational even on stripped-down images.
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
+
     _ET_TZ = _ZoneInfo("America/New_York")
 except Exception:  # pragma: no cover - defensive
     _ET_TZ = None
 
 logger = logging.getLogger("ingest.algo_plus")
+
+
+# ---------------------------------------------------------------------------
+# v9.1.120 -- alpaca-py connection-limit patch
+# ---------------------------------------------------------------------------
+def _patch_alpaca_connection_limit_bug() -> None:
+    """Monkey-patch alpaca-py DataStream._auth to handle 'connection
+    limit exceeded' gracefully.
+
+    Bug: alpaca-py 0.43.x (including the latest 0.43.4) has an unfixed
+    bug in DataStream._run_forever. When _auth raises a ValueError with
+    any message OTHER than 'insufficient subscription', the except branch
+    only logs the error -- it does NOT call close() on the half-open
+    socket and does NOT sleep. The finally clause's `await
+    asyncio.sleep(0)` yields without delay, so the next iteration
+    immediately re-opens a fresh WebSocket via _start_ws().
+
+    Why this matters: per Alpaca support (forum thread 10896), the server
+    holds half-open SIP sessions for 90 seconds before releasing the
+    per-key slot. The SDK's tight retry creates hundreds of ghost slots
+    per second, which permanently locks the account out of the SIP feed
+    -- the bot stays in ws_state=CONNECTING with bars_today=0 forever
+    even though the credentials are valid and Algo Trader Plus is active.
+
+    Fix: wrap _auth so that when it raises with 'connection limit
+    exceeded', we (a) close the half-open socket so no fresh ghost slot
+    is added on top of whatever's already there, and (b) sleep 100s
+    (> Alpaca's 90s expiry window) before re-raising. The SDK's outer
+    loop still re-attempts, but at ~100s spacing, which lets prior ghost
+    slots expire naturally.
+    """
+    try:
+        from alpaca.data.live.websocket import DataStream
+    except ImportError:
+        return  # SDK not installed; ingest falls through to REST_ONLY
+    if getattr(DataStream, "_tg_auth_patched", False):
+        return  # idempotent
+
+    _orig_auth = DataStream._auth
+
+    async def _patched_auth(self):
+        try:
+            await _orig_auth(self)
+        except ValueError as ve:
+            if "connection limit exceeded" in str(ve):
+                try:
+                    await self.close()
+                except Exception:
+                    pass
+                import asyncio as _asyncio
+
+                logger.warning(
+                    "[INGEST] alpaca SIP slot busy (connection limit "
+                    "exceeded) -- sleeping 100s for ghost-slot expiry"
+                )
+                await _asyncio.sleep(100)
+            raise
+
+    DataStream._auth = _patched_auth
+    DataStream._tg_auth_patched = True
+    logger.info("[INGEST] applied alpaca-py connection-limit patch")
+
+
+_patch_alpaca_connection_limit_bug()
+
 
 # ---------------------------------------------------------------------------
 # Backoff schedule (seconds)
@@ -59,6 +125,7 @@ GAP_THRESHOLD_MINUTES = 3  # gaps of >= 3 consecutive missing 1-min bars trigger
 # ---------------------------------------------------------------------------
 # v6.14.0 \u2014 et_bucket helper
 # ---------------------------------------------------------------------------
+
 
 def _compute_et_bucket(ts) -> Optional[str]:
     """Return the extended-session minute bucket for a bar timestamp as 'HHMM' (ET).
@@ -177,6 +244,7 @@ def get_health() -> ConnectionHealth:
 # Credential resolution (P-1 / M-1)
 # ---------------------------------------------------------------------------
 
+
 def _resolve_alpaca_creds() -> Tuple[Optional[str], Optional[str]]:
     """Resolve Alpaca API credentials for the ingest worker.
 
@@ -210,6 +278,7 @@ def _resolve_alpaca_creds() -> Tuple[Optional[str], Optional[str]]:
 # ---------------------------------------------------------------------------
 # BarAssembler
 # ---------------------------------------------------------------------------
+
 
 class BarAssembler:
     """Validates incoming bar data, fills optional fields, writes to archive.
@@ -252,6 +321,7 @@ class BarAssembler:
 
         try:
             import bar_archive as _ba
+
             _ba.write_bar(ticker, bar)
             _health.record_bar()
             return True
@@ -263,6 +333,7 @@ class BarAssembler:
 # ---------------------------------------------------------------------------
 # GapDetector
 # ---------------------------------------------------------------------------
+
 
 def _bar_data_dir(date_str: str) -> str:
     """Return the path to today's bar directory."""
@@ -381,6 +452,7 @@ class GapDetector:
 # ---------------------------------------------------------------------------
 # RestBackfillWorker
 # ---------------------------------------------------------------------------
+
 
 class RestBackfillWorker:
     """Background thread that dequeues (ticker, start_ts, end_ts) gap tuples
@@ -510,6 +582,7 @@ class RestBackfillWorker:
                     "feed_source": "sip",
                 }
                 import bar_archive as _ba
+
                 _ba.write_bar(ticker, bar_dict)
                 existing_ts.add(ts_str)
                 written += 1
@@ -517,14 +590,19 @@ class RestBackfillWorker:
                 logger.debug("[INGEST] backfill write error for %s: %s", ticker, e)
 
         if written:
-            logger.info("[INGEST] backfilled %d bars for %s (%s -> %s)",
-                        written, ticker,
-                        start_ts.isoformat(), end_ts.isoformat())
+            logger.info(
+                "[INGEST] backfilled %d bars for %s (%s -> %s)",
+                written,
+                ticker,
+                start_ts.isoformat(),
+                end_ts.isoformat(),
+            )
 
         # v6.6.0 Pillar B: record backfill completion + inline verification (Decision A3)
         _elapsed_s = time.time() - _backfill_start
         try:
             from ingest.audit import AuditLog as _AL
+
             _AL.record_backfill_completed(
                 ticker=ticker,
                 gap_start=start_ts,
@@ -538,6 +616,7 @@ class RestBackfillWorker:
         # v6.6.0 Pillar A: record backfill latency for SLA
         try:
             from ingest.sla import record_backfill_completed as _sla_backfill
+
             _sla_backfill(ticker, start_ts, end_ts, written, _elapsed_s)
         except Exception:
             pass
@@ -557,6 +636,7 @@ def _verify_gap_closed(
         date_str = start_ts.astimezone(timezone.utc).strftime("%Y-%m-%d")
         existing_ts = _read_ts_set(ticker, date_str)
         from datetime import timedelta as _td
+
         expected_ts = set()
         cur = start_ts.astimezone(timezone.utc)
         end_utc = end_ts.astimezone(timezone.utc)
@@ -566,12 +646,16 @@ def _verify_gap_closed(
         gaps_remaining = len(expected_ts - existing_ts)
         status = "closed" if gaps_remaining == 0 else "missing"
         from ingest.audit import AuditLog as _AL
+
         _AL.record_verification(ticker=ticker, gap_start=start_ts, status=status)
         if status == "missing":
             logger.warning(
                 "[INGEST] gap verification MISSING for %s (%s -> %s): "
                 "%d minute(s) still absent after backfill",
-                ticker, start_ts.isoformat(), end_ts.isoformat(), gaps_remaining,
+                ticker,
+                start_ts.isoformat(),
+                end_ts.isoformat(),
+                gaps_remaining,
             )
     except Exception as e:
         logger.debug("[INGEST] _verify_gap_closed error for %s: %s", ticker, e)
@@ -598,6 +682,7 @@ def _update_ingest_stats(**kwargs: object) -> None:
     # v6.6.0 Pillar A: propagate stats to SLA collector (Decision A1)
     try:
         from ingest.sla import update_global_stats as _sla_update
+
         _sla_update(
             last_bar_age_s=_health.last_bar_age_s(),
             open_gaps_today=kwargs.get("open_gaps_today"),
@@ -628,6 +713,7 @@ class AlgoPlusIngest:
         """Return TICKERS from trade_genius if importable, else empty list."""
         try:
             import trade_genius as _tg
+
             return list(getattr(_tg, "TICKERS", []) or [])
         except Exception:
             return []
@@ -642,6 +728,7 @@ class AlgoPlusIngest:
         # v6.5.0 \u2014 register module-level singleton so gap_detect_task()
         # in trade_genius.py can find the active backfill worker queue.
         import sys as _sys
+
         _mod = _sys.modules.get(__name__)
         if _mod is not None:
             setattr(_mod, "_current_ingest", self)
@@ -659,6 +746,7 @@ class AlgoPlusIngest:
             self._stream = None
         # v6.5.0 \u2014 clear singleton on stop.
         import sys as _sys
+
         _mod = _sys.modules.get(__name__)
         if _mod is not None and getattr(_mod, "_current_ingest", None) is self:
             setattr(_mod, "_current_ingest", None)
@@ -745,6 +833,7 @@ class AlgoPlusIngest:
 # ingest_loop (daemon target)
 # ---------------------------------------------------------------------------
 
+
 def ingest_loop() -> None:
     """Long-running daemon target. Boots ingest; re-connects on failure.
 
@@ -758,6 +847,23 @@ def ingest_loop() -> None:
         # [INGEST SHADOW DISABLED] already logged in _resolve_alpaca_creds
         _update_ingest_stats(status="unconfigured", ws_state=CONNECTING)
         return  # do not start the ingest loop at all
+
+    # v9.1.119 -- on Railway, hold back the first WS connect by
+    # INGEST_STARTUP_DELAY_S sec so the previous container's Alpaca SIP
+    # slot has time to be reaped. Without this, the new container's auth
+    # races the old one and gets rejected with "connection limit exceeded",
+    # triggering an alpaca-py internal retry burst (3 tracebacks in 60ms)
+    # that trips the railway_logs_clean monitor invariant. 20s covers the
+    # Alpaca-side socket-eviction window observed in practice. Default 0
+    # outside Railway keeps tests/local runs fast.
+    _railway = bool((os.environ.get("RAILWAY_SERVICE_ID") or "").strip())
+    try:
+        _delay = float(os.environ.get("INGEST_STARTUP_DELAY_S", "20" if _railway else "0"))
+    except (TypeError, ValueError):
+        _delay = 20.0 if _railway else 0.0
+    if _delay > 0:
+        logger.info("[INGEST] startup delay %gs before first WS connect", _delay)
+        time.sleep(_delay)
 
     ingest = AlgoPlusIngest(key, secret)
     attempt = 0
@@ -786,6 +892,7 @@ def ingest_loop() -> None:
 # ---------------------------------------------------------------------------
 # _ingest_health_snapshot (P-6)
 # ---------------------------------------------------------------------------
+
 
 def _ingest_health_snapshot() -> dict:
     """Return the ingest_status dict for /api/state (P-6).
@@ -819,6 +926,7 @@ def _ingest_health_snapshot() -> dict:
     try:
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZI
+
         today = _dt.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
         snap["bars_today"] = _count_bars_today(today)
     except Exception:
@@ -827,6 +935,7 @@ def _ingest_health_snapshot() -> dict:
     # v6.6.0 Pillar A: embed ingest_health from SLA collector
     try:
         from ingest.sla import get_health_snapshot as _sla_snap
+
         snap["ingest_health"] = _sla_snap()
     except Exception:
         snap["ingest_health"] = {"global": {"color": "green"}, "gate_mode": "dry_run"}
@@ -834,12 +943,14 @@ def _ingest_health_snapshot() -> dict:
     # v6.6.0 Pillar B: embed gap_audit summary
     try:
         from ingest.audit import AuditLog as _AL
+
         snap["gap_audit"] = _AL.daily_summary()
     except Exception:
         snap["gap_audit"] = {}
 
     # v6.6.0 Pillar C: embed gate override state
     import os as _os
+
     snap["gate_override_active"] = (
         _os.environ.get("SSM_INGEST_GATE_DISABLED") == "1"
         or _os.environ.get("SSM_INGEST_GATE_MODE", "dry_run") == "off"
