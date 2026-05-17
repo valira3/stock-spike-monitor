@@ -49,6 +49,71 @@ except Exception:  # pragma: no cover - defensive
 
 logger = logging.getLogger("ingest.algo_plus")
 
+
+# ---------------------------------------------------------------------------
+# v9.1.120 -- alpaca-py connection-limit patch
+# ---------------------------------------------------------------------------
+def _patch_alpaca_connection_limit_bug() -> None:
+    """Monkey-patch alpaca-py DataStream._auth to handle 'connection
+    limit exceeded' gracefully.
+
+    Bug: alpaca-py 0.43.x (including the latest 0.43.4) has an unfixed
+    bug in DataStream._run_forever. When _auth raises a ValueError with
+    any message OTHER than 'insufficient subscription', the except branch
+    only logs the error -- it does NOT call close() on the half-open
+    socket and does NOT sleep. The finally clause's `await
+    asyncio.sleep(0)` yields without delay, so the next iteration
+    immediately re-opens a fresh WebSocket via _start_ws().
+
+    Why this matters: per Alpaca support (forum thread 10896), the server
+    holds half-open SIP sessions for 90 seconds before releasing the
+    per-key slot. The SDK's tight retry creates hundreds of ghost slots
+    per second, which permanently locks the account out of the SIP feed
+    -- the bot stays in ws_state=CONNECTING with bars_today=0 forever
+    even though the credentials are valid and Algo Trader Plus is active.
+
+    Fix: wrap _auth so that when it raises with 'connection limit
+    exceeded', we (a) close the half-open socket so no fresh ghost slot
+    is added on top of whatever's already there, and (b) sleep 100s
+    (> Alpaca's 90s expiry window) before re-raising. The SDK's outer
+    loop still re-attempts, but at ~100s spacing, which lets prior ghost
+    slots expire naturally.
+    """
+    try:
+        from alpaca.data.live.websocket import DataStream
+    except ImportError:
+        return  # SDK not installed; ingest falls through to REST_ONLY
+    if getattr(DataStream, "_tg_auth_patched", False):
+        return  # idempotent
+
+    _orig_auth = DataStream._auth
+
+    async def _patched_auth(self):
+        try:
+            await _orig_auth(self)
+        except ValueError as ve:
+            if "connection limit exceeded" in str(ve):
+                try:
+                    await self.close()
+                except Exception:
+                    pass
+                import asyncio as _asyncio
+
+                logger.warning(
+                    "[INGEST] alpaca SIP slot busy (connection limit "
+                    "exceeded) -- sleeping 100s for ghost-slot expiry"
+                )
+                await _asyncio.sleep(100)
+            raise
+
+    DataStream._auth = _patched_auth
+    DataStream._tg_auth_patched = True
+    logger.info("[INGEST] applied alpaca-py connection-limit patch")
+
+
+_patch_alpaca_connection_limit_bug()
+
+
 # ---------------------------------------------------------------------------
 # Backoff schedule (seconds)
 # ---------------------------------------------------------------------------
