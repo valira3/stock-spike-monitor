@@ -511,6 +511,19 @@
     /* v8.3.18 -- Held cell label on mobile card layout. */
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before,
     [data-f="pos-body"] table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(11)::before { content: "HELD"; }
+    /* Main's renderPositions (v9.1.116 redesign) emits 6 cells, not 11:
+       colspan=4 Ticker block | Sh | Entry | Mark | Notional | Stop.
+       %change/unrealized/held are inside the Ticker block. The labels above
+       are written for the Val/Gene 11-cell layout, so for #pos-body we
+       override nth-child(2)..(6) to match the new structure. */
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(2) {
+      display: flex;
+    }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(2)::before { content: "SH"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(3)::before { content: "ENTRY"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(4)::before { content: "MARK"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(5)::before { content: "NOTIONAL"; }
+    #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(6)::before { content: "STOP"; }
     /* Unreal $ + % visually paired -- emphasize. */
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(9),
     #pos-body table tbody tr[data-pos-ticker]:not(.pos-progress-row) td:nth-child(10),
