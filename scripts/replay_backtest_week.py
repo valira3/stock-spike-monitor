@@ -6,16 +6,27 @@ algorithm would have traded the past trading week against real SIP bars,
 for both Main and Val portfolios. Date dropdown defaults to the most
 recent day; user can switch days and portfolios client-side.
 
+Morning trades come from `tools/orb_replay_day` (drives the LIVE v10
+runtime — orb.live_runtime — against archived 1-min bars). EOD trades
+come from `tools/afternoon_backtest.py` (r17 reversal at 15:00-15:58).
+
 Reads:
-    data/<DATE>/<TICKER>.jsonl                    -- 1-min RTH bars
-    results/week_replay/<portfolio>_morning/per_day/<DATE>.json
-    results/week_replay/<portfolio>_eod/per_day/<DATE>.json
+    data/<DATE>/<TICKER>.jsonl                                        -- 1-min RTH bars
+    results/week_replay_v2/<portfolio>_<DATE>.jsonl                   -- live-engine morning ledger
+    results/week_replay/<portfolio>_eod/per_day/<DATE>.json           -- r17 EOD trades
 
 Produces:
     replay_week.html  -- standalone, no server needed.
 
 Usage:
-    python tools/orb_backtest.py ...   # one per (portfolio, leg) -- run first
+    # 1. Run live-engine morning replays (per day, per portfolio):
+    #    env $ENV python3 -m tools.orb_replay_day --date YYYY-MM-DD \\
+    #        --base-dir data --tickers ... --equity {100000|30185} \\
+    #        --portfolio {main|val} --out results/week_replay_v2/<p>_<d>.jsonl
+    # 2. Run afternoon backtest for EOD trades:
+    #    env $AFT_ENV python3 tools/afternoon_backtest.py --strategy eod_reversal \\
+    #        --corpus data --out results/week_replay/<p>_eod --year-prefix 20
+    # 3. Generate HTML:
     python scripts/replay_backtest_week.py \\
         --out replay_week.html \\
         --dates 2026-05-11,2026-05-12,2026-05-13,2026-05-14,2026-05-15
@@ -78,41 +89,70 @@ def _load_bars(date_str: str) -> dict[str, list[dict]]:
 
 def _load_trades(date_str: str, portfolio: str) -> list[dict]:
     trades: list[dict] = []
-    for leg in ("morning", "eod"):
-        f = REPO / "results" / "week_replay" / f"{portfolio}_{leg}" / "per_day" / f"{date_str}.json"
-        if not f.exists():
-            continue
-        try:
-            d = json.loads(f.read_text())
-        except json.JSONDecodeError:
-            continue
-        for p in d.get("pnl_pairs", []):
-            # Morning schema uses entry_ts / exit_ts (ISO-8601).
-            # EOD schema uses entry_bucket / exit_bucket (minutes past midnight ET).
-            if "entry_ts" in p:
-                entry_min = _et_min(p["entry_ts"])
-                exit_min = _et_min(p["exit_ts"])
+    # ---- Morning: pair admit -> exit by ticket_id from orb_replay_day output ----
+    morning_f = REPO / "results" / "week_replay_v2" / f"{portfolio}_{date_str}.jsonl"
+    if morning_f.exists():
+        events = [json.loads(line) for line in morning_f.read_text().splitlines() if line.strip()]
+        # First pass: collect or_lock per ticker for OR bounds.
+        or_locks: dict[str, dict] = {}
+        admits_by_id: dict[str, dict] = {}
+        for e in events:
+            if e.get("kind") == "or_lock":
+                or_locks[e["ticker"]] = e
+            elif e.get("kind") == "admit":
+                admits_by_id[e["ticket_id"]] = e
+        # Second pass: emit trade pairs.
+        for e in events:
+            if e.get("kind") != "exit":
+                continue
+            adm = admits_by_id.get(e.get("ticket_id"))
+            if not adm:
+                continue
+            side = adm["side"]
+            entry_price = float(adm["price"])
+            exit_price = float(e.get("exit_price") or e.get("price") or 0)
+            shares = int(adm["shares"])
+            if side == "long":
+                pnl = (exit_price - entry_price) * shares
             else:
-                entry_min = int(p["entry_bucket"])
-                exit_min = int(p["exit_bucket"])
-            tr = {
-                "leg": leg,
+                pnl = (entry_price - exit_price) * shares
+            ol = or_locks.get(adm["ticker"], {})
+            trades.append({
+                "leg": "morning",
+                "ticker": adm["ticker"],
+                "side": side,
+                "entry_min": int(adm["bucket"]),
+                "exit_min": int(e["bucket"]),
+                "entry_price": round(entry_price, 4),
+                "exit_price": round(exit_price, 4),
+                "shares": shares,
+                "pnl": round(pnl, 2),
+                "exit_reason": e.get("reason", "?"),
+                "stop_price": round(float(adm.get("stop") or 0), 4),
+                "or_high": round(float(ol.get("or_high") or 0), 4),
+                "or_low": round(float(ol.get("or_low") or 0), 4),
+            })
+    # ---- EOD: from afternoon_backtest.py (entry_bucket / exit_bucket schema) ----
+    eod_f = REPO / "results" / "week_replay" / f"{portfolio}_eod" / "per_day" / f"{date_str}.json"
+    if eod_f.exists():
+        try:
+            d = json.loads(eod_f.read_text())
+        except json.JSONDecodeError:
+            d = {}
+        for p in d.get("pnl_pairs", []):
+            trades.append({
+                "leg": "eod",
                 "ticker": p["ticker"],
                 "side": p["side"],
-                "entry_min": entry_min,
-                "exit_min": exit_min,
+                "entry_min": int(p["entry_bucket"]),
+                "exit_min": int(p["exit_bucket"]),
                 "entry_price": round(float(p["entry_price"]), 4),
                 "exit_price": round(float(p["exit_price"]), 4),
                 "shares": int(p["shares"]),
                 "pnl": round(float(p["pnl_dollars"]), 2),
                 "exit_reason": p.get("exit_reason", "?"),
                 "stop_price": round(float(p.get("stop_price") or 0), 4),
-            }
-            if leg == "morning":
-                tr["or_high"] = round(float(p.get("or_high") or 0), 4)
-                tr["or_low"] = round(float(p.get("or_low") or 0), 4)
-            trades.append(tr)
-    # Sort by entry minute, earliest first.
+            })
     trades.sort(key=lambda x: (x["entry_min"], x["ticker"]))
     return trades
 
@@ -170,8 +210,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 14px; margin: 0; font-weight: 600; color: var(--accent); }
   header .sub { color: var(--muted); font-size: 11px; }
-  select, button { background: #1f2937; color: var(--text); border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; font: inherit; cursor: pointer; }
-  select:hover, button:hover { background: #2a3441; }
+  button { background: #1f2937; color: var(--text); border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; font: inherit; cursor: pointer; }
+  button:hover { background: #2a3441; }
+  /* Dropdown styled to stand out: bigger, brighter, with explicit caret. */
+  .date-picker { display: flex; align-items: center; gap: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid var(--accent); border-radius: 5px; padding: 4px 8px 4px 10px; }
+  .date-picker .label { color: var(--accent); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .date-picker select { background: transparent; color: var(--text); border: 0; padding: 4px 24px 4px 4px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%2338bdf8' stroke-width='2' fill='none'/></svg>"); background-repeat: no-repeat; background-position: right 4px center; }
+  .date-picker select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .date-picker select option { background: var(--panel); color: var(--text); }
   .tabs { display: flex; gap: 4px; }
   .tab { padding: 5px 14px; border-radius: 4px; background: #1f2937; border: 1px solid var(--border); cursor: pointer; user-select: none; }
   .tab.active { background: var(--accent); color: #0e1318; border-color: var(--accent); font-weight: 600; }
@@ -214,8 +260,11 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <header>
   <h1>WEEK REPLAY</h1>
-  <span class="sub">counterfactual · real SIP bars · Keystone v9.1.114</span>
-  <label>Date <select id="dateSel"></select></label>
+  <span class="sub">counterfactual · real SIP bars · live v10 engine · Keystone v9.1.114</span>
+  <div class="date-picker">
+    <span class="label">Date</span>
+    <select id="dateSel" aria-label="Select replay date"></select>
+  </div>
   <div class="tabs">
     <div class="tab active" data-portfolio="main">Main · $100k</div>
     <div class="tab" data-portfolio="val">Val · $30,185</div>
@@ -244,8 +293,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <footer>
   Generated by <code>scripts/replay_backtest_week.py</code>.
-  Trades simulated by <code>tools/orb_backtest.py</code> + <code>tools/afternoon_backtest.py</code>
-  against real Alpaca SIP 1-min bars. Keystone v9.1.114 levers (15bps VWAP gate, VIX≤25, sym-10m cooldown, TSLA in EOD fence).
+  Morning trades simulated by <code>tools/orb_replay_day</code> (drives the live <code>orb.live_runtime</code> end-to-end against archived 1-min bars).
+  EOD trades by <code>tools/afternoon_backtest.py</code>.
+  Keystone v9.1.114 levers: 15bps VWAP gate · VIX≤25 · sym-10m cooldown · TSLA in EOD fence.
 </footer>
 
 <script id="dataPayload" type="application/json">__DATA__</script>

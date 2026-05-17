@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.126 (2026-05-17) — Week-replay v2: live-engine fidelity + prominent dropdown + one-step runner
+
+Three follow-up fixes to v9.1.125's week-replay viewer.
+
+**1. Switched morning trades from `orb_backtest.py` to `orb_replay_day`.**
+
+The v9.1.125 viewer pulled morning trades from `tools/orb_backtest.py`, which is a simplified 5-min-candle simulator built for lever sweeps. On 2026-05-15 that produced 2 NFLX shorts; the live v10 engine on the same bars produced an AMZN long. The discrepancy comes from the rejected/admitted set diverging between the two code paths.
+
+The v2 viewer drives `tools/orb_replay_day` (which calls `orb.live_runtime` end-to-end against the archived 1-min bars) per (date, portfolio). Trade counts and shares now line up with what the live engine would actually emit: 1-2 morning admits/day, exits paired by `ticket_id`, OR boundaries from the engine's `or_lock` event, stop prices from the admit event.
+
+Week-by-week:
+
+| Date | Main P&L | Val P&L |
+|---|---:|---:|
+| 05-11 | +$48 | +$14 |
+| 05-12 | +$288 | +$87 |
+| 05-13 | +$2,002 | +$601 |
+| 05-14 | +$2,829 | +$847 |
+| 05-15 | -$55 | -$16 |
+| **Total** | **+$5,112** | **+$1,533** |
+
+**2. Made the date dropdown unmissable.**
+
+The v9.1.125 dropdown was a plain `<select>` inside a label — visible but easy to scan past. The v2 dropdown sits in a pill-bordered container with a cyan-accent "DATE" label, larger font, custom caret SVG. The selected date and the dropdown caret are both prominent enough to read from across the room.
+
+**3. New `scripts/build_replay_week.sh` -- one-step end-to-end runner.**
+
+Pulls any missing dates from Alpaca via `tools/fetch_alpaca_bars.py`, runs `tools.orb_replay_day` for each (date, portfolio) in parallel, runs `tools/afternoon_backtest.py` for the EOD r17 leg, then renders the HTML. Defaults to last 5 trading days; override via `DATES=...` env or `OUT=...` env. Picks up Val's $30,185 paper equity automatically.
+
+Run:
+```
+bash scripts/build_replay_week.sh           # last 5 trading days
+DATES=2026-05-12,2026-05-13 bash scripts/build_replay_week.sh
+```
+
+---
+
 ## v9.1.125 (2026-05-17) — Week-replay counterfactual viewer + intraday-cache race fix
 
 Two related changes to the replay path:
