@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.121 (2026-05-17) — INGEST_DISABLE_WS env flag for prod-priority SIP slot
+
+Alpaca's SIP feed has a hard 1-connection-per-account limit (held for 90s
+after disconnect). After v9.1.120 eliminated the ghost-slot accumulation,
+PROD successfully acquired the slot at 13:38:50 UTC on 2026-05-17 in a
+32ms window when both containers were redeploying. The risk going forward:
+on any future PROD redeploy or network blip, a concurrently-running STAGE
+bot could race in and steal the slot, leaving PROD unable to reconnect.
+
+This patch adds an opt-in env flag for non-prod environments to skip the
+SIP WS connect entirely so PROD's slot is always uncontested.
+
+- `ingest/algo_plus.py:ingest_loop` -- when `INGEST_DISABLE_WS=1` (or
+  `true`/`True`/`yes`) is set, the worker logs `[INGEST] WS disabled
+  via INGEST_DISABLE_WS=1` and immediately transitions to REST_ONLY
+  mode without attempting any SIP connect. The check runs after the
+  cred resolution so unconfigured envs still take the existing
+  early-return path.
+- Set `INGEST_DISABLE_WS=1` on the **staging** Railway env only. PROD
+  env stays unset (defaults to the WS-enabled path).
+- STAGE's broker, dashboard, executors, REST backfill paths are
+  unaffected -- they don't use the SIP WebSocket. STAGE's
+  `ingest_status` will permanently show `status: "offline", ws_state:
+  "REST_ONLY"` by design.
+
 ## v9.1.120 (2026-05-17) — patch alpaca-py to stop ghost-slot SIP lockout
 
 The v9.1.119 startup delay reduced the post-redeploy WS-error volume, but
