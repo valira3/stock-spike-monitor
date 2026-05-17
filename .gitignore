@@ -1,5 +1,6 @@
 __pycache__/
 .venv/
+replay_week.html
 data/.bt_cache/
 data/ui_audit/
 data/monitor/

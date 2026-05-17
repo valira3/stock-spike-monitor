@@ -592,8 +592,23 @@ _NAV_SCRIPT = """\
        derived from currentState().server_time_label, so the per-ticker cache
        in app.js MUST be flushed on every scrubber move -- otherwise jumping
        to EOD shows different bars than scrolling through to EOD (the cache
-       serves the first snapshot's payload for 60s wall-clock). */
-    if (typeof window.__tgFlushIntradayCache === 'function') window.__tgFlushIntradayCache();
+       serves the first snapshot's payload for 60s wall-clock).
+
+       v9.1.125: the flush is retried with backoff because the user can
+       drag the scrubber BEFORE app.js has finished loading. Without the
+       retry, that first nav silently misses the flush and the cache
+       holds whatever bars app.js first fetched, even after later navs
+       (until the 60s TTL self-heals). Two-phase: try immediately, then
+       retry every 50ms for up to 500ms total. Once app.js loads and
+       defines __tgFlushIntradayCache, the next retry succeeds and the
+       cache is cleared so the next refresh() reads fresh bars. */
+    (function tryFlush(attempt) {
+      if (typeof window.__tgFlushIntradayCache === 'function') {
+        window.__tgFlushIntradayCache();
+      } else if (attempt < 10) {
+        setTimeout(function () { tryFlush(attempt + 1); }, 50);
+      }
+    })(0);
     /* sync range input */
     var rng = document.getElementById('__tt_range');
     if (rng) rng.value = idx;

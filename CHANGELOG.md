@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.125 (2026-05-17) — Week-replay counterfactual viewer + intraday-cache race fix
+
+Two related changes to the replay path:
+
+**1. New `scripts/replay_backtest_week.py` — counterfactual week viewer.**
+
+Standalone HTML that shows what the current Keystone v9.1.114 algorithm WOULD have traded for the past 5 trading days against real Alpaca SIP bars, for both the Main ($100k) and Val ($30,185 live equity) books. Different from `scripts/replay_dashboard.py`, which replays what the live bot actually did — this is the "if the current algo had been running, here's the trade-by-trade behavior" view.
+
+- Date dropdown (defaults to most recent trading day) + Main/Val tabs.
+- Scrubber walks 9:30 → 16:00 ET minute by minute; play/pause + 1×/2×/3× speed + jump buttons (9:30 / 10:30 / 15:30 / 16:00).
+- 12 small candle charts (one per universe ticker) with entry/exit markers, stop reference lines, OR-window highlight (9:30-10:00), and EOD-window highlight (15:00-15:58) overlaid only when the scrubber has passed the entry.
+- Trades sidebar shows the per-day order list with active/closed/future status that updates as the scrubber moves.
+- Self-contained HTML (~1.5 MB inline JSON) — no server required, opens via `file://`.
+
+Run:
+```
+# 1. Backfill any missing days via tools/fetch_alpaca_bars.py.
+# 2. Run per-portfolio backtests (account=100000 for main, 30185 for val).
+# 3. python scripts/replay_backtest_week.py --out replay_week.html
+```
+
+**2. Fix `_intradayCache` race in `scripts/replay_dashboard.py:navigate()`.**
+
+The v9.1.117 cache-flush hook was gated on `typeof window.__tgFlushIntradayCache === 'function'` — silently dropped if app.js hadn't finished loading. Users who scrubbed the timeline immediately on page load saw bars that depended on which snapshot app.js's first fetch happened to land on (60s TTL on `_intradayCache`).
+
+Replaced with a retry-on-backoff IIFE: tries flushing immediately, then retries every 50 ms for up to 500 ms total (10 attempts). Once app.js loads and defines the flusher, the next retry succeeds and the cache clears so the next refresh reads fresh bars. The auto-memory note `replay_ticker_keyed_caches.md` has the follow-up documented.
+
+**Bundled corpus:** added `data/2026-05-14/` + `data/2026-05-15/` (12 tickers × 391 RTH SIP bars each) — pulled from Alpaca during the week-replay generation.
+
+---
+
 ## v9.1.124 (2026-05-17) — docs: drop GHA framing from scripts/run_ci.py
 
 The repo moved off GitHub Actions for routine workflows (smoke is now `scripts/run_smoke.py`, monitor is `scripts/run_monitor.py`), but `scripts/run_ci.py` still printed "GHA post-deploy-smoke will auto-fire after merge" on PASS and referenced strategy-tests.yml / version-bump-check.yml / scripts-lint.yml in its module docstring. Updated the docstring to describe what the script actually does (without the GHA framing), point at the sibling local runners (`run_smoke.py`, `run_monitor.py`), and note that the remaining `.github/workflows/*.yml` files are kept for emergency workflow_dispatch only. PASS message now points operators at `python scripts/run_smoke.py` as the post-push verification step.
