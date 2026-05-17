@@ -848,6 +848,25 @@ def ingest_loop() -> None:
         _update_ingest_stats(status="unconfigured", ws_state=CONNECTING)
         return  # do not start the ingest loop at all
 
+    # v9.1.121 -- prod-priority guarantee. When INGEST_DISABLE_WS=1 is set
+    # (intended for the staging Railway env), this worker skips the SIP
+    # WebSocket connect entirely and stays in REST_ONLY mode. Reason:
+    # Alpaca's SIP feed has a hard 1-connection-per-account limit (held
+    # for 90s after disconnect), so if PROD's container drops the slot
+    # for any reason (redeploy, network blip), a concurrently-running
+    # STAGE bot could race in and steal it. Disabling WS on STAGE
+    # eliminates that race so PROD's SIP feed is always uncontested.
+    # STAGE's broker / dashboard / executor paths are unaffected -- they
+    # use REST endpoints (or no Alpaca at all).
+    if os.environ.get("INGEST_DISABLE_WS", "").strip() in ("1", "true", "True", "yes"):
+        logger.info(
+            "[INGEST] WS disabled via INGEST_DISABLE_WS=1; staying REST_ONLY "
+            "(intentional for prod-priority on non-prod envs)"
+        )
+        _health.set(REST_ONLY)
+        _update_ingest_stats(status="offline", ws_state=REST_ONLY)
+        return
+
     # v9.1.119 -- on Railway, hold back the first WS connect by
     # INGEST_STARTUP_DELAY_S sec so the previous container's Alpaca SIP
     # slot has time to be reaped. Without this, the new container's auth
