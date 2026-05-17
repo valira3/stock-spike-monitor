@@ -1652,6 +1652,14 @@
   // a freshly-printed bar shows up within a minute.
   const _intradayCache = {};
   const _INTRADAY_TTL_MS = 60 * 1000;
+  // Exposed for replay mode: scrubber navigation needs to invalidate the
+  // intraday cache so charts reflect the new scenario time. Production
+  // doesn't call this (the 60s TTL keeps it self-healing in live trading).
+  if (typeof window !== "undefined") {
+    window.__tgFlushIntradayCache = function () {
+      Object.keys(_intradayCache).forEach(function (k) { delete _intradayCache[k]; });
+    };
+  }
 
   // v6.0.0 \u2014 per-canvas chart-view state for zoom/pan/hover. The
   // canvas DOM node is the key; we attach a state object so wheel/drag

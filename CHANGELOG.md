@@ -4,6 +4,27 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.117 (2026-05-16) — Replay determinism: flush intraday cache on scrubber move
+
+Jumping the replay scrubber directly to EOD produced different chart bars than
+scrolling through to the same scrubber position. Root cause: `_intradayCache` in
+`dashboard_static/app.js` is keyed only by ticker with a 60s wall-clock TTL.
+The replay `fetch` shim returns *time-dependent* payloads (bars, lifecycle,
+`_stop_refs`, mark price all derived from `currentState().server_time_label`),
+but the cache check fires before the shim — so the first chart payload for a
+ticker was frozen for 60s of real time, far longer than any scrubber sweep at
+3× playback (≈150 ms/tick).
+
+Fix:
+- Expose `window.__tgFlushIntradayCache()` from app.js (no behavior change in
+  production — the 60s TTL still self-heals live charts).
+- `scripts/replay_dashboard.py` calls the flusher at the top of `navigate()`
+  so every scrubber move re-fetches chart payloads against the new scenario
+  time.
+
+After this fix, jumping to 15:55 and scrolling to 15:55 produce identical
+bars / lifecycle / stop overlays / mark.
+
 ## v9.1.116 (2026-05-16) — Dashboard replay system + live staging improvements
 
 Full-day time-travel replay (scripts/replay_dashboard.py, gen_scenarios.py):

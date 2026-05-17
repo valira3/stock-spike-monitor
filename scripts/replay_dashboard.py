@@ -585,6 +585,12 @@ _NAV_SCRIPT = """\
   function navigate(n, skipRefresh) {
     idx = Math.max(0, Math.min(DIFFS.length - 1, n));
     window.__TT_IDX = idx;
+    /* Intraday chart payloads (bars, lifecycle, stop_refs, mark price) are all
+       derived from currentState().server_time_label, so the per-ticker cache
+       in app.js MUST be flushed on every scrubber move -- otherwise jumping
+       to EOD shows different bars than scrolling through to EOD (the cache
+       serves the first snapshot's payload for 60s wall-clock). */
+    if (typeof window.__tgFlushIntradayCache === 'function') window.__tgFlushIntradayCache();
     /* sync range input */
     var rng = document.getElementById('__tt_range');
     if (rng) rng.value = idx;
