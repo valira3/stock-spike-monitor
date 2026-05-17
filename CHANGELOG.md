@@ -4,6 +4,44 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.119 (2026-05-17) — ingest startup delay eliminates Alpaca WS reconnect storm
+
+Adds a Railway-only startup delay before `ingest_loop` opens its first Alpaca
+SIP WebSocket, so the previous container's per-account slot has time to be
+reaped. Without this, every redeploy fired a 3-traceback burst (alpaca-py's
+internal `_run_forever -> _start_ws -> _auth` retry loop) that tripped the
+`railway_logs_clean` monitor invariant and Telegram-alerted on every push.
+
+- `ingest/algo_plus.py:ingest_loop` -- sleeps `INGEST_STARTUP_DELAY_S` seconds
+  (default 20 on Railway, 0 elsewhere) before the first WS connect. Detection
+  via `RAILWAY_SERVICE_ID` env. Env var lets the operator tune or disable.
+- Logs `[INGEST] startup delay <N>s before first WS connect` so the wait is
+  observable in Railway logs.
+- No effect on local runs or tests (default 0 outside Railway -- 25/25 ingest
+  unit tests still pass in 0.11s).
+
+Root cause: Railway's `drainingSeconds`/`overlapSeconds` are unset on this
+service, so a new container can start before the old one's Alpaca slot is
+released. The ingest delay is the application-side workaround. A
+belt-and-suspenders Railway-side drain config change is being applied
+separately (operator action, no code).
+
+Bundled test-isolation fix:
+
+- `tests/strategy/conftest.py` -- new autouse fixture
+  `_strategy_isolate_orb_persistence` patches
+  `orb.persistence._default_path_template` to a per-test tmp dir. Without
+  this, `engine.scan.persist_engine_state` from `test_orb_entry_route.py`
+  (and any other test that exercises the scan path) wrote
+  `orb_state_2026-01-02.json` to the repo root. Later tests then ran
+  `live_runtime.ensure_session_started -> _try_rehydrate_engine_state` and
+  the stale file overlaid the fresh fixture's equity, silently failing
+  `test_bootstrap_compounding_default_on`,
+  `test_bootstrap_then_session_then_feed`, and
+  `test_three_portfolios_independent`. Function-patch (not env var)
+  because per-file `isolated_env` fixtures iterate `os.environ` and wipe
+  every `ORB_*` key, which would have nuked an env-var-based override.
+
 ## v9.1.115 (2026-05-16) — RTH state snapshot logging + time-travel dashboard replay
 
 Adds automated 5-min state capture during RTH and a self-contained dashboard

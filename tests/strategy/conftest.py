@@ -25,6 +25,7 @@ Why:
   partial tests keep testing partial behavior; CI stays green
   through the v8.1.3 default flip.
 """
+
 import os
 
 import pytest
@@ -38,4 +39,31 @@ def _strategy_default_partial_off(monkeypatch):
     # PARTIAL=0. Tests that want partial-on call
     # monkeypatch.setenv(..., "1") AFTER this fixture runs.
     monkeypatch.setenv("ORB_PARTIAL_PROFIT_AT_1R", "0")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _strategy_isolate_orb_persistence(tmp_path, monkeypatch):
+    # v9.1.119 -- pin orb.persistence file location to a per-test tmp
+    # dir. Without this, dump_state_to_disk writes orb_state_<date>.json
+    # to the repo root (orb.persistence._default_path_template falls
+    # back to "." when PAPER_STATE_PATH is unset). A later test's
+    # ensure_session_started -> _try_rehydrate_engine_state then finds
+    # the stale file and overlays its equity/state on top of the fresh
+    # test fixture. The 3 tests using date_iso="2026-01-02"
+    # (test_bootstrap_compounding_default_on,
+    #  test_bootstrap_then_session_then_feed,
+    #  test_three_portfolios_independent) silently failed with
+    # rb.equity == 100_000.0 instead of 105_000.0 whenever an earlier
+    # test in the run (e.g. test_orb_entry_route) had persisted state
+    # for that date via engine.scan.persist_engine_state.
+    #
+    # NOTE: per-file isolated_env fixtures iterate os.environ and
+    # delenv every ORB_* key, which would wipe an env-var-based patch.
+    # Patch the resolver function directly so the override survives
+    # those wipes.
+    import orb.persistence as _orb_persistence
+
+    template = str(tmp_path / "orb_state_{date}.json")
+    monkeypatch.setattr(_orb_persistence, "_default_path_template", lambda: template)
     yield
