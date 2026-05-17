@@ -1,7 +1,12 @@
 __pycache__/
 .venv/
 data/.bt_cache/
-results/
+data/ui_audit/
+data/monitor/
+results/*
+!results/keystone/
+results/keystone/*
+!results/keystone/keystone.json
 CODE_REVIEW.md
 .env
 .env.monitor

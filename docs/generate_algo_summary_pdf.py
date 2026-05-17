@@ -70,7 +70,7 @@ def build():
         ["Position size", "1% risk per trade\n≤75% of account notional", "35% notional per leg\n(1 long + 1 short)"],
         ["Universe",      "AAPL AMZN AVGO GOOG\nMETA MSFT NFLX NVDA\nORCL QQQ SPY TSLA", "ORCL AAPL MSFT AVGO NFLX TSLA\n(long: ORCL AAPL MSFT AVGO TSLA)\n(short: ORCL NFLX AAPL MSFT TSLA)"],
         ["Max trades/day","5",                       "2 (1 long + 1 short)"],
-        ["Ann P&L (17mo)","$39,898",                 "$12,620"],
+        ["Ann P&L (17mo)","$37,466",                 "$12,620"],
     ]
     ts = TableStyle([
         ("BACKGROUND",  (0,0), (-1,0), NAVY),
@@ -136,7 +136,7 @@ def build():
     # headline KPIs
     kpi_data = [
         ["Combined Ann/yr", "Return on $100k", "Negative Quarters", "Morning Win Rate"],
-        ["$52,518",         "+74.7%",           "1 of 6",            "57%"],
+        ["$50,086",         "+67.8%",           "1 of 6",            "57%"],
     ]
     kt = Table(kpi_data, colWidths=[1.8*inch]*4)
     kt.setStyle(TableStyle([
@@ -160,7 +160,7 @@ def build():
     range_data = [
         ["Scenario",      "Rolling Period",          "Annual P&L",  "Notes"],
         ["Minimum",       "Q1 2025 – Q4 2025",       "$33,540",     "Includes weakest quarter (Q1 2025, −$3,819)"],
-        ["Median / Base", "17-month annualized",     "$52,518",     "Full-corpus compounded figure"],
+        ["Median / Base", "17-month annualized",     "$50,086",     "Full-corpus compounded figure"],
         ["Maximum",       "Q3 2025 – Q2 2026",       "$62,800",     "Strongest trailing year to date"],
     ]
     colors_row = [LGREY, colors.HexColor("#FFF3F5"), WHITE, colors.HexColor("#F0FDF8")]

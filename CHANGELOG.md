@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.123 (2026-05-17) — chore: ignore data/ui_audit + data/monitor
+
+Fix-forward from v9.1.122 — `git add data/` for the SIP corpus expansion accidentally swept in two untracked subtrees that should never have been committed:
+
+- `data/ui_audit/` — 17 PNG screenshots produced by a separate UI-audit workflow (~150KB binary).
+- `data/monitor/` — local heartbeat output from `scripts/run_monitor.py` (`system_check_*.jsonl`, `latest.json`, ~9MB).
+
+`.gitignore` now excludes both subtrees, and the files were removed from the index via `git rm --cached`. They remain in the working tree for the local workflows that produce them; future `git add data/` calls will skip them.
+
+---
+
+## v9.1.122 (2026-05-17) — Keystone v3.0: first archived clean re-verify of v9.1.114 baseline
+
+The v9.1.114 CHANGELOG claimed +$52,518/yr combined ($39,898 morning + $12,620 EOD) for the Keystone v5 lever sweep but never checkpointed a corresponding `results/keystone/keystone.json`. Today's clean re-run with the same config (15bps VWAP, VIX 25, sym-10m cooldown, TSLA in EOD fence) reproduces **+$50,086/yr combined ($37,466 morning + $12,620 EOD)** — within the skill's 10% investigate threshold, EOD an exact match. The morning drift is attributed to the earnings-calendar population (commit `713aa2b1`, landed 17 min after the v9.1.114 baseline was reported) and weekly VIX refreshes since. No code or lever regression.
+
+**Changes:**
+
+- `results/keystone/keystone.json` — new v3.0 archive (was missing) with full v9.1.114 config, per-quarter table, and explanatory changelog field.
+- `CLAUDE.md` Keystone table — synced to +$50,086/yr combined with a note explaining the CHANGELOG-vs-reproducible drift.
+- `.claude/skills/keystone-backtest/SKILL.md` — full refresh: v9.1.114 config commands (was on v2.1 25bps/VIX 22/30min-loss-cooldown), v3.0 numbers, anti-patterns updated to flag pre-v9.1.111 levers and missing TSLA in EOD fence.
+- `tools/dashboard_analysis.py` — KEYSTONE dict bumped `skip_vix_above` 22→25 and `max_vwap_dev_bps` 25→15 to match production (was lagging v9.1.114; `tools/system_check_bot.py` already correct).
+- `docs/generate_algo_summary_pdf.py` — three headline values: morning $39,898→$37,466, combined $52,518→$50,086, return +74.7%→+67.8%. Rolling min/max range left as-is (needs separate computation).
+- `data/<dates>/*.jsonl` — corpus expansion: 1,500+ tracked day-files now carry the full extended-hours bar range that the SIP corpus delivered (~2x line count per file). Backtest fidelity improves; replay artifacts are unchanged. `CRLF→LF` and mode bits normalized as a side effect.
+
+**How it ran:**
+
+```
+python tools/orb_backtest.py --corpus data --out results/keystone/morning --year-prefix 20 \\
+  --tickers AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,ORCL,QQQ,SPY,TSLA
+python tools/afternoon_backtest.py --strategy eod_reversal --corpus data \\
+  --out results/keystone/eod --year-prefix 20
+```
+
+Morning 6.5s pkl-cache run, EOD 4m20s full slip-by-slip simulation. 341 corpus days (2025-01-02 to 2026-05-13), 261 morning trade-days, 680 EOD entries, 471 morning entries (57.1% WR). 1 negative quarter of 6 (2025-Q1, -$4,448 combined — structurally weak quarter, NFLX-driven; see Keystone skill).
+
+---
+
 ## v9.1.121 (2026-05-17) — INGEST_DISABLE_WS env flag for prod-priority SIP slot
 
 Alpaca's SIP feed has a hard 1-connection-per-account limit (held for 90s

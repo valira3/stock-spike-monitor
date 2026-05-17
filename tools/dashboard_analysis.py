@@ -45,11 +45,11 @@ KEYSTONE = {
     "max_trades_per_day": 5,
     "max_concurrent_risk_dollars": 2000.0,
     "daily_loss_kill_pct": 2.0,
-    "skip_vix_above": 22.0,
+    "skip_vix_above": 25.0,  # v9.1.114: raised 22->25 (Keystone v5)
     "skip_gap_above_pct": 1.5,
     "atr_stop_mult": 1.75,
     "partial_profit_at_1r": True,
-    "max_vwap_dev_bps": 25.0,
+    "max_vwap_dev_bps": 15.0,  # v9.1.114: tightened 25->15 (Keystone v5)
     # RTH entry window: 09:30-11:00 ET (minutes past midnight)
     "entry_open_min": 570,  # 09:30
     "entry_close_min": 660,  # 11:00

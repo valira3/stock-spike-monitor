@@ -109,22 +109,24 @@ sweep runs.
 
 **Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate **15bps** on 6 mega-caps. Sym-10m cooldown. VIX ceiling **25**. EOD 6-ticker fence (TSLA added v9.1.113).
 
-**Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr):**
+**Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr; archived 2026-05-17 in `results/keystone/keystone.json` v3.0):**
 
 | Component | Ann/yr | Notes |
 |---|---:|---|
-| Morning ORB | +$39,898 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown |
+| Morning ORB | +$37,466 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown |
 | EOD reversal | +$12,620 | ORCL/AAPL/MSFT/AVGO/TSLA fence, 35% notional, 15:00-15:58 ET |
-| **Combined** | **+$52,518** | **+74.7% on $100k / 17mo / 1/6 neg quarters** |
+| **Combined** | **+$50,086** | **+67.8% on $100k / 17mo / 1/6 neg quarters** |
 
 | Quarter | Morning | EOD | Combined |
 |---|---:|---:|---:|
-| 2025-Q1 | -$5,406 | +$1,102 | -$4,304 |
-| 2025-Q2 | +$6,298 | +$6,994 | +$13,291 |
-| 2025-Q3 | +$9,999 | -$1,074 | +$8,926 |
-| 2025-Q4 | +$14,260 | +$2,046 | +$16,306 |
-| 2026-Q1 | +$10,048 | +$6,414 | +$16,462 |
-| 2026-Q2 | +$18,791 | +$1,594 | +$20,385 |
+| 2025-Q1 | -$5,550 | +$1,102 | -$4,448 |
+| 2025-Q2 | +$6,281 | +$6,994 | +$13,274 |
+| 2025-Q3 | +$9,959 | -$1,074 | +$8,886 |
+| 2025-Q4 | +$13,733 | +$2,046 | +$15,779 |
+| 2026-Q1 | +$5,094 | +$6,414 | +$11,508 |
+| 2026-Q2 | +$21,181 | +$1,594 | +$22,775 |
+
+> The v9.1.114 CHANGELOG initially reported +$52,518/yr combined (+$39,898 morning, +$12,620 EOD) from the lever sweep. The morning leg was revised down to +$37,466/yr on 2026-05-17 after the first clean re-verify; the EOD leg reproduces the original claim exactly. The drift is attributed to the earnings-calendar population (commit 713aa2b1, +17 min after v9.1.114) and weekly VIX refreshes landed after the sweep's numbers were captured. No code or lever regression.
 
 **Standard backtest approach (combined, compounded, annualized):**
 Run morning + EOD in parallel, sum P&Ls, annualize by `× (252/341)`. Always use `ORB_COMPOUND_DAILY=1` and `AFT_COMPOUND_DAILY=1`.
