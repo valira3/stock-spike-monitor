@@ -3070,7 +3070,7 @@ async def h_version(request):
 
 
 # ─────────────────────────────────────────────────────────────
-# Replay Today — build a live-data replay from today's snapshots.
+# Replay Today -- build a live-data replay from today's snapshots.
 # POST /api/replay/today   {"date": "YYYY-MM-DD"} (optional)
 # Returns {"ok": true, "url": "<presigned-R2-url>", "snapshots": N}
 # ─────────────────────────────────────────────────────────────
@@ -3116,7 +3116,7 @@ async def h_replay_today(request):
         else:
             return web.json_response(
                 {"ok": False, "error": "No snapshot data found for recent trading days. "
-                 "Snapshots are captured every 5 min during RTH — try again after 09:30 ET."},
+                 "Snapshots are captured every 5 min during RTH -- try again after 09:30 ET."},
                 status=404)
     except Exception as e:
         import traceback

@@ -244,7 +244,7 @@ def build_scenario_2(base: dict) -> dict:
         {"kind": "OR_LOCK",       "ticker": "AVGO", "pid": "main", "ts_et": "10:00:01", "detail": "OR locked: H=432.62 L=424.44 rng=1.93%"},
         {"kind": "OR_LOCK",       "ticker": "META", "pid": "main", "ts_et": "10:00:01", "detail": "OR locked: H=614.09 L=609.49 rng=0.75%"},
         {"kind": "OR_LOCK",       "ticker": "ORCL", "pid": "main", "ts_et": "10:00:01", "detail": "OR locked: H=194.20 L=191.80 rng=1.24%"},
-        {"kind": "SESSION_START", "ticker": "",     "pid": "main", "ts_et": "09:30:00", "detail": "v10 session started — LONG_BIAS"},
+        {"kind": "SESSION_START", "ticker": "",     "pid": "main", "ts_et": "09:30:00", "detail": "v10 session started -- LONG_BIAS"},
     ]
     s["portfolio"] = {"cash": 100000.0, "long_mv": round(MARK * SH, 2), "short_liab": 0,
                       "equity": round(100000 + UPL, 2), "start": 100000,
@@ -398,7 +398,7 @@ def build_and_upload(state: dict, label: str, date: str = "2026-05-16") -> str:
 # Full-day combined replay (single page, time scrubber)
 # ---------------------------------------------------------------------------
 
-# Ordered activity events for May 15 — shown in the Recent Activity feed
+# Ordered activity events for May 15 -- shown in the Recent Activity feed
 def _act(kind, ticker, pid, ts_et, detail, time=None):
     """Build an activity event with ts_iso for proper time display in executor tab."""
     hh, mm = int(ts_et[:2]), int(ts_et[3:5])
@@ -556,7 +556,7 @@ def _open_positions_at(et_hhmm: str) -> tuple[list[dict], float]:
     elif cur >= x2:
         realized += -412.82
 
-    # EOD: 15:30-15:59 — AVGO long + MSFT short + ORCL long
+    # EOD: 15:30-15:59 -- AVGO long + MSFT short + ORCL long
     # entry_stop = OR-low for longs / OR-high for shorts so the progress bar renders
     e3, x3 = _hhmm_to_min("15:30"), _hhmm_to_min("15:59")
     if e3 <= cur < x3:

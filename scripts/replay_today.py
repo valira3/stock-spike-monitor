@@ -221,7 +221,7 @@ def find_most_recent_snapshots(start_date: str | None = None,
         snaps = fetch_snapshots(date_str)
         if snaps:
             return date_str, snaps
-        print(f"  {date_str}: no snapshots — looking earlier")
+        print(f"  {date_str}: no snapshots -- looking earlier")
 
     return None, []
 

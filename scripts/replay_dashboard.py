@@ -211,7 +211,7 @@ _HEAD_PATCH = """\
     if (parts.length < 2) return {};
     var ticker = parts[1].split('?')[0].toUpperCase();
     var s = currentState();
-    /* Find OR levels — try proximity list first, fall back to v10.or_windows dict */
+    /* Find OR levels -- try proximity list first, fall back to v10.or_windows dict */
     var prox = (s.proximity || []).filter(function(p){ return p.ticker === ticker; })[0] || {};
     var orHigh = prox.or_high || null;
     var orLow  = prox.or_low  || null;
@@ -235,7 +235,7 @@ _HEAD_PATCH = """\
     /* Build lifecycle overlay data from trades.
        IMPORTANT: do NOT put entry_ts/exit_ts in payload.trades.
        app.js calls utcIsoToEtMin() (declared as `const` at line 2005) from the
-       trades overlay loop at line 1962 — temporal dead zone ReferenceError silently
+       trades overlay loop at line 1962 -- temporal dead zone ReferenceError silently
        kills _drawIntradayChart before entry/exit triangles ever render.
        Fix: use lifecycle.entries/exits/open (et_min numbers, no TDZ risk) and
        draw stop/1R/target lines ourselves via _stop_refs in _autoExpandCharts. */
@@ -262,7 +262,7 @@ _HEAD_PATCH = """\
 
     var bars = _fakeBars(ticker, orHigh, orLow, endMin, sceneDate, _chartStartMin);
 
-    /* Find open position for this ticker — gives us actual stop/mark prices */
+    /* Find open position for this ticker -- gives us actual stop/mark prices */
     var openPos = null;
     (s.positions || []).forEach(function(p) {
       if ((p.ticker||'').toUpperCase() === ticker && !openPos) openPos = p;
@@ -456,11 +456,14 @@ _NAV_SCRIPT = """\
 
   /* Auto-expand inline charts for every open position row.
      Inserts the chart row AFTER the progress-bar row so the bar
-     appears above the chart (user expectation). */
+     appears above the chart (user expectation).
+     v9.1.118: selector also matches Val/Gene panels which mount
+     [data-f="pos-body"] (the IIFE-2 renderer) rather than #pos-body. */
   function _autoExpandCharts() {
     if (typeof window.__tgRenderTickerChart !== 'function') return;
     var rows = document.querySelectorAll(
-      '#pos-body tr[data-pos-ticker]:not(.pos-progress-row):not(.pos-chart-row)');
+      '#pos-body tr[data-pos-ticker]:not(.pos-progress-row):not(.pos-chart-row), ' +
+      '[data-f="pos-body"] tr[data-pos-ticker]:not(.pos-progress-row):not(.pos-chart-row)');
     rows.forEach(function(row) {
       var ticker = row.getAttribute('data-pos-ticker');
       if (!ticker) return;
@@ -488,7 +491,7 @@ _NAV_SCRIPT = """\
       if (insertAfter.parentNode) insertAfter.parentNode.insertBefore(chartRow, insertAfter.nextSibling);
       window.__tgRenderTickerChart(ticker, mount);
       /* After chart renders: draw entry/stop/mark/1R/target lines.
-         The app.js code path for these is dead (TDZ bug at line 1962) — we draw here.
+         The app.js code path for these is dead (TDZ bug at line 1962) -- we draw here.
          Uses distinct colors per level so each line is immediately identifiable. */
       (function(m) {
         setTimeout(function() {
@@ -556,7 +559,7 @@ _NAV_SCRIPT = """\
               hline(ref.be_price,     '#fbbf24',[4,3],'1R');
               hline(ref.target_price, '#22c55e',[5,3],'+2.5R');
             }
-            /* mark — sky-blue solid with circle + price badge */
+            /* mark -- sky-blue solid with circle + price badge */
             if (ref.mark_price!=null) {
               var mp=ref.mark_price, my=yOf(mp), mx=x2;
               ctx.save();
@@ -594,7 +597,7 @@ _NAV_SCRIPT = """\
     /* sync range input */
     var rng = document.getElementById('__tt_range');
     if (rng) rng.value = idx;
-    /* update timestamp label — show "May 15 · HH:MM ET" */
+    /* update timestamp label -- show "May 15 . HH:MM ET" */
     var d   = DIFFS[idx] || {};
     var raw = d.ts_et || '';
     var tm  = raw.match(/T([0-9]{2}:[0-9]{2})/);
@@ -627,21 +630,23 @@ _NAV_SCRIPT = """\
       cursor2.style.left = _pct2.toFixed(1) + '%';
     }
     if (!skipRefresh) refresh();
-    /* Simplify verbose scan-paused banner to a short one-liner */
+    /* Simplify verbose scan-paused banner to a short one-liner.
+       v9.1.118: iterate so Val/Gene panels (mount [data-f="banner"])
+       get the same simplification as Main (#banner). */
     setTimeout(function() {
-      var b = document.getElementById('banner');
-      if (!b || b.classList.contains('hide')) return;
-      /* Replace the inner HTML with a compact version */
-      var inner = b.innerHTML || '';
-      if (inner.indexOf('SCAN PAUSED') >= 0 || inner.indexOf('KILL') >= 0 ||
-          inner.indexOf('scan_paused') >= 0) {
+      var banners = document.querySelectorAll(
+        '#banner:not(.hide), [data-f="banner"]:not(.hide)');
+      banners.forEach(function(b) {
+        var inner = b.innerHTML || '';
+        if (inner.indexOf('SCAN PAUSED') < 0 && inner.indexOf('KILL') < 0 &&
+            inner.indexOf('scan_paused') < 0) return;
         var kill = inner.indexOf('kill') >= 0 || inner.indexOf('KILL') >= 0;
         b.innerHTML = '<div style="padding:6px 16px;font-size:11px;color:#64748b;display:flex;align-items:center;gap:8px">'
-          + '<span style="font-size:13px">&#9646;</span>'          /* ▐ pause glyph */
+          + '<span style="font-size:13px">&#9646;</span>'          /* pause glyph */
           + (kill ? '<span>Scanner paused &mdash; daily-loss limit reached &middot; existing positions still managed</span>'
                   : '<span>Scanner paused &mdash; outside trading window</span>')
           + '</div>';
-      }
+      });
     }, 750);
     /* Auto-show charts for all open positions after render settles */
     setTimeout(_autoExpandCharts, 600);
@@ -680,81 +685,81 @@ _NAV_SCRIPT = """\
   }
 
   /* P&L sparkline: draws history up to current snapshot, dims future trajectory.
-     Re-draws on every navigation so the "filled" portion tracks the scrubber. */
+     Re-draws on every navigation so the "filled" portion tracks the scrubber.
+     v9.1.118: iterates over every k-pnl mount so Val/Gene KPI panels
+     (which use [data-f="k-pnl"]) get the same sparkline as Main (#k-pnl). */
   function _pnlSparkline() {
-    var kpnl = document.getElementById('k-pnl');
-    if (!kpnl) return;
-    var card = kpnl.closest('.card, [class*="kpi"], [class*="pnl"]') || kpnl.parentElement;
-    if (!card) return;
     var diffs = window.__TT_DIFFS || [];
-    /* Build full day P&L series (all snapshots) for scale */
     var allPoints = diffs.map(function(d) {
       return (d.portfolio && d.portfolio.day_pnl != null) ? d.portfolio.day_pnl : null;
     });
     var validPoints = allPoints.filter(function(v){ return v !== null; });
     if (validPoints.length < 2) return;
-
-    /* Create or reuse canvas */
-    var cv = card.__pnlSparkCv;
-    if (!cv) {
-      cv = document.createElement('canvas');
-      cv.style.cssText = 'display:block;width:100%;height:28px;margin-top:4px;opacity:0.9;';
-      kpnl.parentElement.insertBefore(cv, kpnl.nextSibling);
-      card.__pnlSparkCv = cv;
-    }
-    cv.width = Math.min(card.clientWidth || 140, 140);
-    cv.height = 28;
-    var ctx2 = cv.getContext('2d');
-    var w = cv.width, h = cv.height, pad = 2;
     var curIdx = Math.min(window.__TT_IDX || 0, diffs.length - 1);
-
-    /* Y scale uses the FULL day range so scale doesn't jump */
     var lo = Math.min.apply(null, validPoints);
     var hi = Math.max.apply(null, validPoints);
     var rng = hi - lo || 1;
-    var xOf3 = function(i){ return pad + i/(diffs.length-1)*(w-2*pad); };
-    var yOf3 = function(v){ return pad + (1-(v-lo)/rng)*(h-2*pad); };
 
-    ctx2.clearRect(0, 0, w, h);
+    var mounts = document.querySelectorAll('#k-pnl, [data-f="k-pnl"]');
+    mounts.forEach(function(kpnl) {
+      var card = kpnl.closest('.card, [class*="kpi"], [class*="pnl"]') || kpnl.parentElement;
+      if (!card) return;
 
-    /* Zero baseline */
-    if (lo < 0 && hi > 0) {
-      var y0 = yOf3(0);
-      ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 0.5;
-      ctx2.setLineDash([2,3]);
-      ctx2.beginPath(); ctx2.moveTo(pad,y0); ctx2.lineTo(w-pad,y0); ctx2.stroke();
-      ctx2.setLineDash([]);
-    }
+      var cv = card.__pnlSparkCv;
+      if (!cv) {
+        cv = document.createElement('canvas');
+        cv.style.cssText = 'display:block;width:100%;height:28px;margin-top:4px;opacity:0.9;';
+        kpnl.parentElement.insertBefore(cv, kpnl.nextSibling);
+        card.__pnlSparkCv = cv;
+      }
+      cv.width = Math.min(card.clientWidth || 140, 140);
+      cv.height = 28;
+      var ctx2 = cv.getContext('2d');
+      var w = cv.width, h = cv.height, pad = 2;
+      var xOf3 = function(i){ return pad + i/(diffs.length-1)*(w-2*pad); };
+      var yOf3 = function(v){ return pad + (1-(v-lo)/rng)*(h-2*pad); };
 
-    /* Full-day ghost line (dim) — gives context for the full trajectory */
-    ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 1;
-    ctx2.beginPath();
-    var _started = false;
-    for (var k=0;k<diffs.length;k++) {
-      var v = allPoints[k]; if (v == null) continue;
-      if (!_started){ ctx2.moveTo(xOf3(k),yOf3(v)); _started=true; }
-      else ctx2.lineTo(xOf3(k),yOf3(v));
-    }
-    if (_started) ctx2.stroke();
+      ctx2.clearRect(0, 0, w, h);
 
-    /* History line up to curIdx (solid, colored) */
-    var pnlAtCur = allPoints[curIdx];
-    var lineColor = (pnlAtCur != null && pnlAtCur >= 0) ? '#3ec28f' : '#ef4444';
-    ctx2.strokeStyle = lineColor; ctx2.lineWidth = 1.5; ctx2.lineJoin = 'round';
-    ctx2.beginPath();
-    var _hStarted = false;
-    for (var m=0;m<=curIdx;m++) {
-      var hv = allPoints[m]; if (hv == null) continue;
-      if (!_hStarted){ ctx2.moveTo(xOf3(m),yOf3(hv)); _hStarted=true; }
-      else ctx2.lineTo(xOf3(m),yOf3(hv));
-    }
-    if (_hStarted) ctx2.stroke();
+      /* Zero baseline */
+      if (lo < 0 && hi > 0) {
+        var y0 = yOf3(0);
+        ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 0.5;
+        ctx2.setLineDash([2,3]);
+        ctx2.beginPath(); ctx2.moveTo(pad,y0); ctx2.lineTo(w-pad,y0); ctx2.stroke();
+        ctx2.setLineDash([]);
+      }
 
-    /* Current position dot */
-    if (pnlAtCur != null) {
-      ctx2.fillStyle = lineColor;
-      ctx2.beginPath(); ctx2.arc(xOf3(curIdx),yOf3(pnlAtCur),3,0,Math.PI*2); ctx2.fill();
-    }
+      /* Full-day ghost line (dim) -- context for the full trajectory */
+      ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 1;
+      ctx2.beginPath();
+      var _started = false;
+      for (var k=0;k<diffs.length;k++) {
+        var v = allPoints[k]; if (v == null) continue;
+        if (!_started){ ctx2.moveTo(xOf3(k),yOf3(v)); _started=true; }
+        else ctx2.lineTo(xOf3(k),yOf3(v));
+      }
+      if (_started) ctx2.stroke();
+
+      /* History line up to curIdx (solid, colored) */
+      var pnlAtCur = allPoints[curIdx];
+      var lineColor = (pnlAtCur != null && pnlAtCur >= 0) ? '#3ec28f' : '#ef4444';
+      ctx2.strokeStyle = lineColor; ctx2.lineWidth = 1.5; ctx2.lineJoin = 'round';
+      ctx2.beginPath();
+      var _hStarted = false;
+      for (var m=0;m<=curIdx;m++) {
+        var hv = allPoints[m]; if (hv == null) continue;
+        if (!_hStarted){ ctx2.moveTo(xOf3(m),yOf3(hv)); _hStarted=true; }
+        else ctx2.lineTo(xOf3(m),yOf3(hv));
+      }
+      if (_hStarted) ctx2.stroke();
+
+      /* Current position dot */
+      if (pnlAtCur != null) {
+        ctx2.fillStyle = lineColor;
+        ctx2.beginPath(); ctx2.arc(xOf3(curIdx),yOf3(pnlAtCur),3,0,Math.PI*2); ctx2.fill();
+      }
+    });
   }
 
   /* Inject 60×24px sparklines into proximity matrix ticker rows */
@@ -772,7 +777,7 @@ _NAV_SCRIPT = """\
         if (fc) ticker = fc.textContent.trim().split(' ')[0].toUpperCase();
       }
       if (!ticker || row.__sparkDone) return;
-      /* Find a cell to inject into — prefer the last td */
+      /* Find a cell to inject into -- prefer the last td */
       var cells = row.querySelectorAll('td');
       if (!cells.length) return;
       var cell = cells[cells.length - 1];
@@ -1151,7 +1156,7 @@ border-bottom:1px solid #1a2535;box-shadow:0 2px 12px rgba(0,0,0,.8)">
     <span id="__tt_cnt" style="color:#374151;font-size:9px;white-space:nowrap">{init_cnt}</span>
   </div>
 
-  <!-- Row 2: Session timeline — zones + event markers + cursor + invisible range input -->
+  <!-- Row 2: Session timeline -- zones + event markers + cursor + invisible range input -->
   <div style="padding:0 10px 0">
     <div style="position:relative;height:28px;border-radius:3px;overflow:hidden;
                 background:#0d1117;border:1px solid #1a2535">
@@ -1233,7 +1238,7 @@ def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
     replay_css = """<style id='__tt_css'>
 /* Replay bar is sticky in-page, no body top-margin needed */
 #tg-replay-btn{display:none!important}  /* hide Replay Day btn in replay mode */
-/* Hide static backtest baseline — no live data in replay */
+/* Hide static backtest baseline -- no live data in replay */
 #v10-baseline{display:none!important}
 /* Hide empty ||| gauge placeholders in v10 ORB header */
 #v10-day-status>.v10-gauge-head,
@@ -1242,7 +1247,7 @@ def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
 /* Remove redundant "main" portfolio badge from trade/position rows on Main tab */
 .trade-row td[data-col="portfolio"] span,
 tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
-/* Scan-paused / kill banner: muted in replay — expected mid-day, not a crisis.
+/* Scan-paused / kill banner: muted in replay -- expected mid-day, not a crisis.
    Replace red with subtle slate so the operator eye isn't drawn to a false alarm. */
 #banner:not(.hide){
   background:rgba(17,24,39,0.55)!important;
@@ -1257,7 +1262,7 @@ tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
 #banner:not(.hide) [style*="#dc2626"]{
   background:#1e293b!important;color:#94a3b8!important;
   border-color:#334155!important;}
-/* Remove error health pill — not used */
+/* Remove error health pill -- not used */
 #tg-health-pill,#tg-health-pop{display:none!important}
 </style>\n"""
 

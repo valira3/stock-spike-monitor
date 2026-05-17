@@ -4,6 +4,36 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.118 (2026-05-17) — Replay parity: Val/Gene tabs get the same scrubber decorations as Main
+
+The replay nav script targeted three Main-only ID selectors, so operators on the
+Val (or Gene) tab during a scrubber sweep saw a degraded experience versus Main:
+
+- **Position rows never auto-expanded their inline intraday charts.** The
+  `_autoExpandCharts` selector `#pos-body tr[data-pos-ticker]` matched only
+  Main's positions table. Val/Gene use `[data-f="pos-body"]` (the IIFE-2
+  renderer per CLAUDE.md's cross-tab rule), so their rows stayed collapsed
+  and the operator had to click each row by hand after every scrubber move.
+- **Day P&L sparkline never drew under the Val/Gene KPI.** `_pnlSparkline` was
+  hard-coded to `getElementById('k-pnl')`, hitting only Main's KPI.
+- **Scan-paused / kill banner stayed verbose on Val/Gene.** The banner
+  simplification was hard-coded to `getElementById('banner')`.
+
+Fix in `scripts/replay_dashboard.py`: all three call sites now iterate over
+both ID and `[data-f="..."]` selectors so the decoration fires once per panel.
+Existing per-mount caches (`card.__pnlSparkCv`) already key off the card, so
+Main and Val/Gene get their own canvases without collision.
+
+Also bundled (per the [[replay-em-dash-debt]] auto-memory): 18 literal em-dash
+characters added in v9.1.115-v9.1.117 across `scripts/replay_dashboard.py` (12),
+`scripts/gen_scenarios.py` (3), `dashboard_server.py` (2), and
+`scripts/replay_today.py` (1) are replaced with `--` in comments and
+string-escape `—` in the JSON error message. `scripts/run_ci.py` step 3
+(em-dash check) was failing on every staging push because of these; now drops
+to a clean diff against `origin/main` until new debt is added.
+
+No production behavior change. Replay-only fix.
+
 ## v9.1.117 (2026-05-16) — Replay determinism: flush intraday cache on scrubber move
 
 Jumping the replay scrubber directly to EOD produced different chart bars than
