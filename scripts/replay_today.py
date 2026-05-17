@@ -93,6 +93,27 @@ def _et_min_from_server_time(server_time: str) -> int | None:
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
+def _extract_state(snap: dict) -> dict:
+    """Return the /api/state payload from a snapshot regardless of which
+    writer schema produced it.
+
+    Three schemas observed in the wild:
+      - flat:        snap["state"]              (synthetic backfills, v9.1.115+ target)
+      - dashboard:   snap["dashboard"]["/api/state"]   (scripts/snapshot_state.py)
+      - endpoints:   snap["endpoints"]["/api/state"]   (tools/state_snapshot.py, pre-v9.1.115)
+    """
+    s = snap.get("state")
+    if isinstance(s, dict):
+        return s
+    for wrapper_key in ("dashboard", "endpoints"):
+        wrapped = snap.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            inner = wrapped.get("/api/state")
+            if isinstance(inner, dict) and "__error__" not in inner:
+                return inner
+    return {}
+
+
 def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
     """Convert JSONL snapshot list → (diffs, base_state) for build_html()."""
     if not snaps:
@@ -108,7 +129,7 @@ def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
         (s for s in snaps if "12:0" in s.get("ts_et", "") or "13:0" in s.get("ts_et", "")),
         snaps[len(snaps) // 2]
     )
-    base_state = copy.deepcopy(mid.get("state", {}))
+    base_state = copy.deepcopy(_extract_state(mid))
     base_state.pop("trades_today", None)
     base_state.pop("positions", None)
 
@@ -116,7 +137,7 @@ def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
     prev_trade_count = 0
 
     for snap in snaps:
-        state    = snap.get("state", {})
+        state    = _extract_state(snap)
         ts_et    = snap.get("ts_et", snap.get("captured_at_utc", ""))
         cap_utc  = snap.get("captured_at_utc", "")
         v10      = state.get("v10", {})
