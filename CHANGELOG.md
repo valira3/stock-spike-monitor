@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.124 (2026-05-17) — docs: drop GHA framing from scripts/run_ci.py
+
+The repo moved off GitHub Actions for routine workflows (smoke is now `scripts/run_smoke.py`, monitor is `scripts/run_monitor.py`), but `scripts/run_ci.py` still printed "GHA post-deploy-smoke will auto-fire after merge" on PASS and referenced strategy-tests.yml / version-bump-check.yml / scripts-lint.yml in its module docstring. Updated the docstring to describe what the script actually does (without the GHA framing), point at the sibling local runners (`run_smoke.py`, `run_monitor.py`), and note that the remaining `.github/workflows/*.yml` files are kept for emergency workflow_dispatch only. PASS message now points operators at `python scripts/run_smoke.py` as the post-push verification step.
+
+---
+
 ## v9.1.123 (2026-05-17) — chore: ignore data/ui_audit + data/monitor
 
 Fix-forward from v9.1.122 — `git add data/` for the SIP corpus expansion accidentally swept in two untracked subtrees that should never have been committed:

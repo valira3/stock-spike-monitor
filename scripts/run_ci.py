@@ -2,8 +2,8 @@
 """run_ci.py -- cross-platform local CI runner (Windows/macOS/Linux).
 
 Supersedes the bash-only scripts/preflight.sh for day-to-day development on
-Windows. Runs the same checks that GHA strategy-tests.yml, version-bump-check.yml,
-and scripts-lint.yml cover, so those workflows are not needed for iteration.
+Windows. Runs the strategy-test / version-consistency / em-dash / ruff checks
+that every push needs.
 
 Usage:
     python scripts/run_ci.py              # fast checks (pytest + version + em-dash + ruff)
@@ -19,17 +19,13 @@ Checks run in order:
   [5/5] ruff check + ruff format --check  (only if ruff is installed)
   [opt] python smoke_test.py     (31 local smoke tests; pass --smoke or --all)
 
-GHA workflows superseded by this script (kept but no longer needed for iteration):
-  - .github/workflows/strategy-tests.yml
-  - .github/workflows/version-bump-check.yml
-  - .github/workflows/scripts-lint.yml  (shellcheck only, soft-fail; low value locally)
+Sibling local runners:
+  - scripts/run_smoke.py    (post-push smoke: Railway-version wait + 31 local + 9 prod tests)
+  - scripts/run_monitor.py  (every-5-min dashboard health check during US RTH)
 
-GHA workflows intentionally left active (need secrets / Railway / GHA compute):
-  - .github/workflows/post-deploy-smoke.yml  (Railway polling + Telegram alert)
-  - .github/workflows/lever-sweep.yml / lever-sweep-auto.yml
-  - .github/workflows/pull-rth-bars.yml / pull-tick-data.yml / refresh-data-feeds.yml
-  - .github/workflows/rth-merge-warning.yml / trade-replay.yml / docker-boot.yml
-  - .github/workflows/monitor.yml  (already moved to scripts/run_monitor.py)
+GitHub Actions are no longer the canonical path for any of these; the
+.github/workflows/*.yml files that remain are kept for emergency
+workflow_dispatch only.
 """
 
 from __future__ import annotations
@@ -445,19 +441,15 @@ def main() -> int:
         print(flush=True)
         print(
             "Fix the issues above, then re-run:\n"
-            "  python scripts/run_ci.py\n\n"
-            "GHA post-deploy-smoke (Railway polling + Telegram) is separate and\n"
-            "only runs after merge to main -- no local equivalent needed.",
+            "  python scripts/run_ci.py",
             flush=True,
         )
         return 1
 
     print(f"{BOLD}{GREEN}=== run_ci.py PASS ==={RESET}", flush=True)
     print(
-        "\nReady to push. GHA post-deploy-smoke will auto-fire after merge.\n"
-        "If GHA strategy-tests / version-bump-check / scripts-lint are\n"
-        "redundant given this local run, add [skip-version] to the PR body\n"
-        "for doc-only changes (those workflows still run on PR open).",
+        "\nReady to push. After the push, run:\n"
+        "  python scripts/run_smoke.py   (waits for Railway rollout, then 31 local + 9 prod tests)",
         flush=True,
     )
     return 0
