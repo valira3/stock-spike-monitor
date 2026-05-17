@@ -4,6 +4,12 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.127 (2026-05-17) — chore: drop literal em-dash slipped into replay_backtest_week.py docstring
+
+Fix-forward — v9.1.126 introduced two literal U+2014 em-dashes in the `replay_backtest_week.py` module docstring. CI's em-dash guard flagged it, but the `;`-chained commit + push command ran anyway, so the bad lines landed on `staging`. Replaced both with `--` per the CLAUDE.md rule (`.py` files use the escape, CHANGELOG/README may use the real glyph).
+
+---
+
 ## v9.1.126 (2026-05-17) — Week-replay v2: live-engine fidelity + prominent dropdown + one-step runner
 
 Three follow-up fixes to v9.1.125's week-replay viewer.

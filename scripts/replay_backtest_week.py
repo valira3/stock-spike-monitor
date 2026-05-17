@@ -7,7 +7,7 @@ for both Main and Val portfolios. Date dropdown defaults to the most
 recent day; user can switch days and portfolios client-side.
 
 Morning trades come from `tools/orb_replay_day` (drives the LIVE v10
-runtime — orb.live_runtime — against archived 1-min bars). EOD trades
+runtime -- orb.live_runtime -- against archived 1-min bars). EOD trades
 come from `tools/afternoon_backtest.py` (r17 reversal at 15:00-15:58).
 
 Reads:
