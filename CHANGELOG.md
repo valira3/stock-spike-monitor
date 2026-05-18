@@ -4,6 +4,30 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.136 (2026-05-18) — staging: bump ORB_MAX_CONCURRENT_NOTIONAL_MULT 0.95 → 1.9 (95% Reg T utilization)
+
+Operator question — what is `MAX_CONCURRENT_NOTIONAL_MULT` set on production? — surfaced that **production has been running with the live-engine code default of 0.95** (= 95% of equity = ~47.5% of Reg T buying power) while ALL prior backtests were anchored to the looser `tools/orb_backtest.py` default of 2.0 (full Reg T). Production has been over half a year of paper-fire data leaving half of Reg T BP unused.
+
+**True-prod-anchored sweep on Val staging ($30,185), 341-day corpus:**
+
+| Gross mult | BP util | Ann/yr | Min day | Sharpe | #<-$1k days |
+|---:|---:|---:|---:|---:|---:|
+| 0.95 (prod today) | ~48% | +$7,548 | -$430 | 3.38 | 0 |
+| 1.5 | ~75% | +$11,275 | -$794 | 2.80 | 0 |
+| 1.7 | ~85% | +$11,563 | -$804 | 2.82 | 0 |
+| **1.9 (95% Reg T, 5% safety)** | **~95%** | **+$13,686** | -$843 | 3.04 | **0** |
+| 2.0 (full Reg T) | ~100% | +$14,473 | -$863 | 3.05 | 0 |
+
+Doubling the gross-notional cap (0.95 → 1.9) nearly doubles annual P&L (+81%) while Sharpe drops only modestly (3.38 → 3.04). Worst day worsens by $413 (-$430 → -$843), but no #<-$1k day appears at any cap level in 341 days. **The "safety margin" benefit of 0.95 costs ~$6k/yr in foregone P&L for $413 less drawdown on the worst day — a $14:$1 P&L:safety trade not worth taking.**
+
+Why production was at 0.95: a defensive initial setting from early paper-fire days. 17+ months of clean data with zero margin-related incidents make that ceiling over-tight.
+
+**Action**: set `ORB_MAX_CONCURRENT_NOTIONAL_MULT=1.9` on Railway **staging** environment (commit hash `n/a` — Railway env-var change, not a code change). Production remains at 0.95 until 1-2 weeks of staging paper-fire validates the new ceiling. Promotion to production handled via a follow-up env-var change once observation period is clean.
+
+Caveat: 5% safety on `MAX_CONCURRENT_NOTIONAL_MULT` is gross-notional based and does not account for Reg T's asymmetric short-margin (50% long / 150% short). The current ORB strategy takes both sides as OR breaks dictate but doesn't enforce per-side balance, so a strong-trend day could put all $57k of gross capacity into longs. For tighter safety, a future change would add per-side caps + a true BP-utilization formula. Documented in the 7-layer architecture proposal but not implemented in this commit.
+
+---
+
 ## v9.1.135 (2026-05-17) — replay: P&L sparkline reads diff, fix at synth source
 
 P&L sparkline beneath the Day P&L KPI was rendering a flat line at $0. v9.1.133 added a `currentState()` bridge that mirrors `state.portfolios.main` → `state.portfolio` at render time, fixing the KPI tile — but the sparkline pre-computes ALL points from `d.portfolio.day_pnl` directly in each diff (so it can draw the full ghost trajectory + dim-future-fill style). That data was untouched by the `currentState()` bridge.
