@@ -4,6 +4,39 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.137 (2026-05-18) — replay: regenerate last-week snapshots with the 1.9× cap + morning↔EOD interaction
+
+Follow-up to v9.1.136. Operator asked to regenerate replay snapshots for 05-11→05-15 to reflect the new staging gross-cap lever, **including** the morning ↔ EOD interaction (a morning position that holds past 15:00 ET consumes gross-notional capacity that EOD r17 would otherwise use).
+
+**Changes:**
+
+- `scripts/build_replay_week.sh` — `MORN_ENV` now sets `ORB_MAX_CONCURRENT_NOTIONAL_MULT=1.9` so the per-day `orb_replay_day` invocations replay against the same lever as staging production.
+- `tools/synth_snapshots.py:synth_day` — new optional `gross_notional_mult` arg (default 1.9). New `_add_eod_with_interaction` helper: sums morning positions still open at bucket 900 (15:00 ET), computes remaining gross capacity, and admits/blocks EOD r17 candidates FCFS against that budget. Logs the blocked count + held-over notional per day so the interaction is auditable.
+
+**Updated weekly P&L (vs prior 0.95×-cap replay):**
+
+| Date | Main (new) | Val (new) | Δ Main | Δ Val |
+|---|---:|---:|---:|---:|
+| Mon 05-11 | -$788 | -$238 | -$836 | -$252 |
+| Tue 05-12 | +$388 | -$5 | +$100 | -$92 |
+| Wed 05-13 | +$2,471 | +$771 | +$469 | +$170 |
+| Thu 05-14 | +$3,323 | +$1,065 | +$494 | +$218 |
+| Fri 05-15 | +$191 | +$55 | +$246 | +$71 |
+| **Week** | **+$5,586** | **+$1,648** | **+$474** | **+$115** |
+
+Worst-day deepens on Mon (Main -$55 → -$788, Val -$16 → -$238) — more morning trades admitted, more potential downside on adverse-OR days. Best-day grows on Thu by ~$500.
+
+**EOD blocked by morning held-over notional** (Val only — Main's $190k cap has room):
+- 05-13: Val 1 EOD blocked (held-over $43k of $57k cap → $14k left, below the $21k both-leg requirement)
+- 05-14: Val 1 EOD blocked (held-over $38k)
+- 05-15: Val 2 EOD blocked = full EOD shutdown (held-over $48k)
+
+The interaction is significant on the $30k Val account: large morning positions can fully crowd out the EOD r17 strategy on the same day. On the $100k Main account, the $190k cap has room for both legs and no EOD is ever blocked across the week.
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `8964cb3c`).
+
+---
+
 ## v9.1.136 (2026-05-18) — staging: bump ORB_MAX_CONCURRENT_NOTIONAL_MULT 0.95 → 1.9 (95% Reg T utilization)
 
 Operator question — what is `MAX_CONCURRENT_NOTIONAL_MULT` set on production? — surfaced that **production has been running with the live-engine code default of 0.95** (= 95% of equity = ~47.5% of Reg T buying power) while ALL prior backtests were anchored to the looser `tools/orb_backtest.py` default of 2.0 (full Reg T). Production has been over half a year of paper-fire data leaving half of Reg T BP unused.

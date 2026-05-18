@@ -371,41 +371,73 @@ def _build_snapshot(base: dict, date_str: str, minute: int,
     return state
 
 
-def synth_day(date_str: str, base: dict) -> list[dict]:
-    """Synthesize all 5-min snapshots for one trading day."""
+def synth_day(date_str: str, base: dict,
+              gross_notional_mult: float = 1.9) -> list[dict]:
+    """Synthesize all 5-min snapshots for one trading day.
+
+    Models morning <-> EOD interaction: morning positions still open at
+    EOD entry time (bucket 900 = 15:00 ET) consume gross-notional capacity
+    that EOD r17 entries would otherwise use. If remaining capacity is
+    insufficient for both EOD legs (~70% of equity for the 35%-per-side
+    fixed notional sizing), the smaller-magnitude EOD legs are dropped.
+    """
     # Morning admits/exits per portfolio
     adm_m, ex_m, _ = _load_morning_events(date_str, "main")
     adm_v, ex_v, _ = _load_morning_events(date_str, "val")
     pairs_main = _pair_admits_exits(adm_m, ex_m)
     pairs_val = _pair_admits_exits(adm_v, ex_v)
 
-    # EOD pairs per portfolio
-    for p in _load_eod_pairs(date_str, "main"):
-        pairs_main.append({
-            "ticker": p["ticker"], "side": p["side"],
-            "entry_min": int(p["entry_bucket"]),
-            "exit_min": int(p["exit_bucket"]),
-            "entry_price": float(p["entry_price"]),
-            "exit_price": float(p["exit_price"]),
-            "shares": int(p["shares"]),
-            "stop_price": float(p.get("stop_price") or 0),
-            "pnl": float(p["pnl_dollars"]),
-            "exit_reason": p.get("exit_reason", "eod"),
-            "leg": "eod",
-        })
-    for p in _load_eod_pairs(date_str, "val"):
-        pairs_val.append({
-            "ticker": p["ticker"], "side": p["side"],
-            "entry_min": int(p["entry_bucket"]),
-            "exit_min": int(p["exit_bucket"]),
-            "entry_price": float(p["entry_price"]),
-            "exit_price": float(p["exit_price"]),
-            "shares": int(p["shares"]),
-            "stop_price": float(p.get("stop_price") or 0),
-            "pnl": float(p["pnl_dollars"]),
-            "exit_reason": p.get("exit_reason", "eod"),
-            "leg": "eod",
-        })
+    EOD_ENTRY_MIN = 900  # 15:00 ET
+
+    def _add_eod_with_interaction(portfolio: str, morning_pairs: list[dict],
+                                  out_pairs: list[dict]) -> dict:
+        """Add EOD pairs to out_pairs, but enforce gross-notional cap interaction
+        with morning held-over positions. Returns a per-portfolio summary."""
+        equity = PORTFOLIOS_EQUITY[portfolio]
+        cap = gross_notional_mult * equity
+        # Notional from morning trades still open at 15:00 ET
+        held_over = sum(
+            p["entry_price"] * p["shares"]
+            for p in morning_pairs
+            if p["entry_min"] < EOD_ENTRY_MIN < p["exit_min"]
+        )
+        # Sort EOD pairs by entry bucket (admit FCFS)
+        eod_candidates = sorted(_load_eod_pairs(date_str, portfolio),
+                                key=lambda x: int(x.get("entry_bucket", 900)))
+        admitted, blocked = [], []
+        running_notional = held_over
+        for p in eod_candidates:
+            nominal = float(p["entry_price"]) * int(p["shares"])
+            if running_notional + nominal > cap:
+                blocked.append(p)
+                continue
+            admitted.append(p)
+            running_notional += nominal
+        for p in admitted:
+            out_pairs.append({
+                "ticker": p["ticker"], "side": p["side"],
+                "entry_min": int(p["entry_bucket"]),
+                "exit_min":  int(p["exit_bucket"]),
+                "entry_price": float(p["entry_price"]),
+                "exit_price":  float(p["exit_price"]),
+                "shares": int(p["shares"]),
+                "stop_price": float(p.get("stop_price") or 0),
+                "pnl": float(p["pnl_dollars"]),
+                "exit_reason": p.get("exit_reason", "eod"),
+                "leg": "eod",
+            })
+        return {
+            "portfolio": portfolio, "cap": cap, "held_over": held_over,
+            "eod_admitted": len(admitted), "eod_blocked": len(blocked),
+            "blocked_pnl_lost": round(sum(float(p["pnl_dollars"]) for p in blocked), 2),
+        }
+
+    interaction_main = _add_eod_with_interaction("main", pairs_main, pairs_main)
+    interaction_val  = _add_eod_with_interaction("val",  pairs_val,  pairs_val)
+    if interaction_main["eod_blocked"] or interaction_val["eod_blocked"]:
+        print(f"  {date_str}: EOD-blocked-by-gross-cap   "
+              f"main={interaction_main['eod_blocked']} (held-over=${interaction_main['held_over']:,.0f})  "
+              f"val={interaction_val['eod_blocked']} (held-over=${interaction_val['held_over']:,.0f})")
 
     bars = _load_bars(date_str)
 
