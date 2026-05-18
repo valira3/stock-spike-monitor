@@ -2048,6 +2048,26 @@ def _v10_per_portfolio_exit_pass(callbacks: EngineCallbacks) -> None:
                     callbacks=callbacks,
                     reduce_only=True,
                 )
+                # v9.1.128 (audit fix): record post-trade cooldown on
+                # the portfolio's PortfolioBook. Pre-v9.1.127 this was
+                # set inside executors/base.py:_on_signal's EXIT_LONG/
+                # EXIT_SHORT handler -- now unreachable in always-
+                # independent mode. Without this call the Keystone
+                # cooldown lever (ORB_POST_TRADE_COOLDOWN_MIN=10,
+                # +$42,573/yr) was silently disabled for Val/Gene.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS as _pb_map
+
+                    _pb_pid = _pb_map.get(pid)
+                    if _pb_pid is not None:
+                        _pb_pid.record_post_trade(ticker, pos.side.lower())
+                except Exception:
+                    logger.debug(
+                        "[V9128-COOLDOWN] %s/%s record_post_trade skipped",
+                        pid,
+                        ticker,
+                        exc_info=True,
+                    )
             elif getattr(result, "partial", False):
                 logger.info(
                     "[V9127-EXIT-PARTIAL] %s/%s %s shares=%d @ %.4f booked=$%.2f",

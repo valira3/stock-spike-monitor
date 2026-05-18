@@ -1364,27 +1364,38 @@ class TradeGeniusBase:
         v9.1.125: when `reduce_only=True`, skip the cumulative-notional
         cap check at lines ~1390. Close orders for existing positions
         must always submit; the cap is for new-exposure entries only.
+
+        v9.1.128 (audit fix): `reduce_only=True` also bypasses the
+        post-trade cooldown gate. The cooldown blocks RE-ENTRIES on a
+        recently exited (ticker, side); a close is an exit, never a
+        re-entry, and must never be blocked here. Without this guard,
+        an opposite-side close on a ticker whose same-side trade just
+        stopped out would be wrongly suppressed and the position
+        would linger until the 15:57 EOD safety-net sweep.
         """
         # Cooldown gate: post-loss (asymmetric) + post-trade (symmetric v9.1.111).
         # Symmetric check runs first -- it covers both wins and losses.
-        try:
-            from engine.portfolio_book import PORTFOLIOS
+        # v9.1.128: skip entirely when reduce_only=True -- cooldown is an
+        # entry-side gate and must not block closes.
+        if not reduce_only:
+            try:
+                from engine.portfolio_book import PORTFOLIOS
 
-            _pb_entry = PORTFOLIOS.get(self.NAME.lower())
-            if _pb_entry is not None:
-                _cd_sym = _pb_entry.is_in_post_trade_cooldown(ticker, side.lower())
-                if _cd_sym is not None:
-                    logger.info(
-                        "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
-                        self.NAME,
-                        side,
-                        ticker,
-                        _cd_sym.get("until_utc", "?"),
-                        _cd_sym.get("window_min", 0),
-                    )
-                    return False
-        except Exception:
-            logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
+                _pb_entry = PORTFOLIOS.get(self.NAME.lower())
+                if _pb_entry is not None:
+                    _cd_sym = _pb_entry.is_in_post_trade_cooldown(ticker, side.lower())
+                    if _cd_sym is not None:
+                        logger.info(
+                            "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
+                            self.NAME,
+                            side,
+                            ticker,
+                            _cd_sym.get("until_utc", "?"),
+                            _cd_sym.get("window_min", 0),
+                        )
+                        return False
+            except Exception:
+                logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
 
         client = self._ensure_client()
         if client is None:
@@ -1470,13 +1481,36 @@ class TradeGeniusBase:
         direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
         coid = self._build_client_order_id(ticker, direction)
         order_side = OrderSide.BUY if side == "LONG" else OrderSide.SELL
-        req = MarketOrderRequest(
+        # v9.1.128: forward close-only intent to Alpaca via PositionIntent.
+        # alpaca-py's MarketOrderRequest has no `reduce_only` field
+        # (pydantic v2 silently drops it). The right primitive is
+        # `position_intent=PositionIntent.{SELL,BUY}_TO_CLOSE`, which tells
+        # the broker explicitly that this order closes the existing
+        # position. Defends against local<->broker position drift: if we
+        # think we have 100 shares but Alpaca only has 80, the
+        # SELL_TO_CLOSE intent caps the fill at 80 instead of accidentally
+        # shorting 20.
+        _req_kwargs = dict(
             symbol=ticker,
             qty=int(shares),
             side=order_side,
             time_in_force=TimeInForce.DAY,
             client_order_id=coid,
         )
+        if reduce_only:
+            try:
+                from alpaca.trading.enums import PositionIntent
+
+                _req_kwargs["position_intent"] = (
+                    PositionIntent.SELL_TO_CLOSE if side == "SHORT" else PositionIntent.BUY_TO_CLOSE
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] [V10-FIRE-CLOSE] PositionIntent import failed; "
+                    "submitting without broker-side close-only marker",
+                    self.NAME,
+                )
+        req = MarketOrderRequest(**_req_kwargs)
         try:
             order = self._submit_order_idempotent(client, req, coid)
         except Exception as _exc:
