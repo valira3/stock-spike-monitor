@@ -4,6 +4,40 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.123 (2026-05-18) — extend post-restart engine↔broker reconciliation to Main
+
+`orb.live_runtime.inject_missing_engine_positions` previously restricted
+itself to `val` and `gene` (per its docstring); the scan-loop reconcile
+pass at `engine/scan.py:992` correspondingly only iterated those two
+portfolios. After Main acquired the 2026-05-18 10:10 ET AVGO short
+through the legacy `callbacks.execute_short_entry` path, an automated
+`data: refresh earnings feeds` commit at 11:20 ET triggered a Railway
+redeploy. Post-restart, Main's `tg.short_positions` rehydrated from
+`paper_state.json` but the v10 RiskBook's `_open_tickets` came back
+empty — Main wasn't in any reconcile pass that would re-admit the
+ticket. The 11:25 ET monitor tick fired `no_phantom_positions=CRIT`
+with detail "main has 1 positions in /api/state but RiskBook reports
+open_count=0".
+
+The position itself was safe (Main's legacy chandelier-trail + stop +
+EOD cutoff machinery is independent of v10 ticket tracking), but the
+v10 risk-cap accounting was wrong — a fresh Main entry on the same
+session could pile up against the $2k risk cap without the engine
+knowing about the existing $820.
+
+- `orb/live_runtime.py:inject_missing_engine_positions` — docstring
+  updated to include "main". The function body was already
+  portfolio-agnostic; only the contract changed.
+- `engine/scan.py` — new reconcile block runs immediately after the
+  val/gene loop. Builds Main's broker_positions tuples from
+  `tg.positions` (longs) + `tg.short_positions` (shorts) — a different
+  source than val/gene's executor.positions because Main has no
+  executor instance — and calls `inject_missing_engine_positions("main",
+  tuples)`. Same `[V9197-INJECT]` log tag as val/gene for consistency.
+- Idempotent: if the engine already has the ticket (normal case, no
+  redeploy interrupted entry), the inject function's "already tracked"
+  short-circuit fires per ticker and the call is a no-op.
+
 ## v9.1.122 (2026-05-18) — resolve_equity routes through executor for live mode
 
 `engine.portfolio_equity.alpaca_account_for_book` was hard-coded to read

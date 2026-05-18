@@ -1000,6 +1000,43 @@ def _orb_phantom_sweep(tg) -> None:
                     )
             except Exception as _ie:
                 logger.warning("[V9199-RECONCILE] %s inner: %s", _pid, _ie)
+        # v9.1.123 -- extend engine↔broker reconciliation to Main.
+        # Pre-v9.1.123 Main was excluded from the inject path because the
+        # function docstring restricted it to val/gene; a redeploy after
+        # Main acquired a position via the legacy callbacks.execute_entry
+        # path left the v10 RiskBook's _open_tickets empty for Main,
+        # tripping the no_phantom_positions invariant. (Observed
+        # 2026-05-18 10:10 ET AVGO short entry → 11:20 ET earnings-feed-
+        # refresh redeploy → 11:25 ET monitor CRIT.) Main's broker truth
+        # is tg.positions (longs) + tg.short_positions (shorts), not an
+        # executor, so the tuple construction is slightly different from
+        # the val/gene path above.
+        try:
+            _main_longs = getattr(tg, "positions", {}) or {}
+            _main_shorts = getattr(tg, "short_positions", {}) or {}
+            _main_broker_tuples: list = []
+            for _ticker, _pos in _main_longs.items():
+                _ticker_u = (_ticker or "").upper()
+                _entry = float(_pos.get("entry_price") or 0)
+                _qty = int(_pos.get("shares") or 0)
+                if _ticker_u and _qty > 0:
+                    _main_broker_tuples.append((_ticker_u, "long", _entry, _qty))
+            for _ticker, _pos in _main_shorts.items():
+                _ticker_u = (_ticker or "").upper()
+                _entry = float(_pos.get("entry_price") or 0)
+                _qty = int(_pos.get("shares") or 0)
+                if _ticker_u and _qty > 0:
+                    _main_broker_tuples.append((_ticker_u, "short", _entry, _qty))
+            if _main_broker_tuples:
+                _injected_main = inject_missing_engine_positions("main", _main_broker_tuples)
+                if _injected_main:
+                    logger.warning(
+                        "[V9197-INJECT] main: injected %d missing engine position(s): %s",
+                        len(_injected_main),
+                        _injected_main,
+                    )
+        except Exception as _me:
+            logger.warning("[V9199-RECONCILE] main: %s", _me)
     except Exception as _rce:
         logger.warning("[V9199-RECONCILE] outer: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
