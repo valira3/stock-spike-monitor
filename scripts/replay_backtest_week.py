@@ -212,12 +212,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   header .sub { color: var(--muted); font-size: 11px; }
   button { background: #1f2937; color: var(--text); border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px; font: inherit; cursor: pointer; }
   button:hover { background: #2a3441; }
-  /* Dropdown styled to stand out: bigger, brighter, with explicit caret. */
-  .date-picker { display: flex; align-items: center; gap: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid var(--accent); border-radius: 5px; padding: 4px 8px 4px 10px; }
-  .date-picker .label { color: var(--accent); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .date-picker select { background: transparent; color: var(--text); border: 0; padding: 4px 24px 4px 4px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%2338bdf8' stroke-width='2' fill='none'/></svg>"); background-repeat: no-repeat; background-position: right 4px center; }
-  .date-picker select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .date-picker select option { background: var(--panel); color: var(--text); }
+  /* Dropdown styled to be unmissable: cyan accent panel with explicit "REPLAY DATE" label,
+     larger font, custom caret. Includes a glow on hover so it announces itself. */
+  .date-picker { display: flex; align-items: center; gap: 8px; background: rgba(56, 189, 248, 0.15); border: 2px solid var(--accent); border-radius: 6px; padding: 5px 10px 5px 12px; box-shadow: 0 0 0 0 rgba(56,189,248,0); transition: box-shadow 0.2s; }
+  .date-picker:hover { box-shadow: 0 0 12px 1px rgba(56,189,248,0.25); }
+  .date-picker .label { color: var(--accent); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.0px; }
+  .date-picker select { background: transparent; color: var(--text); border: 0; padding: 4px 26px 4px 4px; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%2338bdf8' stroke-width='2.5' fill='none'/></svg>"); background-repeat: no-repeat; background-position: right 4px center; }
+  .date-picker select:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .date-picker select option { background: var(--panel); color: var(--text); font-size: 14px; }
   .tabs { display: flex; gap: 4px; }
   .tab { padding: 5px 14px; border-radius: 4px; background: #1f2937; border: 1px solid var(--border); cursor: pointer; user-select: none; }
   .tab.active { background: var(--accent); color: #0e1318; border-color: var(--accent); font-weight: 600; }
@@ -261,8 +263,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <h1>WEEK REPLAY</h1>
   <span class="sub">counterfactual · real SIP bars · live v10 engine · Keystone v9.1.114</span>
-  <div class="date-picker">
-    <span class="label">Date</span>
+  <div class="date-picker" role="group" aria-labelledby="date-label">
+    <span class="label" id="date-label">Replay Date</span>
     <select id="dateSel" aria-label="Select replay date"></select>
   </div>
   <div class="tabs">
@@ -400,6 +402,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     var W = canvas.clientWidth, H = canvas.clientHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     var ctx = canvas.getContext('2d');
+    if (!ctx) return;  // headless / canvas-unsupported environment
     ctx.scale(dpr, dpr);
     var PAD_L = 50, PAD_R = 8, PAD_T = 6, PAD_B = 14;
     var plotW = W - PAD_L - PAD_R;

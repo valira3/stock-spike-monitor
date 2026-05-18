@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.128 (2026-05-17) — week-replay: unmissable date picker + canvas null guard
+
+Operator reported "I don't see the dropdown" after v9.1.126. Headless-DOM verification confirmed the dropdown does render (5 options, Fri 05-15 selected, change event re-renders trade list) — but the styling could be missed at a glance. This bump makes it impossible to miss and adds a defensive guard for canvas-less browsers.
+
+- **Label changed from "DATE" to "REPLAY DATE"** so the affordance is obvious even with the dropdown closed.
+- **Pill container** now has a 2px cyan border (was 1px), thicker letter-spacing on the label, larger font (15px on the selected value, was 14px), beefier caret (stroke-width 2.5, was 2), and a soft cyan glow on hover so the picker announces itself.
+- **`drawChart`** now bails out cleanly if `canvas.getContext('2d')` returns null (defensive against headless / canvas-less environments — irrelevant in real browsers but kills the `Cannot read properties of null` traceback in JSDOM and similar tools used for testing).
+
+Verified via JSDOM: `dropdown options: 5 (expected 5)`, `default selected: Fri May 15`, `after change to 05-13 ... trades shown: 4` (the re-render fires correctly).
+
+---
+
 ## v9.1.127 (2026-05-17) — chore: drop literal em-dash slipped into replay_backtest_week.py docstring
 
 Fix-forward — v9.1.126 introduced two literal U+2014 em-dashes in the `replay_backtest_week.py` module docstring. CI's em-dash guard flagged it, but the `;`-chained commit + push command ran anyway, so the bad lines landed on `staging`. Replaced both with `--` per the CLAUDE.md rule (`.py` files use the escape, CHANGELOG/README may use the real glyph).
