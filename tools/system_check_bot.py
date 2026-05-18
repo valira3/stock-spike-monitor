@@ -1140,7 +1140,7 @@ def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
     status = OK
     detail = f"{n} trades W{wins}/L{n - wins} P&L=${total_pnl:+.2f} WR={wr:.0f}%"
 
-    # Cap breach (ORB_PORTFOLIO_FIRE=1 means each pid counts separately,
+    # Cap breach (always-independent: each pid counts separately,
     # so main alone should not exceed 5 trades).
     main_trades = [t for t in today if t.get("portfolio") in ("paper", "main", None)]
     if len(main_trades) > KEYSTONE["max_trades_per_day"]:

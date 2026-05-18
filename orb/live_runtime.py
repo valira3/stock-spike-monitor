@@ -1052,9 +1052,9 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
     The dashboard surfaced this as the "phantom IN_POS" pattern
     caught by `inv_v10_in_pos_has_internal_position`.
 
-    Same shape for Val/Gene in mirror mode (ORB_PORTFOLIO_FIRE=0):
-    they admit and transition IN_POS, but their broker fire is
-    deferred so no position is ever opened in their book.
+    Same shape for Val/Gene when the executor is unavailable
+    (Alpaca keys unset, kill switch active): they admit and
+    transition IN_POS, but no broker order lands.
 
     This helper undoes both:
       1. Releases the RiskBook ticket so capacity flows back.

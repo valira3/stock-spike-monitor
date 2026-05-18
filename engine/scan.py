@@ -1375,14 +1375,8 @@ def _v10_dispatch_executor_fire(
 ) -> bool:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
-    Production-safe rollout: gated on BOTH ORB_LIVE_MODE and
-    ORB_PORTFOLIO_FIRE. Either off -> no broker call.
-
-    v7.30.0: the ORB_LIVE_MODE gate was added here for kill-switch
-    consistency. Previously fire was gated only on ORB_PORTFOLIO_FIRE,
-    so an operator setting ORB_LIVE_MODE=0 to disable v10 strategy
-    could still see Val/Gene fire if PORTFOLIO_FIRE was on. Now both
-    must agree.
+    v9.1.128: always-independent. The only kill switch is ORB_LIVE_MODE;
+    the old ORB_PORTFOLIO_FIRE escape hatch was removed.
 
     v7.30.0: also routes broker submit failures (e.g. Alpaca 5xx) to
     callbacks.report_error so Telegram/dashboard see them instead of
@@ -1407,20 +1401,10 @@ def _v10_dispatch_executor_fire(
             ticker,
         )
         return False
-    # v8.3.23 -- env default flipped "0" -> "1". Independent mode
-    # is now the default. Operators wanting the old mirror-mode
-    # behavior set ORB_PORTFOLIO_FIRE=0 explicitly in Railway env.
-    # Companion change: executors/base.py:_on_signal guards ENTRY
-    # signals when this flag is "1" to prevent double-fire.
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
-        logger.info(
-            "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
-            "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
-            pid,
-            side,
-            ticker,
-        )
-        return False
+    # v9.1.128 -- always-independent. The ORB_PORTFOLIO_FIRE escape
+    # hatch was removed; every non-main portfolio fires its own
+    # broker order via the executor. The only kill switch remaining
+    # is ORB_LIVE_MODE (checked above).
     try:
         from executors.bootstrap import get_executor
 
@@ -1933,8 +1917,6 @@ def _v10_dispatch_executor_partial_close(
     """
     if not _orb_runtime.is_live_mode_on():
         return False
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
-        return False
     try:
         from executors.bootstrap import get_executor
 
@@ -1985,10 +1967,8 @@ def _v10_per_portfolio_exit_pass(callbacks: EngineCallbacks) -> None:
     and PARTIAL_EXIT_* in independent mode so this loop owns ALL exit
     firing for Val/Gene.
 
-    Skipped in legacy mirror mode (ORB_PORTFOLIO_FIRE=0).
+    v9.1.128: always runs. The only kill switch is ORB_LIVE_MODE.
     """
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
-        return
     if not _orb_runtime.is_live_mode_on():
         return
 
@@ -2068,6 +2048,26 @@ def _v10_per_portfolio_exit_pass(callbacks: EngineCallbacks) -> None:
                     callbacks=callbacks,
                     reduce_only=True,
                 )
+                # v9.1.128 (audit fix): record post-trade cooldown on
+                # the portfolio's PortfolioBook. Pre-v9.1.127 this was
+                # set inside executors/base.py:_on_signal's EXIT_LONG/
+                # EXIT_SHORT handler -- now unreachable in always-
+                # independent mode. Without this call the Keystone
+                # cooldown lever (ORB_POST_TRADE_COOLDOWN_MIN=10,
+                # +$42,573/yr) was silently disabled for Val/Gene.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS as _pb_map
+
+                    _pb_pid = _pb_map.get(pid)
+                    if _pb_pid is not None:
+                        _pb_pid.record_post_trade(ticker, pos.side.lower())
+                except Exception:
+                    logger.debug(
+                        "[V9128-COOLDOWN] %s/%s record_post_trade skipped",
+                        pid,
+                        ticker,
+                        exc_info=True,
+                    )
             elif getattr(result, "partial", False):
                 logger.info(
                     "[V9127-EXIT-PARTIAL] %s/%s %s shares=%d @ %.4f booked=$%.2f",
@@ -2277,17 +2277,16 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                         shares=result.shares,
                         callbacks=callbacks,
                     )
-                    # v7.81.0 -- if the executor's broker fire was
-                    # deferred (ORB_PORTFOLIO_FIRE=0 mirror mode) or
-                    # the executor wasn't available, roll back the
-                    # admit so Val/Gene FSM doesn't stick IN_POS.
+                    # v7.81.0 -- if the executor wasn't available
+                    # (no keys, kill switch), roll back the admit so
+                    # Val/Gene FSM doesn't stick IN_POS.
                     if not _fired_other:
                         try:
                             _orb_runtime.rollback_admit(
                                 pid,
                                 ticker,
                                 result.ticket_id,
-                                reason="executor broker-fire deferred or unavailable",
+                                reason="executor broker-fire unavailable",
                             )
                         except Exception:
                             pass

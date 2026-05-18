@@ -225,7 +225,7 @@ class TestPositionCountThreeWay:
         assert "broker_open_n=1" in r["detail"]
 
     def test_passes_when_val_has_independent_engine_positions(self):
-        # ORB_PORTFOLIO_FIRE=1: Val fired 3 entries independently; main books empty.
+        # Val fired 3 entries independently; main books empty.
         # engine_positions on the executor covers the broker count.
         s = {
             "portfolio": {"broker_open_n": 3},
@@ -715,215 +715,30 @@ class TestEquityMatchesBaselineToleranceV783:
 # ---------------------------------------------------------------------
 
 
-class TestValGeneTradesMatchMainEnrichmentV784:
-    """v7.84.0 -- on failure, the invariant fetches recent Railway logs
-    and appends a [V79-MIRROR-*] + [Val] [ALPACA-*] slice to the issue
-    detail. Operator no longer needs to paste logs manually."""
+class TestValGeneTradesMatchMainObsoleteV9128:
+    """v9.1.128 -- inv_val_gene_trades_match_main was reduced to a
+    permanent skip stub when the ORB_PORTFOLIO_FIRE mirror-mode flag
+    was removed. Val/Gene trade counts are no longer expected to
+    match Main (each portfolio fires independently). The v7.84.0
+    enrichment path + v8.3.14 subscribed-note logic are gone.
+    """
 
-    def test_passes_when_counts_match(self):
-        # Sanity: no mismatch -> no log fetch attempted -> ok.
-        s = {"trades_today": [{"ticker": "AAPL"}]}
-        val = {"enabled": True, "trades_today": [{"ticker": "AAPL"}]}
-        gene = {"enabled": True, "trades_today": [{"ticker": "AAPL"}]}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
-
-        r = inv_val_gene_trades_match_main(ctx)
-        assert r["ok"]
-
-    def test_fails_with_log_slice_when_logs_available(self, monkeypatch):
+    def test_obsolete_invariant_always_returns_ok_skip(self):
+        """Regardless of input state, the function must return ok=True
+        with an obsolete-marker reason so callers + the JSONL log keep
+        parsing the snapshot."""
         s = {"trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
+        val = {"enabled": True, "trades_today": []}  # huge mismatch
+        gene = {"enabled": True, "trades_today": [{"ticker": "C"}]}
         ctx = InvariantContext(
             payloads={"state": s, "exec_val": val, "exec_gene": gene},
             base_url="https://example.com",
         )
-        # Stub grep_logs to return synthetic mirror lines.
-        import tools.railway_log_tail as rlt
-
-        def fake_grep(pattern, **kw):
-            if "MIRROR" in pattern:
-                return [
-                    {
-                        "timestamp": "t1",
-                        "message": "[V79-MIRROR-RECV] Val kind=ENTRY_LONG",
-                        "severity": "info",
-                    },
-                    {
-                        "timestamp": "t2",
-                        "message": "[V79-MIRROR-SKIP] Val ENTRY_LONG qty=0",
-                        "severity": "warning",
-                    },
-                ]
-            return []
-
-        monkeypatch.setattr(rlt, "grep_logs", fake_grep)
         from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
 
         r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        assert "val=0 vs main=2" in r["summary"]
-        # The detail should now include the log slice with our MIRROR markers
-        assert "[V79-MIRROR-RECV]" in r["detail"]
-        assert "[V79-MIRROR-SKIP]" in r["detail"]
-
-    def test_fails_with_explainer_when_logs_unavailable(self, monkeypatch):
-        s = {"trades_today": [{"ticker": "A"}]}
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        # Stub grep_logs to return nothing (simulates missing secrets).
-        import tools.railway_log_tail as rlt
-
-        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
-        from tools.dashboard_monitor_invariants import inv_val_gene_trades_match_main
-
-        r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        # Detail should include the missing-secrets explainer
-        assert "RAILWAY_API_TOKEN" in r["detail"] or "No Railway log slice attached" in r["detail"]
-
-
-# ---------------------------------------------------------------------
-# v8.3.14 -- inv_val_gene_trades_match_main calls out unsubscribed
-# executor directly via the v8.3.13 portfolios.<pid>.subscribed field.
-# ---------------------------------------------------------------------
-
-
-class TestValGeneTradesMatchMainSubscribedNoteV8314:
-    """v8.3.14 -- when the mismatch is caused by an executor not
-    being subscribed to the signal bus, the invariant body now calls
-    out the root cause explicitly instead of leaving the operator to
-    grep Railway logs."""
-
-    def test_val_unsubscribed_named_as_root_cause(self, monkeypatch):
-        # Setup: val has trades_today=0 vs main=2, AND
-        # /api/state.portfolios.val.subscribed = false
-        s = {
-            "trades_today": [{"ticker": "A"}, {"ticker": "B"}],
-            "portfolios": {
-                "val": {"portfolio_id": "val", "subscribed": False},
-                "gene": {"portfolio_id": "gene", "subscribed": True},
-            },
-        }
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": [{"ticker": "A"}, {"ticker": "B"}]}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        # Stub log helpers so the detail also includes the rest of the
-        # existing v7.84.0 enrichment path (but our v8.3.14 root-cause
-        # note should land FIRST).
-        import tools.railway_log_tail as rlt
-
-        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
-        from tools.dashboard_monitor_invariants import (
-            inv_val_gene_trades_match_main,
-        )
-
-        r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        assert "val=0 vs main=2" in r["summary"]
-        # The new v8.3.14 root-cause note explicitly fingers val
-        assert "val.subscribed = false" in r["detail"]
-        assert "VAL_ALPACA_PAPER_KEY" in r["detail"]
-        # Gene is subscribed -- no false-alarm note for it
-        assert "gene.subscribed = false" not in r["detail"]
-
-    def test_both_unsubscribed_named(self, monkeypatch):
-        s = {
-            "trades_today": [{"ticker": "A"}],
-            "portfolios": {
-                "val": {"portfolio_id": "val", "subscribed": False},
-                "gene": {"portfolio_id": "gene", "subscribed": False},
-            },
-        }
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": []}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        import tools.railway_log_tail as rlt
-
-        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
-        from tools.dashboard_monitor_invariants import (
-            inv_val_gene_trades_match_main,
-        )
-
-        r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        assert "val.subscribed = false" in r["detail"]
-        assert "gene.subscribed = false" in r["detail"]
-        assert "GENE_ALPACA_PAPER_KEY" in r["detail"]
-
-    def test_both_subscribed_no_note(self, monkeypatch):
-        """Mismatch but both subscribed -- the v7.84.0 log-slice path
-        owns the diagnosis; no v8.3.14 root-cause note."""
-        s = {
-            "trades_today": [{"ticker": "A"}, {"ticker": "B"}],
-            "portfolios": {
-                "val": {"portfolio_id": "val", "subscribed": True},
-                "gene": {"portfolio_id": "gene", "subscribed": True},
-            },
-        }
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        import tools.railway_log_tail as rlt
-
-        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
-        from tools.dashboard_monitor_invariants import (
-            inv_val_gene_trades_match_main,
-        )
-
-        r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        assert "subscribed = false" not in r["detail"]
-        assert "Root cause likely" not in r["detail"]
-
-    def test_pre_v8313_state_shape_compat(self, monkeypatch):
-        """Pre-v8.3.13 deploys won't have portfolios.{pid}.subscribed.
-        The invariant must not crash and must fall through to the
-        v7.84.0 log-slice path."""
-        s = {
-            "trades_today": [{"ticker": "A"}],
-            # NO portfolios block, OR portfolios block without
-            # `subscribed` field (the pre-v8.3.13 shape).
-            "portfolios": {
-                "val": {"portfolio_id": "val"},
-                "gene": {"portfolio_id": "gene"},
-            },
-        }
-        val = {"enabled": True, "trades_today": []}
-        gene = {"enabled": True, "trades_today": [{"ticker": "A"}]}
-        ctx = InvariantContext(
-            payloads={"state": s, "exec_val": val, "exec_gene": gene},
-            base_url="https://example.com",
-        )
-        import tools.railway_log_tail as rlt
-
-        monkeypatch.setattr(rlt, "grep_logs", lambda *a, **k: [])
-        from tools.dashboard_monitor_invariants import (
-            inv_val_gene_trades_match_main,
-        )
-
-        # Must not raise
-        r = inv_val_gene_trades_match_main(ctx)
-        assert not r["ok"]
-        # No false-positive root-cause note when shape is pre-v8.3.13
-        assert "Root cause likely" not in r["detail"]
+        assert r["ok"] is True
+        assert "obsolete" in r.get("summary", "").lower()
 
 
 # ---------------------------------------------------------------------

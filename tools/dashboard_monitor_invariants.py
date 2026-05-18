@@ -150,282 +150,18 @@ def inv_equity_matches_baseline(ctx):
 
 
 def inv_val_gene_trades_match_main(ctx):
-    """When ORB_PORTFOLIO_FIRE=0 (mirror mode), Val and Gene should
-    have the same broker trade count as Main today.
-
-    v7.84.0 -- on failure, fetches recent Railway logs and appends a
-    `[V79-MIRROR-*]` slice + `[Val] [ALPACA-*]` slice to the issue
-    detail. Lets the operator (or a future me) see exactly where the
-    mirror drops without needing to paste Railway logs manually.
-    Requires RAILWAY_API_TOKEN + RAILWAY_SERVICE_ID secrets; if those
-    are missing the helper returns empty and the issue body just shows
-    the structural diagnosis as before.
+    """v9.1.128 -- OBSOLETE. This invariant compared Val/Gene broker
+    trade counts against Main, which only makes sense in the legacy
+    mirror-mode bus path. With ORB_PORTFOLIO_FIRE removed and every
+    portfolio firing its own entries + exits, Val/Gene trade counts
+    diverge from Main by design. Kept as a permanent skip stub so
+    the invariant registry list at line ~1390 doesn't need surgery
+    and historical jsonl snapshots remain parseable.
     """
-    s = _state(ctx)
-    val = _exec(ctx, "val")
-    gene = _exec(ctx, "gene")
-    if not s or not val or not gene:
-        return _ok("val_gene_trades_match_main", "skipped: state/exec missing")
-    # v9.1.47 -- skip in ORB_PORTFOLIO_FIRE=1 (independent mode, default since
-    # v8.3.23). In FIRE=1 each portfolio fires its own entries independently --
-    # Val/Gene trade counts diverge from Main by design. Detect FIRE=1 by
-    # checking if Val has Alpaca positions that are independent of paper_state.
-    val_alpaca_pos = len(val.get("positions") or [])
-    main_paper_pos = len(s.get("positions") or [])
-    if val_alpaca_pos != main_paper_pos or (val.get("enabled") and val_alpaca_pos > 0):
-        return _ok(
-            "val_gene_trades_match_main",
-            f"skipped: ORB_PORTFOLIO_FIRE=1 independent mode "
-            f"(val_alpaca_pos={val_alpaca_pos} main_paper_pos={main_paper_pos})",
-        )
-    # v9.1.70 -- skip post-market. In FIRE=1 independent mode, Val's
-    # Alpaca todays_trades (real broker) and Main's trades_today (paper
-    # state) are from different systems and will rarely match. During
-    # market hours the position-count skip above catches active divergence;
-    # post-market there are no open positions so it doesn't trigger, but
-    # there's also nothing actionable about a count mismatch at 16:15 ET.
-    _session_mode = (s.get("regime") or {}).get("mode") or ""
-    if _session_mode in ("AFTER", "CLOSED", "PRE"):
-        return _ok(
-            "val_gene_trades_match_main",
-            f"skipped: post-market session mode={_session_mode}",
-        )
-    main_trades = s.get("trades_today") or []
-    # v9.1.68 -- skip if Main's trades_today includes EOD supplement rows
-    # (portfolio="eod", injected by _eod_trade_rows_for_pid in v9.1.67).
-    # In FIRE=1 EOD mode each portfolio tracks EOD trades independently;
-    # comparing Main's injected count against Val's Alpaca todays_trades
-    # produces a guaranteed mismatch even when everything is working.
-    if any(t.get("portfolio") == "eod" or t.get("eod") for t in main_trades):
-        return _ok(
-            "val_gene_trades_match_main",
-            "skipped: Main trades_today includes EOD supplement (FIRE=1 EOD mode)",
-        )
-    main_count = len(main_trades)
-    # v9.1.68 -- executor snapshot field is "todays_trades", not "trades_today".
-    # The wrong key name made val_count always 0 in FIRE=1 post-EOD sessions.
-    val_count = len(val.get("todays_trades") or val.get("trades_today") or [])
-    gene_count = len(gene.get("todays_trades") or gene.get("trades_today") or [])
-    # v9.1.107 -- in independent FIRE=1 mode, Val fires its own ORB entries
-    # AND receives EOD reversal broker fills (AVGO, MSFT etc.) that Main
-    # never sees in paper_state. Val's count legitimately exceeds Main's.
-    # Skip when val_count >= main_count (extra trades, not missing ones).
-    import os as _os_inv
-
-    if _os_inv.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
-        if val_count >= main_count:
-            return _ok(
-                "val_gene_trades_match_main",
-                f"skipped: FIRE=1 independent mode val={val_count} >= main={main_count}"
-                " (extra Val trades from ORB+EOD are expected)",
-            )
-    mismatches = []
-    if val.get("enabled") is not False and val_count != main_count:
-        mismatches.append(f"val={val_count} vs main={main_count}")
-    if gene.get("enabled") is not False and gene_count != main_count:
-        mismatches.append(f"gene={gene_count} vs main={main_count}")
-    if not mismatches:
-        return _ok("val_gene_trades_match_main")
-
-    # v7.84.0 -- enrich failure with Railway log slice.
-    base_detail = (
-        "In mirror mode (ORB_PORTFOLIO_FIRE=0) Val and Gene fire on the "
-        "same signals as Main via the legacy bus, so their broker trade "
-        "counts should match. A mismatch may indicate Alpaca-side "
-        "rejection or a mirror-bus drift."
-    )
-    # v8.3.14 -- check the v8.3.13 `subscribed` flag first. If an
-    # executor never registered its _on_signal callback (start()
-    # failed silently, missing ALPACA_PAPER_KEY env, or the
-    # construction raised), Main's emits go into the void and the
-    # trade-count mismatch is guaranteed. Naming this root cause
-    # explicitly in the issue body lets the operator skip the
-    # log-archaeology step entirely.
-    portfolios = s.get("portfolios") or {}
-    subscription_notes: list[str] = []
-    for _pid in ("val", "gene"):
-        _block = portfolios.get(_pid) or {}
-        if "subscribed" not in _block:
-            continue  # pre-v8.3.13 state shape; skip
-        if not _block.get("subscribed"):
-            subscription_notes.append(
-                f"**{_pid}.subscribed = false** -- {_pid.upper()} executor "
-                f"never registered its _on_signal callback on the signal "
-                f"bus. Most likely causes: (a) {_pid.upper()}_ALPACA_PAPER_KEY "
-                f"env var unset or empty in Railway; (b) executor "
-                f"construction or start() raised silently (grep older "
-                f"Railway logs for `[{_pid.title()}] startup failed` or "
-                f"`[{_pid.title()}] skipped`); (c) Alpaca client probe "
-                f"raised inside _ensure_client(). Until {_pid.upper()} "
-                f"is subscribed, every Main emit goes into the void for "
-                f"this executor and the trade-count mismatch is "
-                f"guaranteed."
-            )
-    if subscription_notes:
-        base_detail += "\n\n### Root cause likely:\n\n" + ("\n\n".join(subscription_notes))
-    try:
-        from tools.railway_log_tail import grep_logs, format_log_slice
-
-        # v7.85.0 -- limit raised 1000 -> 3000 so we span a wider time
-        # window. The bot logs at ~50 lines/min during RTH; 3000 lines
-        # covers ~1 hour, which catches any Main fire from the last
-        # cron tick / monitor cycle even if Main was quiet recently.
-        # Also added the [SIGNAL-BUS-*] section so we can audit "did
-        # emit fire?" / "did dispatch fire?" vs the receiver side.
-        # v7.95.0 -- limit raised 3000 -> 10000. Post-RTH log rates
-        # (~10-20 lines/min for heartbeats + scan-loop ticks) meant
-        # the 3000-line window only covered ~2-3 hours of idle time,
-        # so monitor cycles fired hours after RTH close (e.g. issue
-        # #575/#577/#579 today at 18:55-19:22 ET, ~3-3.5h after the
-        # last trade) couldn't reach back to capture [TRADE_CLOSED]
-        # or [SIGNAL-BUS-EMIT] lines for today's actual fires. 10000
-        # covers ~8h of post-RTH activity or ~3-5h of RTH activity --
-        # either case reaches back to the most recent trade window.
-        bus_slice = grep_logs(r"\[SIGNAL-BUS-(EMIT|DISPATCH)\]", limit=10000, max_matches=100)
-        mirror_slice = grep_logs(r"\[V79-MIRROR-\w+\]", limit=10000, max_matches=100)
-        alpaca_val = grep_logs(r"\[Val\] \[ALPACA-(REQ|RESP|ERR)\]", limit=10000, max_matches=50)
-        alpaca_gene = grep_logs(r"\[Gene\] \[ALPACA-(REQ|RESP|ERR)\]", limit=10000, max_matches=50)
-        log_sections: list[str] = []
-        if bus_slice:
-            log_sections.append(
-                "### Railway [SIGNAL-BUS-*] slice (emit + dispatch counts)\n\n"
-                "```\n" + format_log_slice(bus_slice, max_lines=40) + "\n```"
-            )
-        if mirror_slice:
-            log_sections.append(
-                "### Railway [V79-MIRROR-*] slice (signal-bus receipts)\n\n"
-                "```\n" + format_log_slice(mirror_slice, max_lines=40) + "\n```"
-            )
-        if alpaca_val:
-            log_sections.append(
-                "### Railway [Val] [ALPACA-*] slice (broker submissions)\n\n"
-                "```\n" + format_log_slice(alpaca_val, max_lines=20) + "\n```"
-            )
-        if alpaca_gene:
-            log_sections.append(
-                "### Railway [Gene] [ALPACA-*] slice (broker submissions)\n\n"
-                "```\n" + format_log_slice(alpaca_gene, max_lines=20) + "\n```"
-            )
-        if log_sections:
-            detail = base_detail + "\n\n" + "\n\n".join(log_sections)
-        else:
-            # v7.91.0 -- distinguish "secrets missing" from "secrets
-            # work but window empty" so the operator knows which leg
-            # to chase. The probe issues one GraphQL call against
-            # Railway to verify auth + service resolution.
-            # v7.96.0 -- also report how many log rows Railway
-            # actually returned for our limit=10000 grep window.
-            # If Railway capped the response (returned << 10000),
-            # widening the limit further can't help and we need a
-            # different fetch strategy. If it returned ~10000 but
-            # zero grep matches, the bot truly isn't emitting the
-            # patterns we expect -- a real bug downstream.
-            from tools.railway_log_tail import (
-                probe_railway_access,
-                count_recent_logs,
-                get_last_gql_errors,
-            )
-
-            probe = probe_railway_access()
-            status = probe.get("status", "unknown")
-            lines_fetched = None
-            gql_errors: list[str] = []
-            if status == "ok":
-                try:
-                    lines_fetched = count_recent_logs(limit=10000)
-                except Exception:
-                    lines_fetched = None
-                # v7.100.0 -- if the deploymentLogs query came back with
-                # GraphQL errors (schema drift, deprecated field, wrong
-                # arg name), capture the messages here so the footer
-                # surfaces Railway's actual complaint instead of just
-                # `lines_fetched=0`. count_recent_logs above triggers
-                # the fetch that populates _last_gql_errors.
-                try:
-                    gql_errors = get_last_gql_errors()
-                except Exception:
-                    gql_errors = []
-            footers = {
-                "missing_token": (
-                    "RAILWAY_API_TOKEN env var is empty in this "
-                    "workflow run. Add the secret at Settings -> "
-                    "Secrets and variables -> Actions -> Repository "
-                    "secrets with name RAILWAY_API_TOKEN."
-                ),
-                "missing_service": (
-                    "RAILWAY_SERVICE_ID env var is empty in this "
-                    "workflow run. Add the secret at Settings -> "
-                    "Secrets and variables -> Actions -> Repository "
-                    "secrets with name RAILWAY_SERVICE_ID (the "
-                    "service UUID, not the project id)."
-                ),
-                "auth_failed": (
-                    "Both env vars are set but the Railway GraphQL "
-                    "call failed. Most likely cause: the token "
-                    "is missing project log-read scope, OR "
-                    "RAILWAY_SERVICE_ID points at a project id "
-                    "instead of a service id."
-                ),
-                "no_deployment": (
-                    "Auth succeeded but the service has zero "
-                    "deployments. Verify RAILWAY_SERVICE_ID points "
-                    "at the running tradegenius service."
-                ),
-                "ok": (
-                    "Railway credentials probe OK -- the log "
-                    "fetch succeeded but the recent window genuinely "
-                    "contains no [SIGNAL-BUS-*] / [V79-MIRROR-*] / "
-                    "[Val|Gene] [ALPACA-*] lines. Main's signal "
-                    "emits may not be reaching Railway stdout."
-                ),
-            }
-            reason = footers.get(status, f"unexpected probe status: {status!r}")
-            lf_suffix = ""
-            if lines_fetched is not None:
-                lf_suffix = f" lines_fetched_on_10k_request={lines_fetched}"
-            # v7.97.0 -- surface resolved deployment so we can tell
-            # whether _resolve_latest_deployment_id picked a stale /
-            # non-running deployment. If lines_fetched=0 AND
-            # deployment_status is REMOVED / FAILED / CRASHED, the
-            # resolver is the bug -- it grabbed the first deployment
-            # in the list regardless of whether it was the running
-            # one. SUCCESS + lines_fetched=0 would be a real
-            # bot-logging issue (or a token scope problem).
-            dep_suffix = ""
-            dep_id = probe.get("deployment_id") or ""
-            dep_status = probe.get("deployment_status") or ""
-            dep_created = probe.get("deployment_created") or ""
-            if dep_id or dep_status or dep_created:
-                # v7.98.0 -- include deployment_created so the operator
-                # can tell whether the resolved deployment is the
-                # currently-running one (fresh createdAt) vs a stale
-                # SUCCESS deployment whose logs have been purged.
-                dep_suffix = (
-                    f" deployment_id={dep_id[:12] or '?'}"
-                    f" deployment_status={dep_status or '?'}"
-                    f" deployment_created={dep_created or '?'}"
-                )
-            detail = base_detail + (
-                f"\n\n_No Railway log slice attached. Diagnostic: "
-                f"status={status} token_set={probe.get('token_set')} "
-                f"service_set={probe.get('service_set')}{lf_suffix}{dep_suffix}. "
-                f"{reason}_"
-            )
-            # v7.100.0 -- surface Railway's GraphQL errors verbatim
-            # when present. These tell us EXACTLY what's wrong with
-            # the deploymentLogs query (deprecated, missing arg,
-            # type mismatch, ...) instead of leaving us to iterate
-            # query shapes blindly.
-            if gql_errors:
-                detail += "\n\n### Railway GraphQL errors\n\n"
-                for err in gql_errors[:5]:
-                    detail += f"- `{err}`\n"
-    except Exception as exc:
-        detail = base_detail + f"\n\n_log-context fetch raised: {exc}_"
-    return _fail(
+    return _ok(
         "val_gene_trades_match_main",
-        f"trade-count mismatch: {', '.join(mismatches)}",
-        detail,
+        "obsolete in v9.1.128: portfolios are always independent; "
+        "Val/Gene trade counts are not expected to match Main",
     )
 
 
@@ -986,10 +722,10 @@ def inv_position_count_three_way(ctx: InvariantContext) -> dict:
     portfolio = s.get("portfolio") or {}
     broker_open_n = int(portfolio.get("broker_open_n") or 0)
     main_count = len(main.get("positions") or s.get("positions") or [])
-    # In ORB_PORTFOLIO_FIRE=1 mode, Val/Gene fire entries independently. Their
-    # positions live in the executor's engine_positions, not the main scan loop
-    # state. Pull from executor snapshots so independent-mode entries aren't
-    # counted as phantom broker positions.
+    # v9.1.128: always-independent. Val/Gene fire entries independently;
+    # their positions live in the executor's engine_positions, not in the
+    # main scan loop state. Pull from executor snapshots so independent
+    # entries aren't flagged as phantom broker positions.
     val_exec = _exec(ctx, "val") or {}
     gene_exec = _exec(ctx, "gene") or {}
     val_count = len(val.get("positions") or []) + len(val_exec.get("engine_positions") or {})
@@ -1110,10 +846,10 @@ def inv_v10_in_pos_has_internal_position(ctx: InvariantContext) -> dict:
                 t = p.get("ticker") or p.get("symbol")
                 if t:
                     out.add(str(t).upper())
-        # v9.1.47 -- ORB_PORTFOLIO_FIRE=1: Val/Gene positions live in
-        # their Alpaca accounts, not paper_state. Include the executor
-        # Alpaca positions for val/gene so their in_pos FSM states
-        # don't trigger phantom alerts when they hold independent entries.
+        # v9.1.128: always-independent. Val/Gene positions live in their
+        # Alpaca accounts, not paper_state. Include the executor Alpaca
+        # positions for val/gene so their in_pos FSM states don't trigger
+        # phantom alerts when they hold independent entries.
         if pid in ("val", "gene"):
             exec_data = _exec(ctx, pid) or {}
             for p in exec_data.get("positions") or []:

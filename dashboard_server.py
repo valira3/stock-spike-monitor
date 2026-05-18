@@ -284,11 +284,13 @@ def _build_portfolio_strip(book, executor=None) -> dict:
         try:
             _ptc = getattr(book, "_post_trade_cooldown", {}) or {}
             long_cd = sum(
-                1 for k in _ptc
+                1
+                for k in _ptc
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "LONG"
             )
             short_cd = sum(
-                1 for k in _ptc
+                1
+                for k in _ptc
                 if isinstance(k, tuple) and len(k) == 2 and str(k[1]).upper() == "SHORT"
             )
         except Exception:
@@ -891,9 +893,11 @@ def _eod_realized_pnl_today(pid: str, today_s: str) -> float:
                     continue
                 _exit_iso = _leg.get("exit_iso") or ""
                 try:
-                    _exit_et_date = _dt_eod.fromisoformat(
-                        _exit_iso.replace("Z", "+00:00")
-                    ).astimezone(_et_zone).strftime("%Y-%m-%d")
+                    _exit_et_date = (
+                        _dt_eod.fromisoformat(_exit_iso.replace("Z", "+00:00"))
+                        .astimezone(_et_zone)
+                        .strftime("%Y-%m-%d")
+                    )
                 except Exception:
                     continue
                 if _exit_et_date != today_s:
@@ -2335,6 +2339,7 @@ def snapshot() -> dict[str, Any]:
             v701_active_by_pid = {"main": [], "val": [], "gene": []}
         try:
             import os as _os_sym_cd
+
             _sym_cd_min = int(_os_sym_cd.environ.get("ORB_POST_TRADE_COOLDOWN_MIN", 0) or 0)
         except Exception:
             _sym_cd_min = 0
@@ -2382,13 +2387,11 @@ def snapshot() -> dict[str, Any]:
             v10_block = {"available": False, "error": str(_e_v10)[:120]}
 
         # v7.50.0 -- enrich each day_state with the broker-reported
-        # trade count for that portfolio. The v10 FSM's trades_today
-        # only increments on v10-tracked exits, which means it stays
-        # at 0 for val/gene when ORB_PORTFOLIO_FIRE=0 (the default)
-        # -- those books mirror Main via the legacy signal bus. The
-        # dashboard shows broker_trades_today instead so all three
-        # tabs match. The engine itself keeps using trades_today for
-        # the max-trades-per-day gate.
+        # trade count for that portfolio. The dashboard shows
+        # broker_trades_today so val/gene tabs reflect actual Alpaca
+        # fills (independent of Main's paper count). The engine keeps
+        # using trades_today for the per-portfolio max-trades-per-day
+        # gate.
         try:
             from engine.portfolio_book import PORTFOLIOS as _PB
 

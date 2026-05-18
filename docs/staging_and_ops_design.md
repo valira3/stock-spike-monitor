@@ -38,7 +38,6 @@ Three tiers:
 # Strategy — all in observation/paper mode
 ORB_LIVE_MODE=0
 ORB_EOD_FIRE_BROKER=0
-ORB_PORTFOLIO_FIRE=0
 
 # Staging Telegram bot (separate from prod)
 TELEGRAM_BOT_TOKEN=<staging_bot_token>
@@ -267,7 +266,6 @@ Key behavioral differences that are **expected** and should not fail comparison:
 | `executor.val.mode` | paper | live | intentional |
 | `eod.fire_mode` | paper | LIVE ORDERS | `ORB_EOD_FIRE_BROKER` diff |
 | `orb_live_mode` | 0 (legacy) | 1 (v10) | `ORB_LIVE_MODE` diff |
-| `portfolio_fire` | 0 | 1 | `ORB_PORTFOLIO_FIRE` diff |
 | Open positions | empty (no real trading) | real paper positions | expected |
 | Trade log | empty or synthetic | real day's trades | expected |
 

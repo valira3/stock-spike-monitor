@@ -7,11 +7,13 @@ RiskBook fanout) with no intraday exit signal -- they could only flush at
 the 15:57 ET safety-net EOD sweep.
 
 This module covers `engine/scan.py:_v10_per_portfolio_exit_pass`:
-  - Skipped in mirror mode (ORB_PORTFOLIO_FIRE=0)
-  - Skipped when live mode is off
+  - Skipped when live mode is off (ORB_LIVE_MODE=0 kill switch)
   - Skips the "main" portfolio (Main exits via broker/positions.py)
   - On full exit: dispatches close via _v10_dispatch_executor_fire(reduce_only=True)
   - On partial: dispatches via _v10_dispatch_executor_partial_close
+
+v9.1.128: the ORB_PORTFOLIO_FIRE escape hatch was removed; the pass
+always runs (subject to the live-mode kill switch).
 """
 
 from __future__ import annotations
@@ -69,26 +71,15 @@ def _exit_result(
 
 @pytest.fixture
 def isolated_env(monkeypatch):
-    """Default: independent mode ON, live mode ON. Tests override as needed."""
+    """Default: live mode ON. Tests override as needed."""
     for k in list(os.environ):
         if k.startswith("ORB_"):
             monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
     monkeypatch.setenv("ORB_LIVE_MODE", "1")
     yield monkeypatch
 
 
 class TestExitPassGuards:
-    def test_skipped_when_mirror_mode(self, isolated_env):
-        """ORB_PORTFOLIO_FIRE=0 -> bus mirror path owns exits, pass is a no-op."""
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "0")
-        from engine import scan as _scan
-
-        with patch.object(_scan._orb_runtime, "get_engine") as mock_get:
-            _scan._v10_per_portfolio_exit_pass(callbacks=MagicMock())
-        # get_engine should NEVER be called -- we bail on the env check
-        mock_get.assert_not_called()
-
     def test_skipped_when_live_mode_off(self, isolated_env):
         """ORB_LIVE_MODE=0 -> kill switch active, no exit fires."""
         isolated_env.setenv("ORB_LIVE_MODE", "0")

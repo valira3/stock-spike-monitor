@@ -4,6 +4,82 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.128 (2026-05-18) — Remove `ORB_PORTFOLIO_FIRE`: always-independent only
+
+The mirror-mode escape hatch is gone. After v9.1.127 closed the last
+independence gap (per-portfolio exit loop), there is no functional
+reason to keep `ORB_PORTFOLIO_FIRE` around — Val/Gene have no
+"mirror Main" mode to fall back to that's any safer than the
+always-independent path. Cleaner config surface, fewer dead-code
+branches in monitors/tests/dashboard.
+
+Code:
+
+- `executors/base.py:_on_signal` -- the independent-mode skip guard
+  on ENTRY/EXIT/PARTIAL_EXIT_* is now unconditional. The env read is
+  gone. EOD_CLOSE_ALL still dispatches (v9.1.126 safety-net sweep).
+- `engine/scan.py` -- 3 sites had env-gated short-circuits removed:
+    1. `_v10_dispatch_executor_fire`: dropped the `ORB_PORTFOLIO_FIRE`
+       check; only the `ORB_LIVE_MODE` kill switch remains.
+    2. `_v10_dispatch_executor_partial_close`: same.
+    3. `_v10_per_portfolio_exit_pass`: same.
+  Two stale "mirror mode" comments on `_orb_long_entry`/`_orb_short_entry`
+  + rollback paths cleaned up.
+- `orb/live_runtime.py:rollback_admit` -- docstring no longer
+  references mirror mode (the rollback now only fires on missing
+  executor keys or the live-mode kill switch).
+
+Monitor + dashboard:
+
+- `tools/dashboard_monitor_invariants.py:inv_val_gene_trades_match_main`
+  -- 280-line function reduced to a permanent skip stub. The
+  invariant compared Val/Gene broker trade counts against Main, which
+  only made sense in mirror mode. In always-independent mode Val/Gene
+  counts diverge by design (independent RiskBook + EOD reversal
+  fills). Kept the function as a stub so the invariant registry list
+  and historical jsonl snapshots stay parseable.
+- Other monitor comments referencing `ORB_PORTFOLIO_FIRE` updated to
+  reflect always-independent reality.
+- `dashboard_server.py`, `dashboard_static/app.js`,
+  `tools/system_check_bot.py`, `tools/dashboard_analysis.py` --
+  comment-only cleanup.
+
+Tests:
+
+- `tests/strategy/test_independent_mode_entry_guard.py` -- rewritten
+  for the v9.1.128 always-skip semantics; mirror-mode test deleted,
+  new "skip is unconditional even with the flag set to 0" test
+  pins the regression.
+- `tests/strategy/test_per_portfolio_exit_pass.py` -- mirror-mode
+  test (`test_skipped_when_mirror_mode`) deleted; fixture no longer
+  sets `ORB_PORTFOLIO_FIRE`.
+- `tests/strategy/test_executor_eod_sweep.py` -- consolidated 3
+  mode-variant tests into 2 covering the single behavior.
+- `tests/strategy/test_executor_partial_close.py` -- deleted the
+  `TestOnSignalPartialDispatch` class (4 tests that exercised
+  unreachable code).
+- `tests/strategy/test_orb_executor_fire.py` -- renamed
+  `test_explicit_zero_skips_fire` -> `test_kill_switch_skips_fire`,
+  inverted to assert `ORB_LIVE_MODE=0` is the kill switch.
+- `tests/strategy/test_orb_killswitch_threadsafety.py` -- removed
+  the `test_portfolio_fire_off_overrides_live_mode_on` test.
+- `test_orb_reaudit_fixes.py` + `test_executor_reduce_only.py` +
+  `test_dashboard_monitor_invariants.py` -- redundant `setenv` lines
+  dropped.
+
+Docs:
+
+- `CLAUDE.md` -- "Independent-mode default" section retitled
+  "Always-independent portfolios"; rollback note updated.
+- `ARCHITECTURE.md` -- env-flag table row deleted; rollback section
+  updated; per-portfolio exit pass added to the call-graph.
+- `docs/staging_and_ops_design.md` -- staging env recipe no longer
+  sets the removed flag; staging-vs-prod diff table row dropped.
+
+Operator action: the `ORB_PORTFOLIO_FIRE` Railway env variable can
+be deleted from prod + staging environments. Leaving it set has no
+effect (the code no longer reads it).
+
 ## v9.1.127 (2026-05-18) — Per-portfolio EXIT loop: Val/Gene fully independent of Main
 
 Closes the v8.3.23 limitation flagged in `CLAUDE.md` and the

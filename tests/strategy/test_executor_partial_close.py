@@ -308,107 +308,12 @@ class TestPartialCloseErrors:
         assert ex.positions["AAPL"]["qty"] == 100
 
 
-# ----- 4. _on_signal PARTIAL_EXIT_* dispatch --------------------------
-
-
-class _DispatchExecutor(_FakeExecutor):
-    """Capture _partial_close_position_idempotent calls so the
-    _on_signal dispatch path can be verified without re-testing
-    the partial code itself."""
-
-    def __init__(self):
-        super().__init__()
-        self.partial_calls = []
-        # Stub _ensure_client to skip the alpaca client builder.
-        self._stub_client = MagicMock()
-
-    def _ensure_client(self):
-        return self._stub_client
-
-    def _partial_close_position_idempotent(self, client, ticker, shares_to_close, label, reason):
-        self.partial_calls.append(
-            {
-                "ticker": ticker,
-                "shares_to_close": shares_to_close,
-                "reason": reason,
-            }
-        )
-
-
-class TestOnSignalPartialDispatch:
-    """v9.1.127: these tests pin the LEGACY mirror-mode bus path
-    (ORB_PORTFOLIO_FIRE=0). In independent mode (the default since
-    v8.3.23), PARTIAL_EXIT_* is skipped by the _on_signal guard and
-    routed via engine/scan.py:_v10_dispatch_executor_partial_close
-    instead -- covered in test_orb_executor_fire.py + the new
-    per-portfolio exit-pass tests."""
-
-    def test_partial_exit_long_routes_to_partial_close(self, monkeypatch):
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
-        ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
-        event = {
-            "kind": "PARTIAL_EXIT_LONG",
-            "ticker": "AAPL",
-            "price": 101.0,
-            "reason": "PARTIAL_1R",
-            "main_shares": 50,
-            "timestamp_utc": "2026-05-12T00:00:00Z",
-        }
-        ex._on_signal(event)
-        assert len(ex.partial_calls) == 1
-        call = ex.partial_calls[0]
-        assert call["ticker"] == "AAPL"
-        assert call["shares_to_close"] == 50
-        assert call["reason"] == "PARTIAL_1R"
-
-    def test_partial_exit_short_routes_to_partial_close(self, monkeypatch):
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
-        ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "SHORT", "qty": 100, "entry_price": 100.0}
-        event = {
-            "kind": "PARTIAL_EXIT_SHORT",
-            "ticker": "AAPL",
-            "price": 99.0,
-            "reason": "PARTIAL_1R",
-            "main_shares": 50,
-            "timestamp_utc": "2026-05-12T00:00:00Z",
-        }
-        ex._on_signal(event)
-        assert len(ex.partial_calls) == 1
-        assert ex.partial_calls[0]["shares_to_close"] == 50
-
-    def test_partial_exit_no_position_skipped(self, monkeypatch):
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
-        ex = _DispatchExecutor()
-        # AAPL not in positions
-        event = {
-            "kind": "PARTIAL_EXIT_LONG",
-            "ticker": "AAPL",
-            "price": 101.0,
-            "reason": "PARTIAL_1R",
-            "main_shares": 50,
-            "timestamp_utc": "2026-05-12T00:00:00Z",
-        }
-        ex._on_signal(event)
-        # No partial-close call
-        assert len(ex.partial_calls) == 0
-
-    def test_partial_exit_zero_main_shares_skipped(self, monkeypatch):
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
-        ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
-        event = {
-            "kind": "PARTIAL_EXIT_LONG",
-            "ticker": "AAPL",
-            "price": 101.0,
-            "reason": "PARTIAL_1R",
-            "main_shares": 0,
-            "timestamp_utc": "2026-05-12T00:00:00Z",
-        }
-        ex._on_signal(event)
-        # Defensive guard: main_shares <= 0 -> skip without dispatching
-        assert len(ex.partial_calls) == 0
+# Section 4 (legacy _on_signal PARTIAL_EXIT_* dispatch tests) was
+# removed in v9.1.128 along with the ORB_PORTFOLIO_FIRE escape hatch.
+# In always-independent mode, PARTIAL_EXIT_* signals are skipped by
+# the _on_signal guard unconditionally; partial closes route through
+# engine/scan.py:_v10_dispatch_executor_partial_close
+# (covered in tests/strategy/test_per_portfolio_exit_pass.py).
 
 
 # ----- 5. v8.1.7 -- executor records activity for cross-portfolio
