@@ -71,9 +71,9 @@
     <span id="h-tick" style="color:#e7ecf3;font-variant-numeric:tabular-nums" title="Seconds until next scan loop iteration" aria-label="next scan countdown">&mdash;</span>
   </span>
   <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
-  <!-- Replay Day icon button — builds a scrubable replay from the most recent trading day's snapshots -->
+  <!-- Replay icon button — builds a multi-day scrubable replay from the last 5 trading days' snapshots -->
   <button type="button" id="tg-replay-btn"
-    title="Replay most recent trading day (time-travel scrubbing)"
+    title="Replay last 5 trading days (date dropdown + time-travel scrubbing)"
     onclick="(function(btn){
       if (btn.disabled) return;
       btn.disabled = true;

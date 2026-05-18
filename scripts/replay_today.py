@@ -226,33 +226,111 @@ def find_most_recent_snapshots(start_date: str | None = None,
     return None, []
 
 
-def build_today_replay(date: str | None = None) -> tuple[str | None, str | None]:
-    """Build a replay from the most recent available trading-day snapshots.
+def find_recent_trading_days(end_date: str | None = None,
+                             n_days: int = 5,
+                             max_lookback_calendar: int = 14,
+                             min_snapshots: int = 10,
+                             ) -> dict[str, list[dict]]:
+    """Walk backwards from end_date (or today) and return up to ``n_days``
+    distinct trading days that have at least ``min_snapshots`` snapshots.
+    Skips weekends and days the snapshot capture missed (or only wrote a
+    metadata header without per-bucket /api/state payloads)."""
+    from datetime import timedelta
+    base_dt = (datetime.fromisoformat(end_date) if end_date
+               else datetime.now(timezone.utc))
+    found: dict[str, list[dict]] = {}
+    for i in range(max_lookback_calendar + 1):
+        if len(found) >= n_days:
+            break
+        candidate = (base_dt - timedelta(days=i)).date()
+        date_str = candidate.strftime("%Y-%m-%d")
+        if not _is_trading_day(date_str):
+            continue
+        snaps = fetch_snapshots(date_str)
+        # Count snapshots that carry an actual /api/state payload, not just
+        # metadata header lines.
+        payload_count = sum(
+            1 for s in snaps
+            if isinstance(s, dict)
+            and (s.get("state") or (s.get("dashboard") or {}).get("/api/state"))
+        )
+        if payload_count >= min_snapshots:
+            found[date_str] = snaps
+        elif snaps:
+            print(f"  {date_str}: only {payload_count} payload-bearing snapshots -- skipping")
+    return found
 
-    Returns (presigned_url, date_used) or (None, None) on failure.
-    Automatically falls back to the most recent weekday with snapshots.
+
+def build_today_replay(date: str | None = None,
+                       multi_day: bool = True) -> tuple[str | None, str | None]:
+    """Build a replay from snapshots and upload to R2.
+
+    Two modes:
+      - ``date`` explicit:           single-day replay for that date.
+      - ``date`` None + multi_day:   most recent 5 trading days bundled
+        with a date dropdown (default behavior; what the dashboard
+        button hits).
+      - ``date`` None + ``multi_day=False``: legacy single-day fallback
+        on the most recent available day.
+
+    Returns (presigned_url, default_date_in_url) or (None, None) on failure.
     """
-    print(f"\nLooking for replay data (start={date or 'today'})...")
-    actual_date, snaps = find_most_recent_snapshots(date)
+    # Explicit single date -> legacy path.
+    if date:
+        print(f"\nBuilding single-day replay for {date}...")
+        actual_date, snaps = find_most_recent_snapshots(date)
+        if not snaps:
+            print("  No snapshots found")
+            return None, None
+        diffs, base_state = snapshots_to_diffs(snaps)
+        print(f"  {len(diffs)} diffs from {actual_date}")
+        html = rd.build_html(diffs, base_state, start_idx=0)
+        body = html.encode("utf-8")
+        key = f"replay/live_{actual_date}.html"
+        print(f"  Uploading ({len(body)//1024} KB) -> {key}...")
+        rd.upload_r2(body, key)
+        url = rd.presigned(key, expires=28800)
+        print(f"  Done.")
+        return url, actual_date
 
-    if not snaps:
-        print("  No snapshots found in recent trading days")
+    if not multi_day:
+        # Legacy path: most recent single day.
+        actual_date, snaps = find_most_recent_snapshots(None)
+        if not snaps:
+            return None, None
+        diffs, base_state = snapshots_to_diffs(snaps)
+        html = rd.build_html(diffs, base_state, start_idx=0)
+        rd.upload_r2(html.encode("utf-8"), f"replay/live_{actual_date}.html")
+        return rd.presigned(f"replay/live_{actual_date}.html", expires=28800), actual_date
+
+    # Default: bundle last 5 trading days.
+    print(f"\nLooking for multi-day replay data (last 5 trading days)...")
+    found = find_recent_trading_days(end_date=None, n_days=5)
+    if not found:
+        print("  No snapshots found in the last 14 calendar days")
         return None, None
+    dates_sorted = sorted(found.keys())
+    default_date = dates_sorted[-1]
+    print(f"  Bundling {len(found)} days, default = {default_date}")
 
-    print(f"  Found {len(snaps)} snapshots for {actual_date}")
+    days_map: dict[str, dict] = {}
+    for d, snaps in found.items():
+        diffs, base = snapshots_to_diffs(snaps)
+        days_map[d] = {"diffs": diffs, "base": base}
+        print(f"    {d}: {len(diffs)} diffs")
 
-    diffs, base_state = snapshots_to_diffs(snaps)
-    print(f"  {len(diffs)} diffs")
-
-    html = rd.build_html(diffs, base_state, start_idx=0)
+    default_data = days_map[default_date]
+    html = rd.build_html(
+        default_data["diffs"], default_data["base"], start_idx=0,
+        days_map=days_map, default_date=default_date,
+    )
     body = html.encode("utf-8")
-    key  = f"replay/live_{actual_date}.html"
-
+    key = f"replay/week_{default_date}.html"
     print(f"  Uploading ({len(body)//1024} KB) -> {key}...")
     rd.upload_r2(body, key)
     url = rd.presigned(key, expires=28800)
     print(f"  Done.")
-    return url, actual_date
+    return url, default_date
 
 
 # ---------------------------------------------------------------------------

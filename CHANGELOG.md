@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.130 (2026-05-17) — dashboard replay button now serves the multi-day replay
+
+The `#tg-replay-btn` in the live dashboard (top-right of the header, the gamepad icon) already POSTs to `/api/replay/today`, which calls `scripts.replay_today.build_today_replay()`. v9.1.129 added multi-day support to the underlying `replay_dashboard.build_html`, but `build_today_replay()` itself was still single-day -- so clicking the button still landed on a single-day HTML with no date dropdown.
+
+This commit closes that loop end-to-end:
+
+- **`scripts/replay_today.py:build_today_replay()`** now defaults to **multi-day mode** when called with no explicit `date`. Walks back up to 14 calendar days to collect up to 5 trading days that have ≥10 payload-bearing snapshots (skips weekends and metadata-only-header days). Bundles them via `rd.build_html(... days_map=..., default_date=most_recent)` and uploads to `replay/week_<latest>.html` (8-hour signed URL). Explicit `--date YYYY-MM-DD` still produces the legacy single-day artifact.
+
+- **`find_recent_trading_days()`** is the new helper. `min_snapshots=10` filter excludes 05-12 / 05-13-style header-only files where the snapshot writer only emitted a metadata line.
+
+- **`dashboard_static/index.html`** -- button tooltip updated from "Replay most recent trading day" to "Replay last 5 trading days (date dropdown + time-travel scrubbing)" so the new behavior is discoverable on hover.
+
+No dashboard JS changes needed -- the button still POSTs `{}` to `/api/replay/today` and opens whatever URL the server returns. The server now returns a week-bundle URL by default.
+
+**Behavior today (2026-05-17):** only 05-15 has real captures on `snapshots-live`; older days lost their per-bucket payloads to a writer regression. Today's click returns a single-day URL (the dropdown only shows when ≥2 days have real data). Once the next few weekday captures land naturally, clicks will start returning a proper 5-day bundle with the dropdown visible.
+
+---
+
 ## v9.1.129 (2026-05-17) — replay_dashboard: date dropdown on the R2-shared replay
 
 The standalone `replay_week.html` (added in v9.1.125) had a date picker; the R2-shared `live_<DATE>.html` (the URL the operator actually opens — the one ending with the cloudflarestorage.com signature) did not. v9.1.128 added the picker to the wrong file. This commit adds it where it belongs.
