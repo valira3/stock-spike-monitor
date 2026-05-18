@@ -21,6 +21,7 @@ v7.76.0 motivation:
   Both engine/scan.py (RiskBook seeding) and dashboard_server.py
   (per-portfolio equity display) import from here.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,13 +38,23 @@ _ALPACA_ACCT_TTL_S = 30.0
 
 
 def alpaca_account_for_book(pid: str) -> Optional[dict]:
-    """Fetch (cached) Alpaca paper account for a non-main book.
+    """Fetch (cached) Alpaca account snapshot for a non-main book.
 
-    Resolves ``<PID>_ALPACA_PAPER_KEY`` and ``<PID>_ALPACA_PAPER_SECRET``
-    from env (case-insensitive on the pid -- we uppercase). Returns a
-    dict with ``equity``, ``cash``, ``last_equity``, ``buying_power``
-    (all float) on success. Returns ``None`` when:
-      - either env var is missing/blank
+    v9.1.122 -- routes through the registered executor instance
+    (``trade_genius._executor_inst(pid)``) when available, so a book
+    running in ``mode=live`` reads its LIVE account's equity (via its
+    own client built with the live keys + ``paper=False``). Falls back
+    to the legacy env-var lookup -- ``<PID>_ALPACA_PAPER_KEY``/
+    ``_SECRET`` with ``paper=True`` -- when the executor isn't loaded.
+
+    Pre-v9.1.122 the fallback was the only path, which caused
+    RiskBook.equity to be seeded from the paper account regardless of
+    the executor's mode. Val (mode=live, $30k LIVE) was being sized as
+    if it had $102k (its paper sibling) -- ~3.4x oversize.
+
+    Returns a dict with ``equity``, ``cash``, ``last_equity``,
+    ``buying_power`` (all float) on success, or ``None`` when:
+      - no executor instance AND no paper-key env (or short value)
       - the alpaca-py import fails
       - the API call raises
       - the account is blocked
@@ -67,6 +78,39 @@ def alpaca_account_for_book(pid: str) -> Optional[dict]:
         if (now - ts) < _ALPACA_ACCT_TTL_S:
             return snap
 
+    # v9.1.122 -- prefer the executor's own client (respects mode=live).
+    try:
+        import trade_genius as _tg
+
+        ex = _tg._executor_inst(pid_norm)
+        if ex is not None:
+            # _ensure_client builds the client based on the executor's
+            # current mode (live or paper), so this honors the operator's
+            # /mode live flip when it has been confirmed.
+            client = ex._ensure_client() if hasattr(ex, "_ensure_client") else None
+            if client is None:
+                client = getattr(ex, "client", None)
+            if client is not None:
+                acct = client.get_account()
+                if not getattr(acct, "account_blocked", False):
+                    snap = {
+                        "equity": float(getattr(acct, "equity", 0) or 0),
+                        "cash": float(getattr(acct, "cash", 0) or 0),
+                        "last_equity": float(getattr(acct, "last_equity", 0) or 0),
+                        "buying_power": float(getattr(acct, "buying_power", 0) or 0),
+                    }
+                    _ALPACA_ACCT_CACHE[pid_norm] = (now, snap)
+                    return snap
+    except Exception as exc:
+        logger.debug(
+            "[v9.1.122] executor-routed account fetch failed for %s: %s: %s",
+            pid_norm,
+            type(exc).__name__,
+            str(exc)[:120],
+        )
+
+    # Fallback: legacy env-var paper-only path (used when no executor
+    # is loaded, e.g. backtests or partial init).
     pid_up = pid_norm.upper()
     key = (os.getenv("%s_ALPACA_PAPER_KEY" % pid_up, "") or "").strip()
     secret = (os.getenv("%s_ALPACA_PAPER_SECRET" % pid_up, "") or "").strip()
@@ -75,6 +119,7 @@ def alpaca_account_for_book(pid: str) -> Optional[dict]:
 
     try:
         from alpaca.trading.client import TradingClient as _ATC  # type: ignore
+
         tc = _ATC(key, secret, paper=True)
         acct = tc.get_account()
         if getattr(acct, "account_blocked", False):
@@ -90,7 +135,9 @@ def alpaca_account_for_book(pid: str) -> Optional[dict]:
     except Exception as exc:
         logger.debug(
             "[v7.76.0] alpaca account fetch failed for %s: %s: %s",
-            pid_norm, type(exc).__name__, str(exc)[:120],
+            pid_norm,
+            type(exc).__name__,
+            str(exc)[:120],
         )
         return None
 
@@ -113,6 +160,7 @@ def resolve_equity(pid: str, default_main_equity: float = 100_000.0) -> float:
     if pid_norm in ("", "main"):
         try:
             import trade_genius as tg  # local import to avoid cycles
+
             return float(getattr(tg, "paper_cash", default_main_equity))
         except Exception:
             return float(default_main_equity)
@@ -125,6 +173,7 @@ def resolve_equity(pid: str, default_main_equity: float = 100_000.0) -> float:
     # Alpaca unreachable or zero -- fall back to the book's own view.
     try:
         from engine.portfolio_book import PORTFOLIOS
+
         book = PORTFOLIOS.get(pid_norm)
         if book is not None:
             return float(book.current_equity())
