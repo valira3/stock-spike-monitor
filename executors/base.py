@@ -2389,14 +2389,31 @@ class TradeGeniusBase:
             main_shares,
         )
 
-        # v8.3.23 -- skip ENTRY signals in independent mode. Exits
-        # still flow through here.
-        if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
+        # v8.3.23 -- skip ENTRY signals in independent mode (entries
+        # fire via engine/scan.py:_v10_dispatch_executor_fire).
+        # v9.1.127 -- ALSO skip EXIT and PARTIAL_EXIT signals in
+        # independent mode. Exits now fire per-portfolio via
+        # engine/scan.py:_v10_per_portfolio_exit_pass, which calls
+        # _v10_dispatch_executor_fire(reduce_only=True) for full exits
+        # and _v10_dispatch_executor_partial_close for partials.
+        # Val/Gene are completely independent of Main's bus.
+        #
+        # EOD_CLOSE_ALL is NOT in this skip list -- it still arrives
+        # at 15:57 ET as the v9.1.126 safety-net sweep across all
+        # remaining open Alpaca positions.
+        if kind in (
+            "ENTRY_LONG",
+            "ENTRY_SHORT",
+            "EXIT_LONG",
+            "EXIT_SHORT",
+            "PARTIAL_EXIT_LONG",
+            "PARTIAL_EXIT_SHORT",
+        ):
             if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
                 logger.info(
                     "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
-                    "mode active; entry will fire via "
-                    "_v10_dispatch_executor_fire (not legacy bus)",
+                    "mode active; will fire via per-portfolio "
+                    "engine/scan.py path (not legacy bus)",
                     self.NAME,
                     kind,
                     ticker,
