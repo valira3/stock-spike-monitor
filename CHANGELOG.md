@@ -4,6 +4,68 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.125 (2026-05-18) — EOD close: bypass cap + 5-min buffer + scheduler safety-net
+
+Real-money close-failure on 2026-05-18 (live Val account, AVGO long +
+NFLX short positions from the EOD reversal engine):
+
+  - **Bug 1 — closing orders blocked by notional cap.** When the V10
+    EOD engine tried to close Val's $36k AVGO long + $36k NFLX short on
+    its ~$30k live account, the `[V10-FIRE] notional cap` check in
+    `executors/base.py:fire_long/short` clamped the closing orders to
+    0 shares (cumulative notional already at 95%). Both close orders
+    logged `submitted=False`. Val ended up flat only because Alpaca's
+    broker-side EOD auto-flush ran; on a different broker config the
+    live position would have stayed open overnight.
+
+  - **Bug 2 — V10 EOD close fired AFTER market close.** The scan loop
+    went silent between 15:57:36 and 16:00:11 ET (~2.5 min). The V10
+    EOD engine's `is_exit_window(cur >= 15:58)` check only fires inside
+    the scan loop, so the close fired at 16:00:11 ET -- 11 SECONDS
+    after the 16:00 market close.
+
+  - **Bug 3 — legacy `eod_close` was no-op.** Scheduler fired
+    `("daily","15:58",eod_close)`, which aligned to
+    `EOD_FLUSH_ET = 15:59:59` and emitted `EOD_CLOSE_ALL`. Main had no
+    positions (V10 owns them) so the legacy `close_breakout` loop saw
+    nothing. V10 executors received the signal but skipped with
+    "independent mode -- skipping close_all_positions". Net: zero
+    closes from this path.
+
+Fixes:
+
+- `executors/base.py:fire_long`/`fire_short`/`_submit_v10_entry` --
+  new `reduce_only: bool = False` param. When True, skips the
+  cumulative-notional cap check. Logs `[V10-FIRE-CLOSE] ...
+  (reduce_only -- cap bypassed)` instead of `[V10-FIRE]`. Default
+  False preserves entry-path behavior; only close paths opt in.
+- `engine/scan.py:_v10_dispatch_executor_fire` -- forwards new
+  `reduce_only` kwarg to the executor's fire_*.
+- `engine/scan.py:_eod_fire_broker_close` -- passes `reduce_only=True`
+  so EOD reversal closes never hit the cap.
+- `orb/eod_reversal.py:EodReversalConfig.exit_et_minutes` -- default
+  `15:58` -> `15:56`. 4-min buffer before market close (vs the
+  previous 2-min) lets scan-loop ticks land the close even with
+  partial scan delays.
+- `tools/afternoon_backtest.py:AfternoonConfig.exit_bucket` -- mirror
+  change `15:59` -> `15:56` so backtest stays aligned with live.
+  AFT_EXIT_BUCKET override remains for research.
+- `engine/timing.py:EOD_FLUSH_ET` -- `15:59:59` -> `15:57:00`. The
+  legacy `eod_close` job now runs as a SAFETY NET 1 min AFTER the V10
+  engines have run; uses `client.close_position()` (different code
+  path from V10 close, independent failure mode).
+- `trade_genius.py` -- scheduler cron `("daily","15:58",eod_close)` ->
+  `("daily","15:57",eod_close)`.
+- `broker/lifecycle.py:_eod_align_to_spec` -- docstring updated; the
+  hardcoded "15:49:59" log string now reads the actual constant.
+
+Test coverage:
+
+- `tests/strategy/test_executor_reduce_only.py` (new) -- 6 unit tests:
+  default fire_long path still hits cap; `reduce_only=True` bypasses
+  cap even at 100% utilization; `_v10_dispatch_executor_fire` forwards
+  reduce_only; `_eod_fire_broker_close` always sets it True.
+
 ## v9.1.124 (2026-05-18) — OR-retracement gate + monitor ATR-stop fix
 
 Two fixes triggered by the 2026-05-18 10:10 ET AVGO short, which fired

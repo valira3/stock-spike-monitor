@@ -216,7 +216,10 @@ class TestShipSpec:
         # v9.1.2: entry moved 15:30 -> 15:00 per R18c sweep.
         assert cfg.entry_et_minutes == 15 * 60
         # v9.1.109: exit moved 15:59 -> 15:58 to align with eod_close flush.
-        assert cfg.exit_et_minutes == 15 * 60 + 58
+        # v9.1.125: exit moved 15:58 -> 15:56 for a 4-min buffer before
+        # market close. The 2026-05-18 EOD incident showed 2 min wasn't
+        # enough headroom for scan-loop ticks to land the close.
+        assert cfg.exit_et_minutes == 15 * 60 + 56
         # v9.1.108/9: entry cutoff 15:51 (exclusive) = last valid entry 15:50.
         assert cfg.entry_cutoff_et_minutes == 15 * 60 + 51
         # v9.1.1: live broker firing is the default (was False in v9.1.0).

@@ -45,6 +45,7 @@ Usage:
         --strategy eod_reversal \
         --corpus /tmp/rth-data/data --out /tmp/afternoon_eod
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,13 +73,24 @@ class AfternoonConfig:
     """All knobs in one place. Defaults mirror the v9 baseline so combined
     runs use the same risk envelope.
     """
-    strategy: str = "intraday_momentum"   # or "eod_reversal"
+
+    strategy: str = "intraday_momentum"  # or "eod_reversal"
 
     # Universe
     intraday_momentum_tickers: tuple = ("SPY", "QQQ")
     eod_universe: tuple = (
-        "AAPL", "MSFT", "NVDA", "TSLA", "META", "GOOG",
-        "AMZN", "AVGO", "NFLX", "ORCL", "SPY", "QQQ",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "TSLA",
+        "META",
+        "GOOG",
+        "AMZN",
+        "AVGO",
+        "NFLX",
+        "ORCL",
+        "SPY",
+        "QQQ",
     )
 
     # Sizing
@@ -89,14 +101,14 @@ class AfternoonConfig:
     # 25-min holds. "stop_based" mode is available for stress-testing
     # but produces over-sized positions when the realized 25-min move
     # is smaller than the stop distance.
-    sizing_mode: str = "fixed_notional"   # "fixed_notional" | "stop_based"
-    notional_pct_per_leg: float = 25.0    # 25% of equity per leg
-    risk_per_trade_pct: float = 0.5       # used only when sizing_mode=stop_based
+    sizing_mode: str = "fixed_notional"  # "fixed_notional" | "stop_based"
+    notional_pct_per_leg: float = 25.0  # 25% of equity per leg
+    risk_per_trade_pct: float = 0.5  # used only when sizing_mode=stop_based
     account: float = 100_000.0
     compound_daily: bool = True
 
     # EOD-reversal-specific
-    eod_top_n: int = 2                    # top-N winners + top-N losers
+    eod_top_n: int = 2  # top-N winners + top-N losers
     # Per-(ticker, side) fence. If non-empty, only the listed pairs are
     # eligible. e.g. "ORCL:long,ORCL:short,AAPL:long,MSFT:long,NFLX:short".
     # Empty = use eod_universe for both sides.
@@ -107,10 +119,14 @@ class AfternoonConfig:
     # (Gao 2015) uses signal=09:30-10:00 -> trade=15:30-16:00. We
     # default to that window. entry_bucket is the bar whose OPEN is
     # the entry price (so entry_bucket=930 = 15:30 ET open).
-    morning_window_start: int = 9 * 60 + 30   # 09:30
-    morning_window_end:   int = 10 * 60        # 10:00 (exclusive close)
-    entry_bucket:         int = 15 * 60 + 30   # 15:30 ET entry bar's open
-    exit_bucket:          int = 15 * 60 + 59   # 15:59 ET exit bar's close (~16:00)
+    morning_window_start: int = 9 * 60 + 30  # 09:30
+    morning_window_end: int = 10 * 60  # 10:00 (exclusive close)
+    entry_bucket: int = 15 * 60 + 30  # 15:30 ET entry bar's open
+    # v9.1.125: default exit moved 15:59 -> 15:56 to match the live
+    # engine's eod_reversal.exit_et_minutes (orb/eod_reversal.py).
+    # Backtest now mirrors the production timing; override via
+    # AFT_EXIT_BUCKET if you need a different window for research.
+    exit_bucket: int = 15 * 60 + 56  # 15:56 ET exit bar's close
 
     # Slippage. ETF mega-cap (SPY/QQQ) have ~1bp spreads in
     # liquid hours; individual mega-caps run 1-3bps. Defaults are
@@ -118,28 +134,38 @@ class AfternoonConfig:
     # an OR-bar-derived breakout fill.
     entry_slippage_bps: float = 1.5
     exit_slippage_bps: float = 1.5
-    short_pen_bps: float = 0.5            # short-side adverse penalty
+    short_pen_bps: float = 0.5  # short-side adverse penalty
 
     # Safety-net stop. Set wide enough that it rarely binds in normal
     # 25-min holds (realized SPY/QQQ moves are 5-50bps typically).
-    stop_pct: float = 0.02                # 200 bps safety stop
+    stop_pct: float = 0.02  # 200 bps safety stop
 
     @classmethod
     def from_env(cls) -> "AfternoonConfig":
         def _f(k: str, d: float) -> float:
-            try: return float(os.environ.get(k, d))
-            except (TypeError, ValueError): return d
+            try:
+                return float(os.environ.get(k, d))
+            except (TypeError, ValueError):
+                return d
+
         def _i(k: str, d: int) -> int:
-            try: return int(os.environ.get(k, d))
-            except (TypeError, ValueError): return d
+            try:
+                return int(os.environ.get(k, d))
+            except (TypeError, ValueError):
+                return d
+
         def _b(k: str, d: bool) -> bool:
             v = os.environ.get(k)
-            if v is None: return d
+            if v is None:
+                return d
             return v.strip() in ("1", "true", "True", "yes", "YES")
+
         def _t(k: str, d: tuple) -> tuple:
             v = os.environ.get(k, "")
-            if not v.strip(): return d
+            if not v.strip():
+                return d
             return tuple(t.strip().upper() for t in v.split(",") if t.strip())
+
         return cls(
             strategy=os.environ.get("AFT_STRATEGY", "intraday_momentum"),
             intraday_momentum_tickers=_t("AFT_IM_TICKERS", cls.intraday_momentum_tickers),
@@ -153,7 +179,7 @@ class AfternoonConfig:
             eod_long_tickers=_t("AFT_EOD_LONG_TICKERS", ()),
             eod_short_tickers=_t("AFT_EOD_SHORT_TICKERS", ()),
             entry_bucket=_i("AFT_ENTRY_BUCKET", 15 * 60 + 30),
-            exit_bucket=_i("AFT_EXIT_BUCKET", 15 * 60 + 59),
+            exit_bucket=_i("AFT_EXIT_BUCKET", 15 * 60 + 56),
             entry_slippage_bps=_f("AFT_ENTRY_SLIP_BPS", 1.5),
             exit_slippage_bps=_f("AFT_EXIT_SLIP_BPS", 1.5),
             short_pen_bps=_f("AFT_SHORT_PEN_BPS", 0.5),
@@ -201,10 +227,16 @@ def _last_rth_close(bars: list[Bar1m]) -> Optional[float]:
     return last.close if last else None
 
 
-def _simulate_one_leg(*, side: str, entry_price: float, exit_price: float,
-                     shares: int, stop_price: Optional[float],
-                     bars_during_hold: list[Bar1m],
-                     cfg: AfternoonConfig) -> tuple[float, str]:
+def _simulate_one_leg(
+    *,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    shares: int,
+    stop_price: Optional[float],
+    bars_during_hold: list[Bar1m],
+    cfg: AfternoonConfig,
+) -> tuple[float, str]:
     """Return (pnl_dollars, exit_reason).
 
     A hard stop is honored intra-hold (priority over the 15:55 exit). When
@@ -236,8 +268,9 @@ def _simulate_one_leg(*, side: str, entry_price: float, exit_price: float,
     return pnl, "eod"
 
 
-def _enter_leg(*, side: str, raw_entry: float, stop_pct: float,
-               cfg: AfternoonConfig, equity: float) -> tuple[float, float, int, float]:
+def _enter_leg(
+    *, side: str, raw_entry: float, stop_pct: float, cfg: AfternoonConfig, equity: float
+) -> tuple[float, float, int, float]:
     """Compute (entry_price, stop_price, shares, risk_dollars).
 
     Sizing: when cfg.sizing_mode == "fixed_notional", shares are computed
@@ -275,7 +308,11 @@ def _enter_leg(*, side: str, raw_entry: float, stop_pct: float,
 
 
 def simulate_intraday_momentum_day(
-    *, date: str, corpus_dir: Path, cfg: AfternoonConfig, equity: float,
+    *,
+    date: str,
+    corpus_dir: Path,
+    cfg: AfternoonConfig,
+    equity: float,
 ) -> list[dict]:
     """Per-day P&L pairs for the intraday-momentum strategy."""
     pairs: list[dict] = []
@@ -287,8 +324,9 @@ def simulate_intraday_momentum_day(
         if not rth:
             continue
         # Morning window: open of 9:30 bar -> close of 9:59 bar
-        morning_bars = [b for b in rth
-                        if cfg.morning_window_start <= b.bucket < cfg.morning_window_end]
+        morning_bars = [
+            b for b in rth if cfg.morning_window_start <= b.bucket < cfg.morning_window_end
+        ]
         if len(morning_bars) < 5:
             continue
         m_open = morning_bars[0].open
@@ -307,34 +345,42 @@ def simulate_intraday_momentum_day(
         if entry_bar is None or exit_bar is None:
             continue
         # Hold bars: bars BETWEEN entry and exit (exclusive of entry, inclusive of exit-1)
-        hold_bars = [b for b in rth
-                     if entry_bar.bucket < b.bucket < exit_bar.bucket]
+        hold_bars = [b for b in rth if entry_bar.bucket < b.bucket < exit_bar.bucket]
 
         entry_price, stop_price, shares, risk_dollars = _enter_leg(
-            side=side, raw_entry=entry_bar.open, stop_pct=cfg.stop_pct,
-            cfg=cfg, equity=equity,
+            side=side,
+            raw_entry=entry_bar.open,
+            stop_pct=cfg.stop_pct,
+            cfg=cfg,
+            equity=equity,
         )
         if shares == 0:
             continue
         pnl, exit_reason = _simulate_one_leg(
-            side=side, entry_price=entry_price, exit_price=exit_bar.close,
-            shares=shares, stop_price=stop_price, bars_during_hold=hold_bars,
+            side=side,
+            entry_price=entry_price,
+            exit_price=exit_bar.close,
+            shares=shares,
+            stop_price=stop_price,
+            bars_during_hold=hold_bars,
             cfg=cfg,
         )
-        pairs.append({
-            "ticker": ticker,
-            "side": side,
-            "entry_bucket": entry_bar.bucket,
-            "exit_bucket": exit_bar.bucket,
-            "entry_price": round(entry_price, 4),
-            "exit_price": round(exit_bar.close, 4),
-            "stop_price": round(stop_price, 4),
-            "shares": shares,
-            "pnl_dollars": round(pnl, 2),
-            "exit_reason": exit_reason,
-            "risk_dollars": round(risk_dollars, 2),
-            "m_return_bps": round(m_return * 10000, 1),
-        })
+        pairs.append(
+            {
+                "ticker": ticker,
+                "side": side,
+                "entry_bucket": entry_bar.bucket,
+                "exit_bucket": exit_bar.bucket,
+                "entry_price": round(entry_price, 4),
+                "exit_price": round(exit_bar.close, 4),
+                "stop_price": round(stop_price, 4),
+                "shares": shares,
+                "pnl_dollars": round(pnl, 2),
+                "exit_reason": exit_reason,
+                "risk_dollars": round(risk_dollars, 2),
+                "m_return_bps": round(m_return * 10000, 1),
+            }
+        )
     return pairs
 
 
@@ -342,8 +388,12 @@ def simulate_intraday_momentum_day(
 
 
 def simulate_eod_reversal_day(
-    *, date: str, corpus_dir: Path, cfg: AfternoonConfig,
-    prev_close_lookup: dict[str, float], equity: float,
+    *,
+    date: str,
+    corpus_dir: Path,
+    cfg: AfternoonConfig,
+    prev_close_lookup: dict[str, float],
+    equity: float,
 ) -> list[dict]:
     """Per-day P&L pairs for the EOD-reversal cross-sectional strategy."""
     # 1. Compute ROD3 (prior_close -> 15:29 close) for each ticker.
@@ -379,7 +429,7 @@ def simulate_eod_reversal_day(
     else:
         eligible_short = list(rod_signals)
     longs = eligible_long[: cfg.eod_top_n]
-    shorts = eligible_short[-cfg.eod_top_n:]
+    shorts = eligible_short[-cfg.eod_top_n :]
 
     # 3. Enter each leg at 15:31 open, exit at 15:55 close.
     pairs: list[dict] = []
@@ -389,33 +439,41 @@ def simulate_eod_reversal_day(
             exit_bar = _bar_at_bucket(rth, cfg.exit_bucket)
             if entry_bar is None or exit_bar is None:
                 continue
-            hold_bars = [b for b in rth
-                         if entry_bar.bucket < b.bucket < exit_bar.bucket]
+            hold_bars = [b for b in rth if entry_bar.bucket < b.bucket < exit_bar.bucket]
             entry_price, stop_price, shares, risk_dollars = _enter_leg(
-                side=side, raw_entry=entry_bar.open, stop_pct=cfg.stop_pct,
-                cfg=cfg, equity=equity,
+                side=side,
+                raw_entry=entry_bar.open,
+                stop_pct=cfg.stop_pct,
+                cfg=cfg,
+                equity=equity,
             )
             if shares == 0:
                 continue
             pnl, exit_reason = _simulate_one_leg(
-                side=side, entry_price=entry_price, exit_price=exit_bar.close,
-                shares=shares, stop_price=stop_price, bars_during_hold=hold_bars,
+                side=side,
+                entry_price=entry_price,
+                exit_price=exit_bar.close,
+                shares=shares,
+                stop_price=stop_price,
+                bars_during_hold=hold_bars,
                 cfg=cfg,
             )
-            pairs.append({
-                "ticker": ticker,
-                "side": side,
-                "entry_bucket": entry_bar.bucket,
-                "exit_bucket": exit_bar.bucket,
-                "entry_price": round(entry_price, 4),
-                "exit_price": round(exit_bar.close, 4),
-                "stop_price": round(stop_price, 4),
-                "shares": shares,
-                "pnl_dollars": round(pnl, 2),
-                "exit_reason": exit_reason,
-                "risk_dollars": round(risk_dollars, 2),
-                "rod3_bps": round(rod * 10000, 1),
-            })
+            pairs.append(
+                {
+                    "ticker": ticker,
+                    "side": side,
+                    "entry_bucket": entry_bar.bucket,
+                    "exit_bucket": exit_bar.bucket,
+                    "entry_price": round(entry_price, 4),
+                    "exit_price": round(exit_bar.close, 4),
+                    "stop_price": round(stop_price, 4),
+                    "shares": shares,
+                    "pnl_dollars": round(pnl, 2),
+                    "exit_reason": exit_reason,
+                    "risk_dollars": round(risk_dollars, 2),
+                    "rod3_bps": round(rod * 10000, 1),
+                }
+            )
     return pairs
 
 
@@ -432,8 +490,9 @@ def discover_dates(corpus_dir: Path, year_prefix: str) -> list[str]:
     return out
 
 
-def build_prev_close_index(corpus_dir: Path, dates: list[str],
-                           tickers: tuple) -> dict[str, dict[str, float]]:
+def build_prev_close_index(
+    corpus_dir: Path, dates: list[str], tickers: tuple
+) -> dict[str, dict[str, float]]:
     """Return {date: {ticker: prior_session_close}}. Walks each date's
     archive once and remembers the last-RTH close; the next date's lookup
     points back to it. Trading-day adjacent (no weekend/holiday gaps in
@@ -457,8 +516,7 @@ def build_prev_close_index(corpus_dir: Path, dates: list[str],
     return prev_close
 
 
-def run(cfg: AfternoonConfig, corpus_dir: Path, out_dir: Path,
-        year_prefix: str = "202") -> dict:
+def run(cfg: AfternoonConfig, corpus_dir: Path, out_dir: Path, year_prefix: str = "202") -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "per_day").mkdir(parents=True, exist_ok=True)
 
@@ -485,12 +543,18 @@ def run(cfg: AfternoonConfig, corpus_dir: Path, out_dir: Path,
 
         if cfg.strategy == "intraday_momentum":
             pairs = simulate_intraday_momentum_day(
-                date=date, corpus_dir=corpus_dir, cfg=cfg, equity=equity,
+                date=date,
+                corpus_dir=corpus_dir,
+                cfg=cfg,
+                equity=equity,
             )
         elif cfg.strategy == "eod_reversal":
             pairs = simulate_eod_reversal_day(
-                date=date, corpus_dir=corpus_dir, cfg=cfg,
-                prev_close_lookup=prev_close_idx.get(date, {}), equity=equity,
+                date=date,
+                corpus_dir=corpus_dir,
+                cfg=cfg,
+                prev_close_lookup=prev_close_idx.get(date, {}),
+                equity=equity,
             )
         else:
             raise ValueError(f"unknown strategy: {cfg.strategy}")
@@ -517,14 +581,14 @@ def run(cfg: AfternoonConfig, corpus_dir: Path, out_dir: Path,
     summary = {
         "strategy": cfg.strategy,
         "tickers": list(
-            cfg.intraday_momentum_tickers if cfg.strategy == "intraday_momentum"
+            cfg.intraday_momentum_tickers
+            if cfg.strategy == "intraday_momentum"
             else cfg.eod_universe
         ),
         "starting_account": starting_account,
         "ending_account": round(running_account, 2),
         "net_pnl": round(running_account - starting_account, 2),
-        "fy_return_pct": round(
-            (running_account - starting_account) / starting_account * 100, 3),
+        "fy_return_pct": round((running_account - starting_account) / starting_account * 100, 3),
         "entries": n_entries,
         "wins": n_wins,
         "losses": n_losses,
@@ -547,25 +611,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         prog="afternoon_backtest",
         description="Afternoon-trading backtests (R17): intraday-momentum + EOD-reversal.",
     )
-    parser.add_argument("--strategy", required=True,
-                        choices=["intraday_momentum", "eod_reversal"])
-    parser.add_argument("--corpus", required=True,
-                        help="Corpus root (e.g. /tmp/rth-data/data)")
+    parser.add_argument("--strategy", required=True, choices=["intraday_momentum", "eod_reversal"])
+    parser.add_argument("--corpus", required=True, help="Corpus root (e.g. /tmp/rth-data/data)")
     parser.add_argument("--out", required=True, help="Output dir")
-    parser.add_argument("--year-prefix", default="202",
-                        help="Date prefix (default 202 = 2020s)")
-    parser.add_argument("--account", type=float, default=None,
-                        help="Override starting equity")
-    parser.add_argument("--risk-pct", type=float, default=None,
-                        help="Override risk_per_trade_pct (stop_based sizing only)")
-    parser.add_argument("--notional-pct", type=float, default=None,
-                        help="Override notional_pct_per_leg (fixed_notional sizing)")
-    parser.add_argument("--sizing-mode", default=None,
-                        choices=["fixed_notional", "stop_based"])
-    parser.add_argument("--slip-bps", type=float, default=None,
-                        help="Override slippage (sets both entry + exit)")
-    parser.add_argument("--no-compound", action="store_true",
-                        help="Disable daily compounding (use static account)")
+    parser.add_argument("--year-prefix", default="202", help="Date prefix (default 202 = 2020s)")
+    parser.add_argument("--account", type=float, default=None, help="Override starting equity")
+    parser.add_argument(
+        "--risk-pct",
+        type=float,
+        default=None,
+        help="Override risk_per_trade_pct (stop_based sizing only)",
+    )
+    parser.add_argument(
+        "--notional-pct",
+        type=float,
+        default=None,
+        help="Override notional_pct_per_leg (fixed_notional sizing)",
+    )
+    parser.add_argument("--sizing-mode", default=None, choices=["fixed_notional", "stop_based"])
+    parser.add_argument(
+        "--slip-bps", type=float, default=None, help="Override slippage (sets both entry + exit)"
+    )
+    parser.add_argument(
+        "--no-compound", action="store_true", help="Disable daily compounding (use static account)"
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -586,8 +655,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.no_compound:
         cfg.compound_daily = False
 
-    summary = run(cfg, Path(args.corpus), Path(args.out),
-                  year_prefix=args.year_prefix)
+    summary = run(cfg, Path(args.corpus), Path(args.out), year_prefix=args.year_prefix)
     if not summary:
         return 1
     logger.info(json.dumps(summary, indent=2, default=str))
