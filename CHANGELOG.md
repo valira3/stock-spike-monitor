@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.131 (2026-05-17) — synth_snapshots: 5-day counterfactual snapshot backfill
+
+`snapshots-live` had only 1 usable day (05-15); 05-12/13/14 wrote metadata headers only (no `/api/state` payload) due to a state-snapshot writer regression, and 05-11 was missing entirely. Operator flagged the captures as unreliable and asked for a synthetic backfill so the dashboard replay button returns a full week.
+
+New `tools/synth_snapshots.py` builds deterministic `/api/state` snapshots from three sources:
+
+- `results/week_replay_v2/<portfolio>_<DATE>.jsonl` — admit/exit events from `tools/orb_replay_day` (the live v10 engine against archived 1-min SIP bars).
+- `results/week_replay/<portfolio>_eod/per_day/<DATE>.json` — pnl pairs from `tools/afternoon_backtest`.
+- `data/<DATE>/<TICKER>.jsonl` — 1-min bars for mark/unrealized math on still-open positions.
+
+Emits **80 snapshots per day** (5-min ET buckets from 09:30 to 16:05) in the snapshots-live schema. Each snapshot carries both Main ($100k) and Val ($30,185) portfolios, with equity/day_pnl updating as exits fire and `trades_today` + `positions` evolving in real time. Synthetic by construction — this is what the current Keystone v9.1.114 algorithm WOULD have done, not what live fired.
+
+Bundled with this commit:
+- 5 day-files pushed to `snapshots-live` branch (commit `06002105`), overwriting the unreliable captures.
+- `data/snapshots/` added to `.gitignore` on the staging branch so the synth output doesn't leak into staging commits.
+- `tools/synth_snapshots.py` available for re-running the backfill anytime (idempotent; safe to re-run after updating any backtest result).
+
+**Trading simulation summary (Main / Val, per-day P&L):**
+
+| Date | Main | Val | Trades on Main |
+|---|---:|---:|---|
+| Mon 05-11 | +$48 | +$14 | 1 morning (AAPL long, BE stop) + 2 EOD |
+| Tue 05-12 | +$288 | +$87 | 1 morning (NFLX long, BE stop) + 2 EOD |
+| Wed 05-13 | +$2,002 | +$601 | 2 morning (GOOG + TSLA, both EOD-flush wins) + 2 EOD |
+| Thu 05-14 | **+$2,829** | **+$847** | 2 morning (ORCL hit target at 11:09, MSFT EOD-flush) + 2 EOD |
+| Fri 05-15 | -$55 | -$16 | 1 morning (AMZN long, EOD-flush near-flat) + 2 EOD |
+| **Week** | **+$5,112** | **+$1,533** | |
+
+Once Railway redeploys 9.1.131, clicking the gamepad icon in the dashboard header opens an R2 URL containing all 5 days bundled with the date dropdown.
+
+---
+
 ## v9.1.130 (2026-05-17) — dashboard replay button now serves the multi-day replay
 
 The `#tg-replay-btn` in the live dashboard (top-right of the header, the gamepad icon) already POSTs to `/api/replay/today`, which calls `scripts.replay_today.build_today_replay()`. v9.1.129 added multi-day support to the underlying `replay_dashboard.build_html`, but `build_today_replay()` itself was still single-day -- so clicking the button still landed on a single-day HTML with no date dropdown.
