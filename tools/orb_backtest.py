@@ -466,6 +466,25 @@ class ORBConfig:
     # After a hard stop on (ticker, side),
     # block re-entry for this many minutes.
     # 0 = off. Production value: 30.
+    # R20 afternoon-discipline levers (2026-05-18). Morning ORB positions
+    # carried into the afternoon block EOD reversal entries (15:00-15:50)
+    # by consuming the equity needed for the 35%-notional EOD legs. These
+    # three levers test ways to free that equity by exiting morning
+    # positions earlier on a local-max signal. Backtest-only -- live
+    # engine wiring deferred until the sweep validates a winner.
+    eod_prep_exit_minutes: int = 0  # >0: hard time exit at this ET
+    #     minute. Reason="eod_prep". 0=off.
+    mfe_giveback_bps: float = 0.0  # >0: exit when (mfe-current) >=
+    #     this many bps of entry_price.
+    #     "Local-max giveback" exit.
+    mfe_giveback_start_minutes: int = 0  # earliest ET minute when the
+    #     giveback check activates.
+    #     0 = always (when bps>0).
+    afternoon_trail_pct: float = 0.0  # >0: after start_minutes, ratchet
+    #     stop to mfe - X * initial_risk
+    #     (long) or mfe + X * initial_risk
+    #     (short). Chandelier trail. 0=off.
+    afternoon_trail_start_minutes: int = 14 * 60  # default 14:00 ET.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -591,6 +610,22 @@ class ORBConfig:
             pm_trade_end_et=_et_to_minutes(_envs("ORB_PM_TRADE_END_ET", "15:00")),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
             post_loss_cooldown_min=_envi("ORB_POST_LOSS_COOLDOWN_MIN", 0),
+            # R20 afternoon-discipline levers.
+            eod_prep_exit_minutes=(
+                _et_to_minutes(_envs("ORB_EOD_PREP_EXIT_ET", ""))
+                if _envs("ORB_EOD_PREP_EXIT_ET", "")
+                else 0
+            ),
+            mfe_giveback_bps=_envf("ORB_MFE_GIVEBACK_BPS", 0.0),
+            mfe_giveback_start_minutes=(
+                _et_to_minutes(_envs("ORB_MFE_GIVEBACK_START_ET", ""))
+                if _envs("ORB_MFE_GIVEBACK_START_ET", "")
+                else 0
+            ),
+            afternoon_trail_pct=_envf("ORB_AFTERNOON_TRAIL_PCT", 0.0),
+            afternoon_trail_start_minutes=(
+                _et_to_minutes(_envs("ORB_AFTERNOON_TRAIL_START_ET", "14:00"))
+            ),
         )
 
 
@@ -1104,6 +1139,11 @@ def run_ticker_day(
         partial_pnl_dollars = 0.0  # P&L from the partial take, added to final
         remaining_shares = shares
         one_r_long = entry_price + risk if side == "long" else entry_price - risk
+        # R20 afternoon-discipline: track per-position MFE (max favorable
+        # excursion) for the giveback + chandelier-trail exits. Initialize
+        # to entry_price -- MFE only moves favorably as the position works.
+        mfe = entry_price
+        initial_risk = risk  # snapshot pre-trail value for the trail width
         for fb in forward_1m:
             # First check stop/target intra-bar (high/low pierce).
             if side == "long":
@@ -1177,6 +1217,60 @@ def run_ticker_day(
                     exit_reason = "target"
                     exit_bkt = fb.bucket
                     break
+            # R20 afternoon-discipline gates. Run AFTER intra-bar
+            # stop/target checks (so a clean stop/target on this bar still
+            # wins) but BEFORE the EOD cutoff (so we exit earlier than the
+            # full 15:55 flush). Update MFE first, then evaluate exits in
+            # priority order: (1) hard time exit > (2) MFE-giveback >
+            # (3) chandelier-trail (which only adjusts the stop and lets
+            # the next bar's stop check fire it).
+            if side == "long":
+                if fb.high > mfe:
+                    mfe = fb.high
+            else:
+                if fb.low < mfe:
+                    mfe = fb.low
+
+            # (1) Hard time exit -- "eod_prep" force-close before EOD.
+            if cfg.eod_prep_exit_minutes > 0 and fb.bucket >= cfg.eod_prep_exit_minutes:
+                exit_price = fb.close
+                exit_reason = "eod_prep"
+                exit_bkt = fb.bucket
+                break
+
+            # (2) MFE-giveback exit -- exit when price has retraced this
+            # many bps from the favorable peak. Local-max signal.
+            if cfg.mfe_giveback_bps > 0 and fb.bucket >= cfg.mfe_giveback_start_minutes:
+                if side == "long":
+                    giveback = mfe - fb.close
+                else:
+                    giveback = fb.close - mfe
+                if giveback > 0 and entry_price > 0:
+                    giveback_bps = (giveback / entry_price) * 10000.0
+                    if giveback_bps >= cfg.mfe_giveback_bps:
+                        exit_price = fb.close
+                        exit_reason = "mfe_giveback"
+                        exit_bkt = fb.bucket
+                        break
+
+            # (3) Chandelier trail -- tighten the stop to mfe -+ trail_pct
+            # * initial_risk after the afternoon start time. Only ratchets
+            # toward MFE (long: only moves stop UP; short: only DOWN).
+            if (
+                cfg.afternoon_trail_pct > 0
+                and fb.bucket >= cfg.afternoon_trail_start_minutes
+                and initial_risk > 0
+            ):
+                trail_width = cfg.afternoon_trail_pct * initial_risk
+                if side == "long":
+                    new_stop = mfe - trail_width
+                    if new_stop > stop:
+                        stop = new_stop
+                else:
+                    new_stop = mfe + trail_width
+                    if new_stop < stop:
+                        stop = new_stop
+
             # EOD cutoff?
             if fb.bucket >= cfg.eod_cutoff_et:
                 exit_price = fb.close
