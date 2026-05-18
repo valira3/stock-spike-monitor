@@ -94,6 +94,21 @@ _HEAD_PATCH = """\
     }
     /* Time-varying fields: P&L, session mode, activity feed, scan state */
     if ('portfolio'         in diff) s.portfolio         = diff.portfolio;
+    /* Critical: the dashboard's Main-tab DAY P&L / EQUITY KPI reads from
+       state.portfolio (singular legacy field) via paperSlice -> sl.portfolio,
+       NOT from state.portfolios.main. Without this, the KPI stays at $0
+       throughout the day even when day_pnl is properly updated in
+       state.portfolios.main. Mirror main's values into the singular field
+       so the KPI reflects intraday realized + unrealized swings. */
+    if (s.portfolios && s.portfolios.main) {
+      var pm = s.portfolios.main;
+      s.portfolio = Object.assign({}, s.portfolio || {}, {
+        equity:   (pm.equity   != null) ? pm.equity   : (s.portfolio||{}).equity,
+        day_pnl:  (pm.day_pnl  != null) ? pm.day_pnl  : (s.portfolio||{}).day_pnl,
+        start:    ((s.portfolio||{}).start != null) ? (s.portfolio||{}).start : 100000,
+        vs_start: (pm.day_pnl  != null) ? pm.day_pnl  : (s.portfolio||{}).vs_start,
+      });
+    }
     if ('regime'            in diff) s.regime            = diff.regime;
     if ('v10_activity'      in diff && s.v10) {
       s.v10 = Object.assign({}, s.v10);

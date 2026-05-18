@@ -4,6 +4,18 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.133 (2026-05-17) — replay: bridge state.portfolio (singular) to state.portfolios.main
+
+v9.1.132 added `state.portfolios.main.day_pnl` (realized + unrealized) to every snapshot diff. Day P&L KPI on the Main tab **still** read $0.00. Root cause: `dashboard_static/app.js:renderKPIs` reads `p = sl.portfolio || {}` where `sl = paperSlice(s) = { portfolio: s.portfolio, ... }` — that's `state.portfolio` (singular legacy field), NOT `state.portfolios.main`.
+
+The singular field came from the base state and never got rewritten across snapshots, so `p.day_pnl` was always the base value (`0.0`).
+
+Fix in `_HEAD_PATCH.currentState()`: after merging `diff.portfolios` into `s.portfolios`, mirror `main`'s `equity` / `day_pnl` into `s.portfolio` so the KPI tile reflects intraday realized + unrealized. Doesn't require regenerating snapshots — the merge happens client-side in the replay's JS, so the next click on the dashboard button (post-Railway-deploy) picks up the fix.
+
+Verified path: `state.portfolios.main.day_pnl = -$300.80` (synthesized) → `currentState().portfolio.day_pnl = -$300.80` → `renderKPIs` displays -$300.80. Previously this chain broke at the second step.
+
+---
+
 ## v9.1.132 (2026-05-17) — replay: Day P&L includes unrealized + per-portfolio diff
 
 Two replay-fidelity bugs uncovered by clicking through the v9.1.131 synthesized week:
