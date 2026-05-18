@@ -4,6 +4,60 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.124 (2026-05-18) — OR-retracement gate + monitor ATR-stop fix
+
+Two fixes triggered by the 2026-05-18 10:10 ET AVGO short, which fired
+the dashboard monitor's `or_break` and `atr_stop` WARNs at 11:55 ET.
+
+**Bug 1 — OR-retracement (real strategy gap, gate added in the bot):**
+
+The 5m-close trigger in `detect_breakout` and the actual entry price
+(`signal.proposed_entry = next_open = current_price` at scan time) are
+decoupled. The VWAP-chase gate (`ORB_MAX_VWAP_DEV_BPS=15`) can stall a
+signal until price has retraced back inside the OR range, at which
+point the entry no longer reflects the breakout premise. AVGO timeline:
+
+- ~10:05 — first 5m bar after OR locks closes at ~$415.X (below
+  OR_low $416.30) → signal fires.
+- 10:05–10:10 — VWAP-chase rejects each scan because price ($415) is
+  ~48bps below VWAP ($418-ish) → `dev_bps > 15bps threshold`.
+- 10:05–10:10 — price rallies back into the OR range.
+- 10:10:35 — price is now ~$418.37, VWAP-chase passes, entry fires at
+  $418.37 (49bps *above* OR_low).
+
+Fix in `orb/engine.py:try_enter` (runs immediately after the VWAP-chase
+block): reject when `entry_price` has retraced past the OR boundary by
+more than `cfg.or_retracement_tolerance_bps`. Default 25 bps (matches
+the dashboard monitor's `or_break` invariant threshold). New env var
+`ORB_OR_RETRACEMENT_TOLERANCE_BPS`; set to `0.0` to disable. New
+session-scoped counter `_or_retrace_reject_count` exposed via
+`OrbEngine.snapshot()`. Log tag `[V9124-OR-RETRACE]`.
+
+**Caveat:** this is a strategy-affecting change. Existing Keystone
+backtest results assume no such gate. A future research pass should
+re-run the Keystone command with `ORB_OR_RETRACEMENT_TOLERANCE_BPS=25`
+to quantify the cost (we expect a small entry-count reduction).
+
+**Bug 2 — monitor's `atr_stop` invariant computed wrong ATR (monitor-side):**
+
+`tools/system_check_bot.py:_compute_atr` required `len(bars) >= n+1`
+(15 bars for ATR(14)), and the caller fell back to `ticker_bars[:half]`
+when there weren't enough pre-entry bars. That fallback mixed POST-entry
+bars into the ATR computation, producing a value several multiples
+larger than what the live engine (`orb.engine.atr_from_5m`) actually
+used to size the stop. For AVGO at 10:10 ET, monitor saw ATR≈$3.00 and
+expected stop ≈ $5.26; bot saw ATR≈$0.72 and produced stop $1.26.
+Monitor flagged "stop ratio 0.24" but the bot was actually doing exactly
+what Keystone specifies.
+
+Fix in `tools/system_check_bot.py`:
+- `_compute_atr` now uses simple mean of the last min(N-1, n) True Ranges
+  (matches `orb.engine.atr_from_5m`), accepts as few as 2 bars, returns
+  None on <2.
+- Caller `checks_market_validation`: removed the post-entry-bars
+  fallback. When `pre_entry` has <2 bars, skip the trade instead of
+  contaminating the ATR with future data.
+
 ## v9.1.123 (2026-05-18) — extend post-restart engine↔broker reconciliation to Main
 
 `orb.live_runtime.inject_missing_engine_positions` previously restricted

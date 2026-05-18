@@ -248,6 +248,10 @@ def _build_config_from_env() -> OrbConfig:
         # bypass either filter.
         min_break_bps=_f("ORB_MIN_BREAK_BPS", 5.0),
         max_vwap_dev_bps=_f("ORB_MAX_VWAP_DEV_BPS", 25.0),
+        # v9.1.124 -- OR-retracement gate (see orb/engine.py for rationale).
+        # Default 25bps matches the dashboard monitor's or_break tolerance.
+        # Set ORB_OR_RETRACEMENT_TOLERANCE_BPS=0 to disable.
+        or_retracement_tolerance_bps=_f("ORB_OR_RETRACEMENT_TOLERANCE_BPS", 25.0),
         max_vwap_dev_tickers=tuple(
             t.strip().upper()
             for t in os.environ.get(

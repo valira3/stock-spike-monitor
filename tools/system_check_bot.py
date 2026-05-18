@@ -854,6 +854,7 @@ def print_report(report: dict[str, Any]) -> None:
     # Reconfigure stdout to UTF-8 so Unicode chars in check details (e.g. ≈)
     # don't crash on Windows cp1252 consoles.
     import sys as _sys
+
     if hasattr(_sys.stdout, "reconfigure"):
         try:
             _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1164,8 +1165,23 @@ def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
 
 
 def _compute_atr(bars: list[dict[str, Any]], n: int = 14) -> float | None:
-    """Wilder's ATR(n) from a list of {o,h,l,c} bar dicts, oldest first."""
-    if len(bars) < n + 1:
+    """ATR over `bars` (oldest first).
+
+    v9.1.124 -- match the live engine's `orb.engine.atr_from_5m`:
+    simple mean of the last min(N-1, n) True Ranges, where N is the
+    number of bars supplied. Pre-v9.1.124 this used Wilder smoothing
+    with a hard minimum of `n+1` bars; that caused the caller's
+    fallback to extend pre-entry bars with POST-entry bars to reach
+    the threshold, mixing future data into the "stop sizing at entry
+    time" computation. Result: ATR was wildly different from the
+    engine's value and the atr_stop invariant fired false WARNs on
+    early-RTH entries.
+
+    Returns None when fewer than 2 bars are supplied (no TRs computable)
+    -- callers should skip that trade rather than substitute post-entry
+    bars.
+    """
+    if len(bars) < 2:
         return None
     trs = [
         max(
@@ -1175,10 +1191,8 @@ def _compute_atr(bars: list[dict[str, Any]], n: int = 14) -> float | None:
         )
         for i in range(1, len(bars))
     ]
-    atr = sum(trs[:n]) / n
-    for tr in trs[n:]:
-        atr = (atr * (n - 1) + tr) / n
-    return atr
+    window = trs[-n:] if len(trs) > n else trs
+    return sum(window) / len(window)
 
 
 def pull_alpaca_market_data(tickers: list[str], date_et: str) -> dict[str, Any]:
@@ -1361,8 +1375,8 @@ def checks_market_validation(
         if not entry or not stop:
             continue
         ticker_bars = bars.get(ticker, [])
-        if len(ticker_bars) < 15:
-            continue  # not enough bars to compute ATR
+        if len(ticker_bars) < 2:
+            continue  # not enough bars to compute any ATR
 
         # Use bars up to the bar containing the entry time
         entry_time_s = str(t.get("entry_time") or "")
@@ -1378,8 +1392,14 @@ def checks_market_validation(
             if (datetime.fromisoformat(b["t"]).hour * 60 + datetime.fromisoformat(b["t"]).minute)
             < entry_min_utc
         ]
-        if len(pre_entry) < 15:
-            pre_entry = ticker_bars[: max(15, len(ticker_bars) // 2)]
+        # v9.1.124 -- skip when too few pre-entry bars instead of falling
+        # back to ticker_bars[:half] which mixes POST-entry data into the
+        # ATR. _compute_atr now matches the live engine's simple-mean
+        # formula so 7 TRs at 10:10 AM produces the same number the bot
+        # used for sizing. Pre-v9.1.124 the post-entry fallback drove
+        # ATR several multiples larger and produced false WARNs.
+        if len(pre_entry) < 2:
+            continue
 
         atr = _compute_atr(pre_entry)
         if atr is None or atr <= 0:
