@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.129 (2026-05-17) — replay_dashboard: date dropdown on the R2-shared replay
+
+The standalone `replay_week.html` (added in v9.1.125) had a date picker; the R2-shared `live_<DATE>.html` (the URL the operator actually opens — the one ending with the cloudflarestorage.com signature) did not. v9.1.128 added the picker to the wrong file. This commit adds it where it belongs.
+
+**New `--dates` CLI flag** (singular `--date` still works for backwards compatibility):
+```
+python scripts/replay_dashboard.py --share --env prod \\
+    --dates 2026-05-11,2026-05-12,2026-05-13,2026-05-14,2026-05-15
+```
+
+`build_html` now accepts an optional `days_map = {date: {"diffs": [...], "base": {...}}}` and a `default_date`. When `>1` date is supplied:
+
+- A cyan-bordered **DATE** pill appears in the replay bar, between the speed button and the timestamp.
+- All days' diffs + base states are bundled inline as `window.__TT_DAYS`.
+- On dropdown change, `_NAV_SCRIPT` swaps `__TT_BASE` / `__TT_DIFFS` to the selected day's bundle, resets the scrubber to bucket 0, flushes the intraday-cache, and re-fires the SSE so the dashboard re-renders against the new state.
+- R2 key becomes `replay/week_<latest>.html`; presigned URL valid for **8 hours** (vs 1 hour for single-day) so a week's worth of switching fits in one signing window.
+
+**`_load_captured_snapshots` now handles both snapshot schemas** — the legacy `{"dashboard": {"/api/state": ...}}` format AND the newer `{"state": ..., "ts_et": ...}` format on the `snapshots-live` branch. The user's actual on-disk snapshots are the newer schema; without this fix every multi-day call fell straight through to the live-fetch fallback.
+
+**Caveat**: real captured snapshots only exist for dates the `state-snapshot` workflow ran. For older dates without captures, the script falls back to live-fetching the dashboard state and synthesizing a 30-min grid labeled with the target date — the dropdown still works but the day's activity isn't historically accurate. Run the snapshot capture for a few days to backfill before relying on multi-day for analysis.
+
+---
+
 ## v9.1.128 (2026-05-17) — week-replay: unmissable date picker + canvas null guard
 
 Operator reported "I don't see the dropdown" after v9.1.126. Headless-DOM verification confirmed the dropdown does render (5 options, Fri 05-15 selected, change event re-renders trade list) — but the styling could be missed at a glance. This bump makes it impossible to miss and adds a defensive guard for canvas-less browsers.

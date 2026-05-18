@@ -854,6 +854,40 @@ _NAV_SCRIPT = """\
 
   /* Export for external callers (playwright, console) */
   window.ttNav  = navigate;
+
+  /* Multi-day date switcher. Only wires up if __TT_DAYS is present (set by
+     build_html when --dates passes >1 date). Swaps __TT_BASE / __TT_DIFFS
+     to the selected date's bundle, resets the scrubber to bucket 0, and
+     re-fires the SSE so the dashboard re-renders against the new state. */
+  var dateSelEl = document.getElementById('__tt_date');
+  if (dateSelEl && window.__TT_DAYS) {
+    dateSelEl.addEventListener('change', function () {
+      var d = this.value;
+      var bundle = window.__TT_DAYS[d];
+      if (!bundle) return;
+      /* Stop playback (otherwise the timer races the swap). */
+      stopPlay();
+      /* Swap base + diffs in place. Keep refs that other JS already grabbed
+         consistent by mutating the same arrays/objects where possible. */
+      window.__TT_BASE = bundle.base;
+      window.__TT_DIFFS = bundle.diffs;
+      DIFFS = bundle.diffs;
+      window.__TT_IDX = 0;
+      idx = 0;
+      /* Update range input max bound to match new day's snapshot count. */
+      var rng = document.getElementById('__tt_range');
+      if (rng) {
+        rng.max = Math.max(0, DIFFS.length - 1);
+        rng.value = 0;
+      }
+      /* Flush the per-ticker intraday-bar cache so charts redraw with the
+         new day's bars instead of serving the old day's cached payload. */
+      if (typeof window.__tgFlushIntradayCache === 'function') {
+        window.__tgFlushIntradayCache();
+      }
+      navigate(0);
+    });
+  }
   window.ttStop = stopPlay;
 
   if (document.readyState === 'loading') {
@@ -1051,8 +1085,18 @@ def build_day_snapshots(state: dict, date_et: str = "2026-05-15") -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _bar_html(diffs: list[dict], start_idx: int) -> str:
-    """Build the replay bar: controls + rich session timeline with zones + events."""
+def _bar_html(
+    diffs: list[dict],
+    start_idx: int,
+    available_dates: list[str] | None = None,
+    default_date: str | None = None,
+) -> str:
+    """Build the replay bar: controls + rich session timeline with zones + events.
+
+    When ``available_dates`` has >1 entry, a date dropdown is injected in the
+    controls row and a no-event placeholder is rendered for non-default days
+    (events get rebuilt client-side on date change in _NAV_SCRIPT).
+    """
     import re as _re
 
     START_MIN, END_MIN = 570, 960  # 9:30 ET .. 16:00 ET
@@ -1157,6 +1201,34 @@ def _bar_html(diffs: list[dict], start_idx: int) -> str:
     btn = ("background:#111827;color:#d1d5db;border:1px solid #374151;"
            "border-radius:5px;cursor:pointer;font:11px/1 inherit;padding:5px 11px;")
 
+    # Date dropdown -- only shown when multi-day mode is in play.
+    date_picker_html = ""
+    if available_dates and len(available_dates) > 1:
+        from datetime import date as _date
+        opts = []
+        for d in available_dates:
+            try:
+                dt = _date.fromisoformat(d)
+                lbl = dt.strftime("%a %b %-d")
+            except Exception:
+                lbl = d
+            sel = " selected" if d == (default_date or available_dates[-1]) else ""
+            opts.append(f'<option value="{d}"{sel}>{lbl}</option>')
+        opts_html = "".join(opts)
+        date_picker_html = (
+            '<div id="__tt_date_picker" style="display:flex;align-items:center;gap:6px;'
+            'background:rgba(56,189,248,0.18);border:1.5px solid #38bdf8;border-radius:5px;'
+            'padding:3px 6px 3px 9px;margin-right:6px">'
+            '<span style="color:#38bdf8;font-size:9px;font-weight:700;letter-spacing:1px">DATE</span>'
+            f'<select id="__tt_date" aria-label="Select replay date" style="background:transparent;'
+            'color:#e6edf3;border:0;padding:2px 18px 2px 2px;font:inherit;font-size:11px;'
+            'font-weight:700;cursor:pointer;appearance:none;-webkit-appearance:none;'
+            'background-image:url(&quot;data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' '
+            'width=\'10\' height=\'10\' viewBox=\'0 0 12 12\'><path d=\'M2 4l4 4 4-4\' stroke=\'%2338bdf8\' '
+            'stroke-width=\'2\' fill=\'none\'/></svg>&quot;);background-repeat:no-repeat;'
+            f'background-position:right 2px center">{opts_html}</select></div>'
+        )
+
     return f"""<div id="__tt_bar" style="position:sticky;top:0;left:0;right:0;z-index:999;
 background:#070a0f;color:#d1d5db;
 font:11px/1 'JetBrains Mono',ui-monospace,monospace;
@@ -1167,6 +1239,7 @@ border-bottom:1px solid #1a2535;box-shadow:0 2px 12px rgba(0,0,0,.8)">
     <span style="color:#f59e0b;font-weight:700;white-space:nowrap;font-size:11px;letter-spacing:.5px">&#9194; REPLAY</span>
     <button id="__tt_play" style="{btn}min-width:32px">&#9654;</button>
     <button id="__tt_spd"  style="{btn}font-size:10px;padding:4px 7px;color:#9ca3af">3&times;</button>
+    {date_picker_html}
     <span id="__tt_ts" style="color:#60a5fa;flex:1;text-align:center;font-size:14px;font-weight:700;letter-spacing:.5px">{init_ts}</span>
     <span id="__tt_cnt" style="color:#374151;font-size:9px;white-space:nowrap">{init_cnt}</span>
   </div>
@@ -1208,7 +1281,20 @@ border-bottom:1px solid #1a2535;box-shadow:0 2px 12px rgba(0,0,0,.8)">
 </div>"""
 
 
-def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
+def build_html(
+    diffs: list[dict],
+    base_state: dict,
+    start_idx: int = 0,
+    days_map: dict | None = None,
+    default_date: str | None = None,
+) -> str:
+    """Render the full replay HTML.
+
+    Single-day mode: ``diffs`` + ``base_state`` are baked in directly.
+    Multi-day mode: pass ``days_map = {date: {"diffs": [...], "base": {...}}}``
+    and ``default_date``. A date dropdown appears in the scrubber bar and
+    on change the JS swaps ``__TT_BASE`` / ``__TT_DIFFS`` and re-navigates.
+    """
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     app_css = (STATIC / "app.css").read_text(encoding="utf-8")
     html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -1281,18 +1367,56 @@ tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
 #tg-health-pill,#tg-health-pop{display:none!important}
 </style>\n"""
 
+    # Multi-day payload: bundle every date's base+slim_diffs into __TT_DAYS.
+    # Only emitted when days_map is provided; single-day callers get the
+    # legacy __TT_BASE / __TT_DIFFS only.
+    multi_payload = ""
+    if days_map and len(days_map) > 1:
+        # Slim each day's diffs the same way single-day does.
+        days_slim: dict[str, dict] = {}
+        for d, daydata in days_map.items():
+            d_diffs = daydata.get("diffs") or []
+            d_base = daydata.get("base") or {}
+            d_slim = [
+                {
+                    "ts_et":             dd["ts_et"],
+                    "captured_at_utc":   dd["captured_at_utc"],
+                    "kind":              dd.get("kind", ""),
+                    "label":             dd.get("label", ""),
+                    "trades_today":      dd["diff"]["trades_today"],
+                    "positions":         dd["diff"]["positions"],
+                    "server_time":       dd["diff"]["server_time"],
+                    "server_time_label": dd["diff"]["server_time_label"],
+                    "eod":               dd["diff"]["eod"],
+                    "portfolio":          dd["diff"].get("portfolio", {}),
+                    "regime":             dd["diff"].get("regime", {}),
+                    "v10_activity":       dd["diff"].get("v10_activity", []),
+                    "gates_scan_paused":  dd["diff"].get("gates_scan_paused", False),
+                    "v10_kill_triggered": dd["diff"].get("v10_kill_triggered", False),
+                    "v10_realized_pnl":   dd["diff"].get("v10_realized_pnl",   0.0),
+                    "v10_admit_count":    dd["diff"].get("v10_admit_count",    0),
+                    "v10_reject_count":   dd["diff"].get("v10_reject_count",   0),
+                    "v10_day_states":     dd["diff"].get("v10_day_states",     []),
+                }
+                for dd in d_diffs
+            ]
+            days_slim[d] = {"base": d_base, "diffs": d_slim}
+        multi_payload = f"window.__TT_DAYS={_js(days_slim)};\nwindow.__TT_DEFAULT_DATE={_js(default_date or '')};\n"
+
     # Data + patch script goes in <head> BEFORE anything else
     head_inject = (
         replay_css + f"<script>\n"
         f"window.__TT_BASE={_js(base_state)};\n"
         f"window.__TT_DIFFS={_js(slim_diffs)};\n"
         f"window.__TT_IDX={start_idx};\n"
+        f"{multi_payload}"
         f"</script>\n" + _HEAD_PATCH
     )
     html = html.replace("</head>", head_inject + "</head>", 1)
 
     # Static bar HTML at the very start of <body>
-    bar = _bar_html(diffs, start_idx)
+    available_dates = sorted(days_map.keys()) if days_map and len(days_map) > 1 else None
+    bar = _bar_html(diffs, start_idx, available_dates=available_dates, default_date=default_date)
     html = re.sub(r"(<body[^>]*>)", r"\1" + bar, html, count=1)
 
     # Inline app.js + nav script at end of body
@@ -1463,7 +1587,15 @@ def _make_handler(snaps: list[dict], env: str):
 
 
 def _load_captured_snapshots(date_et: str) -> list[dict] | None:
-    """Return real captured snapshots from data/snapshots/YYYY-MM-DD.jsonl, or None."""
+    """Return real captured snapshots from data/snapshots/YYYY-MM-DD.jsonl, or None.
+
+    Two on-disk schemas are accepted:
+    1. ``{"dashboard": {"/api/state": {...}}, ...}`` -- legacy capture format
+       emitted by snapshot_state.py.
+    2. ``{"state": {...}, "ts_et": "...", "captured_at_utc": "..."}`` -- the
+       newer format on the snapshots-live branch (tools/state_snapshot.py).
+       Re-shaped on the fly so _jsonl_to_diffs can consume it uniformly.
+    """
     snap_file = REPO / "data" / "snapshots" / f"{date_et}.jsonl"
     if not snap_file.exists():
         return None
@@ -1478,6 +1610,14 @@ def _load_captured_snapshots(date_et: str) -> list[dict] | None:
             continue
         if e.get("dashboard"):
             out.append(e)
+            continue
+        # snapshots-live schema: {"state": ..., "ts_et": ..., "captured_at_utc": ...}.
+        if e.get("state") and e.get("ts_et"):
+            out.append({
+                "ts_et": e["ts_et"],
+                "captured_at_utc": e.get("captured_at_utc", ""),
+                "dashboard": {"/api/state": e["state"]},
+            })
     return out if out else None
 
 
@@ -1524,12 +1664,86 @@ def _jsonl_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
     return diffs, base_state
 
 
+def _gather_day(env: str, date_et: str) -> tuple[list[dict], dict]:
+    """Return (day_snaps, base_state) for a single date, identical to the
+    single-day branch of main() (real captured first, fall back to live)."""
+    captured = _load_captured_snapshots(date_et)
+    if captured:
+        print(f"  {date_et}: using {len(captured)} captured snapshots")
+        return _jsonl_to_diffs(captured)
+    base_url = (
+        "https://tradegenius.up.railway.app" if env == "prod"
+        else "https://tradegenius-staging.up.railway.app"
+    )
+    password = (
+        "3YhCoi5AIZYAFG7eDua8bD8Z" if env == "prod"
+        else os.environ.get("DASHBOARD_PASSWORD", "")
+    )
+    if not password:
+        raise RuntimeError("DASHBOARD_PASSWORD not set")
+    print(f"  {date_et}: no captured snapshots, fetching live from {base_url}")
+    opener = _login(base_url, password)
+    state = _fetch_state(opener, base_url)
+    day_snaps = build_day_snapshots(state, date_et)
+    base_state = dict(state)
+    base_state.pop("trades_today", None)
+    base_state.pop("positions", None)
+    return day_snaps, base_state
+
+
+def _run_multi_day_share(args) -> None:
+    """Bundle multiple dates into one HTML with a date dropdown."""
+    dates = [d.strip() for d in args.dates.split(",") if d.strip()]
+    if not dates:
+        print("--dates given but empty")
+        sys.exit(1)
+    default_date = dates[-1]  # most recent date is the initial view
+
+    print(f"Multi-day mode: {len(dates)} dates, default = {default_date}")
+    days_map: dict[str, dict] = {}
+    for d in dates:
+        try:
+            day_snaps, base_state = _gather_day(args.env, d)
+            days_map[d] = {"diffs": day_snaps, "base": base_state}
+        except Exception as e:
+            print(f"  [WARN] {d}: {e} -- skipping")
+    if not days_map:
+        print("No usable days found")
+        sys.exit(1)
+
+    # Use the default day's data as the legacy single-day fallback fields.
+    default_data = days_map.get(default_date) or next(iter(days_map.values()))
+    default_diffs = default_data["diffs"]
+    default_base = default_data["base"]
+
+    print(f"Generating HTML ({len(days_map)} days bundled) ...")
+    html = build_html(
+        default_diffs, default_base, start_idx=0,
+        days_map=days_map, default_date=default_date,
+    )
+    body = html.encode("utf-8")
+    print(f"  {len(body) // 1024} KB")
+
+    key = f"replay/week_{default_date}.html"
+    print(f"Uploading to R2 ({key}) ...")
+    upload_r2(body, key)
+    url = presigned(key, expires=3600 * 8)
+    print(f"\nShareable URL (8 hours):\n{url}\n")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--env", default="staging", choices=["staging", "prod"])
     p.add_argument("--date", default=None)
+    p.add_argument(
+        "--dates",
+        default=None,
+        help="Comma-separated dates for multi-day mode (e.g. "
+             "2026-05-11,2026-05-12,...). Adds a date dropdown to the "
+             "replay bar; default-selected = the last date in the list.",
+    )
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument(
         "--share",
@@ -1540,6 +1754,10 @@ def main() -> None:
 
     _load_env()
     date_et = args.date or datetime.now(ET).strftime("%Y-%m-%d")
+
+    if args.share and args.dates:
+        _run_multi_day_share(args)
+        return
 
     if args.share:
         # Prefer real captured snapshots (from GHA state-snapshot workflow)
