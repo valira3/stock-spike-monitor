@@ -203,6 +203,23 @@ def _position_row(p: dict, mark: float, minute: int, date_str: str) -> dict:
     }
 
 
+def _activity_row(p: dict, action: str, minute: int) -> dict:
+    """One Recent Activity feed entry for an admit or exit at `minute`."""
+    h, m = minute // 60, minute % 60
+    pnl = p.get("pnl") if action in ("EXIT_LONG", "EXIT_SHORT") else None
+    return {
+        "ts_iso": f"{h:02d}:{m:02d}:00",
+        "minute": minute,
+        "kind": action,
+        "ticker": p["ticker"],
+        "side": p["side"].upper(),
+        "price": round(p["entry_price"] if action.startswith("ENTRY") else p["exit_price"], 4),
+        "shares": p["shares"],
+        "pnl": round(pnl, 2) if pnl is not None else None,
+        "leg": p.get("leg", "morning"),
+    }
+
+
 def _build_snapshot(base: dict, date_str: str, minute: int,
                     pairs_main: list[dict], pairs_val: list[dict],
                     bars: dict[str, dict[int, dict]]) -> dict:
@@ -215,6 +232,17 @@ def _build_snapshot(base: dict, date_str: str, minute: int,
         et_dt.strftime("%a %b %-d") + f" | {h:02d}:{m:02d}:00 ET"
     )
     state["version"] = "9.1.130-replay"
+
+    # Session-phase derived flags that drive top-of-page banner state.
+    # scan_paused is True outside 9:30-15:55 ET (matches live engine's
+    # idle-hours behavior; otherwise the dashboard renders a "Scanner
+    # paused" banner that's incongruous mid-day).
+    scan_paused = (minute < START_MIN) or (minute >= 955)
+    if state.get("gates"):
+        state["gates"]["scan_paused"]      = scan_paused
+        state["gates"]["scan_paused_user"] = scan_paused
+        state["gates"]["scan_idle_hours"]  = scan_paused
+        state["gates"]["trading_halted"]   = False
 
     # Per-portfolio buckets.
     portfolios_out = {}
@@ -269,6 +297,60 @@ def _build_snapshot(base: dict, date_str: str, minute: int,
     # Top-level "main"-shaped fields (legacy clients read these).
     state["trades_today"] = portfolios_out["main"]["trades_today"]
     state["positions"] = portfolios_out["main"]["positions"]
+
+    # Update v10.risk_books.main with running realized + counts so the v10
+    # ORB section's realized P&L gauge updates per snapshot instead of
+    # staying frozen at the base-state value ($0).
+    main_realized = sum(
+        p["pnl"] for p in pairs_main
+        if minute >= p["exit_min"]
+    )
+    main_admits = sum(1 for p in pairs_main if minute >= p["entry_min"])
+    if state.get("v10") and state["v10"].get("risk_books"):
+        if "main" in state["v10"]["risk_books"]:
+            state["v10"]["risk_books"]["main"] = {
+                **state["v10"]["risk_books"]["main"],
+                "realized_pnl_today": round(main_realized, 2),
+                "admit_count": main_admits,
+                "daily_kill_triggered": False,
+                "equity": round(PORTFOLIOS_EQUITY["main"] + main_realized, 2),
+            }
+        if "val" in state["v10"]["risk_books"]:
+            val_realized = sum(p["pnl"] for p in pairs_val if minute >= p["exit_min"])
+            val_admits = sum(1 for p in pairs_val if minute >= p["entry_min"])
+            state["v10"]["risk_books"]["val"] = {
+                **state["v10"]["risk_books"]["val"],
+                "realized_pnl_today": round(val_realized, 2),
+                "admit_count": val_admits,
+                "daily_kill_triggered": False,
+                "equity": round(PORTFOLIOS_EQUITY["val"] + val_realized, 2),
+            }
+
+    # Build a Recent Activity feed of admit/exit events up to this minute.
+    activity = []
+    for p in sorted(pairs_main, key=lambda x: x["entry_min"]):
+        if minute >= p["entry_min"]:
+            activity.append(_activity_row(
+                p, "ENTRY_LONG" if p["side"] == "long" else "ENTRY_SHORT",
+                p["entry_min"],
+            ))
+        if minute >= p["exit_min"]:
+            activity.append(_activity_row(
+                p, "EXIT_LONG" if p["side"] == "long" else "EXIT_SHORT",
+                p["exit_min"],
+            ))
+    # Most recent first, capped at 30 entries.
+    activity.sort(key=lambda x: x["minute"], reverse=True)
+    if state.get("v10") is not None:
+        state["v10"]["activity"] = activity[:30]
+
+    # Populate eod_positions for any EOD trade currently open (so the EOD
+    # time-bar renders the right session badge on Main's position rows).
+    eod_pos_dict = {}
+    for pos in portfolios_out["main"]["positions"]:
+        if pos.get("leg") == "eod":
+            eod_pos_dict[pos["ticker"]] = {"eod": True, "entry_price": pos["entry"]}
+    state["eod_positions"] = eod_pos_dict
 
     return state
 

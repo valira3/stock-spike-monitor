@@ -4,6 +4,38 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.134 (2026-05-17) — replay: full snapshot-path audit + Val independence
+
+Comprehensive audit of every dashboard field that drives visible UI vs every field the snapshot pipeline (synth → diff → currentState merge) actually carries. Found three real gaps and one logic bug.
+
+**Bug: Val tab was deriving its positions from Main × 30%.**
+
+The `/api/executor/val` fetch shim in `replay_dashboard.py` mapped each Main position to a "Val" position with `shares = round(main.shares × 30185/100000)`. This was wrong: Val is an independent portfolio with its own admissions, cooldowns, and equity. `orb_replay_day` runs Val separately ($30,185 starting equity) and can produce different share counts (or even different tickers if Val's risk book rejects something Main admits). The shim now reads `state.portfolios.val` directly — the per-portfolio block we ship in every snapshot's diff since v9.1.132.
+
+**Gap: stale v10.* fields across every snapshot.**
+
+Audit revealed these dashboard reads stayed pinned to the base-state's 05-15 09:30 values:
+
+| Field | Drives | Fix |
+|---|---|---|
+| `v10.risk_books.main.realized_pnl_today` | v10 ORB realized P&L gauge | synth computes `sum(pnl for exits ≤ minute)` per snapshot |
+| `v10.risk_books.main.admit_count` | v10 trades-today counter | synth computes `count(entries ≤ minute)` |
+| `v10.activity` | "Recent Activity" feed | synth builds flattened ENTRY/EXIT events, cap 30 |
+| `eod_positions` | EOD time-bar session badge | synth fills with currently-open EOD tickers |
+| `gates.scan_paused` | scanner-paused banner | synth toggles True outside 9:30-15:54 ET |
+
+**Bug: redundant Val data in state.portfolios.val** was being computed but never read by the shim. Now read end-to-end.
+
+Verified end-to-end on Mon 05-11:
+- 09:30 ET: realized=$0, admits=0, scan_paused=False, activity=[]
+- 10:30 ET: realized=$0, admits=1, day_pnl=-$285.60 (unrealized only), activity=[ENTRY AAPL]
+- 15:30 ET: realized=$0, admits=3 (post-EOD), eod_positions=[ORCL, TSLA]
+- 15:55 ET: realized=-$72.67 (AAPL BE-stop exit), scan_paused=True, activity=[…4 entries…]
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `862cc809`). After Railway deploys 9.1.134, next click on the dashboard replay button generates a fresh HTML with the full state path verified.
+
+---
+
 ## v9.1.133 (2026-05-17) — replay: bridge state.portfolio (singular) to state.portfolios.main
 
 v9.1.132 added `state.portfolios.main.day_pnl` (realized + unrealized) to every snapshot diff. Day P&L KPI on the Main tab **still** read $0.00. Root cause: `dashboard_static/app.js:renderKPIs` reads `p = sl.portfolio || {}` where `sl = paperSlice(s) = { portfolio: s.portfolio, ... }` — that's `state.portfolio` (singular legacy field), NOT `state.portfolios.main`.

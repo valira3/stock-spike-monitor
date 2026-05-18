@@ -349,52 +349,47 @@ _HEAD_PATCH = """\
   function reply(u) {
     var s = currentState();
     if (u.indexOf('/api/state')         >= 0) return s;
-    /* Val mirrors Main ORB positions with executor-compatible field names.
-       The executor renderer uses symbol/entry_price/current_price/unrealized_pnl
-       (not ticker/entry/mark/unrealized as the main state uses). */
+    /* Val is an INDEPENDENT portfolio (own admissions, cooldowns, equity).
+       Read its state from state.portfolios.val directly -- do NOT scale
+       Main's positions by some ratio. Pre-v9.1.134 this shim derived Val
+       from Main * 0.30, which was wrong: Val's orb_replay_day can admit
+       different tickers, get rejected on different gates, and carry
+       different share counts than Main. Now it reads the per-portfolio
+       slim block we ship in every snapshot's diff. */
     if (u.indexOf('/api/executor/val')  >= 0) {
-      /* Val paper account: equity $30,185.24, scale positions proportionally vs Main $100k */
-      var _VAL_EQUITY  = 30185.24;
-      var _VAL_RATIO   = _VAL_EQUITY / 100000;
-      var _mainEq = ((s.portfolio||{}).equity) || 100000;
-      var _valDayPnl = Math.round(((_mainEq - 100000) * _VAL_RATIO) * 100) / 100;
-      var _valEq   = Math.round((_VAL_EQUITY + _valDayPnl) * 100) / 100;
-      /* Include ALL positions (morning + EOD) scaled to Val's account size.
-         Executor renderer uses avg_entry (not entry_price) for entry/notional/progress bar.
-         EOD positions also need to be in the eod_positions dict for the EOD time-bar. */
-      var _valPos = (s.positions||[]).map(function(p) {
-        var _sh  = Math.max(1, Math.round((p.shares||1) * _VAL_RATIO));
-        var _unr = Math.round((p.unrealized != null ? p.unrealized : (p.unrealized_pnl||0)) * _VAL_RATIO * 100) / 100;
+      var valPort = (s.portfolios && s.portfolios.val) || {};
+      var _valEq     = valPort.equity != null ? valPort.equity : 30185.24;
+      var _valDayPnl = valPort.day_pnl != null ? valPort.day_pnl : 0;
+      /* Translate per-portfolio positions to the executor renderer's field
+         names (symbol/avg_entry/current_price/unrealized_pnl). */
+      var _valPos = (valPort.positions || []).map(function (p) {
+        var _sh  = p.shares || 0;
+        var _unr = (p.unrealized != null) ? p.unrealized
+                                          : (p.unrealized_pnl || 0);
         var _pct = (p.entry && _sh) ? _unr / (p.entry * _sh) * 100 : 0;
         var _pctRounded = Math.round(_pct * 100) / 100;
+        var _isEod = (p.leg === 'eod') || !!p.eod;
         return {
           symbol: p.ticker, ticker: p.ticker,
-          side: (p.side||'LONG').toUpperCase(),   /* executor renderer expects UPPER */
-          entry_price: p.entry,
-          avg_entry:   p.entry,                   /* executor renderer uses avg_entry for Entry/Notional/progress */
+          side: (p.side||'LONG').toUpperCase(),
+          entry_price: p.entry, avg_entry: p.entry,
           current_price: p.mark, limit_price: p.entry,
           unrealized_pnl: _unr,
-          unrealized_pct: _pctRounded,
-          unrealized_pnl_pct: _pctRounded,        /* executor renderer reads unrealized_pnl_pct */
+          unrealized_pct: _pctRounded, unrealized_pnl_pct: _pctRounded,
           shares: _sh, qty: _sh,
           stop_price: p.stop, held_seconds: p.held_seconds || 0,
           entry_ts_utc: p.entry_ts_utc,
           phase: p.phase || 'A', entry_num: p.entry_num || 1,
-          portfolio: p.eod ? 'val-eod' : 'val',
-          cost: Math.round(p.entry * _sh * 100) / 100,
-          eod: !!p.eod
+          portfolio: _isEod ? 'val-eod' : 'val',
+          cost: Math.round((p.entry || 0) * _sh * 100) / 100,
+          eod: _isEod
         };
       });
-      /* eod_positions dict: executor renderer uses this to classify positions as EOD
-         (renders time-based progress bar instead of ORB stop-based bar). */
       var _eodPosDict = {};
-      _valPos.forEach(function(vp) {
-        if (vp.eod) _eodPosDict[vp.symbol] = {eod: true, entry_price: vp.avg_entry};
-      });
-      /* All trades (morning + EOD) scaled; executor renderer reads todays_trades */
-      var _valTrades = (s.trades_today||[]).map(function(t){
-        return Object.assign({}, t, {portfolio: t.eod ? 'val-eod' : 'val',
-          shares: Math.max(1, Math.round((t.shares||1)*_VAL_RATIO))});
+      _valPos.forEach(function(vp){ if (vp.eod) _eodPosDict[vp.symbol] = {eod:true, entry_price:vp.avg_entry}; });
+      var _valTrades = (valPort.trades_today || []).map(function (t) {
+        var _isEod = (t.leg === 'eod') || !!t.eod;
+        return Object.assign({}, t, { portfolio: _isEod ? 'val-eod' : 'val' });
       });
       return {ok:true, positions:_valPos, eod_positions:_eodPosDict,
               todays_trades:_valTrades, trades_today:_valTrades,
