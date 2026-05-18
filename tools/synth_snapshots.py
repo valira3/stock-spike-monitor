@@ -298,6 +298,22 @@ def _build_snapshot(base: dict, date_str: str, minute: int,
     state["trades_today"] = portfolios_out["main"]["trades_today"]
     state["positions"] = portfolios_out["main"]["positions"]
 
+    # Singular state.portfolio mirrors portfolios.main for legacy widgets
+    # (Day P&L KPI, equity tile, P&L sparkline) that read it directly from
+    # each diff without going through currentState()'s portfolios merge.
+    # Without this the sparkline pre-computes a flat $0 array across all
+    # snapshots even when portfolios.main.day_pnl is correct.
+    state["portfolio"] = {
+        **state.get("portfolio", {}),
+        "equity":   portfolios_out["main"]["equity"],
+        "day_pnl":  portfolios_out["main"]["day_pnl"],
+        "start":    PORTFOLIOS_EQUITY["main"],
+        "vs_start": portfolios_out["main"]["day_pnl"],
+        "cash":     portfolios_out["main"]["equity"],
+        "long_mv":  sum(p["entry"] * p["shares"] for p in portfolios_out["main"]["positions"] if p["side"] == "LONG"),
+        "short_liab": sum(p["entry"] * p["shares"] for p in portfolios_out["main"]["positions"] if p["side"] == "SHORT"),
+    }
+
     # Update v10.risk_books.main with running realized + counts so the v10
     # ORB section's realized P&L gauge updates per snapshot instead of
     # staying frozen at the base-state value ($0).

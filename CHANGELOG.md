@@ -4,6 +4,16 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.135 (2026-05-17) — replay: P&L sparkline reads diff, fix at synth source
+
+P&L sparkline beneath the Day P&L KPI was rendering a flat line at $0. v9.1.133 added a `currentState()` bridge that mirrors `state.portfolios.main` → `state.portfolio` at render time, fixing the KPI tile — but the sparkline pre-computes ALL points from `d.portfolio.day_pnl` directly in each diff (so it can draw the full ghost trajectory + dim-future-fill style). That data was untouched by the `currentState()` bridge.
+
+`synth_snapshots.py` now sets `state.portfolio.{equity, day_pnl, vs_start, cash, long_mv, short_liab}` per snapshot, mirroring `portfolios.main`. The diffs carry real values and the sparkline renders a real intraday curve. Verified: 69 unique P&L transitions on Mon 05-11 (was 1 — flat $0).
+
+Re-synthesized + pushed 5 days to snapshots-live (commit `53f6a098`).
+
+---
+
 ## v9.1.134 (2026-05-17) — replay: full snapshot-path audit + Val independence
 
 Comprehensive audit of every dashboard field that drives visible UI vs every field the snapshot pipeline (synth → diff → currentState merge) actually carries. Found three real gaps and one logic bug.
