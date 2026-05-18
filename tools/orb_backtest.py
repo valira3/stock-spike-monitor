@@ -380,6 +380,12 @@ class ORBConfig:
     #     chase-failure is sharper
     #     than short).
     max_vwap_dev_bps_short: float = 0.0  # if >0, overrides for SHORT.
+    # v9.1.124 -- OR-retracement gate. When >0, reject entries where the
+    # post-VWAP entry price has retraced past the OR boundary by more
+    # than this tolerance in bps. Mirrors the live-engine gate in
+    # orb/engine.py:try_enter. Default 0 = OFF per backtest convention.
+    # Live default is 25 bps (matches monitor's or_break threshold).
+    or_retracement_tolerance_bps: float = 0.0
     # v21 more fenced filters for mega-caps (2026-05-13).
     confirm_bars_n_tickers: tuple = ()  # fence list for confirm_bars_n.
     #     Empty = global (existing
@@ -541,6 +547,7 @@ class ORBConfig:
             ),
             max_vwap_dev_bps_long=_envf("ORB_MAX_VWAP_DEV_BPS_LONG", 0.0),
             max_vwap_dev_bps_short=_envf("ORB_MAX_VWAP_DEV_BPS_SHORT", 0.0),
+            or_retracement_tolerance_bps=_envf("ORB_OR_RETRACEMENT_TOLERANCE_BPS", 0.0),
             confirm_bars_n_tickers=tuple(
                 t.strip().upper()
                 for t in _envs("ORB_CONFIRM_BARS_N_TICKERS", "").split(",")
@@ -1005,6 +1012,25 @@ def run_ticker_day(
                 else:
                     dev_bps = (vwap_at - entry_price) / vwap_at * 10000.0
                 if dev_bps > effective_thr:
+                    continue
+
+        # v9.1.124 -- OR-retracement gate. The 5m-close trigger fired
+        # when sig.close was past the OR boundary, but entry_price is
+        # the NEXT bar's open with slippage. When VWAP-chase or other
+        # gates above don't kick in but the next-bar-open has drifted
+        # back inside the OR range, the entry no longer reflects the
+        # breakout premise. Reject when retracement exceeds tolerance.
+        # Default 0 (OFF) preserves prior Keystone results; set
+        # ORB_OR_RETRACEMENT_TOLERANCE_BPS=25 to match the live engine.
+        if cfg.or_retracement_tolerance_bps > 0:
+            tol_frac = cfg.or_retracement_tolerance_bps / 10000.0
+            if side == "long" and ref_high > 0:
+                min_entry = ref_high * (1.0 - tol_frac)
+                if entry_price < min_entry:
+                    continue
+            elif side == "short" and ref_low > 0:
+                max_entry = ref_low * (1.0 + tol_frac)
+                if entry_price > max_entry:
                     continue
 
         # Stop: opposite side of OR with buffer adder. v10: optional ATR
