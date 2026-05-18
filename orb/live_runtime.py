@@ -1206,8 +1206,14 @@ def inject_missing_engine_positions(
     track of (e.g. NFLX SHORT surviving after a mid-rollback state
     mismatch). Without injection the position card shows no stop/bar.
 
+    v9.1.123 -- accepts "main" in addition to "val"/"gene". For Main the
+    broker_positions list is built from tg.positions + tg.short_positions
+    by the scan-loop reconcile pass; without this Main missed the
+    post-redeploy ticket re-admission and tripped the
+    no_phantom_positions invariant.
+
     Args:
-        portfolio_id: "val" or "gene".
+        portfolio_id: "main", "val", or "gene".
         broker_positions: list of (ticker, side, entry_price, qty) tuples
             from the Alpaca client (avg_entry_price for entry_price).
             Use 0.0 for entry_price when Alpaca doesn't provide it —
