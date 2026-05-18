@@ -1360,6 +1360,7 @@ def _v10_dispatch_executor_fire(
     price: float,
     shares: int,
     callbacks: "EngineCallbacks | None" = None,
+    reduce_only: bool = False,
 ) -> bool:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
@@ -1380,6 +1381,11 @@ def _v10_dispatch_executor_fire(
     Callers use this to know whether to roll back the v10 admit on
     the FSM + RiskBook -- otherwise a deferred / suppressed / failed
     fire leaves the admit dangling as a phantom IN_POS.
+
+    v9.1.125: `reduce_only=True` forwards to fire_long/fire_short so
+    close orders (e.g. _eod_fire_broker_close) bypass the notional
+    cap. The cap is for new-exposure entries; closes shrink exposure
+    and must not be blocked. Default False preserves entry semantics.
     """
     if not _orb_runtime.is_live_mode_on():
         logger.info(
@@ -1457,9 +1463,21 @@ def _v10_dispatch_executor_fire(
 
     try:
         if side == "long":
-            ok = ex.fire_long(ticker, float(price), int(shares), error_callback=_err_cb)
+            ok = ex.fire_long(
+                ticker,
+                float(price),
+                int(shares),
+                error_callback=_err_cb,
+                reduce_only=reduce_only,
+            )
         else:
-            ok = ex.fire_short(ticker, float(price), int(shares), error_callback=_err_cb)
+            ok = ex.fire_short(
+                ticker,
+                float(price),
+                int(shares),
+                error_callback=_err_cb,
+                reduce_only=reduce_only,
+            )
         logger.info(
             "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
             pid,
@@ -1847,6 +1865,12 @@ def _eod_fire_broker_close(
 ) -> None:
     """v9.1.0 -- broker close for an EOD position. Uses the inverse
     side on the same executor surface (long -> sell, short -> cover).
+
+    v9.1.125: routes with reduce_only=True so the cumulative-notional
+    cap in fire_long/fire_short does NOT block the close. The 2026-05-18
+    incident showed the cap silently rejected the close (submitted=False)
+    when account was at 95% notional from the entry pair; only Alpaca's
+    broker-side EOD auto-flush kept the live position from staying open.
     """
     try:
         close_side = "short" if side == "long" else "long"
@@ -1856,9 +1880,10 @@ def _eod_fire_broker_close(
             ticker=ticker,
             price=float(price),
             shares=int(shares),
+            reduce_only=True,
         )
         logger.info(
-            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f",
+            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f (reduce_only)",
             pid,
             ticker,
             side,

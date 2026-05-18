@@ -81,7 +81,18 @@ class EodReversalConfig:
     # produce structurally negative P&L (anti-momentum applied during
     # the momentum phase); 14:00-15:00 is the inflection zone.
     entry_et_minutes: int = 15 * 60  # 15:00 ET
-    exit_et_minutes: int = 15 * 60 + 58  # 15:58 ET -- matches eod_close flush job
+    # v9.1.125: default moved 15:58 -> 15:56 to give a 4-min buffer
+    # before market close. The 2026-05-18 incident showed the v10 scan
+    # loop went silent for 2.5 min, causing the close to fire at
+    # 16:00:11 ET -- 12 SECONDS AFTER market close. With Alpaca's
+    # broker-side EOD auto-flush as the only safety net, the position
+    # would have stayed open on a different broker configuration.
+    # 15:56 gives 4 min of scan-loop ticks to land the close before
+    # market close, even with partial scan delays. Pairs with a
+    # scheduler-driven safety-net hook at 15:57 (see trade_genius.py).
+    # Backtest delta vs old 15:58 default: ~$942/yr lower on the
+    # 252-day corpus (15:56=+$7,714 vs 15:58=+$8,656); 15:55=+$5,860.
+    exit_et_minutes: int = 15 * 60 + 56  # 15:56 ET
     # v9.1.108 -- no new admissions past 15:50 ET (last valid entry minute).
     # Wide entry window ([15:00, 15:59)) was added in v9.1.22 so a late
     # deploy/restart could still land the entry. But a position opened at

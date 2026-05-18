@@ -1276,8 +1276,16 @@ class TradeGeniusBase:
     # within the same UTC minute. A double-fire (v10 admission + main bus
     # broadcast) would land as two separate orders, each idempotent against
     # itself -- _submit_order_idempotent handles within-bucket dupes.
-    def fire_long(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
-        """Submit a LONG v10 entry directly to Alpaca.
+    def fire_long(
+        self,
+        ticker: str,
+        price: float,
+        shares: int,
+        *,
+        error_callback=None,
+        reduce_only: bool = False,
+    ) -> bool:
+        """Submit a LONG v10 order directly to Alpaca.
 
         Returns True if an order was submitted (or recognized as a coid
         duplicate); False on no-op (no client, no shares, exception).
@@ -1287,6 +1295,17 @@ class TradeGeniusBase:
         escalate via callbacks.report_error (Telegram / dashboard
         alert). Without it, the failure is still logged but only
         visible in the log file.
+
+        v9.1.125: `reduce_only=True` skips the cumulative-notional cap.
+        Callers MUST set this when the order is a CLOSE for an
+        existing opposite-side position (e.g. covering a SHORT). The
+        cap was designed to prevent accumulating new exposure; a close
+        REDUCES exposure and must not be blocked. The EOD reversal
+        engine's close path is the first/only caller -- on 2026-05-18
+        the cap silently rejected its close orders (`submitted=False`)
+        and the position was only flat thanks to Alpaca's broker-side
+        EOD auto-flush. Default False preserves existing entry-path
+        behavior.
         """
         if shares <= 0:
             return False
@@ -1298,12 +1317,23 @@ class TradeGeniusBase:
             price=price,
             shares=int(shares),
             error_callback=error_callback,
+            reduce_only=reduce_only,
         )
 
-    def fire_short(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
-        """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long.
+    def fire_short(
+        self,
+        ticker: str,
+        price: float,
+        shares: int,
+        *,
+        error_callback=None,
+        reduce_only: bool = False,
+    ) -> bool:
+        """Submit a SHORT v10 order directly to Alpaca. Mirror of fire_long.
 
-        v7.30.0: optional `error_callback` -- see `fire_long` docstring."""
+        v7.30.0: optional `error_callback` -- see `fire_long` docstring.
+        v9.1.125: `reduce_only=True` -- see `fire_long` docstring.
+        """
         if shares <= 0:
             return False
         if not ticker:
@@ -1314,10 +1344,18 @@ class TradeGeniusBase:
             price=price,
             shares=int(shares),
             error_callback=error_callback,
+            reduce_only=reduce_only,
         )
 
     def _submit_v10_entry(
-        self, *, side: str, ticker: str, price: float, shares: int, error_callback=None
+        self,
+        *,
+        side: str,
+        ticker: str,
+        price: float,
+        shares: int,
+        error_callback=None,
+        reduce_only: bool = False,
     ) -> bool:
         """Shared body for fire_long / fire_short.
 
@@ -1326,6 +1364,10 @@ class TradeGeniusBase:
         the strategy's anchor); LIMIT IOC could short-fill and break the
         risk-cap accounting on the RiskBook. MARKET DAY ensures the full
         v10-computed quantity fills (or rejects cleanly).
+
+        v9.1.125: when `reduce_only=True`, skip the cumulative-notional
+        cap check at lines ~1390. Close orders for existing positions
+        must always submit; the cap is for new-exposure entries only.
         """
         # Cooldown gate: post-loss (asymmetric) + post-trade (symmetric v9.1.111).
         # Symmetric check runs first -- it covers both wins and losses.
@@ -1338,8 +1380,11 @@ class TradeGeniusBase:
                 if _cd_sym is not None:
                     logger.info(
                         "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
-                        self.NAME, side, ticker,
-                        _cd_sym.get("until_utc", "?"), _cd_sym.get("window_min", 0),
+                        self.NAME,
+                        side,
+                        ticker,
+                        _cd_sym.get("until_utc", "?"),
+                        _cd_sym.get("window_min", 0),
                     )
                     return False
         except Exception:
@@ -1367,7 +1412,13 @@ class TradeGeniusBase:
         # The TOTAL check (long_mv + abs(short_mv) + new_notional <= equity * 0.95)
         # ensures a small account (e.g. Val at $30k) can't accumulate NFLX SHORT
         # ($28k) AND an EOD position that pushes combined notional above equity.
-        if price > 0:
+        #
+        # v9.1.125: reduce_only=True bypasses this cap. A close order REDUCES
+        # exposure (existing_notional drops); blocking it because we're already
+        # at the cap is exactly backwards. The 2026-05-18 EOD incident
+        # demonstrated this: the close was rejected with submitted=False; the
+        # position was only flat thanks to Alpaca's broker-side EOD auto-flush.
+        if price > 0 and not reduce_only:
             try:
                 _acct = client.get_account()
                 _equity = float(getattr(_acct, "equity", 0) or 0) or float(
@@ -1410,6 +1461,15 @@ class TradeGeniusBase:
                         return False
             except Exception as _ce:
                 logger.debug("[%s] [V10-FIRE] equity cap skipped: %s", self.NAME, _ce)
+        elif reduce_only:
+            logger.info(
+                "[%s] [V10-FIRE-CLOSE] %s %s %d sh @ %.2f (reduce_only -- cap bypassed)",
+                self.NAME,
+                side,
+                ticker,
+                shares,
+                price,
+            )
 
         direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
         coid = self._build_client_order_id(ticker, direction)

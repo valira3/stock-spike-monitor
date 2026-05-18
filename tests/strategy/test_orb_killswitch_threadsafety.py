@@ -289,7 +289,9 @@ class TestFireErrorCallback:
 
         # Real executor stub that "fails" the submit and invokes the
         # error_callback the dispatch supplies.
-        def fake_fire_long(ticker, price, shares, *, error_callback=None):
+        # v9.1.125: signature accepts reduce_only kwarg (default False)
+        # since _v10_dispatch_executor_fire forwards it unconditionally.
+        def fake_fire_long(ticker, price, shares, *, error_callback=None, reduce_only=False):
             if error_callback:
                 error_callback("VAL", "LONG", ticker, shares, RuntimeError("alpaca 503"))
             return False

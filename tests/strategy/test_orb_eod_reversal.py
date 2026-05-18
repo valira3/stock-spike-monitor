@@ -37,7 +37,9 @@ class TestConfigDefaults:
         # v9.1.2: entry moved 15:30 -> 15:00 per the R18c sweep.
         assert cfg.entry_et_minutes == 15 * 60
         # v9.1.109: exit moved 15:59 -> 15:58 to align with eod_close flush.
-        assert cfg.exit_et_minutes == 15 * 60 + 58
+        # v9.1.125: exit moved 15:58 -> 15:56 for a 4-min buffer (per
+        # 2026-05-18 EOD-close-incident investigation).
+        assert cfg.exit_et_minutes == 15 * 60 + 56
         # v9.1.108/9: entry cutoff 15:51 (exclusive) = last valid entry 15:50.
         assert cfg.entry_cutoff_et_minutes == 15 * 60 + 51
         # v9.1.1: live broker firing is the default (was False in v9.1.0).
@@ -333,10 +335,12 @@ class TestTimeWindows:
         assert e.is_entry_window(15 * 60 + 51) is False
         assert e.is_entry_window(15 * 60 + 58) is False
 
-    def test_exit_window_inclusive_after_15_58(self):
+    def test_exit_window_inclusive_after_15_56(self):
         # v9.1.109: exit_et moved 15:59 -> 15:58 to align with eod_close flush.
+        # v9.1.125: exit_et moved 15:58 -> 15:56 (4-min pre-close buffer).
         e = _eng()
-        assert e.is_exit_window(15 * 60 + 57) is False
+        assert e.is_exit_window(15 * 60 + 55) is False
+        assert e.is_exit_window(15 * 60 + 56) is True
         assert e.is_exit_window(15 * 60 + 58) is True
         assert e.is_exit_window(16 * 60) is True  # late ticks still flatten
 
@@ -383,7 +387,7 @@ class TestSnapshot:
         snap = e.snapshot()
         # v9.1.2: entry default moved from 15:30 to 15:00.
         assert snap["config"]["entry_et"] == "15:00"
-        assert snap["config"]["exit_et"] == "15:58"
+        assert snap["config"]["exit_et"] == "15:56"
         # v9.1.1: live broker firing is the default
         assert snap["config"]["fire_broker"] is True
         assert isinstance(snap["config"]["universe"], list)

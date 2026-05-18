@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "9.1.124"
+BOT_VERSION = "9.1.125"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7224,12 +7224,14 @@ def scheduler_thread():
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
         ("daily", "09:36", send_or_notification),
-        # R-4: EOD flush moved 15:49 -> 15:58 ET (v9.1.107).
-        # Original 15:49 was per Tiger Sovereign v15.0 (retired).
-        # 15:58 fires AFTER the ORB EOD cutoff (15:55). The EOD reversal
-        # engine's exit_et is also 15:58 (v9.1.109), so broker closes via
-        # _eod_fire_broker_close and this flush job align on the same minute.
-        ("daily", "15:58", eod_close),
+        # v9.1.125: EOD flush moved 15:58 -> 15:57 (post-2026-05-18
+        # incident -- see engine/timing.py and orb/eod_reversal.py
+        # docstrings). The legacy `eod_close` aligns to EOD_FLUSH_ET
+        # (15:57:00 ET) and is the safety net AFTER the V10 EOD engine's
+        # 15:56 ET close. Both should run; the legacy path uses
+        # client.close_position() (different code path than V10's
+        # fire_long/short, so independent failure mode).
+        ("daily", "15:57", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
         # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
