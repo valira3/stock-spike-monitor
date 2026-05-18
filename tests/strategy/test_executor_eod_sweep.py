@@ -1,15 +1,12 @@
-"""v9.1.126 -- EOD_CLOSE_ALL always sweeps positions, regardless of mode.
+"""v9.1.126 -- EOD_CLOSE_ALL always sweeps positions.
 
-Pre-v9.1.126: in independent mode (ORB_PORTFOLIO_FIRE=1, the default
-since v8.3.23) the _on_signal EOD_CLOSE_ALL branch SKIPPED
-client.close_all_positions on the "engines own their exits" rationale.
-That was unsafe -- a position Val/Gene admitted that Main rejected got
-no exit signal (orb.live_runtime.check_exit has no production caller),
-and the executor wiped local tracking without closing the Alpaca leg.
+Pre-v9.1.126: the _on_signal EOD_CLOSE_ALL branch had an env-gated SKIP
+that left positions Val/Gene admitted independently with no Alpaca close
+at EOD (only local tracking was wiped). v9.1.126 removed the skip;
+v9.1.128 removed the related ORB_PORTFOLIO_FIRE env flag entirely.
 
-v9.1.126: always sweep. Safe because v9.1.125 moved the EOD reversal
-exit window from 15:59 to 15:56, leaving a 1-min buffer before the
-15:57 EOD_CLOSE_ALL arrives.
+Safe because v9.1.125 moved the EOD reversal exit window from 15:59
+to 15:56, leaving a 1-min buffer before the 15:57 EOD_CLOSE_ALL arrives.
 """
 
 from __future__ import annotations
@@ -86,12 +83,9 @@ def isolated_env(monkeypatch):
 
 
 class TestEodSweep:
-    def test_independent_mode_calls_close_all_positions(self, isolated_env):
-        """ORB_PORTFOLIO_FIRE=1 (default) MUST call close_all_positions.
-
-        Pre-v9.1.126 this was the broken path: skip set, position lingered.
-        """
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
+    def test_eod_close_all_calls_close_all_positions(self, isolated_env):
+        """EOD_CLOSE_ALL MUST call close_all_positions. Pre-v9.1.126 this
+        was the broken path: skip set, position lingered."""
         ex = _FakeExec(positions={"ORCL": {"shares": 190}, "NFLX": {"shares": 401}})
 
         ex._on_signal(
@@ -107,30 +101,9 @@ class TestEodSweep:
         # Local tracking must also be wiped.
         assert ex.positions == {}
 
-    def test_mirror_mode_also_calls_close_all_positions(self, isolated_env):
-        """ORB_PORTFOLIO_FIRE=0 (legacy mirror mode) still sweeps. Behavior
-        is now identical in both modes -- the v9.1.106 env-gated skip is
-        gone."""
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "0")
-        ex = _FakeExec(positions={"AAPL": {"shares": 100}})
-
-        ex._on_signal(
-            {
-                "kind": "EOD_CLOSE_ALL",
-                "ticker": "",
-                "price": 0.0,
-                "timestamp_utc": "2026-05-18T19:57:00Z",
-            }
-        )
-
-        ex._mock_client.close_all_positions.assert_called_once_with(cancel_orders=True)
-        assert ex.positions == {}
-
-    def test_default_env_calls_close_all_positions(self, isolated_env):
-        """No ORB_PORTFOLIO_FIRE set at all (independent mode by default
-        since v8.3.23). The sweep MUST still fire -- this is the prod
-        configuration."""
-        # isolated_env already cleared ORB_PORTFOLIO_FIRE.
+    def test_sweep_handles_multiple_tickers(self, isolated_env):
+        """Multi-ticker positions all wipe; close_all_positions is one call
+        (Alpaca-side handles the fan-out)."""
         ex = _FakeExec(positions={"AVGO": {"shares": 175}})
 
         ex._on_signal(

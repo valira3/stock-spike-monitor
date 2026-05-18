@@ -175,7 +175,6 @@ def test_dispatch_forwards_reduce_only_to_executor():
     import os
 
     os.environ.pop("ORB_LIVE_MODE", None)
-    os.environ.pop("ORB_PORTFOLIO_FIRE", None)
 
     from engine import scan as _scan
 

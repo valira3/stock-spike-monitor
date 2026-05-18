@@ -21,11 +21,18 @@ scan_loop
                                                 detect breakout, RiskBook.try_admit
               if ok and pid == "main":
                   callbacks.execute_entry(...)    # legacy main-bound broker path
-              elif ok and ORB_PORTFOLIO_FIRE=1:
-                  executors.bootstrap.get_executor(pid).fire_long/short(...)  # direct Alpaca submit
-  broker/positions.py wraps manage_positions / manage_short_positions:
-      _run_sentinel:
-          live_runtime.check_exit_by_ticker(pid, ticker, ...) → exit on target / stop / be_stop / eod
+              elif ok:
+                  executors.bootstrap.get_executor(pid).fire_long/short(...)  # always-independent (v9.1.128)
+  _v10_per_portfolio_exit_pass (v9.1.127):                       # non-main exits
+      for each non-main portfolio:
+          for each open position:
+              live_runtime.check_exit_by_ticker(pid, ticker, ...)
+              if exit:
+                  _v10_dispatch_executor_fire(side=opposite, reduce_only=True)
+              elif partial:
+                  _v10_dispatch_executor_partial_close(...)
+  broker/positions.py wraps manage_positions / manage_short_positions for Main:
+      live_runtime.check_exit_by_ticker(pid="main", ...) → close_breakout via legacy pipeline
 ```
 
 ### Per-portfolio independence
@@ -82,7 +89,6 @@ Local: `pytest tests/strategy/` runs all 231 tests in ~2s.
 | Env | Default | Effect |
 |---|---|---|
 | `ORB_LIVE_MODE` | `1` | `0` reverts to legacy strategy entirely (kill switch). |
-| `ORB_PORTFOLIO_FIRE` | `0` | `1` enables Val/Gene to fire on their own admissions via `fire_long`/`fire_short` (v7.26.0). |
 | `ORB_OR_MINUTES` | `30` | OR window length. |
 | `ORB_RR` | `2.5` | Target reward/risk multiple. |
 | `ORB_RISK_PER_TRADE_PCT` | `1.0` | Per-trade risk budget as % of equity (v7.109.0+, was 2.0). |
@@ -98,7 +104,6 @@ Local: `pytest tests/strategy/` runs all 231 tests in ~2s.
 ### Rollback paths
 
 - Strategy: set `ORB_LIVE_MODE=0` on Railway, redeploy. Scan loop falls back to the legacy V570-STRIKE entry path; UI legacy view re-appears (`body.v10-live` not set).
-- Per-portfolio fire: set `ORB_PORTFOLIO_FIRE=0`. Val/Gene revert to mirroring Main via the legacy signal bus.
 - A single-PR revert is always available since each v10 PR (PR1–PR19) was a focused, atomic merge.
 
 ---

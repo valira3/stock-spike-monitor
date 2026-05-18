@@ -1266,16 +1266,12 @@ class TradeGeniusBase:
     # piece that makes Val and Gene fire on their OWN admissions (different
     # equity, different RiskBook), not just mirror Main's signals.
     #
-    # Production-safe rollout: gated behind ORB_PORTFOLIO_FIRE env flag in
-    # engine/scan.py. Default OFF (0); set to "1" after the 5-day paper-fire
-    # observation window confirms the per-portfolio admissions look right.
-    # Until then, Val/Gene continue to mirror Main via _on_signal as before.
+    # v9.1.128: always-independent. fire_long/fire_short are the ONLY
+    # entry/exit paths for Val/Gene; the legacy bus-mirror is removed.
     #
-    # Idempotency: coid is built with direction="V10LONG"/"V10SHORT" so v10
-    # fires get a separate coid bucket from legacy ENTRY_LONG ("LONG") fires
-    # within the same UTC minute. A double-fire (v10 admission + main bus
-    # broadcast) would land as two separate orders, each idempotent against
-    # itself -- _submit_order_idempotent handles within-bucket dupes.
+    # Idempotency: coid is built with direction="V10LONG"/"V10SHORT" so
+    # within-minute retries land on the same coid bucket and
+    # _submit_order_idempotent dedups them.
     def fire_long(
         self,
         ticker: str,
@@ -2363,15 +2359,18 @@ class TradeGeniusBase:
         v7.83.0 silent early-returns (qty<=0, exception in builder)
         gave no log trail post-receipt.
 
-        v8.3.23 -- INDEPENDENT MODE entry guard. When
-        ORB_PORTFOLIO_FIRE=1 (default since v8.3.23), entries are
-        dispatched per-portfolio by engine/scan.py:_v10_dispatch_executor_fire
-        -> executor.fire_long / fire_short. This listener still
-        handles EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_* (the
-        production code does not yet wire live_runtime.check_exit
-        to a per-portfolio exit loop, so bus exits are still the
-        canonical exit path). Skipping ONLY entries here prevents
-        a double-fire on independent mode.
+        v9.1.128 -- always-independent. ENTRY_LONG / ENTRY_SHORT /
+        EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT
+        are all skipped here unconditionally; their broker fires
+        happen via engine/scan.py:_v10_dispatch_executor_fire +
+        _v10_per_portfolio_exit_pass + _v10_dispatch_executor_partial_close.
+        EOD_CLOSE_ALL is the only signal still dispatched here -- it
+        triggers the 15:57 ET safety-net sweep (v9.1.126).
+
+        Mirror-mode bus dispatch code below (ENTRY/EXIT/PARTIAL_EXIT
+        handlers) is unreachable in production and kept only as
+        documentation; physical removal is scheduled for a follow-up
+        cleanup PR.
         """
         kind = event.get("kind", "")
         ticker = event.get("ticker", "")
@@ -2389,14 +2388,12 @@ class TradeGeniusBase:
             main_shares,
         )
 
-        # v8.3.23 -- skip ENTRY signals in independent mode (entries
-        # fire via engine/scan.py:_v10_dispatch_executor_fire).
-        # v9.1.127 -- ALSO skip EXIT and PARTIAL_EXIT signals in
-        # independent mode. Exits now fire per-portfolio via
-        # engine/scan.py:_v10_per_portfolio_exit_pass, which calls
-        # _v10_dispatch_executor_fire(reduce_only=True) for full exits
-        # and _v10_dispatch_executor_partial_close for partials.
-        # Val/Gene are completely independent of Main's bus.
+        # v9.1.128 -- always-independent mode. The legacy bus-mirror
+        # path (Val/Gene mirror Main's ENTRY/EXIT/PARTIAL_EXIT signals)
+        # was removed along with the ORB_PORTFOLIO_FIRE escape hatch.
+        # Entries fire via engine/scan.py:_v10_dispatch_executor_fire,
+        # exits via _v10_per_portfolio_exit_pass + reduce_only closes,
+        # partials via _v10_dispatch_executor_partial_close.
         #
         # EOD_CLOSE_ALL is NOT in this skip list -- it still arrives
         # at 15:57 ET as the v9.1.126 safety-net sweep across all
@@ -2409,16 +2406,14 @@ class TradeGeniusBase:
             "PARTIAL_EXIT_LONG",
             "PARTIAL_EXIT_SHORT",
         ):
-            if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
-                logger.info(
-                    "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
-                    "mode active; will fire via per-portfolio "
-                    "engine/scan.py path (not legacy bus)",
-                    self.NAME,
-                    kind,
-                    ticker,
-                )
-                return
+            logger.info(
+                "[V9128-INDEPENDENT-SKIP] %s %s %s -- always-independent; "
+                "fires via engine/scan.py per-portfolio path (not bus)",
+                self.NAME,
+                kind,
+                ticker,
+            )
+            return
 
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any

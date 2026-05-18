@@ -3,10 +3,9 @@ broker fire error escalation.
 
 Three audit findings addressed:
 
-1. ORB_LIVE_MODE gate on _v10_dispatch_executor_fire: previously the
-   dispatch only gated on ORB_PORTFOLIO_FIRE, so an operator setting
-   LIVE_MODE=0 to disable v10 strategy could still see Val/Gene fire
-   broker orders if PORTFOLIO_FIRE was on.
+1. ORB_LIVE_MODE gate on _v10_dispatch_executor_fire: ORB_LIVE_MODE=0
+   must suppress Val/Gene broker fires (v9.1.128: this is the only
+   kill switch left -- ORB_PORTFOLIO_FIRE was removed).
 
 2. Atomic bootstrap + thread-safe _pending_v10_sizes: bootstrap()
    uses local-then-swap so partial init doesn't leak; stash/consume/
@@ -67,31 +66,20 @@ class TestKillSwitchOnDispatch:
     def test_live_mode_off_suppresses_fire(self, isolated_env):
         dispatch = self._import_dispatch()
         isolated_env.setenv("ORB_LIVE_MODE", "0")
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
         fake_ex.fire_long.assert_not_called()
         fake_ex.fire_short.assert_not_called()
 
-    def test_live_mode_on_and_portfolio_fire_on_fires(self, isolated_env):
+    def test_live_mode_on_fires(self, isolated_env):
         dispatch = self._import_dispatch()
         isolated_env.setenv("ORB_LIVE_MODE", "1")
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_long.return_value = True
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
         fake_ex.fire_long.assert_called_once()
-
-    def test_portfolio_fire_off_overrides_live_mode_on(self, isolated_env):
-        dispatch = self._import_dispatch()
-        isolated_env.setenv("ORB_LIVE_MODE", "1")
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "0")
-        fake_ex = MagicMock()
-        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
-            dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
-        fake_ex.fire_long.assert_not_called()
 
 
 # ----- Atomic bootstrap ----------------------------------------------
@@ -285,7 +273,6 @@ class TestFireErrorCallback:
                 pytest.skip("telegram unavailable in sandbox")
             raise
         isolated_env.setenv("ORB_LIVE_MODE", "1")
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
 
         # Real executor stub that "fails" the submit and invokes the
         # error_callback the dispatch supplies.
