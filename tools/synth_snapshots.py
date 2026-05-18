@@ -240,17 +240,23 @@ def _build_snapshot(base: dict, date_str: str, minute: int,
                 mark = _mark_for(bars, p["ticker"], minute) or p["entry_price"]
                 positions_p.append(_position_row({**p, "portfolio": portfolio}, mark, minute, date_str))
 
+        # Day P&L = realized + unrealized so the dashboard KPI reflects
+        # mid-day movement, not just closed-trade PnL.
+        unrealized_total = sum(pos["unrealized"] for pos in positions_p)
+        day_pnl = realized + unrealized_total
         portfolios_out[portfolio] = {
             "portfolio_id": portfolio,
-            "equity": round(starting_equity + realized, 2),
-            "day_pnl": round(realized, 2),
+            "equity": round(starting_equity + day_pnl, 2),
+            "day_pnl": round(day_pnl, 2),
+            "realized_pnl": round(realized, 2),
+            "unrealized_pnl": round(unrealized_total, 2),
             "positions": positions_p,
             "trades_today": trades_today_p,
             "strip": {
                 "cooldowns": {"long": 0, "short": 0, "total": 0},
                 "errors": {"count": 0, "last": None},
                 "positions": len(positions_p),
-                "day_pnl": round(realized, 2),
+                "day_pnl": round(day_pnl, 2),
                 "state": "active" if positions_p or trades_today_p else ("paused" if minute < START_MIN else "active"),
             },
             "subscribed": True,

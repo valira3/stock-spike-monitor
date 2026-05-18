@@ -4,6 +4,29 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.132 (2026-05-17) — replay: Day P&L includes unrealized + per-portfolio diff
+
+Two replay-fidelity bugs uncovered by clicking through the v9.1.131 synthesized week:
+
+**1. Day P&L stuck at $0 throughout the day on every snapshot.**
+
+`synth_snapshots.py` emitted `day_pnl = realized` only, so the dashboard KPI sat at $0 while open positions carried real unrealized swings (Mon 15:40 ET had Main `day_pnl=$0` even though AAPL/ORCL/TSLA totaled -$300 unrealized). The live bot's KPI is realized + unrealized — the synth now matches. Each portfolio block also carries explicit `realized_pnl` / `unrealized_pnl` so the dashboard can render the split.
+
+**2. Val (and Gene) panels never updated as the scrubber advanced.**
+
+The replay's per-snapshot `diff` carried only the top-level legacy `positions` / `trades_today` fields (which the Main tab reads through `paperSlice`). Val and Gene panels read from `state.portfolios.<pid>.{positions,trades_today,equity,day_pnl}` — those came from the base state and never changed. So on Val you'd see whatever positions the base happened to capture, regardless of scrubber position. Suspected cause of the "play forward shows no positions but jumping back does" symptom too.
+
+Fixes:
+
+- `scripts/replay_today.py` — new `_slim_portfolios()` helper emits a slim per-portfolio view (`positions / trades_today / equity / day_pnl / realized_pnl / unrealized_pnl / strip`) for each pid in the diff. Wired into `snapshots_to_diffs` so it ships in every snapshot.
+- `scripts/replay_dashboard.py:build_html` — `slim_diffs` (both single-day and multi-day paths) now carries `portfolios` alongside the legacy top-level fields.
+- `scripts/replay_dashboard.py:_HEAD_PATCH.currentState()` — merges `diff.portfolios` over `state.portfolios` per pid, preserving any base-state keys (`subscribed`, `strip`, etc.) the diff doesn't override.
+- `tools/synth_snapshots.py` — `day_pnl = realized + sum(unrealized)`. `equity` adjusted accordingly. Each portfolio block exports `realized_pnl` and `unrealized_pnl` as separate fields.
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `25498b28`).
+
+---
+
 ## v9.1.131 (2026-05-17) — synth_snapshots: 5-day counterfactual snapshot backfill
 
 `snapshots-live` had only 1 usable day (05-15); 05-12/13/14 wrote metadata headers only (no `/api/state` payload) due to a state-snapshot writer regression, and 05-11 was missing entirely. Operator flagged the captures as unreliable and asked for a synthetic backfill so the dashboard replay button returns a full week.

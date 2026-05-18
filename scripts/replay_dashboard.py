@@ -83,6 +83,15 @@ _HEAD_PATCH = """\
     if ('server_time'       in diff) s.server_time       = diff.server_time;
     if ('server_time_label' in diff) s.server_time_label = diff.server_time_label;
     if ('eod'               in diff) s.eod               = diff.eod;
+    /* Per-portfolio merge: stitch each pid's slim diff over the base
+       portfolios entry so Val/Gene panels update every scrubber step. */
+    if (diff.portfolios && s.portfolios) {
+      s.portfolios = Object.assign({}, s.portfolios);
+      Object.keys(diff.portfolios).forEach(function (pid) {
+        var basePid = s.portfolios[pid] || {};
+        s.portfolios[pid] = Object.assign({}, basePid, diff.portfolios[pid]);
+      });
+    }
     /* Time-varying fields: P&L, session mode, activity feed, scan state */
     if ('portfolio'         in diff) s.portfolio         = diff.portfolio;
     if ('regime'            in diff) s.regime            = diff.regime;
@@ -1318,6 +1327,7 @@ def build_html(
             # Core state fields (applied by currentState() in JS)
             "trades_today":      d["diff"]["trades_today"],
             "positions":         d["diff"]["positions"],
+            "portfolios":        d["diff"].get("portfolios", {}),
             "server_time":       d["diff"]["server_time"],
             "server_time_label": d["diff"]["server_time_label"],
             "eod":               d["diff"]["eod"],
@@ -1385,6 +1395,7 @@ tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
                     "label":             dd.get("label", ""),
                     "trades_today":      dd["diff"]["trades_today"],
                     "positions":         dd["diff"]["positions"],
+                    "portfolios":        dd["diff"].get("portfolios", {}),
                     "server_time":       dd["diff"]["server_time"],
                     "server_time_label": dd["diff"]["server_time_label"],
                     "eod":               dd["diff"]["eod"],

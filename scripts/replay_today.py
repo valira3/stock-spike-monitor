@@ -114,6 +114,26 @@ def _extract_state(snap: dict) -> dict:
     return {}
 
 
+def _slim_portfolios(portfolios: dict) -> dict:
+    """Slim the portfolios map for the per-snapshot diff. Carries only the
+    fields the dashboard's per-portfolio renderers actually read."""
+    out: dict = {}
+    for pid, pdata in (portfolios or {}).items():
+        if not isinstance(pdata, dict):
+            continue
+        out[pid] = {
+            "portfolio_id": pdata.get("portfolio_id", pid),
+            "equity": pdata.get("equity"),
+            "day_pnl": pdata.get("day_pnl"),
+            "realized_pnl": pdata.get("realized_pnl"),
+            "unrealized_pnl": pdata.get("unrealized_pnl"),
+            "positions": pdata.get("positions") or [],
+            "trades_today": pdata.get("trades_today") or [],
+            "strip": pdata.get("strip") or {},
+        }
+    return out
+
+
 def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
     """Convert JSONL snapshot list → (diffs, base_state) for build_html()."""
     if not snaps:
@@ -175,6 +195,10 @@ def snapshots_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
             "diff": {
                 "trades_today":       trades,
                 "positions":          state.get("positions", []),
+                # Per-portfolio slim view so Val/Gene tabs update with the
+                # scrubber. Without this they stay frozen on base-state values
+                # because currentState() only merges the top-level legacy fields.
+                "portfolios":         _slim_portfolios(state.get("portfolios") or {}),
                 "server_time":        state.get("server_time", ""),
                 "server_time_label":  server_label,
                 "eod":                v10.get("eod", {}),
