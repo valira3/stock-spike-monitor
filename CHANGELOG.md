@@ -4,6 +4,31 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.122 (2026-05-18) — resolve_equity routes through executor for live mode
+
+`engine.portfolio_equity.alpaca_account_for_book` was hard-coded to read
+`<PID>_ALPACA_PAPER_KEY/_SECRET` with `paper=True`, regardless of the
+executor's actual mode. After Val was flipped to live trading (live
+Alpaca account `238361571`, equity ≈ $30k), the RiskBook was still
+seeded with Val's paper-account equity (≈ $102k) — a 3.4× oversizing
+on every live entry's 1% risk budget and a 6.6% effective daily-loss
+threshold instead of the configured 2%.
+
+- `engine/portfolio_equity.py:alpaca_account_for_book` now tries
+  `trade_genius._executor_inst(pid)` first. If the executor is loaded
+  and has a built client, that client (which honors `mode=live` /
+  `mode=paper` via `_build_alpaca_client`) supplies the account
+  snapshot. Legacy env-var paper lookup remains the fallback for
+  unloaded executors (backtests, partial init).
+- The 30s per-pid cache is preserved. Failures still aren't cached so
+  a transient blip recovers on the next scan cycle.
+- No behavior change for Main (still reads `tg.paper_cash`) or for
+  Val/Gene in paper mode (executor's client is paper, returns paper
+  equity — same result as before).
+- Behavior change for Val/Gene in live mode: RiskBook now reflects
+  live equity. `risk_per_trade_pct=1%` × $30k = $300 risk per entry
+  (was $1,021); daily-kill threshold `2%` × $30k = $600 (was $2,042).
+
 ## v9.1.121 (2026-05-17) — INGEST_DISABLE_WS env flag for prod-priority SIP slot
 
 Alpaca's SIP feed has a hard 1-connection-per-account limit (held for 90s
