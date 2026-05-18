@@ -2956,26 +2956,27 @@ class TradeGeniusBase:
                         exc_info=True,
                     )
             elif kind == "EOD_CLOSE_ALL":
-                import os as _os_eod
-
-                # v9.1.106 -- in independent mode (ORB_PORTFOLIO_FIRE=1),
-                # Val/Gene manage their own exits via the ORB engine's
-                # EOD cutoff (15:55) and the EOD reversal engine (15:59).
-                # Calling close_all_positions here would flatten EOD reversal
-                # positions early. Skip the Alpaca close; just clear local
-                # tracking so phantom rows don't linger.
-                _independent = _os_eod.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1"
-                if _independent:
-                    logger.info(
-                        "[%s] EOD_CLOSE_ALL: independent mode -- skipping"
-                        " close_all_positions (ORB+EOD engines own their exits)",
-                        self.NAME,
-                    )
-                else:
-                    client.close_all_positions(cancel_orders=True)
-                    msg = f"\u2705 {label}: EOD close_all_positions"
-                    logger.info(msg)
-                    self._send_own_telegram(msg)
+                # v9.1.126 -- ALWAYS sweep all positions on Alpaca at EOD,
+                # regardless of independent vs mirror mode. Val/Gene must
+                # close their own positions independently of Main; any
+                # straggler -- morning ORB position Val/Gene admitted that
+                # Main rejected, EOD reversal position the 15:56 scan-loop
+                # tick missed, anything else -- gets flushed here.
+                #
+                # The earlier v9.1.106 skip ("independent mode -- ORB+EOD
+                # engines own their exits") was unsafe: a position Main
+                # never held got no EXIT_LONG/EXIT_SHORT bus signal AND
+                # the executor wiped local tracking without closing the
+                # Alpaca leg, leaving the position open past market close.
+                # Safe to call now because the v9.1.125 EOD reversal exit
+                # window (15:56) precedes EOD_CLOSE_ALL (15:57) by 1 min,
+                # so EOD reversal positions are already flushed in the
+                # normal case; if the scan loop stalled they get flushed
+                # here as the safety net.
+                client.close_all_positions(cancel_orders=True)
+                msg = f"\u2705 {label}: EOD close_all_positions"
+                logger.info(msg)
+                self._send_own_telegram(msg)
                 # Always wipe local tracking so no stale rows remain.
                 for tkr in list(self.positions.keys()):
                     self._remove_position(tkr)

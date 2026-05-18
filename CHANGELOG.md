@@ -4,6 +4,50 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.126 (2026-05-18) — EOD safety-net: Val/Gene always sweep all positions
+
+Follow-up to v9.1.125. The 2026-05-18 audit surfaced a second hole in the
+EOD close chain: in independent mode (`ORB_PORTFOLIO_FIRE=1`, the default
+since v8.3.23) the `EOD_CLOSE_ALL` handler in `executors/base.py:_on_signal`
+**skipped** `client.close_all_positions(cancel_orders=True)` on the
+"engines own their exits" rationale. That was unsafe on two paths:
+
+  - **Morning ORB position Val/Gene admitted that Main rejected.** With
+    independent RiskBook fanout, Val/Gene can hold a position Main never
+    opened. Main's `EXIT_LONG`/`EXIT_SHORT` bus signals never reference
+    that ticker, and `orb.live_runtime.check_exit` is not yet wired into
+    a per-portfolio sentinel loop. The position stayed open past close
+    with no safety net.
+
+  - **EOD reversal stragglers if the scan loop stalled at 15:56.** The
+    v9.1.0 EOD reversal engine flushes positions in `_eod_reversal_pass`,
+    which only fires inside the scan loop. If the loop went silent past
+    15:56 (as happened on 2026-05-18 -- see v9.1.125 Bug 2), the
+    positions stayed open and the v9.1.106 skip ensured the 15:57
+    `EOD_CLOSE_ALL` safety net was a no-op.
+
+Additionally, the v9.1.106 path was outright broken: it wiped local
+tracking via `_remove_position` without closing the Alpaca leg, so
+subsequent `_reconcile_broker_positions` would see the position as a
+broker orphan and try to graft it back -- a flat-state lie either way.
+
+Fix:
+
+- `executors/base.py:_on_signal` -- `EOD_CLOSE_ALL` branch now **always**
+  calls `client.close_all_positions(cancel_orders=True)`. The independent-
+  vs-mirror conditional and the `ORB_PORTFOLIO_FIRE` env read are removed.
+  Safe because v9.1.125 moved the EOD reversal exit window from 15:59 to
+  15:56, leaving a 1-min buffer before the 15:57 `EOD_CLOSE_ALL` arrives;
+  EOD reversal positions are already flushed in the normal case, and any
+  straggler gets caught here.
+
+Test coverage:
+
+- `tests/strategy/test_executor_eod_sweep.py` (new) -- 3 unit tests:
+  independent-mode EOD_CLOSE_ALL still calls `close_all_positions`;
+  local position tracking is wiped after the broker close; the
+  `ORB_PORTFOLIO_FIRE` env var no longer gates the sweep.
+
 ## v9.1.125 (2026-05-18) — EOD close: bypass cap + 5-min buffer + scheduler safety-net
 
 Real-money close-failure on 2026-05-18 (live Val account, AVGO long +
