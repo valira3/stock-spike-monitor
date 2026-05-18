@@ -31,6 +31,7 @@ Look-ahead audit per rule #7b: feed_bar consults only the bar passed
 in. check_entry uses only the locked OR window + the supplied 5m close
 + next-open price. No future data anywhere.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,15 +48,16 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EntryResult:
     """Result of a check_entry / check_short_entry call."""
+
     ok: bool
-    side: str = ""               # "long" or "short" or "" if not ok
-    price: float = 0.0           # entry price (proposed_entry from signal)
+    side: str = ""  # "long" or "short" or "" if not ok
+    price: float = 0.0  # entry price (proposed_entry from signal)
     stop: float = 0.0
     target: float = 0.0
     shares: int = 0
     risk_dollars: float = 0.0
     ticket_id: str = ""
-    reason_no: str = ""          # diagnostic when ok=False
+    reason_no: str = ""  # diagnostic when ok=False
 
 
 @dataclass
@@ -70,8 +72,9 @@ class ExitResult:
       3. Continue calling check_exit on subsequent bars for the runner.
     `partial=True` and `exit=True` are mutually exclusive.
     """
+
     exit: bool
-    reason: str = ""             # "target", "stop", "be_stop", "eod", "partial_1r", or ""
+    reason: str = ""  # "target", "stop", "be_stop", "eod", "partial_1r", or ""
     price: float = 0.0
     # v8.1.0 partial-fill metadata. Populated when the engine emits
     # EXIT_PARTIAL and the adapter applies the half-close bookkeeping.
@@ -120,10 +123,17 @@ class LiveAdapter:
 
     # --- bar feed ---
 
-    def feed_bar(self, ticker: str, *,
-                 bar_high: float, bar_low: float, bar_open: float,
-                 bar_close: float, bar_volume: float,
-                 bar_bucket_min: int) -> None:
+    def feed_bar(
+        self,
+        ticker: str,
+        *,
+        bar_high: float,
+        bar_low: float,
+        bar_open: float,
+        bar_close: float,
+        bar_volume: float,
+        bar_bucket_min: int,
+    ) -> None:
         """Forward a 1-min bar to the engine's OR window.
 
         Idempotent: bars after OR lock are silently rejected by the
@@ -131,21 +141,30 @@ class LiveAdapter:
         """
         self.engine.on_bar_arrival(
             ticker=ticker,
-            bar_high=bar_high, bar_low=bar_low,
-            bar_open=bar_open, bar_close=bar_close,
-            bar_volume=bar_volume, bar_bucket_min=bar_bucket_min,
+            bar_high=bar_high,
+            bar_low=bar_low,
+            bar_open=bar_open,
+            bar_close=bar_close,
+            bar_volume=bar_volume,
+            bar_bucket_min=bar_bucket_min,
         )
 
     # --- entry decision ---
 
-    def check_entry(self, ticker: str, *, side: str,
-                    five_min_close: float, next_open: float,
-                    equity: float, signal_iso: str = "",
-                    recent_5m_highs: Optional[list[float]] = None,
-                    recent_5m_lows: Optional[list[float]] = None,
-                    recent_5m_closes: Optional[list[float]] = None,
-                    session_vwap: Optional[float] = None,
-                    ) -> EntryResult:
+    def check_entry(
+        self,
+        ticker: str,
+        *,
+        side: str,
+        five_min_close: float,
+        next_open: float,
+        equity: float,
+        signal_iso: str = "",
+        recent_5m_highs: Optional[list[float]] = None,
+        recent_5m_lows: Optional[list[float]] = None,
+        recent_5m_closes: Optional[list[float]] = None,
+        session_vwap: Optional[float] = None,
+    ) -> EntryResult:
         """Single-side entry decision.
 
         Returns EntryResult.ok=True with full geometry if all of:
@@ -191,7 +210,9 @@ class LiveAdapter:
         cutoff_before = self.engine._time_cutoff_reject_count
 
         admission = self.engine.try_enter(
-            sig, equity=equity, session_vwap=session_vwap,
+            sig,
+            equity=equity,
+            session_vwap=session_vwap,
         )
         if admission is None:
             # Disambiguate the rejection reason.
@@ -221,9 +242,16 @@ class LiveAdapter:
 
     # --- exit decision ---
 
-    def check_exit(self, ticker: str, ticket_id: str, *,
-                   bar_high: float, bar_low: float, bar_close: float,
-                   bar_bucket_min: int) -> ExitResult:
+    def check_exit(
+        self,
+        ticker: str,
+        ticket_id: str,
+        *,
+        bar_high: float,
+        bar_low: float,
+        bar_close: float,
+        bar_bucket_min: int,
+    ) -> ExitResult:
         """Per-bar exit evaluation for an open position.
 
         Returns ExitResult.exit=True with reason+price if the bar
@@ -238,7 +266,9 @@ class LiveAdapter:
 
         decision = self.engine.evaluate_position_exit(
             pos,
-            bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+            bar_high=bar_high,
+            bar_low=bar_low,
+            bar_close=bar_close,
             bar_bucket_min=bar_bucket_min,
         )
         if decision is None:
@@ -249,9 +279,11 @@ class LiveAdapter:
         # broker partial-sell using the partial_shares + partial_price
         # surfaced on this ExitResult.
         from orb.exits import EXIT_PARTIAL
+
         if decision.reason == EXIT_PARTIAL:
             shares_closed, pnl = self.engine.on_partial_exit(
-                pos, decision.price,
+                pos,
+                decision.price,
             )
             if shares_closed == 0:
                 # Engine-side guard rejected the partial (already taken
@@ -259,7 +291,8 @@ class LiveAdapter:
                 # broker order.
                 return ExitResult(exit=False, reason="partial_noop")
             return ExitResult(
-                exit=False, partial=True,
+                exit=False,
+                partial=True,
                 reason=EXIT_PARTIAL,
                 price=decision.price,
                 partial_shares=shares_closed,
@@ -277,10 +310,9 @@ class LiveAdapter:
             del self._ticker_to_ticket[ticker]
         return ExitResult(exit=True, reason=decision.reason, price=decision.price)
 
-    def check_exit_by_ticker(self, ticker: str, *,
-                             bar_high: float, bar_low: float,
-                             bar_close: float,
-                             bar_bucket_min: int) -> ExitResult:
+    def check_exit_by_ticker(
+        self, ticker: str, *, bar_high: float, bar_low: float, bar_close: float, bar_bucket_min: int
+    ) -> ExitResult:
         """Per-bar exit evaluation by ticker (no ticket_id needed).
 
         Convenience for callers (broker/positions.py:manage_positions)
@@ -296,8 +328,11 @@ class LiveAdapter:
         if ticket_id is None:
             return ExitResult(exit=False, reason="no_open_v10_position")
         return self.check_exit(
-            ticker, ticket_id,
-            bar_high=bar_high, bar_low=bar_low, bar_close=bar_close,
+            ticker,
+            ticket_id,
+            bar_high=bar_high,
+            bar_low=bar_low,
+            bar_close=bar_close,
             bar_bucket_min=bar_bucket_min,
         )
 
@@ -311,6 +346,14 @@ class LiveAdapter:
 
     def list_open_tickers(self) -> list[str]:
         return [p.ticker for p in self._open_positions.values()]
+
+    def list_open_positions(self) -> list[_exits.OrbPosition]:
+        """v9.1.127 -- snapshot of open positions for per-portfolio exit pass.
+
+        Returns a list (not the live dict) so callers can iterate without
+        worrying about mid-pass mutation when an exit fires.
+        """
+        return list(self._open_positions.values())
 
 
 class LiveAdapterRegistry:

@@ -4,6 +4,69 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.127 (2026-05-18) — Per-portfolio EXIT loop: Val/Gene fully independent of Main
+
+Closes the v8.3.23 limitation flagged in `CLAUDE.md` and the
+`tests/strategy/test_independent_mode_entry_guard.py` docstring:
+"a future per-portfolio exit loop will replace this in v8.3.24+".
+Until this PR, Val/Gene mirrored Main's bus `EXIT_LONG`/`EXIT_SHORT`/
+`PARTIAL_EXIT_*` signals — so a position Val admitted that Main rejected
+(different RiskBook decision, fully expected in independent mode) had
+no intraday exit signal at all and could only flush at the v9.1.126
+15:57 ET EOD safety-net sweep.
+
+Val and Gene are now fully independent of Main on both entry AND exit:
+
+  - Entries: `engine/scan.py:_v10_dispatch_executor_fire`
+    -> `executor.fire_long`/`fire_short` (since v8.3.23).
+  - Exits: NEW per-portfolio pass `_v10_per_portfolio_exit_pass`
+    runs each scan cycle. For every non-main portfolio it iterates
+    `adapter.list_open_positions()`, calls
+    `_orb_runtime.check_exit_by_ticker(portfolio_id=pid)`, and on a
+    full-exit decision dispatches the close via
+    `_v10_dispatch_executor_fire(..., reduce_only=True)`. Partial-
+    profit decisions dispatch via the new
+    `_v10_dispatch_executor_partial_close` helper which calls the
+    executor's `_partial_close_position_idempotent`.
+
+Companion change in `executors/base.py:_on_signal`: the v8.3.23
+independent-mode skip guard, which previously fenced only
+`ENTRY_LONG`/`ENTRY_SHORT`, now also skips `EXIT_LONG`,
+`EXIT_SHORT`, `PARTIAL_EXIT_LONG`, `PARTIAL_EXIT_SHORT`.
+`EOD_CLOSE_ALL` stays through the bus listener as the v9.1.126
+15:57 ET safety-net sweep.
+
+Mirror mode (`ORB_PORTFOLIO_FIRE=0`) is unchanged — both entries
+and exits still flow through Main's bus on Val/Gene.
+
+Files:
+
+- `engine/scan.py` -- new `_v10_per_portfolio_exit_pass(callbacks)`
+  + `_v10_dispatch_executor_partial_close(...)` helpers; wired into
+  `scan_loop` after the per-ticker loop and before `_eod_reversal_pass`.
+  Stale "follow-up PR" docstring + comment on `_orb_long_entry` cleaned
+  up.
+- `orb/live_adapter.py` -- new `LiveAdapter.list_open_positions()`
+  accessor returns a snapshot list of open `OrbPosition` objects.
+- `executors/base.py:_on_signal` -- skip set extended to EXIT_* +
+  PARTIAL_EXIT_* in independent mode.
+
+Test coverage:
+
+- `tests/strategy/test_per_portfolio_exit_pass.py` (new) -- 10 unit
+  tests: mirror-mode skip, kill-switch skip, no-engine skip, main-pid
+  skip, full-exit long -> close_side=short with reduce_only=True,
+  full-exit short -> close_side=long, no-exit no-dispatch, partial
+  routes to partial-close dispatch, multi-portfolio iteration,
+  missing-bars defensive skip.
+- `tests/strategy/test_independent_mode_entry_guard.py` -- pre-v9.1.127
+  "EXIT/PARTIAL passes through" tests inverted to assert the new skip
+  behavior; new "mirror mode lets EXIT through" and "EOD_CLOSE_ALL
+  still passes" tests added.
+- `tests/strategy/test_executor_partial_close.py` -- the bus-mirror
+  `_on_signal` dispatch tests now set `ORB_PORTFOLIO_FIRE=0`
+  explicitly so they continue to pin the legacy mirror-mode path.
+
 ## v9.1.126 (2026-05-18) — EOD safety-net: Val/Gene always sweep all positions
 
 Follow-up to v9.1.125. The 2026-05-18 audit surfaced a second hole in the

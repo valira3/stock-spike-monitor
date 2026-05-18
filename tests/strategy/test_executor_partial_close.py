@@ -13,6 +13,7 @@ Covers:
   - _on_signal dispatches PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT to
     the partial path with main_shares as the qty.
 """
+
 import sys
 from types import SimpleNamespace, ModuleType
 from unittest.mock import MagicMock
@@ -27,8 +28,7 @@ if "telegram" not in sys.modules:
         setattr(_tel, _name, type(_name, (), {}))
     sys.modules["telegram"] = _tel
     _tel_ext = ModuleType("telegram.ext")
-    for _name in ("Application", "ApplicationHandlerStop", "CommandHandler",
-                  "TypeHandler"):
+    for _name in ("Application", "ApplicationHandlerStop", "CommandHandler", "TypeHandler"):
         setattr(_tel_ext, _name, type(_name, (), {}))
     sys.modules["telegram.ext"] = _tel_ext
 
@@ -47,8 +47,12 @@ if "alpaca" not in sys.modules:
 
     class _OrderSideStub:
         class _V:
-            def __init__(self, name): self._n = name
-            def __str__(self): return f"OrderSide.{self._n}"
+            def __init__(self, name):
+                self._n = name
+
+            def __str__(self):
+                return f"OrderSide.{self._n}"
+
         SELL = _V("SELL")
         BUY = _V("BUY")
 
@@ -56,10 +60,17 @@ if "alpaca" not in sys.modules:
         DAY = "DAY"
         IOC = "IOC"
 
-    class _LimitOrderRequest(_MarketOrderRequest): pass
-    class _ClosePositionRequest(_MarketOrderRequest): pass
-    class _StopOrderRequest(_MarketOrderRequest): pass
-    class _StopLimitOrderRequest(_MarketOrderRequest): pass
+    class _LimitOrderRequest(_MarketOrderRequest):
+        pass
+
+    class _ClosePositionRequest(_MarketOrderRequest):
+        pass
+
+    class _StopOrderRequest(_MarketOrderRequest):
+        pass
+
+    class _StopLimitOrderRequest(_MarketOrderRequest):
+        pass
 
     _alpaca_trading_requests.MarketOrderRequest = _MarketOrderRequest
     _alpaca_trading_requests.LimitOrderRequest = _LimitOrderRequest
@@ -91,6 +102,7 @@ class _FakeExecutor(TradeGeniusBase):
     """Minimum-viable TradeGeniusBase subclass: provides the abstract
     bits without hitting telegram / persistence so unit tests can run
     in sandbox."""
+
     NAME = "TEST"
     mode = "paper"
     DEFAULT_OWNERS = set()
@@ -127,17 +139,18 @@ def _make_order(order_id="ord-42"):
 
 
 class TestPartialCloseHappyPath:
-
     def test_long_partial_submits_market_sell_and_decrements_qty(self):
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "stop": 99.0,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "stop": 99.0, "entry_price": 100.0}
         client = MagicMock()
         client.submit_order = MagicMock(return_value=_make_order("ord-1"))
 
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
 
         # Exactly one order submitted
@@ -158,14 +171,16 @@ class TestPartialCloseHappyPath:
 
     def test_short_partial_submits_market_buy(self):
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "SHORT", "qty": 100, "stop": 101.0,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "SHORT", "qty": 100, "stop": 101.0, "entry_price": 100.0}
         client = MagicMock()
         client.submit_order = MagicMock(return_value=_make_order("ord-2"))
 
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         req = client.submit_order.call_args.args[0]
         assert req.symbol == "AAPL"
@@ -179,18 +194,19 @@ class TestPartialCloseHappyPath:
 
 
 class TestPartialCloseRefuses:
-
     def test_refuses_partial_geq_current_qty(self):
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
         client.submit_order = MagicMock(return_value=_make_order())
 
         # partial = full -> refused
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=100,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=100,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         # No order submitted; no mutation
         client.submit_order.assert_not_called()
@@ -198,28 +214,35 @@ class TestPartialCloseRefuses:
 
     def test_refuses_partial_over_current_qty(self):
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=150,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=150,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         client.submit_order.assert_not_called()
         assert ex.positions["AAPL"]["qty"] == 100
 
     def test_refuses_partial_zero_or_negative(self):
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=0,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=0,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=-5,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=-5,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         client.submit_order.assert_not_called()
         assert ex.positions["AAPL"]["qty"] == 100
@@ -229,8 +252,11 @@ class TestPartialCloseRefuses:
         # AAPL not in positions
         client = MagicMock()
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         client.submit_order.assert_not_called()
 
@@ -243,21 +269,22 @@ class _Already40410000(Exception):
 
 
 class TestPartialCloseErrors:
-
     def test_40410000_treated_as_success_decrements_local(self):
         # Alpaca returns "position not found" for an already-flat
         # ticker (race condition). v8.1.1 treats this as a soft
         # success and decrements local qty anyway.
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
-        client.submit_order = MagicMock(side_effect=Exception(
-            "alpaca error code 40410000: position not found"
-        ))
+        client.submit_order = MagicMock(
+            side_effect=Exception("alpaca error code 40410000: position not found")
+        )
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         # Local qty STILL decremented (so the engine state aligns
         # with Alpaca's already-flat view going forward)
@@ -267,15 +294,15 @@ class TestPartialCloseErrors:
         # Any non-40410000 error must NOT mutate local qty -- caller
         # retries on next tick. Silent share leak is the worst case.
         ex = _FakeExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
-        client.submit_order = MagicMock(side_effect=Exception(
-            "alpaca 500 server error"
-        ))
+        client.submit_order = MagicMock(side_effect=Exception("alpaca 500 server error"))
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="TEST", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="TEST",
+            reason="PARTIAL_1R",
         )
         # qty unchanged so caller can retry
         assert ex.positions["AAPL"]["qty"] == 100
@@ -298,27 +325,35 @@ class _DispatchExecutor(_FakeExecutor):
     def _ensure_client(self):
         return self._stub_client
 
-    def _partial_close_position_idempotent(self, client, ticker,
-                                            shares_to_close, label,
-                                            reason):
-        self.partial_calls.append({
-            "ticker": ticker, "shares_to_close": shares_to_close,
-            "reason": reason,
-        })
+    def _partial_close_position_idempotent(self, client, ticker, shares_to_close, label, reason):
+        self.partial_calls.append(
+            {
+                "ticker": ticker,
+                "shares_to_close": shares_to_close,
+                "reason": reason,
+            }
+        )
 
 
 class TestOnSignalPartialDispatch:
+    """v9.1.127: these tests pin the LEGACY mirror-mode bus path
+    (ORB_PORTFOLIO_FIRE=0). In independent mode (the default since
+    v8.3.23), PARTIAL_EXIT_* is skipped by the _on_signal guard and
+    routed via engine/scan.py:_v10_dispatch_executor_partial_close
+    instead -- covered in test_orb_executor_fire.py + the new
+    per-portfolio exit-pass tests."""
 
-    def test_partial_exit_long_routes_to_partial_close(self):
+    def test_partial_exit_long_routes_to_partial_close(self, monkeypatch):
+        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
         ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         event = {
             "kind": "PARTIAL_EXIT_LONG",
             "ticker": "AAPL",
             "price": 101.0,
             "reason": "PARTIAL_1R",
-            "main_shares": 50, "timestamp_utc": "2026-05-12T00:00:00Z",
+            "main_shares": 50,
+            "timestamp_utc": "2026-05-12T00:00:00Z",
         }
         ex._on_signal(event)
         assert len(ex.partial_calls) == 1
@@ -327,22 +362,24 @@ class TestOnSignalPartialDispatch:
         assert call["shares_to_close"] == 50
         assert call["reason"] == "PARTIAL_1R"
 
-    def test_partial_exit_short_routes_to_partial_close(self):
+    def test_partial_exit_short_routes_to_partial_close(self, monkeypatch):
+        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
         ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "SHORT", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "SHORT", "qty": 100, "entry_price": 100.0}
         event = {
             "kind": "PARTIAL_EXIT_SHORT",
             "ticker": "AAPL",
             "price": 99.0,
             "reason": "PARTIAL_1R",
-            "main_shares": 50, "timestamp_utc": "2026-05-12T00:00:00Z",
+            "main_shares": 50,
+            "timestamp_utc": "2026-05-12T00:00:00Z",
         }
         ex._on_signal(event)
         assert len(ex.partial_calls) == 1
         assert ex.partial_calls[0]["shares_to_close"] == 50
 
-    def test_partial_exit_no_position_skipped(self):
+    def test_partial_exit_no_position_skipped(self, monkeypatch):
+        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
         ex = _DispatchExecutor()
         # AAPL not in positions
         event = {
@@ -350,22 +387,24 @@ class TestOnSignalPartialDispatch:
             "ticker": "AAPL",
             "price": 101.0,
             "reason": "PARTIAL_1R",
-            "main_shares": 50, "timestamp_utc": "2026-05-12T00:00:00Z",
+            "main_shares": 50,
+            "timestamp_utc": "2026-05-12T00:00:00Z",
         }
         ex._on_signal(event)
         # No partial-close call
         assert len(ex.partial_calls) == 0
 
-    def test_partial_exit_zero_main_shares_skipped(self):
+    def test_partial_exit_zero_main_shares_skipped(self, monkeypatch):
+        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")
         ex = _DispatchExecutor()
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         event = {
             "kind": "PARTIAL_EXIT_LONG",
             "ticker": "AAPL",
             "price": 101.0,
             "reason": "PARTIAL_1R",
-            "main_shares": 0, "timestamp_utc": "2026-05-12T00:00:00Z",
+            "main_shares": 0,
+            "timestamp_utc": "2026-05-12T00:00:00Z",
         }
         ex._on_signal(event)
         # Defensive guard: main_shares <= 0 -> skip without dispatching
@@ -388,18 +427,21 @@ class TestExecutorRecordsPartialActivity:
 
     def test_successful_partial_records_activity_event(self):
         from orb import live_runtime
+
         live_runtime.clear_recent_activity()
 
         ex = _FakeExecutor()
         ex.NAME = "Val"
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
         client.submit_order = MagicMock(return_value=_make_order("ord-act-1"))
 
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="VAL paper", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="VAL paper",
+            reason="PARTIAL_1R",
         )
 
         # Activity event landed in the ring buffer
@@ -419,20 +461,21 @@ class TestExecutorRecordsPartialActivity:
         # operator-facing feed should only show partials that
         # actually mutated state.
         from orb import live_runtime
+
         live_runtime.clear_recent_activity()
 
         ex = _FakeExecutor()
         ex.NAME = "Gene"
-        ex.positions["AAPL"] = {"side": "LONG", "qty": 100,
-                                 "entry_price": 100.0}
+        ex.positions["AAPL"] = {"side": "LONG", "qty": 100, "entry_price": 100.0}
         client = MagicMock()
-        client.submit_order = MagicMock(side_effect=Exception(
-            "alpaca 500 server error"
-        ))
+        client.submit_order = MagicMock(side_effect=Exception("alpaca 500 server error"))
 
         ex._partial_close_position_idempotent(
-            client, "AAPL", shares_to_close=50,
-            label="GENE paper", reason="PARTIAL_1R",
+            client,
+            "AAPL",
+            shares_to_close=50,
+            label="GENE paper",
+            reason="PARTIAL_1R",
         )
 
         # No activity recorded (the function returned before the
