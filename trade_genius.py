@@ -109,7 +109,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "9.1.139"
+BOT_VERSION = "9.1.140"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -7966,6 +7966,7 @@ MAIN_BOT_COMMANDS = [
     BotCommand("log", "Trade log (optional date)"),
     BotCommand("replay", "Trade timeline (optional date)"),
     BotCommand("monitoring", "Pause/resume scanner"),
+    BotCommand("close", "Manually close position: /close TICKER"),
     BotCommand("menu", "Quick command menu"),
     BotCommand("strategy", "Strategy summary"),
     BotCommand("algo", "Algorithm reference PDF"),

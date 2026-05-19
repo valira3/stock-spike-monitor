@@ -528,6 +528,43 @@ class ORBConfig:
     stale_full_exit_minutes: int = 0
     stale_full_exit_mfe_floor_r: float = 0.0
 
+    # R27 (research 2026-05-19) -- time-bracketed local-max trailing exit.
+    # Replaces R21/R26's hard time-blind closes with a path-aware variant:
+    # within [trail_open, trail_close], exit when unrealized P&L gives
+    # back >= trail_giveback_r from the WINDOW max (not lifetime MFE);
+    # hard-close at trail_close if no giveback triggered. R-units for
+    # dimensional consistency with the strategy's risk math.
+    # trail_giveback_r=0 disables. Layers ON TOP of R21/R26; trail fires
+    # first if applicable, else R21/R26 backstop.
+    local_max_trail_giveback_r: float = 0.0
+    local_max_trail_open_minutes: int = 0
+    local_max_trail_close_minutes: int = 0
+
+    # R29b (research 2026-05-19) -- VWAP-cross exit. Within [open, close],
+    # exit when bar_close crosses session VWAP against the position
+    # (long: close < vwap; short: close > vwap). Hard deadline at close.
+    # Layers BEFORE R21/R26. 0 disables.
+    vwap_cross_exit_open_minutes: int = 0
+    vwap_cross_exit_close_minutes: int = 0
+
+    # R30 (research 2026-05-19) -- inverse of MFE floor. If current P&L
+    # in R is BELOW this threshold at the R26 cutoff, SKIP the close
+    # (i.e. "spare losers" -- let unfavorable positions ride through
+    # EOD on the theory that they might recover).
+    # Sentinel value 999.0 = disabled. Setting to 0.0 means: skip R26
+    # for any position currently at < 0R PnL (any loser).
+    stale_full_exit_skip_when_pnl_below_r: float = 999.0
+
+    # R32 (research 2026-05-19) -- ASYMMETRIC reversal circuit-breaker.
+    # ONLY fires when BOTH conditions met:
+    #   (a) MFE_R >= reversal_circuit_min_mfe_r  (position WAS favorable)
+    #   (b) (MFE_R - current_PnL_R) >= reversal_circuit_min_giveback_r
+    #       (the round-trip swing exceeds the threshold)
+    # Both 0 = disabled. Designed to catch the rare "round-trip" cohort
+    # (favorable -> unfavorable swing) without touching trending winners.
+    reversal_circuit_min_mfe_r: float = 0.0
+    reversal_circuit_min_giveback_r: float = 0.0
+
     @classmethod
     def from_env(cls) -> "ORBConfig":
         bl_raw = _envs("ORB_TICKER_SIDE_BLOCKLIST", "")
@@ -685,6 +722,34 @@ class ORBConfig:
                 else 0
             ),
             stale_full_exit_mfe_floor_r=_envf("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0),
+            # R27 -- local-max trailing exit (window-bracketed)
+            local_max_trail_giveback_r=_envf("ORB_TRAIL_GIVEBACK_R", 0.0),
+            local_max_trail_open_minutes=(
+                _et_to_minutes(_envs("ORB_TRAIL_OPEN_ET", ""))
+                if _envs("ORB_TRAIL_OPEN_ET", "")
+                else 0
+            ),
+            local_max_trail_close_minutes=(
+                _et_to_minutes(_envs("ORB_TRAIL_CLOSE_ET", ""))
+                if _envs("ORB_TRAIL_CLOSE_ET", "")
+                else 0
+            ),
+            # R29b -- VWAP-cross exit window
+            vwap_cross_exit_open_minutes=(
+                _et_to_minutes(_envs("ORB_VWAP_EXIT_OPEN_ET", ""))
+                if _envs("ORB_VWAP_EXIT_OPEN_ET", "")
+                else 0
+            ),
+            vwap_cross_exit_close_minutes=(
+                _et_to_minutes(_envs("ORB_VWAP_EXIT_CLOSE_ET", ""))
+                if _envs("ORB_VWAP_EXIT_CLOSE_ET", "")
+                else 0
+            ),
+            stale_full_exit_skip_when_pnl_below_r=_envf(
+                "ORB_STALE_SKIP_WHEN_PNL_BELOW_R", 999.0,
+            ),
+            reversal_circuit_min_mfe_r=_envf("ORB_REVERSAL_CIRCUIT_MIN_MFE_R", 0.0),
+            reversal_circuit_min_giveback_r=_envf("ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R", 0.0),
         )
 
 
@@ -1209,6 +1274,9 @@ def run_ticker_day(
         two_r = entry_price + 2 * risk if side == "long" else entry_price - 2 * risk
         three_r = entry_price + 3 * risk if side == "long" else entry_price - 3 * risk
         runner_trail_active = False  # set True once partial_taken=True
+        # R27 -- window-local max P&L (in R) for the trail. None until
+        # the window opens; once opened, tracks running max in R.
+        trail_window_max_r: Optional[float] = None
         for fb in forward_1m:
             # First check stop/target intra-bar (high/low pierce).
             if side == "long":
@@ -1402,6 +1470,91 @@ def run_ticker_day(
                     if new_stop < stop:
                         stop = new_stop
 
+            # R32 (research) -- asymmetric reversal circuit-breaker.
+            # Fires ONLY when position WAS favorable (MFE >= floor) AND
+            # has now swung back by giveback threshold. Designed to catch
+            # the rare round-trip cohort. Fires BEFORE R29b/R27/R21/R26.
+            if (
+                cfg.reversal_circuit_min_mfe_r > 0
+                and cfg.reversal_circuit_min_giveback_r > 0
+                and initial_risk > 0
+            ):
+                if side == "long":
+                    _mfe_in_r = (mfe - entry_price) / initial_risk
+                    _cur_in_r = (fb.close - entry_price) / initial_risk
+                else:
+                    _mfe_in_r = (entry_price - mfe) / initial_risk
+                    _cur_in_r = (entry_price - fb.close) / initial_risk
+                _round_trip = _mfe_in_r - _cur_in_r
+                if (
+                    _mfe_in_r >= cfg.reversal_circuit_min_mfe_r
+                    and _round_trip >= cfg.reversal_circuit_min_giveback_r
+                ):
+                    exit_price = fb.close
+                    exit_reason = "reversal_circuit"
+                    exit_bkt = fb.bucket
+                    break
+
+            # R29b (research) -- VWAP-cross exit. Within window, exit when
+            # bar_close crosses session VWAP against the position. Hard
+            # deadline at window_close. Fires BEFORE R27/R21/R26.
+            if (
+                cfg.vwap_cross_exit_open_minutes > 0
+                and cfg.vwap_cross_exit_close_minutes > 0
+                and fb.bucket >= cfg.vwap_cross_exit_open_minutes
+            ):
+                svwap = session_vwap_at(rth, fb.bucket)
+                crossed = False
+                if svwap > 0:
+                    if side == "long" and fb.close < svwap:
+                        crossed = True
+                    elif side == "short" and fb.close > svwap:
+                        crossed = True
+                if crossed:
+                    exit_price = fb.close
+                    exit_reason = "vwap_cross_exit"
+                    exit_bkt = fb.bucket
+                    break
+                if fb.bucket >= cfg.vwap_cross_exit_close_minutes:
+                    exit_price = fb.close
+                    exit_reason = "vwap_cross_deadline"
+                    exit_bkt = fb.bucket
+                    break
+
+            # R27 (research) -- window-bracketed local-max trailing exit.
+            # Within [trail_open, trail_close], track window-local max P&L
+            # in R; exit when current_R drops below window_max_R by
+            # trail_giveback_r. Hard-close at trail_close as deadline.
+            # Layers BEFORE R21/R26 so trail fires first if applicable.
+            if (
+                cfg.local_max_trail_giveback_r > 0
+                and cfg.local_max_trail_open_minutes > 0
+                and cfg.local_max_trail_close_minutes > 0
+                and initial_risk > 0
+                and fb.bucket >= cfg.local_max_trail_open_minutes
+            ):
+                if side == "long":
+                    current_r = (fb.close - entry_price) / initial_risk
+                else:
+                    current_r = (entry_price - fb.close) / initial_risk
+                if trail_window_max_r is None:
+                    trail_window_max_r = current_r
+                elif current_r > trail_window_max_r:
+                    trail_window_max_r = current_r
+                # Giveback check
+                giveback_r = (trail_window_max_r or 0.0) - current_r
+                if giveback_r >= cfg.local_max_trail_giveback_r:
+                    exit_price = fb.close
+                    exit_reason = "local_max_trail"
+                    exit_bkt = fb.bucket
+                    break
+                # Hard deadline at window close
+                if fb.bucket >= cfg.local_max_trail_close_minutes:
+                    exit_price = fb.close
+                    exit_reason = "local_max_trail_deadline"
+                    exit_bkt = fb.bucket
+                    break
+
             # R21 runner EOD-prep. Time-based force-close on the runner
             # only (i.e. after partial fires). Locks in the partial gain
             # and a piece of runner P&L without holding through the
@@ -1434,7 +1587,20 @@ def run_ticker_day(
                     if side == "long"
                     else (entry_price - mfe) / initial_risk
                 )
-                if cfg.stale_full_exit_mfe_floor_r <= 0 or mfe_in_r < cfg.stale_full_exit_mfe_floor_r:
+                # R30: "spare losers" inversion. If current PnL is below
+                # the threshold, skip the R26 close entirely (let it run).
+                _skip = False
+                if cfg.stale_full_exit_skip_when_pnl_below_r < 999.0:
+                    if side == "long":
+                        _current_r = (fb.close - entry_price) / initial_risk
+                    else:
+                        _current_r = (entry_price - fb.close) / initial_risk
+                    if _current_r < cfg.stale_full_exit_skip_when_pnl_below_r:
+                        _skip = True
+                if not _skip and (
+                    cfg.stale_full_exit_mfe_floor_r <= 0
+                    or mfe_in_r < cfg.stale_full_exit_mfe_floor_r
+                ):
                     exit_price = fb.close
                     exit_reason = "stale_full_exit"
                     exit_bkt = fb.bucket

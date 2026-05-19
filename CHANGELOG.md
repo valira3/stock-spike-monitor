@@ -4,6 +4,24 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.140 (2026-05-19) — merge: pull main into staging (R32 reversal circuit-breaker + EOD dedup + rollback-cooldown + /close)
+
+Brings staging up to date with `main` after its v9.1.131-137 series. New on staging from main:
+
+- v9.1.131: `ORB_ROLLBACK_COOLDOWN_*` lever (env-flagged, default OFF) — blocks re-entry after a rollback exit
+- v9.1.132: `rollback_admit` ticker-orphan fix + post_trade_cooldown default ON
+- v9.1.133: EOD reversal blocks the same ticker on both long + short legs
+- v9.1.134: R32 reversal circuit-breaker (live engine, env-gated)
+- v9.1.135: `/close <ticker>` Telegram command (manual override)
+- v9.1.136: monitor — `atr_stop` skips closed positions
+- v9.1.137: EOD dedup hardening for `top_n > 1`
+
+Also: v9.1.131-137 commit chain on main included #797-#805. Earnings calendar refreshed to 2026-05-19 14:51 UTC.
+
+No behavior changes in this merge commit beyond the textual merge. Conflicts resolved in `bot_version.py`, `trade_genius.py`, `.gitignore`, `tools/orb_earnings_calendar.py` (took main's newer timestamp), and this file (entry ordering — main's 9.1.131-137 entries sit between staging's 9.1.139 broad-universe summary and the shared 9.1.130 entry). Version bumped to 9.1.140 to dedupe.
+
+---
+
 ## v9.1.139 (2026-05-19) — merge: pull main into staging (R21 runner_eod_prep + R26 stale_full_exit + R22-R25 falsified sweeps)
 
 Brings staging up to date with `main` after v9.1.137. New on staging from main: R21 `runner_eod_prep` lever (v9.1.129), R26 `stale_full_exit` lever (v9.1.130), and the R22-R25 falsified-theory sweep scripts + FALSIFIED markers (#790, #791).
@@ -355,6 +373,261 @@ python tools/afternoon_backtest.py --strategy eod_reversal --corpus data \\
 Morning 6.5s pkl-cache run, EOD 4m20s full slip-by-slip simulation. 341 corpus days (2025-01-02 to 2026-05-13), 261 morning trade-days, 680 EOD entries, 471 morning entries (57.1% WR). 1 negative quarter of 6 (2025-Q1, -$4,448 combined — structurally weak quarter, NFLX-driven; see Keystone skill).
 
 ---
+
+## v9.1.137 (2026-05-19) — EOD dedup top_n&gt;1 hardening
+
+Forward-proofs the v9.1.133 same-ticker dedup against the edge case
+that arises only when `ORB_EOD_TOP_N &gt; 1`. The fallback loop in
+`orb/eod_reversal.py:select_signals` previously excluded only the
+conflict ticker + already-taken-same-side tickers from its replacement
+candidate list. With `top_n=2+`, a fallback pick could land on a ticker
+already in the OTHER side's pick set, re-introducing the same-ticker
+collision the dedup was meant to prevent.
+
+Fix: `forbidden = taken_&lt;side&gt; | {p[0] for p in &lt;other_side&gt;_picks}`
+so the fallback can never reintroduce a cross-side collision.
+
+**No production behavior change**: Keystone runs `top_n=1` where the
+new `forbidden` set is a no-op subset of the existing checks (the
+single long-side ticker IS the conflict ticker, already excluded).
+
+Defensive ship — landing the patch BEFORE any future sweep tries
+`top_n=2+`, not after a collision incident.
+
+**Tests**: 2 new cases in `tests/strategy/test_eod_same_ticker_dedup.py`:
+- `test_top_n_2_fallback_avoids_other_side_collision` — forces the
+  exact pre-fix bug scenario and asserts post-fix produces disjoint
+  long_set ∩ short_set = ∅.
+- `test_top_n_1_still_works_after_hardening` — sanity that the
+  forbidden-set widening doesn't break the production top_n=1 path.
+
+All 7 existing dedup tests still pass.
+
+---
+
+## v9.1.136 (2026-05-19) — monitor: atr_stop skips closed positions
+
+`tools/system_check_bot.py:checks_market_validation` was firing the
+`MARKET/atr_stop` WARN on CLOSED historical trades because `today`
+includes every trade_log row from the session. Today's Val TSLA SHORT
+exited at 14:22 ET; the entry row's tight OR-edge stop ($1.19 distance
+vs ATR×1.75 = $5.04) kept firing the alert every 5 min through end of
+RTH and beyond.
+
+Fix: build a `currently_open` set across Main (`state.positions` +
+`state.short_positions`) + Val/Gene executor positions, and skip the
+ATR ratio check for any trade_log row whose (ticker, side) is not in
+that set. Once a position is flat, the stop is historical and nothing
+actionable can be done.
+
+**Tests**: `tests/strategy/test_system_check_atr_stop_skip_closed.py`
+(4 cases: skips-closed, fires-on-open-Main-long, fires-on-open-Val-
+short, silent-when-bot-flat). All pass; existing 1038 strategy tests
+still green.
+
+**Forensic**: unchanged (`MARKET/atr_stop`).
+
+**Files**: `tools/system_check_bot.py`, new test, this CHANGELOG,
+version bumps.
+
+---
+
+## v9.1.135 (2026-05-19) — /close &lt;ticker&gt; Telegram command (manual override)
+
+Operator-controlled manual position close. Usage:
+
+```
+/close <TICKER>
+```
+
+Closes the named ticker on EVERY portfolio (Main / Val / Gene) that
+currently holds it. Dispatches via the correct path per portfolio:
+
+  - Main: `broker.orders.close_breakout(ticker, price, side, reason="manual_close")`
+  - Val / Gene: `engine/scan.py:_v10_dispatch_executor_fire(reduce_only=True)`
+    (bypasses the v9.1.125 cumulative-notional cap; close shrinks exposure)
+
+Owner-only — enforced globally by `_auth_guard` (group=-1) in
+`telegram_ui/runtime.py` against `TRADEGENIUS_OWNER_IDS`. No per-handler
+check needed.
+
+After a successful Val/Gene close, the per-portfolio post-trade cooldown
+is recorded so the Keystone cooldown lever (+$42,573/yr) stays active
+for manual closes too.
+
+**Forensic**: `[V79-MANUAL-CLOSE]` log line per portfolio close (warning
+level), with ticker / side / price / shares / operator_id / status.
+
+**Reply**: per-portfolio status summary so one bad dispatch doesn't shadow
+the others.
+
+**Motivation**: 2026-05-19 Val TSLA SHORT case — a position made a
+favorable move but never reached 1R, then unwound. The R27–R32 research
+sweeps confirmed no automated lever can catch this case without
+destroying value on the 30+ normal trades it would false-positive on.
+Manual operator override is the only safe intervention; this command
+is that override surface.
+
+**Tests**: `tests/strategy/test_telegram_close_command_wiring.py` — 7
+source-inspection cases covering handler existence, runtime
+registration, BotCommand menu entry, auth-guard reliance, dispatch
+routing (Main + Val/Gene), and cooldown recording.
+
+**Files**: `telegram_commands.py`, `telegram_ui/runtime.py`,
+`trade_genius.py`, new test, this CHANGELOG, version bumps.
+
+---
+
+## v9.1.134 (2026-05-19) — R32 reversal circuit-breaker (live engine, env-gated)
+
+Ports the R32 asymmetric reversal circuit-breaker from
+`tools/orb_backtest.py` (research) into the live engine
+(`orb/exits.py:evaluate`). Fires ONLY when BOTH conditions hold:
+
+  (a) `MFE_R >= reversal_circuit_min_mfe_r` (position was clearly favorable)
+  (b) `(MFE_R - current_PnL_R) >= reversal_circuit_min_giveback_r`
+      (the round-trip swing exceeds the threshold)
+
+Designed to catch the rare "favorable → unfavorable" round-trip cohort
+(e.g. NFLX wild-swing days) without affecting trending winners. Fires
+BEFORE partial-at-1R / stop / target / R21 / R26 so the close prints
+at `bar_close` with the reason `reversal_circuit`.
+
+**Default OFF** (both fields = 0 in `OrbConfig`). Enable on Railway PROD via:
+
+```
+ORB_REVERSAL_CIRCUIT_MIN_MFE_R=1.0
+ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R=1.5
+```
+
+These are the operator-approved ultra-strict thresholds from R32's
+sweep on the 252-day rth-expand corpus: cost ≈ -$21/yr (essentially
+neutral), fires ~23 times/year on the rare clear round-trip cohort.
+
+**Forensic**: new exit reason `reversal_circuit` in `trade_log.jsonl`.
+
+**Tests**: `tests/strategy/test_orb_exits_reversal_circuit.py` (7 cases:
+disabled-by-default, long fires, short fires, MFE-only-no-fire,
+giveback-only-no-fire, zero-risk-no-divide, fires-before-partial).
+
+**Files**: `orb/exits.py`, `orb/engine.py`, `orb/live_runtime.py`,
+new test file, this CHANGELOG, version bumps.
+
+---
+
+## v9.1.133 (2026-05-19) — EOD reversal addon: block same ticker on both legs
+
+Closes 2026-05-19 15:26 ET incident: ORCL was in both `long_tickers`
+and `short_tickers` fences (Keystone default), addon picked ORCL for
+both LONG and SHORT legs simultaneously on Val (live $30k). Alpaca
+rejected the SHORT leg with code 42210000 "position intent mismatch,
+inferred: buy_to_open, specified: buy_to_close"; the LONG leg opened
+then auto-closed 32 sec later for -$44.74 real loss.
+
+Fix in `orb/eod_reversal.py:select_signals`: post-pick de-dup. If a
+ticker appears in both `long_picks` and `short_picks`, keep on the
+side with the more extreme |ROD3| signal and fall back to the next
+non-conflicting candidate on the dropped side.
+
+Tiebreak: equal magnitudes keep on LONG side (arbitrary; could be
+either).
+
+**Forensic**: new `[V9133-EOD-DEDUP]` log signature on collision.
+
+**Tests**: `tests/strategy/test_eod_same_ticker_dedup.py`.
+
+**Post-merge action**: re-enable `ORB_EOD_FIRE_BROKER=1` on Railway
+(currently set to 0 by tonight's emergency stop after the incident).
+
+---
+
+## v9.1.132 (2026-05-19) — rollback_admit ticker-orphan fix + cooldown default ON
+
+Two related fixes to the v10 rollback path.
+
+### Primary: rollback_admit no longer orphans valid earlier positions
+
+Pre-v9.1.132 `rollback_admit()` looked up `_ticker_to_ticket[ticker]`
+and deleted whatever ticket was there, regardless of whether it was
+the ticket being rolled back. When rapid re-admits stomped on the
+reverse-lookup (because every successful admit overwrites it), the
+rollback would clear the ticker mapping of an UNRELATED earlier valid
+position. Symptom: `check_exit_by_ticker(ticker)` returns
+`no_open_v10_position` even though the position still exists in
+`_open_positions` -- and legacy sentinel A fires the exit on Main.
+
+**2026-05-19 TSLA Main forensic**: 14:11 admit success -> 14:32+ ten
+re-admit/rollback cycles each stomped + cleared the reverse-lookup ->
+14:35 manage_positions exit check returned `no_open_v10_position` ->
+sentinel A exited at +$0.89 ($86 P&L) instead of letting v10 run to
+its ATR target.
+
+**Fix**: `rollback_admit()` now uses the passed `ticket_id` to target
+cleanup specifically:
+  * `_open_positions[ticket_id]` deleted only if `ticket_id` is in it
+  * `_ticker_to_ticket[ticker]` cleared only if it currently equals
+    `ticket_id` (the one being rolled back)
+  * Calls without `ticket_id=` (legacy callers) are now a no-op for
+    adapter cleanup (safer than guessing).
+
+### Mop-up: cooldown default flipped to ON
+
+`ORB_ROLLBACK_COOLDOWN_AFTER_N` defaults to 3 (was 0); window default
+stays 10 min. This was supposed to land with v9.1.131 but the squash-
+merge happened before the flip commit was pushed. Set
+`ORB_ROLLBACK_COOLDOWN_AFTER_N=0` on Railway to disable.
+
+Combined effect: even if a rollback loop starts, (a) the cooldown
+caps it at 3 attempts within 10 min and (b) the orphan fix ensures
+valid earlier positions survive any rollback that does fire.
+
+**Tests**: `tests/strategy/test_orb_rollback_admit_orphan.py` (4 cases
+including the multi-admit/rollback orphan repro); updated
+`test_orb_rollback_cooldown.py` for default-ON.
+
+---
+
+## v9.1.131 (2026-05-19) — ORB rollback-cooldown lever (env-flagged, default OFF)
+
+Adds an opt-in cooldown that blocks re-admit on the same
+(portfolio, ticker, side) after N consecutive rollbacks within a
+sliding window. Closes the open loophole exposed by the
+2026-05-19 10:35 ET TSLA SHORT incident: `check_entry` returned
+ok=True, `callbacks.execute_short_entry` ran without populating
+`tg.short_positions`, `rollback_admit` cleanly unwound the FSM +
+RiskBook -- but nothing prevented `check_entry` from re-admitting
+the same setup on the very next 5-min bar. 10 rollbacks fired in
+~3 minutes before the operator noticed via the
+`railway_logs_clean` invariant tripping CRIT.
+
+**Default OFF** (env unset or `ORB_ROLLBACK_COOLDOWN_AFTER_N=0`).
+Enable on Railway PROD via env:
+
+```
+ORB_ROLLBACK_COOLDOWN_AFTER_N=3   # block after 3 rollbacks
+ORB_ROLLBACK_COOLDOWN_MIN=10      # within 10-minute sliding window
+```
+
+When the cooldown fires, `check_entry` returns
+`reason_no="rollback_cooldown (3 rollbacks in 10m, 7.2m left)"`
+which surfaces in `[V79-ORB-REJECT]` activity. The window prunes
+old entries automatically; no explicit reset needed when a real
+fill eventually succeeds (next attempt sees the old rollbacks
+aged out).
+
+`rollback_admit()` gained an optional `side` kwarg (default `""`).
+All 4 callsites in `engine/scan.py` now pass `side="long"` /
+`side="short"`. Callers that don't pass side won't trip the
+cooldown (backward-compat for any external use).
+
+**Forensic** (new): `[V79-ORB-REJECT]` lines whose `reason` starts
+with `rollback_cooldown` indicate the gate fired.
+
+**Tests**: `tests/strategy/test_orb_rollback_cooldown.py` covers
+disabled-by-default, threshold-fires, window-pruning.
+
+---
+
 ## v9.1.130 (2026-05-18) — R26 stale_full_exit lever (un-partialed afternoon discipline)
 
 Complement to v9.1.129's R21 runner_eod_prep. R21 catches the runner

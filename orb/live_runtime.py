@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Mapping, Optional
 
 from orb.engine import OrbConfig, OrbEngine
@@ -287,6 +288,12 @@ def _build_config_from_env() -> OrbConfig:
         # never hit 1R -- replaces the legacy sentinel A safety net.
         stale_full_exit_minutes=_et_to_min("ORB_STALE_FULL_EXIT_ET", 0),
         stale_full_exit_mfe_floor_r=_f("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0),
+        # R32 (v9.1.134) -- asymmetric reversal circuit-breaker. Both
+        # default 0 (disabled). Recommended PROD enable:
+        #   ORB_REVERSAL_CIRCUIT_MIN_MFE_R=1.0
+        #   ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R=1.5
+        reversal_circuit_min_mfe_r=_f("ORB_REVERSAL_CIRCUIT_MIN_MFE_R", 0.0),
+        reversal_circuit_min_giveback_r=_f("ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R", 0.0),
     )
 
 
@@ -913,6 +920,12 @@ def check_entry(
     a = adapters.get(portfolio_id)
     if a is None:
         return EntryResult(ok=False, reason_no=f"no_adapter:{portfolio_id}")
+    # v9.1.131 -- rollback-cooldown gate (env-flagged, default OFF).
+    # Blocks re-admit when N consecutive rollbacks have occurred on the
+    # same (pid, ticker, side) within the configured window.
+    _cool = _check_rollback_cooldown(portfolio_id, ticker, side)
+    if _cool:
+        return EntryResult(ok=False, reason_no=_cool)
     result = a.check_entry(
         ticker,
         side=side,
@@ -1031,6 +1044,70 @@ def check_exit(
 _pending_v10_sizes: dict[tuple[str, str], int] = {}
 
 
+# v9.1.131 -- rollback-cooldown state. Per-(portfolio_id, ticker, side)
+# rolling list of recent rollback timestamps (unix epoch). Consulted by
+# `_check_rollback_cooldown()` in `check_entry`; appended to by
+# `rollback_admit()` when a real unwind occurs (any_change=True).
+# v9.1.132 -- default flipped to ON (N=3 in 10-min window).
+# Set ORB_ROLLBACK_COOLDOWN_AFTER_N=0 on Railway to disable.
+_rollback_history: dict[tuple[str, str, str], list[float]] = {}
+_rollback_lock = threading.RLock()
+
+
+def _check_rollback_cooldown(
+    portfolio_id: str, ticker: str, side: str,
+) -> Optional[str]:
+    """v9.1.131 -- block re-admit when consecutive rollbacks pile up
+    on the same (portfolio, ticker, side). v9.1.132 default ON.
+
+    Reads (with defaults):
+        ORB_ROLLBACK_COOLDOWN_AFTER_N -- threshold (default 3, 0 disables)
+        ORB_ROLLBACK_COOLDOWN_MIN     -- sliding-window minutes (default 10)
+
+    Returns a reason string (with count + remaining minutes) when the
+    cooldown blocks admit, else None.
+    """
+    try:
+        after_n = int(os.environ.get("ORB_ROLLBACK_COOLDOWN_AFTER_N", "3"))
+    except Exception:
+        after_n = 3
+    if after_n <= 0:
+        return None
+    try:
+        window_min = float(os.environ.get("ORB_ROLLBACK_COOLDOWN_MIN", "10"))
+    except Exception:
+        window_min = 10.0
+    if window_min <= 0:
+        return None
+    window_sec = window_min * 60.0
+    now = time.time()
+    key = (portfolio_id, (ticker or "").upper(), (side or "").lower())
+    with _rollback_lock:
+        hist = _rollback_history.get(key, [])
+        hist = [t for t in hist if (now - t) < window_sec]
+        _rollback_history[key] = hist
+        if len(hist) >= after_n:
+            oldest = min(hist)
+            remaining = max(0.0, window_min - ((now - oldest) / 60.0))
+            return (
+                f"rollback_cooldown ({len(hist)} rollbacks in "
+                f"{window_min:.0f}m, {remaining:.1f}m left)"
+            )
+    return None
+
+
+def _record_rollback(portfolio_id: str, ticker: str, side: str) -> None:
+    """v9.1.131 -- append a rollback timestamp under the (pid,ticker,side)
+    key. No-op when side is empty (preserves backward compat for callers
+    that don't pass side -- those won't ever trip the cooldown).
+    """
+    if not side:
+        return
+    key = (portfolio_id, (ticker or "").upper(), side.lower())
+    with _rollback_lock:
+        _rollback_history.setdefault(key, []).append(time.time())
+
+
 def stash_v10_size(portfolio_id: str, ticker: str, shares: int) -> None:
     """Store v10's computed shares for an imminent execute_entry call.
 
@@ -1058,7 +1135,13 @@ def peek_v10_size(portfolio_id: str, ticker: str) -> Optional[int]:
         return _pending_v10_sizes.get((portfolio_id, ticker))
 
 
-def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: str = "") -> bool:
+def rollback_admit(
+    portfolio_id: str,
+    ticker: str,
+    ticket_id: str = "",
+    reason: str = "",
+    side: str = "",
+) -> bool:
     """v7.81.0 -- unwind a v10 admit when the downstream broker call
     returned without filling.
 
@@ -1120,20 +1203,26 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
     # the dashboard clears and the ticker isn't shown as an open position
     # when the broker order was never filled.
     # v9.1.96: _open_positions is keyed by risk_ticket_id (not ticker).
-    # Use _ticker_to_ticket to find the correct key. v9.1.90's ticker-key
-    # lookup was a no-op; this is the correct version.
+    # v9.1.132: only remove the SPECIFIC ticket we're rolling back, and
+    # only clear the reverse-lookup if it points to OUR ticket. The
+    # pre-v9.1.132 code looked up `_ticker_to_ticket[ticker]` and
+    # blindly deleted whatever was there -- which orphaned legitimate
+    # earlier positions when a NEW admit had overwritten the reverse-
+    # lookup before this rollback ran. 2026-05-19 TSLA Main: an
+    # original 14:11 admit succeeded, then 10 re-admit+rollback cycles
+    # at 14:32+ each overwrote and cleared the reverse-lookup; the
+    # 14:11 ticket survived in _open_positions but had no ticker map
+    # so check_exit_by_ticker returned `no_open_v10_position` and
+    # legacy sentinel A fired the exit.
     try:
         adapter = get_adapter(portfolio_id)
-        if adapter is not None:
+        if adapter is not None and ticket_id:
             tk_upper = ticker.upper()
-            tid = adapter._ticker_to_ticket.get(tk_upper)
-            if tid and tid in adapter._open_positions:
-                del adapter._open_positions[tid]
-                adapter._ticker_to_ticket.pop(tk_upper, None)
+            if ticket_id in adapter._open_positions:
+                del adapter._open_positions[ticket_id]
                 any_change = True
-            elif tk_upper in adapter._ticker_to_ticket:
-                # Dangling reverse-lookup with no position — clean it up.
-                adapter._ticker_to_ticket.pop(tk_upper, None)
+            if adapter._ticker_to_ticket.get(tk_upper) == ticket_id:
+                del adapter._ticker_to_ticket[tk_upper]
                 any_change = True
     except Exception as e:
         logger.warning(
@@ -1151,6 +1240,9 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
             ticket_id[:8] if ticket_id else "?",
             reason or "<none>",
         )
+        # v9.1.131 -- record for the rollback-cooldown gate.
+        # No-op when side is empty; see _record_rollback().
+        _record_rollback(portfolio_id, ticker, side)
         # Flush state immediately so a redeploy mid-rollback restores the
         # post-rollback state, not the pre-rollback (stale) state.
         try:

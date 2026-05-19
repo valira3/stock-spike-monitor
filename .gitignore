@@ -1,9 +1,21 @@
 __pycache__/
 .venv/
+.DS_Store
+# Claude Code harness local state — scheduler lock + ephemeral cache.
+# Skills, settings, and commands remain tracked (.claude/skills/, .claude/settings*.json).
+.claude/scheduled_tasks.lock
+.claude/projects/
 replay_week.html
 data/.bt_cache/
 data/ui_audit/
 data/monitor/
+data/snapshots/
+# Corpus protection (2026-05-19): rth-expand branch has 3,150 corpus dates
+# main does not. Without this rule, a checkout of rth-expand into the working
+# tree shows those dates as untracked, and `git add` sweeps them in (PR #799
+# mishap). Tracked dates already in main keep tracking — gitignore only
+# affects untracked files.
+data/20*/
 results/*
 !results/keystone/
 results/keystone/*

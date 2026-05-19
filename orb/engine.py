@@ -207,6 +207,17 @@ class OrbConfig:
     # that v9.1.128 portfolio independence removed for Val/Gene.
     stale_full_exit_minutes: int = 0
     stale_full_exit_mfe_floor_r: float = 0.0
+    # R32 (v9.1.134) -- asymmetric reversal circuit-breaker. Closes the
+    # position when it WAS clearly favorable (MFE_R >= min_mfe_r) AND
+    # has now given back at least min_giveback_r in round-trip swing.
+    # Catches the rare clear round-trip (e.g. NFLX wild-swing days)
+    # without affecting trending winners. Both 0 = disabled (default).
+    # Production thresholds (operator-approved 2026-05-19):
+    #   ORB_REVERSAL_CIRCUIT_MIN_MFE_R=1.0
+    #   ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R=1.5
+    # ~23 fires/year on 252-day rth-expand corpus, cost -$21/yr (noise).
+    reversal_circuit_min_mfe_r: float = 0.0
+    reversal_circuit_min_giveback_r: float = 0.0
     # v9.0.0 -- prior-day SPY regime gate (R12 research). Default
     # threshold -40 bps; skip the whole day if prior session SPY
     # close-to-close return was below this. Set to 0.0 to disable.
@@ -1039,6 +1050,8 @@ class OrbEngine:
             runner_eod_prep_min=self.cfg.runner_eod_prep_minutes,
             stale_full_exit_min=self.cfg.stale_full_exit_minutes,
             stale_full_exit_mfe_floor_r=self.cfg.stale_full_exit_mfe_floor_r,
+            reversal_circuit_min_mfe_r=self.cfg.reversal_circuit_min_mfe_r,
+            reversal_circuit_min_giveback_r=self.cfg.reversal_circuit_min_giveback_r,
         )
 
     def on_partial_exit(self, pos: _exits.OrbPosition, partial_price: float) -> tuple[int, float]:
