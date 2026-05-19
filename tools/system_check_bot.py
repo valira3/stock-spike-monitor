@@ -1366,6 +1366,27 @@ def checks_market_validation(
     # --------------------------------------------------------------------- #
     # 2. ATR(14) stop validation using real 5m SIP bars                     #
     # --------------------------------------------------------------------- #
+    # v9.1.x (this PR) -- only check stops for positions that are STILL
+    # OPEN. Pre-this-patch, `today` includes every trade_log row from the
+    # session, so a closed position (e.g. TSLA that exited at 14:22) kept
+    # firing the WARN every 5 min until midnight ET. Once the position is
+    # flat, the original stop is historical and nothing actionable can be
+    # done. Build the open-set across Main + Val + Gene and filter.
+    currently_open: set[tuple[str, str]] = set()
+    for _tk in (state.get("positions") or {}).keys():
+        currently_open.add((str(_tk).upper(), "LONG"))
+    for _tk in (state.get("short_positions") or {}).keys():
+        currently_open.add((str(_tk).upper(), "SHORT"))
+    for _pid_key in ("/api/executor/val", "/api/executor/gene"):
+        _ex_data = raw.get(_pid_key) or {}
+        for _p in (_ex_data.get("positions") or []):
+            if not isinstance(_p, dict):
+                continue
+            _sym = (_p.get("symbol") or _p.get("ticker") or "").upper()
+            _side = (_p.get("side") or "").upper()
+            if _sym and _side in ("LONG", "SHORT"):
+                currently_open.add((_sym, _side))
+
     atr_issues: list[str] = []
     atr_ok_count = 0
     for t in today:
@@ -1373,6 +1394,13 @@ def checks_market_validation(
         entry = float(t.get("entry_price") or 0)
         stop = float(t.get("entry_stop") or 0)
         if not entry or not stop:
+            continue
+        # Skip closed positions -- the stop math is historical; nothing
+        # actionable once flat. Sample of what this guards: 2026-05-19
+        # TSLA SHORT exited at 14:22 ET, the entry-row's tight OR-edge
+        # stop kept firing atr_stop WARN every 5 min for hours after.
+        _row_side = (t.get("side") or "").upper()
+        if (ticker.upper(), _row_side) not in currently_open:
             continue
         ticker_bars = bars.get(ticker, [])
         if len(ticker_bars) < 2:
