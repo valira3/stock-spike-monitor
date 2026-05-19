@@ -51,20 +51,21 @@ jobs:
     timeout-minutes: 7
 
     steps:
-      - name: Checkout monitor-live branch
+      # Check out main (has tools/ + requirements.txt). The monitor-live
+      # branch is a data-only orphan branch; setup-python's `cache: pip`
+      # cannot key off it. We fetch monitor-live separately for the push
+      # step via `git worktree add` below.
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: monitor-live
+          ref: main
           fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+          # No cache: pip -- unified_monitor is stdlib-only; nothing to install.
 
       - name: Run unified monitor
         env:
@@ -81,12 +82,22 @@ jobs:
           MONITOR_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
         run: python -m tools.unified_monitor
 
-      - name: Commit and push to monitor-live
+      - name: Push output to monitor-live
         if: github.event.inputs.dry_run != '1'
         run: |
+          set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Materialize monitor-live in a worktree so we can copy the
+          # fresh data/monitor/ output into it without polluting main.
+          git fetch origin monitor-live --depth=1
+          git worktree add /tmp/monitor-live monitor-live
+
+          mkdir -p /tmp/monitor-live/data/monitor
+          cp -r data/monitor/. /tmp/monitor-live/data/monitor/ 2>/dev/null || true
+
+          cd /tmp/monitor-live
           git add data/monitor/
           if git diff --cached --quiet; then
             echo "Nothing to commit (duplicate tick within minute)"
