@@ -111,7 +111,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--end", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--signal", default=os.environ.get("ORB_DYNAMIC_UNIVERSE_SIGNAL", "composite"),
-                   choices=["gap", "volume", "range", "composite", "compression"])
+                   choices=["gap", "volume", "range", "composite", "compression", "compression_rel"])
     p.add_argument("--top-k", type=int,
                    default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_TOP_K", "10")))
     p.add_argument("--min-pm-bars", type=int,

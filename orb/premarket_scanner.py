@@ -4,14 +4,19 @@ Reads premarket bars (04:00-09:29 ET) from `data_pm_universe/<DATE>/<TICKER>.jso
 and emits the top-K tickers most likely to break out at the RTH open.
 
 Signal options:
-  - "gap"           : |premarket close (09:29) − prior RTH close| / prior RTH close
-  - "volume"        : premarket dollar volume (sum of close × volume for 04:00-09:29)
-  - "range"         : (premarket high − premarket low) / premarket open
-  - "composite"     : z-score sum of (gap, volume, range), divided by 3
-  - "compression"   : NR-N compression -- inverse of bar-range over the last N
-                      premarket bars within the last M minutes (the r18
-                      signal: tight consolidation = coiled spring → breakout
-                      candidate). Higher score = TIGHTER range.
+  - "gap"             : |premarket close (09:29) − prior RTH close| / prior RTH close
+  - "volume"          : premarket dollar volume (sum of close × volume for 04:00-09:29)
+  - "range"           : (premarket high − premarket low) / premarket open
+  - "composite"       : z-score sum of (gap, volume, range), divided by 3
+  - "compression"     : NR-N compression -- inverse of bar-range over the last N
+                        premarket bars within the last M minutes (the r18
+                        signal). Higher score = TIGHTER range. ABSOLUTE — biased
+                        toward names that are always sleepy.
+  - "compression_rel" : Relative NR-N -- today's last-N-bar range divided by the
+                        14-day mean of the same statistic for this ticker.
+                        Sorts highest for "tight TODAY relative to typical."
+                        Requires the feature cache built by orb.scanner_cache
+                        (it stores the per-ticker rolling baseline).
 
 The scanner is upstream of the ORB engine. It does not change entry
 logic, exit logic, or risk caps; it only changes which tickers the
@@ -202,8 +207,30 @@ def scan_day(
     corpus_root = Path(corpus_root)
     raw: list[ScanResult] = []
     compression_scores: list[float] = []
+    compression_rel_scores: list[float] = []
     for tk in universe:
-        if signal == "compression":
+        if signal == "compression_rel":
+            # Pure cache-lookup; needs the extended cache built by
+            # orb.scanner_cache.build_cache (7-field tuple).
+            if feature_cache is None:
+                continue
+            feats = feature_cache.get((date_str, tk))
+            if feats is None:
+                continue
+            try:
+                gap_pct, pm_dol, pm_rng, n_pm, _prior, last_n_rng, baseline = feats
+            except (TypeError, ValueError):
+                continue
+            if n_pm < min_pm_bars or pm_dol < min_dollar_volume:
+                continue
+            if last_n_rng <= 0 or baseline <= 0:
+                continue
+            rel = last_n_rng / baseline  # < 1.0 = tighter than typical
+            raw.append(ScanResult(ticker=tk, score=0.0, gap_pct=gap_pct,
+                                  pm_dollar_volume=pm_dol, pm_range_pct=pm_rng,
+                                  n_pm_bars=n_pm))
+            compression_rel_scores.append(-rel)  # negate so higher = tighter
+        elif signal == "compression":
             # Need the raw bars; cache is per-aggregate
             bars = _load_bars(corpus_root / date_str / f"{tk}.jsonl")
             if not bars:
@@ -234,7 +261,8 @@ def scan_day(
             feats = feature_cache.get((date_str, tk))
             if feats is None:
                 continue
-            gap_pct, pm_dol, pm_rng, n_pm, _prior = feats
+            # Backwards-compat: accept either 5- or 7-field tuples
+            gap_pct, pm_dol, pm_rng, n_pm = feats[0], feats[1], feats[2], feats[3]
             if n_pm < min_pm_bars or pm_dol < min_dollar_volume:
                 continue
             r = ScanResult(ticker=tk, score=0.0, gap_pct=gap_pct,
@@ -257,7 +285,9 @@ def scan_day(
     log_vol = [math.log(max(r.pm_dollar_volume, 1.0)) for r in raw]
     rng = [r.pm_range_pct for r in raw]
 
-    if signal == "compression":
+    if signal == "compression_rel":
+        scores = compression_rel_scores
+    elif signal == "compression":
         scores = compression_scores
     elif signal == "gap":
         scores = abs_gap
