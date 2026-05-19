@@ -4,6 +4,33 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.136 (2026-05-19) — monitor: atr_stop skips closed positions
+
+`tools/system_check_bot.py:checks_market_validation` was firing the
+`MARKET/atr_stop` WARN on CLOSED historical trades because `today`
+includes every trade_log row from the session. Today's Val TSLA SHORT
+exited at 14:22 ET; the entry row's tight OR-edge stop ($1.19 distance
+vs ATR×1.75 = $5.04) kept firing the alert every 5 min through end of
+RTH and beyond.
+
+Fix: build a `currently_open` set across Main (`state.positions` +
+`state.short_positions`) + Val/Gene executor positions, and skip the
+ATR ratio check for any trade_log row whose (ticker, side) is not in
+that set. Once a position is flat, the stop is historical and nothing
+actionable can be done.
+
+**Tests**: `tests/strategy/test_system_check_atr_stop_skip_closed.py`
+(4 cases: skips-closed, fires-on-open-Main-long, fires-on-open-Val-
+short, silent-when-bot-flat). All pass; existing 1038 strategy tests
+still green.
+
+**Forensic**: unchanged (`MARKET/atr_stop`).
+
+**Files**: `tools/system_check_bot.py`, new test, this CHANGELOG,
+version bumps.
+
+---
+
 ## v9.1.135 (2026-05-19) — /close &lt;ticker&gt; Telegram command (manual override)
 
 Operator-controlled manual position close. Usage:
