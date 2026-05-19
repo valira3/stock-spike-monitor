@@ -8,6 +8,9 @@ results/*
 !results/keystone/
 results/keystone/*
 !results/keystone/keystone.json
+!results/bench/
+results/bench/*
+!results/bench/*.md
 CODE_REVIEW.md
 .env
 .env.monitor
