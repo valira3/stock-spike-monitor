@@ -257,6 +257,17 @@ class ORBConfig:
     # (= 0.5% of $100k). Both caps below default to $500.
     max_concurrent_risk_dollars: float = 500.0  # sum of open risk_dollars cap
     daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
+    # Per-(ticker, side) concurrent-position cap.
+    # 0 = unlimited (legacy). >0 = at most this many OPEN positions per (ticker, side)
+    # at admission time. Prevents the "5 TSLA longs in 25 min" anti-pattern where
+    # the same ticker breaks above OR repeatedly within the entry window and the
+    # engine admits each break separately because post-trade cooldown only fires
+    # AFTER an exit.
+    max_concurrent_per_ticker_side: int = 0
+    # Minimum minutes between two admissions on the same (ticker, side) on the
+    # same trading day. 0 = no gap (legacy). Triggers on the prior ENTRY (not
+    # exit) so it fires even when the prior position is still open.
+    same_side_entry_gap_min: int = 0
     risk_per_trade_pct_default = 0.25  # see env override below
     # v9 levers (un-tested, hypothesis-driven)
     move_to_be_after_1r: bool = False  # bump stop to entry after 1R reached
@@ -546,6 +557,8 @@ class ORBConfig:
             short_pen_bps=_envf("ORB_SHORT_PENALTY_BPS", 1.0),
             max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
             max_concurrent_notional_mult=_envf("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
+            max_concurrent_per_ticker_side=_envi("ORB_MAX_CONCURRENT_PER_TICKER_SIDE", 0),
+            same_side_entry_gap_min=_envi("ORB_SAME_SIDE_ENTRY_GAP_MIN", 0),
             # v9 risk budget: total open risk_dollars must stay <= this
             # cap. With $500 default and $250/trade risk, max 2 open
             # positions can stop simultaneously (= $500 worst case).
@@ -1483,6 +1496,48 @@ def run_ticker_day(
         )
         trades_today += 1
 
+    # Per-(ticker, side) concurrent-position cap. Walk pairs in entry-time
+    # order; reject a candidate whose entry_ts overlaps with too many
+    # already-accepted positions on the same side. Without this, the
+    # engine's 5-min breakout walk can admit 5 long entries on the same
+    # ticker between 10:05 and 10:25 (the "5 TSLA longs in 25 min"
+    # anti-pattern on the worst broad-universe day, 2025-11-19).
+    if cfg.max_concurrent_per_ticker_side > 0 and pairs:
+        accepted_pairs: list[dict] = []
+        open_exits: dict[str, list[str]] = {}  # side -> list of exit_ts strings still open
+        for p in sorted(pairs, key=lambda x: x["entry_ts"]):
+            side = p["side"]
+            ent = p["entry_ts"]
+            opn = open_exits.setdefault(side, [])
+            # Drop positions that already exited before this entry
+            opn[:] = [xt for xt in opn if xt > ent]
+            if len(opn) < cfg.max_concurrent_per_ticker_side:
+                accepted_pairs.append(p)
+                opn.append(p["exit_ts"])
+        pairs = accepted_pairs
+
+    # Same-(ticker, side) entry-gap: after admitting one entry, block the
+    # NEXT entry on the same side until `same_side_entry_gap_min` minutes
+    # have passed (measured from the prior ENTRY, not exit). Lets a
+    # genuine continuation breakout still cascade 1 / 1 / 1 across the
+    # entry window without firing 5 in 25 min.
+    if cfg.same_side_entry_gap_min > 0 and pairs:
+        accepted_pairs2: list[dict] = []
+        last_entry_min: dict[str, int] = {}  # side -> last entry minute-of-day
+        for p in sorted(pairs, key=lambda x: x["entry_ts"]):
+            side = p["side"]
+            # Parse HH:MM out of "YYYY-MM-DDTHH:MM:SS..."
+            try:
+                em = int(p["entry_ts"][11:13]) * 60 + int(p["entry_ts"][14:16])
+            except (ValueError, IndexError):
+                continue
+            prior = last_entry_min.get(side)
+            if prior is not None and (em - prior) < cfg.same_side_entry_gap_min:
+                continue
+            accepted_pairs2.append(p)
+            last_entry_min[side] = em
+        pairs = accepted_pairs2
+
     return pairs
 
 
@@ -2186,6 +2241,14 @@ def run(
         rejected_idx: set[int] = set()
         open_notional = 0.0
         open_risk = 0.0
+        # Per-(ticker, side) open-position counter. Used by the
+        # max_concurrent_per_ticker_side cap so that an admitted TSLA long
+        # at 10:05 blocks subsequent TSLA long admissions at 10:10/10:15/...
+        # until the first one exits. Without this gate, the broad-universe
+        # scanner days where a single ticker keeps breaking out admit 5+
+        # near-duplicate trades, each paying full slippage + each stopping
+        # out together when the ticker reverses.
+        open_per_pair: dict[tuple[str, str], int] = {}
         cum_pnl = 0.0
         peak_pnl = 0.0
         kill_active = False
@@ -2233,6 +2296,13 @@ def run(
                 if open_risk + risk > max_risk_budget:
                     rejected_idx.add(idx)
                     continue
+                # Per-(ticker, side) concurrent-position cap.
+                if cfg.max_concurrent_per_ticker_side > 0:
+                    pkey = (p["ticker"], p["side"])
+                    if open_per_pair.get(pkey, 0) >= cfg.max_concurrent_per_ticker_side:
+                        rejected_idx.add(idx)
+                        continue
+                    open_per_pair[pkey] = open_per_pair.get(pkey, 0) + 1
                 accepted_idx.add(idx)
                 open_notional += notional
                 open_risk += risk
@@ -2240,6 +2310,11 @@ def run(
                 if idx in accepted_idx:
                     open_notional -= notional
                     open_risk -= risk
+                    if cfg.max_concurrent_per_ticker_side > 0:
+                        pkey = (p["ticker"], p["side"])
+                        cur = open_per_pair.get(pkey, 0)
+                        if cur > 0:
+                            open_per_pair[pkey] = cur - 1
                     cum_pnl += p["pnl_dollars"]
                     if cum_pnl > peak_pnl:
                         peak_pnl = cum_pnl
