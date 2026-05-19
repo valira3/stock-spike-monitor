@@ -13,7 +13,9 @@ the GitHub MCP `get_file_contents` without needing live Alpaca
 credentials in their sandbox.
 
 Per-portfolio resolution mirrors `engine.portfolio_equity`:
-  <PID>_ALPACA_PAPER_KEY    e.g. VAL_ALPACA_PAPER_KEY
+  <PID>_ALPACA_LIVE_KEY     e.g. VAL_ALPACA_LIVE_KEY     (preferred when set)
+  <PID>_ALPACA_LIVE_SECRET  e.g. VAL_ALPACA_LIVE_SECRET
+  <PID>_ALPACA_PAPER_KEY    e.g. VAL_ALPACA_PAPER_KEY    (fallback)
   <PID>_ALPACA_PAPER_SECRET e.g. VAL_ALPACA_PAPER_SECRET
 
 For `main`, fall back to a `MAIN_ALPACA_PAPER_KEY/_SECRET` if set,
@@ -37,10 +39,13 @@ Two artifacts per run:
                                does Alpaca see right now?"
   data/alpaca/YYYY-MM-DD.jsonl append-only history line per tick
 
-Required env (at least one portfolio's credentials):
-  VAL_ALPACA_PAPER_KEY / VAL_ALPACA_PAPER_SECRET
-  GENE_ALPACA_PAPER_KEY / GENE_ALPACA_PAPER_SECRET
-  [optional] MAIN_ALPACA_PAPER_KEY / MAIN_ALPACA_PAPER_SECRET
+Required env (at least one portfolio's credentials).
+LIVE keys are preferred when both LIVE and PAPER are set, so the
+snapshot reflects the same account the bot is actually trading:
+  <PID>_ALPACA_LIVE_KEY  / <PID>_ALPACA_LIVE_SECRET   (preferred)
+  <PID>_ALPACA_PAPER_KEY / <PID>_ALPACA_PAPER_SECRET  (fallback)
+e.g. VAL_ALPACA_LIVE_KEY for live; VAL_ALPACA_PAPER_KEY for paper.
+[optional] MAIN_*  -- falls back to VAL_/GENE_ paper if unset.
 
 Optional env:
   ALPACA_SNAPSHOT_DIR   output directory (default ./data/alpaca)
@@ -71,23 +76,35 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _creds_for(pid: str) -> Optional[tuple[str, str]]:
-    """Return (key, secret) for `pid` or None if creds missing.
+def _creds_for(pid: str) -> Optional[tuple[str, str, bool]]:
+    """Return (key, secret, paper) for `pid` or None if creds missing.
 
-    main falls back to VAL_ / GENE_ if MAIN_ is unset (read-only data
-    fetch with any valid paper key is harmless).
+    Prefers `<PID>_ALPACA_LIVE_KEY/_SECRET` when set (so the snapshot
+    reflects the same account the bot is actually trading from).
+    Falls back to `<PID>_ALPACA_PAPER_KEY/_SECRET` otherwise. `main`
+    falls back further to VAL_ / GENE_ (paper only -- read-only data
+    fetch with any valid key is harmless).
+
+    The third tuple element is the `paper` flag to pass to
+    `TradingClient`: False for live, True for paper. Picking the
+    wrong flag points the client at the wrong Alpaca base URL and the
+    fetch returns the wrong account's state.
     """
     pid_up = pid.upper()
-    key = (os.getenv(f"{pid_up}_ALPACA_PAPER_KEY") or "").strip()
-    secret = (os.getenv(f"{pid_up}_ALPACA_PAPER_SECRET") or "").strip()
-    if key and secret:
-        return (key, secret)
+    live_key = (os.getenv(f"{pid_up}_ALPACA_LIVE_KEY") or "").strip()
+    live_secret = (os.getenv(f"{pid_up}_ALPACA_LIVE_SECRET") or "").strip()
+    if live_key and live_secret:
+        return (live_key, live_secret, False)
+    paper_key = (os.getenv(f"{pid_up}_ALPACA_PAPER_KEY") or "").strip()
+    paper_secret = (os.getenv(f"{pid_up}_ALPACA_PAPER_SECRET") or "").strip()
+    if paper_key and paper_secret:
+        return (paper_key, paper_secret, True)
     if pid_up == "MAIN":
         for fallback in ("VAL", "GENE"):
             key = (os.getenv(f"{fallback}_ALPACA_PAPER_KEY") or "").strip()
             secret = (os.getenv(f"{fallback}_ALPACA_PAPER_SECRET") or "").strip()
             if key and secret:
-                return (key, secret)
+                return (key, secret, True)
     return None
 
 
@@ -145,7 +162,7 @@ def _pull_portfolio(pid: str) -> dict[str, Any]:
     creds = _creds_for(pid)
     if creds is None:
         return {"__error__": f"no credentials for {pid}"}
-    key, secret = creds
+    key, secret, paper = creds
     try:
         from alpaca.trading.client import TradingClient
         from alpaca.trading.requests import GetOrdersRequest
@@ -153,7 +170,7 @@ def _pull_portfolio(pid: str) -> dict[str, Any]:
     except ImportError as e:
         return {"__error__": f"alpaca-py not installed: {e}"}
     try:
-        tc = TradingClient(key, secret, paper=True)
+        tc = TradingClient(key, secret, paper=paper)
         acct = tc.get_account()
         positions = tc.get_all_positions()
         # Today's orders -- both open and closed.
