@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.137 (2026-05-19) — EOD dedup top_n&gt;1 hardening
+
+Forward-proofs the v9.1.133 same-ticker dedup against the edge case
+that arises only when `ORB_EOD_TOP_N &gt; 1`. The fallback loop in
+`orb/eod_reversal.py:select_signals` previously excluded only the
+conflict ticker + already-taken-same-side tickers from its replacement
+candidate list. With `top_n=2+`, a fallback pick could land on a ticker
+already in the OTHER side's pick set, re-introducing the same-ticker
+collision the dedup was meant to prevent.
+
+Fix: `forbidden = taken_&lt;side&gt; | {p[0] for p in &lt;other_side&gt;_picks}`
+so the fallback can never reintroduce a cross-side collision.
+
+**No production behavior change**: Keystone runs `top_n=1` where the
+new `forbidden` set is a no-op subset of the existing checks (the
+single long-side ticker IS the conflict ticker, already excluded).
+
+Defensive ship — landing the patch BEFORE any future sweep tries
+`top_n=2+`, not after a collision incident.
+
+**Tests**: 2 new cases in `tests/strategy/test_eod_same_ticker_dedup.py`:
+- `test_top_n_2_fallback_avoids_other_side_collision` — forces the
+  exact pre-fix bug scenario and asserts post-fix produces disjoint
+  long_set ∩ short_set = ∅.
+- `test_top_n_1_still_works_after_hardening` — sanity that the
+  forbidden-set widening doesn't break the production top_n=1 path.
+
+All 7 existing dedup tests still pass.
+
+---
+
 ## v9.1.136 (2026-05-19) — monitor: atr_stop skips closed positions
 
 `tools/system_check_bot.py:checks_market_validation` was firing the
