@@ -51,16 +51,16 @@ Rollback: set any of the above to `0` (or the threshold to `0`) in Railway env. 
 
 - `tests/strategy/test_orb_v1000_dynamic_universe.py` — 27 tests covering: compute_universe success + 5 fallback paths, scanner_state set/get/clear/snapshot/thread-safety, _check_cluster_gate firing states, _is_dynamic_universe_on env handling, _run_dynamic_universe_scanner env-defaults + override + exception isolation, rebuild_premarket_bars graceful no-op without creds, snapshot dict shape + JSON-serializable.
 
-**Backtest source-of-truth.** All findings come from the 120-cell broad-universe sweep in `results/broad_universe/sweep_v23_cluster_fine/`, summarized in `[[broad-universe-winner]]` memory. Combined annualized returns vs the v9.1.140 staging baseline (Keystone 12 + EOD):
+**Backtest source-of-truth.** All findings come from the 120-cell broad-universe sweep in `results/broad_universe/sweep_v23_cluster_fine/`, summarized in `[[broad-universe-winner]]` memory. Combined annualized returns vs the v9.1.140 staging baseline (Keystone 12 + EOD), re-verified on the merged v10 tree at each portfolio's actual production equity:
 
 | Portfolio | Equity | Staging baseline | v10 (sec=60 cluster gate) | Δ |
 |---|---:|---:|---:|---:|
-| Main | $102,460 | $+45,935/yr | **$+72,630/yr** | +$26,695 / +26pp |
-| Val | $30,591 | $+16,346/yr | **$+21,611/yr** | +$5,265 / +17pp |
-| Gene | $100,000 | $+45,933/yr | **$+70,869/yr** | +$24,936 / +25pp |
-| **Total** | **$233,051** | **$+108,214/yr** | **$+165,110/yr** | **+$56,896/yr (+54.3%)** |
+| Main | $102,460 | $+45,935/yr | **$+72,369/yr** | +$26,434 |
+| Val | $30,591 | $+16,346/yr | **$+28,701/yr** | +$12,355 |
+| Gene | $100,000 | $+45,933/yr | **$+70,869/yr** | +$24,936 |
+| **Total** | **$233,051** | **$+108,214/yr** | **$+171,939/yr** | **+$63,725/yr (+58.9%)** |
 
-Phase B (v10.1.0) is expected to add an additional $25-37k/yr on top by trading the broader universe directly.
+Phase B (v10.1.0) is expected to add additional lift on top by trading the broader universe directly (currently the engine still trades the static 12; the cluster gate captures most of the day-decision lift without WS expansion).
 
 ---
 
