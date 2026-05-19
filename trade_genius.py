@@ -273,175 +273,35 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# SIGNAL BUS (v4.0.0-alpha)
+# SIGNAL BUS (v4.0.0-alpha; carved out to orb/signal_bus.py in v10.0.1)
 # ============================================================
-# Main's paper book is the brain; executor bots (TradeGeniusVal, and
-# in v4.0.0-beta TradeGeniusGene) subscribe to this bus and mirror
-# signals onto Alpaca. Dispatch is async fire-and-forget: each listener
-# runs in its own daemon thread so the main loop never blocks on an
-# Alpaca round-trip and a single bad listener can't take the bus down.
-#
-# Event schema (dict):
-#   {
-#     "kind": "ENTRY_LONG" | "ENTRY_SHORT" | "EXIT_LONG" | "EXIT_SHORT" | "EOD_CLOSE_ALL",
-#     "ticker": "AAPL",               # omitted on EOD_CLOSE_ALL
-#     "price": 175.42,                # main's reference price
-#     "reason": "BREAKOUT" | "STOP" | "TRAIL" | "RED_CANDLE" | ... ,
-#     "timestamp_utc": "2026-04-24T13:45:12Z",
-#     "main_shares": 57,              # audit-only: shares main paper book traded
-#   }
-_signal_listeners: list = []
-_signal_listeners_lock = threading.Lock()
+# Lives in orb.signal_bus now. trade_genius.py re-exports the public
+# API + keeps `last_signal` as a module-level variable here so the
+# dashboard's `getattr(trade_genius, "last_signal")` and the existing
+# tests' direct writes (`tg.last_signal = X`) keep working unchanged.
+# Event schema unchanged. See orb/signal_bus.py for full docstring.
+from orb.signal_bus import (
+    _signal_listeners,
+    _signal_listeners_lock,
+    signal_bus_status,
+    register_signal_listener,
+    _emit_signal,
+    set_last_signal_setter,
+)
 
-
-# v7.90.0 -- public read of the signal-bus state, surfaced on
-# /api/state.signal_bus so the dashboard monitor can assert during
-# RTH that at least one executor has subscribed. Before v7.90.0 the
-# bus was opaque from outside the process and a Val/Gene listener
-# that failed to register was undetectable until trade-count
-# divergence (the val_gene_trades_match_main invariant) flagged it
-# hours later.
-def signal_bus_status() -> dict:
-    """Return a snapshot of registered signal-bus listeners.
-
-    Shape: {"n_listeners": int, "names": [str, ...]}.
-
-    v8.3.19 -- names use the RUNTIME instance class name, not the
-    Python `__qualname__` (which reflects where the method is
-    DEFINED, not its bound `self.__class__`). Pre-v8.3.19,
-    TradeGeniusVal._on_signal -> `__qualname__` was
-    "TradeGeniusBase._on_signal" (inherited) which broke the
-    v8.3.13 subscription probe: it matched "TradeGeniusBase." for
-    BOTH val and gene and surfaced both as `subscribed=false` even
-    when one or both were actually listening.
-
-    Now we extract `type(fn.__self__).__name__` when the listener is
-    a bound method, falling back to qualname for free-function
-    listeners (tests / synthetic harness use those).
-    """
-    with _signal_listeners_lock:
-        listeners = list(_signal_listeners)
-    names: list[str] = []
-    for fn in listeners:
-        try:
-            inst = getattr(fn, "__self__", None)
-            if inst is not None:
-                cls_name = type(inst).__name__
-                meth_name = getattr(fn, "__name__", "_on_signal")
-                names.append(f"{cls_name}.{meth_name}")
-            else:
-                names.append(getattr(fn, "__qualname__", repr(fn)))
-        except Exception:
-            names.append(repr(fn))
-    return {"n_listeners": len(names), "names": names}
-
-# v5.5.7 \u2014 Most recent signal emitted by the main paper book. The
-# per-executor TradeGeniusBase already keeps its own ``last_signal`` for
-# the Val/Gene exec panels; this module-level mirror is the equivalent
-# for the Main (internal paper) tab so the dashboard's /api/state can
-# surface it the same way as the executor payloads.
+# Canonical mirror. orb.signal_bus._emit_signal updates this via the
+# setter wired below.
 last_signal: "dict | None" = None
 
 
-def register_signal_listener(fn):
-    """Subscribe a callable fn(event: dict) -> None to the signal bus.
-
-    Idempotent: re-registering the same callable is a no-op. Prevents
-    double-execution of ENTRY/EXIT against Alpaca when an executor's
-    ``start()`` is called more than once (e.g. supervisor re-spawn, a
-    module reload during hot-patching, or a paranoid init-retry path).
-    The read-test-append is held under ``_signal_listeners_lock`` so
-    two concurrent ``start()`` calls cannot both observe "not present"
-    and both append the same callable.
-    """
-    with _signal_listeners_lock:
-        if fn in _signal_listeners:
-            logger.info(
-                "signal_bus: listener already registered, skipping (%s) total=%d",
-                getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
-            )
-            return
-        _signal_listeners.append(fn)
-        total = len(_signal_listeners)
-    logger.info(
-        "signal_bus: listener registered (%s) total=%d",
-        getattr(fn, "__qualname__", repr(fn)), total,
-    )
-
-
-def _emit_signal(event: dict) -> None:
-    """Fire an event to every listener in its own daemon thread.
-
-    Async fire-and-forget: main's paper book never blocks on Alpaca.
-    Per-listener exceptions are logged but never break the bus.
-
-    v7.85.0 -- emits [SIGNAL-BUS-EMIT] (once per call, with kind+ticker)
-    and [SIGNAL-BUS-DISPATCH] (once per listener) forensic logs so the
-    dashboard monitor's grep can audit "did emit fire?" vs "did
-    dispatch fire?" vs "did the listener's _on_signal run?". Pre-
-    v7.85.0 the bus produced no log on the happy path, only on
-    listener exceptions, making mirror-bus drift undebuggable.
-    """
-    # v5.5.7 \u2014 capture the latest event for the Main-tab LAST SIGNAL
-    # card before dispatching, so even a listener-less moment (or a
-    # crashing listener) still updates what the dashboard renders.
+def _set_last_signal(value):
     global last_signal
-    try:
-        last_signal = {
-            "kind": event.get("kind", ""),
-            "ticker": event.get("ticker", ""),
-            "price": float(event.get("price", 0.0) or 0.0),
-            "reason": event.get("reason", ""),
-            "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
-        }
-    except Exception:
-        last_signal = None
+    last_signal = value
 
-    # Snapshot the listener list so a concurrent register/unregister can't
-    # mutate what we iterate. Held under the same lock as registration.
-    with _signal_listeners_lock:
-        listeners = list(_signal_listeners)
-    # v7.85.0 -- one EMIT log per event, INFO level.
-    # v7.90.0 -- escalate to WARNING when listeners=0. The bus has
-    # at least one subscriber in every production configuration
-    # (Val and/or Gene executors register at startup); n_listeners=0
-    # means Main fired a signal into the void and no executor will
-    # mirror it. That is the most common root cause of the
-    # val_gene_trades_match_main dashboard-monitor violation, and
-    # without an explicit WARN it is invisible in log tails until a
-    # trade-count audit catches it.
-    if not listeners:
-        logger.warning(
-            "[SIGNAL-BUS-EMIT-VOID] kind=%s ticker=%s n_listeners=0 "
-            "-- Main emitted a signal but no executor is subscribed",
-            event.get("kind", ""), event.get("ticker", ""),
-        )
-        return
-    logger.info(
-        "[SIGNAL-BUS-EMIT] kind=%s ticker=%s n_listeners=%d",
-        event.get("kind", ""), event.get("ticker", ""), len(listeners),
-    )
 
-    def _wrap(fn, ev):
-        try:
-            fn(ev)
-        except Exception:
-            logger.exception(
-                "signal_bus: listener %s raised on event %r",
-                getattr(fn, "__qualname__", repr(fn)),
-                ev.get("kind"),
-            )
-
-    for fn in listeners:
-        # v7.85.0 -- one DISPATCH log per listener, before thread start.
-        logger.info(
-            "[SIGNAL-BUS-DISPATCH] kind=%s ticker=%s listener=%s",
-            event.get("kind", ""), event.get("ticker", ""),
-            getattr(fn, "__qualname__", repr(fn)),
-        )
-        threading.Thread(
-            target=_wrap, args=(fn, event), daemon=True,
-        ).start()
+# Wire the setter at import time so the carved bus can keep this
+# module's last_signal in sync without circular imports.
+set_last_signal_setter(_set_last_signal)
 
 
 # ============================================================
