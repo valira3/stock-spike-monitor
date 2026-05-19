@@ -3763,82 +3763,34 @@ user_config: dict = {"trading_mode": "paper"}
 # `from orb.trade_log import ...` block earlier in this file.)
 # ============================================================
 # ============================================================
-# TELEGRAM MESSAGING
+# TELEGRAM MESSAGING (moved to telegram_io.py in v10.0.1)
 # ============================================================
-def send_telegram(text, chat_id=None):
-    """Send text message to Telegram. Splits long messages. Retries on 429."""
-    cid = chat_id or CHAT_ID
-    if not text or not text.strip() or not TELEGRAM_TOKEN or not cid:
-        return
-
-    parts, current = [], ""
-    for line in text.splitlines(keepends=True):
-        if len(current) + len(line) > 3800:
-            if current:
-                parts.append(current.rstrip())
-            current = line
-        else:
-            current += line
-    if current:
-        parts.append(current.rstrip())
-
-    total = len(parts)
-    for i, part in enumerate(parts, 1):
-        prefix = "%d/%d " % (i, total) if total > 1 else ""
-        payload = json.dumps({"chat_id": cid, "text": prefix + part}).encode()
-        url = "https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_TOKEN
-        for attempt in range(5):
-            try:
-                req = urllib.request.Request(
-                    url, data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    status = resp.status
-                if status == 429:
-                    wait = 2 ** attempt
-                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
-                    time.sleep(wait)
-                    continue
-                time.sleep(0.3)
-                break
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    wait = 2 ** attempt
-                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
-                    time.sleep(wait)
-                    continue
-                logger.error("Telegram send error (attempt %d): %s", attempt + 1, e)
-                time.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error("Telegram send error (attempt %d): %s", attempt + 1, e)
-                time.sleep(2 ** attempt)
-
-
-# ============================================================
-# v4.11.0 \u2014 health-pill error reporting
-# ============================================================
-# report_error() is the single entry point for "operator should be
-# paged about this" events. It does three things, in order:
-#   1. Logs via the existing logger so existing log surfaces still see
-#      the event (file logs, stderr, the dashboard ring buffer prior
-#      to v4.11.0 \u2014 the dashboard log tail card itself was deleted in
-#      this release, but the underlying logger handlers stay).
-#   2. Appends to error_state so the dashboard health pill counter +
-#      tap-to-expand list reflect the event.
-#   3. If error_state's dedup gate says "send", routes a Telegram
-#      message to the right channel: main bot for "main" events,
-#      executor's own bot for "val" / "gene".
+# Implementation lives in telegram_io. trade_genius.py re-exports the
+# public surface (send_telegram, report_error, _format_error_telegram)
+# for back-compat with broker/orders.py, engine/scan.py (via
+# engine/callbacks.py), executors/base.py, telegram_ui/, market_brief,
+# smoke_test, and the tests that do `tg.send_telegram(...)` or
+# `monkeypatch.setattr(tg, "send_telegram", ...)`.
 #
-# The 5-min dedup is per (executor, code) so a flapping ORDER_REJECT
-# does not spam the channel; the dashboard count still increments on
-# every event.
-import error_state as _error_state
-
+# The carved module is host-independent: it reads TELEGRAM_TOKEN /
+# CHAT_ID from env on its own, and routes per-executor pages through
+# an injected executor-lookup callback (wired at import time below).
+from telegram_io import (
+    send_telegram,
+    report_error,
+    _format_error_telegram,
+    set_executor_lookup,
+)
 
 def _executor_inst(name: str):
-    """Return the live executor instance for "val"/"gene", or None."""
+    """Return the live executor instance for "val"/"gene", or None.
+
+    Used by report_error (now in telegram_io) to route per-executor
+    pages through the executor's own Telegram bot. Wired into the
+    carved module via set_executor_lookup below; resolves at call
+    time so val_executor / gene_executor (populated during bootstrap)
+    are visible even though they don't exist yet at import time.
+    """
     n = (name or "").strip().lower()
     if n == "val":
         return val_executor
@@ -3847,137 +3799,7 @@ def _executor_inst(name: str):
     return None
 
 
-def _format_error_telegram(executor: str, code: str, summary: str, detail: str = "") -> str:
-    """Format a Telegram error message respecting the \u226434 chars/line rule.
-
-    Layout:
-      \U0001f6a8 X \u00b7 CODE
-      <summary>
-      <detail line(s)>
-
-      ts: HH:MM:SS ET
-    """
-    ex_label = (executor or "").upper()
-    head = f"\U0001f6a8 {ex_label} \u00b7 {code}"
-
-    def _wrap(text: str, width: int = 34) -> list[str]:
-        out: list[str] = []
-        for raw_line in (text or "").splitlines() or [""]:
-            line = raw_line.rstrip()
-            if len(line) <= width:
-                out.append(line)
-                continue
-            # Greedy word-wrap. If a single word is >width, hard-split it.
-            words = line.split(" ")
-            buf = ""
-            for w in words:
-                if not buf:
-                    if len(w) <= width:
-                        buf = w
-                    else:
-                        # Hard-split overlong word.
-                        while len(w) > width:
-                            out.append(w[:width])
-                            w = w[width:]
-                        buf = w
-                elif len(buf) + 1 + len(w) <= width:
-                    buf = buf + " " + w
-                else:
-                    out.append(buf)
-                    if len(w) <= width:
-                        buf = w
-                    else:
-                        while len(w) > width:
-                            out.append(w[:width])
-                            w = w[width:]
-                        buf = w
-            if buf:
-                out.append(buf)
-        return out
-
-    parts: list[str] = []
-    parts.append(head if len(head) <= 34 else head[:34])
-    parts.extend(_wrap(summary))
-    if detail:
-        parts.extend(_wrap(detail))
-
-    try:
-        ts = _now_et().strftime("%H:%M:%S ET")
-    except Exception:
-        ts = ""
-    if ts:
-        parts.append("")
-        parts.append(f"ts: {ts}")
-    return "\n".join(parts)
-
-
-def report_error(executor: str, code: str, severity: str, summary: str,
-                 detail: str = "") -> bool:
-    """Page-the-operator entry point. See module-level docstring above.
-
-    Returns True iff a Telegram message was actually dispatched (i.e.
-    the dedup gate elapsed). Dashboard count always increments.
-    """
-    # 1. Log via existing logger. Preserve the same level mapping the
-    #    rest of the codebase uses: "warning" -> WARNING, otherwise
-    #    ERROR. CRITICAL events still log at ERROR; the distinction is
-    #    only relevant for the dashboard pill color.
-    sev = (severity or "").strip().lower()
-    log_msg = f"[{(executor or '').upper()}/{code}] {summary}"
-    try:
-        if sev == "warning":
-            logger.warning(log_msg)
-        else:
-            logger.error(log_msg)
-    except Exception:
-        pass
-
-    # 2. Append to error_state ring + check dedup gate.
-    try:
-        ts_iso = _utc_now_iso()
-    except Exception:
-        ts_iso = ""
-    try:
-        should_send = _error_state.record_error(
-            executor=executor,
-            code=code,
-            severity=severity,
-            summary=summary,
-            detail=detail,
-            ts=ts_iso,
-        )
-    except Exception:
-        # Never let error reporting itself raise.
-        logger.exception("report_error: error_state.record_error failed")
-        return False
-
-    if not should_send:
-        return False
-
-    # 3. Dispatch to the right Telegram channel.
-    try:
-        text = _format_error_telegram(executor, code, summary, detail)
-    except Exception:
-        logger.exception("report_error: format failed")
-        return False
-
-    ex = (executor or "").strip().lower()
-    try:
-        if ex in ("val", "gene"):
-            inst = _executor_inst(ex)
-            if inst is not None:
-                inst._send_own_telegram(text)
-            else:
-                # Executor not enabled \u2014 fall back to main bot so the
-                # operator still gets paged.
-                send_telegram(text)
-        else:
-            send_telegram(text)
-    except Exception:
-        logger.exception("report_error: telegram dispatch failed")
-        return False
-    return True
-
+set_executor_lookup(_executor_inst)
 
 
 def fetch_1min_bars(ticker):
