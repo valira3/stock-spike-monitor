@@ -325,13 +325,32 @@ class OrbEngine:
 
         self._state = _state.OrbStateRegistry()
         self._risk = _risk_book.RiskBookRegistry()
+        # v10.0.1 -- per-portfolio overrides for the three admission caps.
+        # Reads <PID>_ORB_MAX_CONCURRENT_RISK_DOLLARS / _NOTIONAL_MULT /
+        # _DAILY_LOSS_KILL_PCT first; falls back to the global cfg value.
+        # Strategy levers (RR, range, ATR, VWAP fence) stay global -- those
+        # are strategy decisions, not portfolio policy. See
+        # orb/portfolio_env.py for the resolve helpers.
+        from orb.portfolio_env import resolve_float as _rf
         for pid in self.portfolio_ids:
+            per_max_risk = _rf(
+                pid, "ORB_MAX_CONCURRENT_RISK_DOLLARS",
+                cfg.max_concurrent_risk_dollars,
+            )
+            per_notional_mult = _rf(
+                pid, "ORB_MAX_CONCURRENT_NOTIONAL_MULT",
+                cfg.max_concurrent_notional_mult,
+            )
+            per_daily_kill = _rf(
+                pid, "ORB_DAILY_LOSS_KILL_PCT",
+                cfg.daily_loss_kill_pct,
+            )
             self._risk.register(
                 pid,
-                max_concurrent_risk_dollars=cfg.max_concurrent_risk_dollars,
-                max_concurrent_notional_mult=cfg.max_concurrent_notional_mult,
+                max_concurrent_risk_dollars=per_max_risk,
+                max_concurrent_notional_mult=per_notional_mult,
                 equity=100_000.0,  # caller refresh via update_equity
-                daily_loss_kill_pct=cfg.daily_loss_kill_pct,
+                daily_loss_kill_pct=per_daily_kill,
                 # v8.3.34 -- day-end-giveback defenses
                 loss_lock_threshold_usd=cfg.loss_lock_threshold_usd,
                 peak_dd_halt_usd=cfg.peak_dd_halt_usd,
