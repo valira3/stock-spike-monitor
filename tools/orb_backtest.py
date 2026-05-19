@@ -507,6 +507,15 @@ class ORBConfig:
     #     force-exit the runner at this ET
     #     minute (e.g. 14:30). Doesn't fire
     #     for stops or losing positions.
+    # R26 (v9.1.130) -- stale FULL-position exit. Mirror of R21 for the
+    # un-partialed cohort: close the WHOLE position at the cutoff ET
+    # minute if the 1R partial hasn't fired yet. Optional MFE-in-R floor
+    # spares trades that came close to 1R (e.g. floor=0.5 only closes
+    # positions whose best MFE < 0.5R, leaving 0.5-1.0R trades to
+    # ride). Set floor=0 (production default) to force-close all
+    # un-partialed regardless of MFE.
+    stale_full_exit_minutes: int = 0
+    stale_full_exit_mfe_floor_r: float = 0.0
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -657,6 +666,12 @@ class ORBConfig:
                 if _envs("ORB_RUNNER_EOD_PREP_ET", "")
                 else 0
             ),
+            stale_full_exit_minutes=(
+                _et_to_minutes(_envs("ORB_STALE_FULL_EXIT_ET", ""))
+                if _envs("ORB_STALE_FULL_EXIT_ET", "")
+                else 0
+            ),
+            stale_full_exit_mfe_floor_r=_envf("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0),
         )
 
 
@@ -1388,6 +1403,29 @@ def run_ticker_day(
                 exit_reason = "runner_eod_prep"
                 exit_bkt = fb.bucket
                 break
+
+            # R26 stale FULL-position exit. Mirror of R21 for the
+            # un-partialed cohort: close the WHOLE position if it
+            # hasn't hit 1R by the cutoff. Optional MFE-in-R floor
+            # spares trades that came close to 1R (e.g. floor=0.5
+            # only force-closes positions whose best MFE < 0.5R).
+            # floor=0 = force-close ALL un-partialed regardless of MFE.
+            if (
+                cfg.stale_full_exit_minutes > 0
+                and not partial_taken
+                and fb.bucket >= cfg.stale_full_exit_minutes
+                and initial_risk > 0
+            ):
+                mfe_in_r = (
+                    (mfe - entry_price) / initial_risk
+                    if side == "long"
+                    else (entry_price - mfe) / initial_risk
+                )
+                if cfg.stale_full_exit_mfe_floor_r <= 0 or mfe_in_r < cfg.stale_full_exit_mfe_floor_r:
+                    exit_price = fb.close
+                    exit_reason = "stale_full_exit"
+                    exit_bkt = fb.bucket
+                    break
 
             # EOD cutoff?
             if fb.bucket >= cfg.eod_cutoff_et:
