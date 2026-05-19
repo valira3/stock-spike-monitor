@@ -111,13 +111,19 @@ def main(argv: list[str]) -> int:
     p.add_argument("--end", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--signal", default=os.environ.get("ORB_DYNAMIC_UNIVERSE_SIGNAL", "composite"),
-                   choices=["gap", "volume", "range", "composite"])
+                   choices=["gap", "volume", "range", "composite", "compression"])
     p.add_argument("--top-k", type=int,
                    default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_TOP_K", "10")))
     p.add_argument("--min-pm-bars", type=int,
                    default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_MIN_PM_BARS", "10")))
     p.add_argument("--min-dollar-vol", type=float,
                    default=float(os.environ.get("ORB_DYNAMIC_UNIVERSE_MIN_DOLLAR_VOL", "100000")))
+    p.add_argument("--pm-lookback-n", type=int,
+                   default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_PM_LOOKBACK_N", "5")),
+                   help="compression signal: how many recent premarket bars to score range over")
+    p.add_argument("--pm-min-lookback-min", type=int,
+                   default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN", "30")),
+                   help="compression signal: search window before 09:30 ET, in minutes")
     p.add_argument("--vid", default="orb_broad_universe")
     args = p.parse_args(argv[1:])
 
@@ -167,6 +173,8 @@ def main(argv: list[str]) -> int:
             min_pm_bars=args.min_pm_bars,
             min_dollar_volume=args.min_dollar_vol,
             feature_cache=feature_cache,
+            pm_lookback_n=args.pm_lookback_n,
+            pm_min_lookback_min=args.pm_min_lookback_min,
         )
         if not picks:
             continue

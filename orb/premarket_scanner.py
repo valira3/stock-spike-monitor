@@ -4,16 +4,14 @@ Reads premarket bars (04:00-09:29 ET) from `data_pm_universe/<DATE>/<TICKER>.jso
 and emits the top-K tickers most likely to break out at the RTH open.
 
 Signal options:
-  - "gap"        : |premarket close (09:29) − prior RTH close| / prior RTH close
-  - "volume"     : premarket dollar volume (sum of close × volume for 04:00-09:29)
-  - "range"      : (premarket high − premarket low) / premarket open
-  - "composite"  : z-score sum of the three above, divided by 3
-
-The scanner is intentionally signal-light at this stage. The original
-research direction was "breakout signals during premarket"; common
-breakout precursors are gap, volume burst, and an expanded premarket
-range. A future expansion can add NR-N compression once we know the
-simpler signals are productive.
+  - "gap"           : |premarket close (09:29) − prior RTH close| / prior RTH close
+  - "volume"        : premarket dollar volume (sum of close × volume for 04:00-09:29)
+  - "range"         : (premarket high − premarket low) / premarket open
+  - "composite"     : z-score sum of (gap, volume, range), divided by 3
+  - "compression"   : NR-N compression -- inverse of bar-range over the last N
+                      premarket bars within the last M minutes (the r18
+                      signal: tight consolidation = coiled spring → breakout
+                      candidate). Higher score = TIGHTER range.
 
 The scanner is upstream of the ORB engine. It does not change entry
 logic, exit logic, or risk caps; it only changes which tickers the
@@ -130,6 +128,47 @@ def _z_scores(values: list[float]) -> list[float]:
     return [(v - mu) / sigma for v in values]
 
 
+def _compression_score(bars: list[dict], pm_lookback_n: int,
+                       pm_min_lookback_min: int) -> float | None:
+    """NR-N compression score. Returns higher value for tighter recent range.
+
+    Window: last `pm_min_lookback_min` minutes of premarket (i.e. bucket >=
+    09:30 - pm_min_lookback_min and bucket < 09:30). Within that window,
+    take the LAST `pm_lookback_n` bars. Range = (max_high - min_low) /
+    mean_close. Score = -range (so sorting desc picks tightest first).
+
+    Returns None if there are fewer than pm_lookback_n bars in the window.
+    """
+    rth_open_min = 9 * 60 + 30   # 09:30 ET
+    window_start_min = rth_open_min - pm_min_lookback_min
+    in_window = []
+    for b in bars:
+        bkt = b.get("et_bucket", "9999")
+        if bkt == "9999":
+            continue
+        # bucket "HHMM" → minutes
+        try:
+            mins = int(bkt[:2]) * 60 + int(bkt[2:])
+        except ValueError:
+            continue
+        if window_start_min <= mins < rth_open_min:
+            in_window.append((mins, b))
+    if len(in_window) < pm_lookback_n:
+        return None
+    # Sort by minutes asc, take last N
+    in_window.sort(key=lambda x: x[0])
+    last_n = [b for _, b in in_window[-pm_lookback_n:]]
+    highs = [float(b["high"]) for b in last_n]
+    lows = [float(b["low"]) for b in last_n]
+    closes = [float(b["close"]) for b in last_n]
+    rng = max(highs) - min(lows)
+    mean_close = sum(closes) / len(closes) if closes else 0.0
+    if mean_close <= 0:
+        return None
+    rng_pct = rng / mean_close
+    return -rng_pct   # negate so higher = tighter
+
+
 def scan_day(
     corpus_root: Path | str,
     date_str: str,
@@ -139,6 +178,8 @@ def scan_day(
     min_pm_bars: int = 10,
     min_dollar_volume: float = 100_000.0,
     feature_cache: dict | None = None,
+    pm_lookback_n: int = 5,
+    pm_min_lookback_min: int = 30,
 ) -> list[ScanResult]:
     """Rank `universe` by `signal` on `date_str`; return top_k ScanResults.
 
@@ -153,11 +194,43 @@ def scan_day(
     (gap_pct, pm_dollar_vol, pm_range_pct, n_pm_bars, prior_close).
     When supplied, scanner skips the JSONL read path entirely. Build
     via `orb.scanner_cache.build_cache` + `save_cache`.
+
+    The "compression" signal always re-reads the raw bars (it needs
+    per-bar high/low for the last-N window). Feature cache is unused
+    for that signal path.
     """
     corpus_root = Path(corpus_root)
     raw: list[ScanResult] = []
+    compression_scores: list[float] = []
     for tk in universe:
-        if feature_cache is not None:
+        if signal == "compression":
+            # Need the raw bars; cache is per-aggregate
+            bars = _load_bars(corpus_root / date_str / f"{tk}.jsonl")
+            if not bars:
+                continue
+            pm = _premarket_bars(bars)
+            if len(pm) < min_pm_bars:
+                continue
+            pm_dol = sum(float(b["close"]) * float(b["total_volume"]) for b in pm)
+            if pm_dol < min_dollar_volume:
+                continue
+            score = _compression_score(bars, pm_lookback_n, pm_min_lookback_min)
+            if score is None:
+                continue
+            pm_open = float(pm[0]["open"])
+            pm_high = max(float(b["high"]) for b in pm)
+            pm_low = min(float(b["low"]) for b in pm)
+            pm_range_pct = (pm_high - pm_low) / pm_open if pm_open > 0 else 0.0
+            # gap_pct via prior close
+            prior_close = _prior_close(corpus_root, tk, date_str)
+            gap_pct = ((float(pm[-1]["close"]) - prior_close) / prior_close
+                       if prior_close and prior_close > 0 else 0.0)
+            raw.append(ScanResult(ticker=tk, score=0.0, gap_pct=gap_pct,
+                                  pm_dollar_volume=pm_dol,
+                                  pm_range_pct=pm_range_pct,
+                                  n_pm_bars=len(pm)))
+            compression_scores.append(score)
+        elif feature_cache is not None:
             feats = feature_cache.get((date_str, tk))
             if feats is None:
                 continue
@@ -167,13 +240,14 @@ def scan_day(
             r = ScanResult(ticker=tk, score=0.0, gap_pct=gap_pct,
                            pm_dollar_volume=pm_dol, pm_range_pct=pm_rng,
                            n_pm_bars=n_pm)
+            raw.append(r)
         else:
             r = _signal_features(corpus_root, tk, date_str, min_pm_bars=min_pm_bars)
             if r is None:
                 continue
             if r.pm_dollar_volume < min_dollar_volume:
                 continue
-        raw.append(r)
+            raw.append(r)
 
     if not raw:
         return []
@@ -183,7 +257,9 @@ def scan_day(
     log_vol = [math.log(max(r.pm_dollar_volume, 1.0)) for r in raw]
     rng = [r.pm_range_pct for r in raw]
 
-    if signal == "gap":
+    if signal == "compression":
+        scores = compression_scores
+    elif signal == "gap":
         scores = abs_gap
     elif signal == "volume":
         scores = log_vol
