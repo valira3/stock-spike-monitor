@@ -1,5 +1,10 @@
 __pycache__/
 .venv/
+.DS_Store
+# Claude Code harness local state — scheduler lock + ephemeral cache.
+# Skills, settings, and commands remain tracked (.claude/skills/, .claude/settings*.json).
+.claude/scheduled_tasks.lock
+.claude/projects/
 data/.bt_cache/
 # Corpus protection (2026-05-19): rth-expand branch has 3,150 corpus dates
 # main does not. Without this rule, a checkout of rth-expand into the working
