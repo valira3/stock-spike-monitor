@@ -4,6 +4,70 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.130 (2026-05-18) — R26 stale_full_exit lever (un-partialed afternoon discipline)
+
+Complement to v9.1.129's R21 runner_eod_prep. R21 catches the runner
+half AFTER the 1R partial fires; R26 catches the WHOLE position
+BEFORE 1R ever fires. Together they cover the two distinct
+afternoon-driftback cohorts and restore the safety-net coverage that
+v9.1.128 portfolio independence removed for Val/Gene (legacy sentinel A
+is no longer routed through Val's exits).
+
+**Forensic that prompted this**: 2026-05-18 Val AVGO SHORT entered 10:10
+ET, MFE 0.17R (never hit 1R), exited 11:54 via legacy sentinel A on
+Main's bus — but under v9.1.128 independence, a future Val-only trade
+in the same shape would ride to 15:55 EOD with only ATR stop as
+protection.
+
+**Backtest** (252-day SIP corpus, 14 variants through combined-replay
+harness with 1.9x gross-notional cap): winner is **force-close at 14:30
+ET, no MFE floor**. Quarterly stability check:
+
+| Quarter | Val Δ | Main Δ |
+|---|---:|---:|
+| Q3-2025 | -$291 | -$1,086 |
+| Q4-2025 | +$1 | +$3 |
+| Q1-2026 | **+$1,272** | **+$1,597** |
+| Q2-2026 | +$800 | +$660 |
+| **Sum** | **+$1,781** | **+$1,174** |
+
+6 of 8 portfolio-quarter cells positive (3/4 Val, 3/4 Main); worst
+single quarter -$1,086 on Main Q3'25; combined +$2,955/yr against
+~$80k baseline (+3.7% lift). Most-recent quarters (Q1-Q2 2026) carry
+the bulk of the edge — good signal for going-forward.
+
+**Lever**: `ORB_STALE_FULL_EXIT_ET=14:30` (set on Railway prod env).
+Optional `ORB_STALE_FULL_EXIT_MFE_FLOOR_R` (default 0) spares trades
+whose MFE got close to 1R; production ships with no floor.
+
+**Live wiring**:
+- `orb/engine.py:OrbConfig` — `stale_full_exit_minutes: int = 0`,
+  `stale_full_exit_mfe_floor_r: float = 0.0`
+- `orb/exits.py` — new `EXIT_STALE_FULL_EXIT = "stale_full_exit"`
+  constant; new `stale_full_exit_min` + `stale_full_exit_mfe_floor_r`
+  kwargs on `evaluate()`; new `mfe_price: float` field on `OrbPosition`
+  updated each `evaluate()` call for floor comparison.
+- `orb/live_runtime.py:bootstrap` — env wiring via
+  `_et_to_min("ORB_STALE_FULL_EXIT_ET", 0)` + `_f("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0)`.
+
+**Safety guard**: the new exit fires only when `pos.partial_taken=False`
+— mutually exclusive with R21's `runner_eod_prep`. Stop/target/BE always
+win on same-bar (pessimistic ordering); R26 fires before EOD cutoff
+when both would otherwise hit.
+
+**Tests**: `tests/strategy/test_orb_stale_full_exit.py` — 13 cases
+covering default-off, partial-gate, MFE-floor variants, stop/target
+precedence, EOD ordering.
+
+**Sweep + quarterly scripts**: `docs/research/r26_stale_full_exit.py`
+and `docs/research/r26_quarterly.py`. Run `python3
+docs/research/r26_quarterly.py` to reproduce the table.
+
+**Rollout**: lever defaults OFF; operator sets
+`ORB_STALE_FULL_EXIT_ET=14:30` on Railway prod env after merge.
+
+---
+
 ## v9.1.129 (2026-05-18) — R21 runner_eod_prep lever + combined-replay baseline harness
 
 R21 forensic on Val morning ORB found that 38 of 156 (24%) of EOD-held

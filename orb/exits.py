@@ -53,6 +53,14 @@ EXIT_PARTIAL = "partial_1r"
 # giveback into 15:55 EOD. Distinct from EXIT_EOD which is the
 # whole-session forced flush.
 EXIT_RUNNER_EOD_PREP = "runner_eod_prep"
+# R26 (v9.1.130) -- stale_full_exit. Mirror of EXIT_RUNNER_EOD_PREP but
+# for the un-partialed cohort: fires when partial_taken=False AND
+# bar_bucket_min >= stale_full_exit_min. Optional MFE-in-R floor spares
+# trades that came close to 1R (floor=0 = always fire at cutoff). Catches
+# afternoon-driftback losses on positions that never hit 1R -- the
+# legacy sentinel A safety net that v9.1.128's portfolio independence
+# removed for Val/Gene.
+EXIT_STALE_FULL_EXIT = "stale_full_exit"
 
 
 @dataclass
@@ -86,6 +94,11 @@ class OrbPosition:
     partial_taken: bool = False
     partial_pnl_dollars: float = 0.0
     original_shares: int = 0
+    # R26 (v9.1.130) -- MFE tracking for the stale_full_exit lever's
+    # optional MFE-in-R floor. Updated each evaluate() call before the
+    # exit-decision checks. Initialized to entry_price; the first
+    # evaluate() bar updates it via bar_high (long) / bar_low (short).
+    mfe_price: float = 0.0
 
 
 @dataclass
@@ -150,6 +163,8 @@ def make_position(
         partial_taken=False,
         partial_pnl_dollars=0.0,
         original_shares=int(max(0, shares)),
+        # R26 -- MFE starts at entry; will move favorably on later bars.
+        mfe_price=entry_price,
     )
 
 
@@ -187,6 +202,8 @@ def evaluate(
     eod_cutoff_min: int,
     partial_profit_at_1r: bool = False,
     runner_eod_prep_min: int = 0,
+    stale_full_exit_min: int = 0,
+    stale_full_exit_mfe_floor_r: float = 0.0,
 ) -> Optional[ExitDecision]:
     """Decide whether the bar triggers an exit OR a partial-profit fill.
 
@@ -239,6 +256,16 @@ def evaluate(
     # BE-first ordering; v8.1.0 preserves that and slots partial in
     # AFTER BE-arm. Live therefore OUTPERFORMS backtest by a small
     # margin on stop-pierce-then-recover days.
+    # R26 -- update MFE tracking BEFORE any exit check so the floor
+    # comparison uses this bar's high (long) / low (short). Idempotent
+    # if pos.mfe_price was initialized to entry_price by make_position.
+    if pos.side == "long":
+        if bar_high > pos.mfe_price:
+            pos.mfe_price = bar_high
+    else:
+        if bar_low < pos.mfe_price or pos.mfe_price == 0.0:
+            pos.mfe_price = bar_low
+
     maybe_arm_be(pos, bar_high, bar_low)
 
     # v8.1.0 partial fire (after BE arm so be_moved is already True
@@ -270,6 +297,26 @@ def evaluate(
     # are unaffected. Returns EXIT_RUNNER_EOD_PREP at bar_close.
     if runner_eod_prep_min > 0 and pos.partial_taken and bar_bucket_min >= runner_eod_prep_min:
         return ExitDecision(reason=EXIT_RUNNER_EOD_PREP, price=bar_close)
+
+    # R26 stale_full_exit -- mirror of R21 for the un-partialed cohort.
+    # Fires when partial NOT taken AND bar_bucket_min >= stale_full_exit_min.
+    # Optional MFE-in-R floor: only close if mfe-in-R is BELOW floor
+    # (i.e. trade never came close to 1R). Floor <= 0 disables the
+    # gate (always close at cutoff). Catches afternoon driftback on
+    # positions that never hit 1R -- replaces legacy sentinel A for
+    # Val/Gene under v9.1.128 independence.
+    if (
+        stale_full_exit_min > 0
+        and not pos.partial_taken
+        and bar_bucket_min >= stale_full_exit_min
+        and pos.risk > 0
+    ):
+        if pos.side == "long":
+            mfe_in_r = (pos.mfe_price - pos.entry_price) / pos.risk
+        else:
+            mfe_in_r = (pos.entry_price - pos.mfe_price) / pos.risk
+        if stale_full_exit_mfe_floor_r <= 0 or mfe_in_r < stale_full_exit_mfe_floor_r:
+            return ExitDecision(reason=EXIT_STALE_FULL_EXIT, price=bar_close)
 
     # EOD flush
     if bar_bucket_min >= eod_cutoff_min:
