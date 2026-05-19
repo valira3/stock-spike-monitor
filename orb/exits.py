@@ -61,6 +61,16 @@ EXIT_RUNNER_EOD_PREP = "runner_eod_prep"
 # legacy sentinel A safety net that v9.1.128's portfolio independence
 # removed for Val/Gene.
 EXIT_STALE_FULL_EXIT = "stale_full_exit"
+# R32 (v9.1.134) -- asymmetric reversal circuit-breaker. Fires ONLY when
+# BOTH conditions hold:
+#   (a) MFE_R >= reversal_circuit_min_mfe_r (position WAS clearly favorable)
+#   (b) (MFE_R - current_PnL_R) >= reversal_circuit_min_giveback_r
+#       (the round-trip swing exceeds the threshold)
+# Designed to catch the rare "favorable -> unfavorable" round-trip cohort
+# (e.g. NFLX wild-swing days) without affecting trending winners. Both
+# thresholds 0 = disabled. Production thresholds (1.0R MFE / 1.5R giveback)
+# fire ~23x/year and cost -$21/yr on the 252-day rth-expand corpus.
+EXIT_REVERSAL_CIRCUIT = "reversal_circuit"
 
 
 @dataclass
@@ -204,6 +214,8 @@ def evaluate(
     runner_eod_prep_min: int = 0,
     stale_full_exit_min: int = 0,
     stale_full_exit_mfe_floor_r: float = 0.0,
+    reversal_circuit_min_mfe_r: float = 0.0,
+    reversal_circuit_min_giveback_r: float = 0.0,
 ) -> Optional[ExitDecision]:
     """Decide whether the bar triggers an exit OR a partial-profit fill.
 
@@ -267,6 +279,30 @@ def evaluate(
             pos.mfe_price = bar_low
 
     maybe_arm_be(pos, bar_high, bar_low)
+
+    # R32 (v9.1.134) -- asymmetric reversal circuit-breaker. Fires ONLY
+    # when position was clearly favorable (MFE >= floor) AND has clearly
+    # given back (round-trip >= threshold). Designed to catch the rare
+    # round-trip cohort without affecting trending winners. Fires BEFORE
+    # partial-at-1R / stop / target / R21 / R26. Disabled when either
+    # threshold is 0 (default).
+    if (
+        reversal_circuit_min_mfe_r > 0
+        and reversal_circuit_min_giveback_r > 0
+        and pos.risk > 0
+    ):
+        if pos.side == "long":
+            _mfe_in_r = (pos.mfe_price - pos.entry_price) / pos.risk
+            _cur_in_r = (bar_close - pos.entry_price) / pos.risk
+        else:
+            _mfe_in_r = (pos.entry_price - pos.mfe_price) / pos.risk
+            _cur_in_r = (pos.entry_price - bar_close) / pos.risk
+        _round_trip = _mfe_in_r - _cur_in_r
+        if (
+            _mfe_in_r >= reversal_circuit_min_mfe_r
+            and _round_trip >= reversal_circuit_min_giveback_r
+        ):
+            return ExitDecision(reason=EXIT_REVERSAL_CIRCUIT, price=bar_close)
 
     # v8.1.0 partial fire (after BE arm so be_moved is already True
     # and pos.stop = entry when partial returns).
