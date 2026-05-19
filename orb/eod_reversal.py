@@ -316,6 +316,62 @@ class EodReversalEngine:
 
         long_picks = eligible_long[: self.cfg.top_n]
         short_picks = eligible_short[-self.cfg.top_n :][::-1]  # highest first
+
+        # v9.1.133 -- block same-ticker on both legs. If a ticker is picked
+        # on BOTH sides (happens when it's in both fences AND ranks at the
+        # extreme of both directions), keep on the side where ROD3 is more
+        # extreme (= farther from 0) and fall back to next-best non-
+        # conflicting pick on the dropped side.
+        # 2026-05-19 15:26 ET incident: ORCL got picked for both LONG and
+        # SHORT on Val. Alpaca rejected the SHORT (position-intent
+        # mismatch); LONG opened then auto-closed for -$44.74 loss.
+        long_set = {t[0] for t in long_picks}
+        short_set = {t[0] for t in short_picks}
+        conflict = long_set & short_set
+        for ticker in conflict:
+            long_rod = next(r for t, r in long_picks if t == ticker)
+            short_rod = next(r for t, r in short_picks if t == ticker)
+            if abs(long_rod) >= abs(short_rod):
+                # Keep on long, replace on short side
+                short_picks = [p for p in short_picks if p[0] != ticker]
+                taken_short = {p[0] for p in short_picks}
+                replacement = None
+                for cand in reversed(eligible_short):
+                    if cand[0] == ticker:
+                        continue
+                    if cand[0] in taken_short:
+                        continue
+                    short_picks.append(cand)
+                    taken_short.add(cand[0])
+                    replacement = cand[0]
+                    if len(short_picks) >= self.cfg.top_n:
+                        break
+                logger.warning(
+                    "[V9133-EOD-DEDUP] %s collided on both legs; kept on LONG "
+                    "(rod=%.1fbps vs short=%.1fbps); SHORT side fell back to %s",
+                    ticker, long_rod, short_rod, replacement or "<empty>",
+                )
+            else:
+                # Keep on short, replace on long side
+                long_picks = [p for p in long_picks if p[0] != ticker]
+                taken_long = {p[0] for p in long_picks}
+                replacement = None
+                for cand in eligible_long:
+                    if cand[0] == ticker:
+                        continue
+                    if cand[0] in taken_long:
+                        continue
+                    long_picks.append(cand)
+                    taken_long.add(cand[0])
+                    replacement = cand[0]
+                    if len(long_picks) >= self.cfg.top_n:
+                        break
+                logger.warning(
+                    "[V9133-EOD-DEDUP] %s collided on both legs; kept on SHORT "
+                    "(rod=%.1fbps vs long=%.1fbps); LONG side fell back to %s",
+                    ticker, short_rod, long_rod, replacement or "<empty>",
+                )
+
         return long_picks, short_picks
 
     def admit(

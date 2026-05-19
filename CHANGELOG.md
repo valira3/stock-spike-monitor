@@ -4,6 +4,32 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.133 (2026-05-19) — EOD reversal addon: block same ticker on both legs
+
+Closes 2026-05-19 15:26 ET incident: ORCL was in both `long_tickers`
+and `short_tickers` fences (Keystone default), addon picked ORCL for
+both LONG and SHORT legs simultaneously on Val (live $30k). Alpaca
+rejected the SHORT leg with code 42210000 "position intent mismatch,
+inferred: buy_to_open, specified: buy_to_close"; the LONG leg opened
+then auto-closed 32 sec later for -$44.74 real loss.
+
+Fix in `orb/eod_reversal.py:select_signals`: post-pick de-dup. If a
+ticker appears in both `long_picks` and `short_picks`, keep on the
+side with the more extreme |ROD3| signal and fall back to the next
+non-conflicting candidate on the dropped side.
+
+Tiebreak: equal magnitudes keep on LONG side (arbitrary; could be
+either).
+
+**Forensic**: new `[V9133-EOD-DEDUP]` log signature on collision.
+
+**Tests**: `tests/strategy/test_eod_same_ticker_dedup.py`.
+
+**Post-merge action**: re-enable `ORB_EOD_FIRE_BROKER=1` on Railway
+(currently set to 0 by tonight's emergency stop after the incident).
+
+---
+
 ## v9.1.132 (2026-05-19) — rollback_admit ticker-orphan fix + cooldown default ON
 
 Two related fixes to the v10 rollback path.
