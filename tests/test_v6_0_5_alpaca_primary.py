@@ -178,6 +178,12 @@ def test_alpaca_path_window_includes_premarket(tg, monkeypatch):
     # Sanity check: the Alpaca request the production code constructs
     # spans 08:00 ET to 18:00 ET (covers 08:00-09:30 ET premarket warm-
     # up loop that v5.30.1 introduced via Yahoo's includePrePost=true).
+    # v10.0.1: _fetch_1min_bars_alpaca lives in orb.bar_fetch now; its
+    # helper lookups resolve in that module's globals, so the patches
+    # for _alpaca_data_client / _alpaca_pdc must target orb.bar_fetch.
+    # get_fmp_quote stays a lazy `from trade_genius import` inside the
+    # function, so a tg-namespace patch is still the right target.
+    import orb.bar_fetch as bf
     captured = {}
 
     class FakeBar:
@@ -202,19 +208,34 @@ def test_alpaca_path_window_includes_premarket(tg, monkeypatch):
             captured["timeframe"] = req.timeframe
             return FakeResp(req.symbol_or_symbols)
 
-    monkeypatch.setattr(tg, "_alpaca_data_client", lambda: FakeClient())
-    monkeypatch.setattr(tg, "_alpaca_pdc", lambda sym, client: 99.0)
+    monkeypatch.setattr(bf, "_alpaca_data_client", lambda: FakeClient())
+    monkeypatch.setattr(bf, "_alpaca_pdc", lambda sym, client: 99.0)
     monkeypatch.setattr(tg, "get_fmp_quote", lambda sym: {"price": 101.5})
+    # Bypass the OR-window completeness check -- the fake bar's
+    # 2025-01-01 timestamp won't fall in today's [09:30, 10:00) ET
+    # window once wall-clock is past 09:30 ET. Returning 0 expected
+    # bars makes _is_or_coverage_thin a no-op.
+    monkeypatch.setattr(bf, "_or_expected_bars", lambda now_et: 0)
 
     out = tg._fetch_1min_bars_alpaca("TSLA")
     assert out is not None
     assert out["pdc"] == 99.0
     assert out["current_price"] == 101.5  # FMP path used, not last bar close
     # Window must START at 08:00 ET to cover premarket warmup.
+    from datetime import timezone
     from zoneinfo import ZoneInfo
     et = ZoneInfo("America/New_York")
-    start_et = captured["start"].astimezone(et)
-    end_et = captured["end"].astimezone(et)
+    # alpaca-py's StockBarsRequest stores start/end as naive UTC after
+    # pydantic validation; explicitly mark as UTC before converting so
+    # this assertion is system-tz-independent.
+    cap_start = captured["start"]
+    cap_end = captured["end"]
+    if cap_start.tzinfo is None:
+        cap_start = cap_start.replace(tzinfo=timezone.utc)
+    if cap_end.tzinfo is None:
+        cap_end = cap_end.replace(tzinfo=timezone.utc)
+    start_et = cap_start.astimezone(et)
+    end_et = cap_end.astimezone(et)
     # v6.0.5 originally pinned start to 08:00 ET. Post-v6.0.6 the window
     # was widened to 04:00 ET (full pre-market 04:00-09:30 + after-hours
     # 16:00-20:00) per trade_genius._fetch_1min_bars_alpaca. The contract
@@ -225,6 +246,11 @@ def test_alpaca_path_window_includes_premarket(tg, monkeypatch):
 
 
 def test_alpaca_current_price_falls_back_to_last_close_when_fmp_down(tg, monkeypatch):
+    # v10.0.1: see test_alpaca_path_window_includes_premarket for why
+    # the Alpaca-side helpers are patched on orb.bar_fetch and FMP is
+    # still patched on tg.
+    import orb.bar_fetch as bf
+
     class FakeBar:
         def __init__(self, ts, close):
             from datetime import datetime, timezone
@@ -243,9 +269,10 @@ def test_alpaca_current_price_falls_back_to_last_close_when_fmp_down(tg, monkeyp
         def get_stock_bars(self, req):
             return FakeResp(req.symbol_or_symbols)
 
-    monkeypatch.setattr(tg, "_alpaca_data_client", lambda: FakeClient())
-    monkeypatch.setattr(tg, "_alpaca_pdc", lambda sym, client: 100.0)
+    monkeypatch.setattr(bf, "_alpaca_data_client", lambda: FakeClient())
+    monkeypatch.setattr(bf, "_alpaca_pdc", lambda sym, client: 100.0)
     monkeypatch.setattr(tg, "get_fmp_quote", lambda sym: None)
+    monkeypatch.setattr(bf, "_or_expected_bars", lambda now_et: 0)
 
     out = tg._fetch_1min_bars_alpaca("TSLA")
     assert out is not None
