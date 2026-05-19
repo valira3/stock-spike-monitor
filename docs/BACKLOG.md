@@ -12,6 +12,28 @@ engineering task). Don't leave silently completed items here.
 
 ## Research
 
+### Broader-universe NR-N compression / dynamic universe (2026-05-19)
+
+**Source.** The production morning ORB runs on a fixed 12-ticker universe (`AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, QQQ, SPY, TSLA`). Every day starts looking at the same 12 names regardless of which ones had a compression setup in the premarket session. R18-R21 explored building a daily "where's the energy" scanner from premarket NR-N (narrow-range N-bar) compression and routing the morning engine at a per-day-selected universe instead of the static list.
+
+**Hypothesis.** A premarket scanner that ranks the broader liquid universe (e.g. S&P 100 or top-200 by ADV) by NR-N compression score at 09:25 ET, then hands the top-K names to the morning ORB engine, should outperform the static 12-ticker universe by:
+
+- catching ORB setups on names that are setting up THAT day but aren't in the static list (the "missed pop" cohort)
+- skipping static-list names that are clearly NOT setting up (the "false trigger" cohort that costs slippage + risk budget)
+
+The same R21 + R26 mid-day exit levers apply — the universe layer is upstream of the engine, not a replacement for it.
+
+**Status.** Code + 32 GB premarket bar corpus + R18-R21 sweep scripts + premarket_scanner module + tests are local on **ValsSpectre** (prior dev machine), NOT in this repo. The original BACKLOG entry written there is the source of truth; this entry is a placeholder so the direction isn't lost. Retrieval options:
+
+1. Transfer from ValsSpectre directly (tar + scp the local-only files; the 32 GB corpus is reproducible from Polygon premarket data so skip it).
+2. Recreate from scratch using `.github/workflows/pull-premarket.yml` (or the consolidated `pull-bars.yml` once Phase-4 lands — see Engineering section) for the corpus, then re-derive the scanner.
+
+**Action.** First, pull the original write-up + code from ValsSpectre so this stub can be replaced with the real research plan. Then expose the scanner output as `ORB_DYNAMIC_UNIVERSE=1` (default OFF, fallback to current static list) so it can be A/B tested in the same `combined_replay` harness as R21/R26.
+
+**Owner.** Next research round. Blocked on the retrieval step above.
+
+---
+
 ### Chase-fence expansion to TSLA + NVDA (2026-05-13)
 
 **Source.** Live observation 2026-05-13: TSLA + NVDA dominated today's trading
