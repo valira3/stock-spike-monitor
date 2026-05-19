@@ -1,0 +1,117 @@
+name: Oversight Monitor
+
+# Phase-aware GHA cron that runs tools.unified_monitor against prod
+# TradeGenius. Replaces the retired local-only `scripts/run_monitor.py`
+# loop (which dies if the operator's Mac is off / Claude Code closed).
+#
+# Each tick:
+#   1. Hits /api/state + /api/executor/{val,gene} + /api/trade_log
+#   2. Pulls per-portfolio Alpaca paper-account state (Val only here --
+#      Gene paper keys not in GHA secrets; skipped via ALPACA_SKIP_PORTFOLIOS)
+#   3. Tails Railway logs for [ALPACA-ERR] / [SENTINEL][CRITICAL] / etc.
+#   4. Runs invariants from tools/dashboard_monitor_invariants.py
+#   5. On any failure: Telegram alert to @tgval3_bot TP chat
+#   6. Commits data/monitor/latest.json + daily JSONL to monitor-live branch
+#
+# Schedule (UTC -- DST-naive; revisit at the Nov 2026 EDT->EST flip):
+#   RTH         09:30-16:00 ET  ->  */3  13-20  * * 1-5
+#   Pre-market  04:00-09:30 ET  ->  */5  8-12   * * 1-5
+#   Weekday off-hours (overnight + after-hours)  ->  */15 0-7,21-23 * * 1-5
+#   Weekend (every hour Sat+Sun)                 ->  0    *  *  *  0,6
+#
+# Workflow_dispatch supports a `dry_run` input that skips both the
+# Telegram side-effect and the branch commit (logs only).
+
+on:
+  schedule:
+    - cron: "*/3 13-20 * * 1-5"
+    - cron: "*/5 8-12 * * 1-5"
+    - cron: "*/15 0-7,21-23 * * 1-5"
+    - cron: "0 * * * 0,6"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip Telegram + branch commit (logs only)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write   # push to monitor-live branch
+
+concurrency:
+  # Serialize ticks -- if a slow run is still going when the next fires,
+  # queue the new one rather than running concurrently (avoids racey
+  # commits on the monitor-live branch).
+  group: oversight-monitor
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+
+    steps:
+      # Check out main (has tools/ + requirements.txt). The monitor-live
+      # branch is a data-only orphan branch; setup-python's `cache: pip`
+      # cannot key off it. We fetch monitor-live separately for the push
+      # step via `git worktree add` below.
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Alpaca SDK
+        # tools/alpaca_snapshot.py does a lazy `import alpaca` inside a
+        # function -- not caught by a top-of-file grep. Everything else
+        # unified_monitor calls is stdlib. Pin matches requirements.txt.
+        run: pip install 'alpaca-py==0.43.2'
+
+      - name: Run unified monitor
+        env:
+          DASHBOARD_BASE_URL: https://tradegenius.up.railway.app
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          VAL_ALPACA_PAPER_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          VAL_ALPACA_PAPER_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          # Gene paper keys not in GHA secrets -- skip cleanly.
+          ALPACA_SKIP_PORTFOLIOS: gene
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+          TELEGRAM_TP_TOKEN: ${{ secrets.TELEGRAM_TP_TOKEN }}
+          TELEGRAM_TP_CHAT_ID: ${{ secrets.TELEGRAM_TP_CHAT_ID }}
+          MONITOR_DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+        run: python -m tools.unified_monitor
+
+      - name: Push output to monitor-live
+        if: github.event.inputs.dry_run != '1'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Materialize monitor-live in a worktree so we can copy the
+          # fresh data/monitor/ output into it without polluting main.
+          git fetch origin monitor-live --depth=1
+          git worktree add /tmp/monitor-live monitor-live
+
+          mkdir -p /tmp/monitor-live/data/monitor
+          cp -r data/monitor/. /tmp/monitor-live/data/monitor/ 2>/dev/null || true
+
+          cd /tmp/monitor-live
+          git add data/monitor/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (duplicate tick within minute)"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          git commit -m "monitor: ${TIMESTAMP}"
+
+          # Pull-rebase in case a parallel run pushed first
+          git pull --rebase origin monitor-live || true
+          git push origin monitor-live

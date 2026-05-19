@@ -30,18 +30,20 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - name: Checkout snapshots-live branch
+      # Check out main (has scripts/ code). snapshots-live is a data-only
+      # orphan branch; setup-python's `cache: pip` can't key off it. The
+      # snapshots-live push happens via `git worktree add` below.
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: snapshots-live
-          # Fetch only the branch we need — no full history
+          ref: main
           fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
+          # No cache: pip -- snapshot_state.py is stdlib-only.
 
       - name: Capture state
         env:
@@ -52,15 +54,22 @@ jobs:
             --env "$TARGET_ENV" \
             --out data/snapshots
 
-      - name: Commit and push
+      - name: Push to snapshots-live
         run: |
+          set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage only the snapshots directory (never touch other files)
+          git fetch origin snapshots-live --depth=1
+          git worktree add /tmp/snapshots-live snapshots-live
+
+          mkdir -p /tmp/snapshots-live/data/snapshots
+          cp -r data/snapshots/. /tmp/snapshots-live/data/snapshots/ 2>/dev/null || true
+
+          cd /tmp/snapshots-live
           git add data/snapshots/
 
-          # Skip commit if nothing changed (e.g. duplicate run within same minute)
+          # Skip commit if nothing changed (duplicate run within same minute)
           if git diff --cached --quiet; then
             echo "Nothing to commit (duplicate tick)"
             exit 0
@@ -69,6 +78,6 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           git commit -m "snapshot: ${TIMESTAMP}"
 
-          # Pull-rebase in case a parallel run pushed first, then retry once
+          # Pull-rebase in case a parallel run pushed first
           git pull --rebase origin snapshots-live || true
           git push origin snapshots-live
