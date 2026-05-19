@@ -1,6 +1,14 @@
 __pycache__/
 .venv/
 data/.bt_cache/
+# Corpus protection (2026-05-19): rth-expand branch has 3,150 corpus dates
+# main does not. Without this rule, a checkout of rth-expand into the working
+# tree shows those dates as untracked, and `git add` sweeps them in (PR #799
+# mishap). Tracked dates already in main keep tracking — gitignore only
+# affects untracked files.
+data/20*/
+data/monitor/
+data/snapshots/
 results/
 CODE_REVIEW.md
 .env
