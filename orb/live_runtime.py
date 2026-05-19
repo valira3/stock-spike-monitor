@@ -1699,6 +1699,20 @@ def snapshot() -> dict:
             "dynamic_universe_active": False,
             "error": str(_se)[:120],
         }
+    # v10.0.1: earnings-calendar refresh state. Sunday 13:00 ET scheduler
+    # job (replaces the retired GHA cron) populates this. UI surfaces
+    # last_run_iso + last_status so operator can see if the calendar
+    # is fresh; stale "ok" past ~10 days OR a "empty_payload" status
+    # means earnings filtering may be silently broken.
+    try:
+        from orb import earnings_refresh as _er
+        snap["earnings_refresh"] = _er.to_snapshot_dict()
+    except Exception as _ee:
+        snap["earnings_refresh"] = {
+            "last_run_iso": "", "last_status": "import_failed",
+            "n_events": 0, "n_tickers_with_events": 0,
+            "error_msg": str(_ee)[:120],
+        }
     return snap
 
 

@@ -7236,6 +7236,17 @@ def scheduler_thread():
         ("sunday", "18:00", send_weekly_digest),
         # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
         # BMO/AMC cycles driven by the minute-by-minute window loop below.
+        # v10.0.1 \u2014 weekly earnings-calendar refresh (replaces the
+        # retired GHA cron). Runs Sunday 13:00 ET in a daemon thread so
+        # a slow yfinance HTTP call can't block the scheduler. The fire
+        # function itself updates orb.earnings_refresh module state for
+        # /api/state staleness surfacing.
+        ("sunday", "13:00",
+         lambda: threading.Thread(
+             target=lambda: __import__("orb.earnings_refresh",
+                                       fromlist=["fire_refresh"]).fire_refresh(),
+             name="earnings-refresh", daemon=True,
+         ).start()),
     ]
 
     # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
