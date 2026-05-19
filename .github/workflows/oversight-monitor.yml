@@ -65,7 +65,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          # No cache: pip -- unified_monitor is stdlib-only; nothing to install.
+
+      - name: Install Alpaca SDK
+        # tools/alpaca_snapshot.py does a lazy `import alpaca` inside a
+        # function -- not caught by a top-of-file grep. Everything else
+        # unified_monitor calls is stdlib. Pin matches requirements.txt.
+        run: pip install 'alpaca-py==0.43.2'
 
       - name: Run unified monitor
         env:
