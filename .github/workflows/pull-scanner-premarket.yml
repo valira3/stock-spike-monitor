@@ -1,0 +1,92 @@
+name: Pull scanner premarket (v10)
+
+# Pulls 04:00-09:30 ET premarket bars for the S&P 500 each trading
+# morning at ~09:24 ET so the live ORB engine's premarket scanner has
+# fresh data when ensure_session_started fires ~09:25 ET.
+#
+# Writes to a 'scanner-bars-live' branch (similar pattern to
+# monitor-live + snapshots-live). Railway's production volume needs
+# to either pull from this branch on startup OR the operator can wire
+# a separate sync; v10.0.0 ships the data path but leaves volume
+# integration to the operator. For ad-hoc testing the workflow can
+# be triggered manually.
+
+on:
+  schedule:
+    # 13:24 UTC = 09:24 ET (EDT). For EST (winter) the runner fires
+    # 09:24 EST = 14:24 UTC -- second cron entry covers it.
+    - cron: '24 13 * * 1-5'   # Mon-Fri 09:24 EDT (UTC-4)
+    - cron: '24 14 * * 1-5'   # Mon-Fri 09:24 EST (UTC-5)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'ET date YYYY-MM-DD (default: today)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Alpaca SDK
+        run: pip install alpaca-py
+
+      - name: Pull premarket bars (S&P 500)
+        env:
+          VAL_ALPACA_PAPER_KEY: ${{ secrets.VAL_ALPACA_PAPER_KEY }}
+          VAL_ALPACA_PAPER_SECRET: ${{ secrets.VAL_ALPACA_PAPER_SECRET }}
+          TG_DATA_ROOT: /tmp/tg_data
+        run: |
+          mkdir -p $TG_DATA_ROOT/bars
+          python tools/pull_premarket_for_scanner.py \
+            --universe data/universe/sp500.json \
+            --date "${{ github.event.inputs.date }}" \
+            --out $TG_DATA_ROOT/bars \
+            --batch-size 50
+
+      - name: Push to scanner-bars-live branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use a worktree (same pattern as monitor-live / snapshots-live)
+          BRANCH=scanner-bars-live
+          WORKTREE=/tmp/scanner-bars-live
+          git fetch origin "$BRANCH" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+            git worktree add -f "$WORKTREE" "origin/$BRANCH"
+          else
+            git worktree add -f --orphan -b "$BRANCH" "$WORKTREE"
+            (cd "$WORKTREE" && git rm -rf . 2>/dev/null || true)
+          fi
+          DATE_DIR=$(ls /tmp/tg_data/bars | head -1)
+          if [ -z "$DATE_DIR" ]; then
+            echo "no bars written; skipping push"
+            exit 0
+          fi
+          mkdir -p "$WORKTREE/bars/$DATE_DIR"
+          cp -r /tmp/tg_data/bars/$DATE_DIR/. "$WORKTREE/bars/$DATE_DIR/"
+          cd "$WORKTREE"
+          git config user.email "valira3@gmail.com"
+          git config user.name "valira3"
+          git add bars/
+          if git diff --cached --quiet; then
+            echo "no new bars to commit"
+            exit 0
+          fi
+          git commit -m "scanner-bars: ${DATE_DIR} premarket pull"
+          # Force-with-lease push to be safe even if branch is concurrent
+          git push --force-with-lease origin "$BRANCH"
