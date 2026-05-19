@@ -344,23 +344,5 @@ def main():
     return 0
 
 
-# ---------------------------------------------------------------------
-# Lever-sweep variants (for GHA dispatch).
-#
-# Usage: python3 docs/research/r20_afternoon_discipline.py --print-variants
-# to get the JSON tuple to paste into the "Lever Sweep" workflow input.
-# ---------------------------------------------------------------------
-
-
-def _print_variants():
-    variants = []
-    for vid, overrides in THEORIES:
-        variants.append({"vid": vid, "env": overrides})
-    print(json.dumps(variants, indent=2))
-
-
 if __name__ == "__main__":
-    if "--print-variants" in sys.argv:
-        _print_variants()
-        sys.exit(0)
     sys.exit(main())
