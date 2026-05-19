@@ -4,6 +4,66 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v10.0.0 (2026-05-19) — broad-universe premarket scanner + sector-cluster day-skip gate
+
+**Headline.** Replaces the fixed 12-ticker Keystone strategy with a **per-day broad-universe scanner** that ranks the S&P 500 by premarket NR-N compression and a **sector-cluster gate** that skips the day when the top-K picks share one GICS sector at high concentration. Validated by the 120-cell broad-universe sweep (`docs/research/r18_broad_universe.md`) — annualized **+$24,936/yr vs staging baseline (+54.3%)** on the $100k corpus, with **4/6 quarters positive**.
+
+This release ships **Phase A** of the rollout: the scanner runs, the cluster gate fires (the dominant lever, +$20k/yr), and the UI surfaces today's picks + gate state on Main / Val / Gene tabs. Phase B (v10.1.0) will swap the WS-subscribed universe each morning so the broader-universe picks actually get traded; until then the engine continues to trade the static 12 but with the cluster gate gating every admission.
+
+**New env levers (all default ON to match the champion config):**
+
+| Lever | Default | Notes |
+|---|---|---|
+| `ORB_DYNAMIC_UNIVERSE` | `1` | Master flag for the scanner |
+| `ORB_DYNAMIC_UNIVERSE_SIGNAL` | `compression` | NR-N (inverse last-5-bar range in last 30 min) |
+| `ORB_DYNAMIC_UNIVERSE_TOP_K` | `7` | Picks per day |
+| `ORB_DYNAMIC_UNIVERSE_MIN_DOLLAR_VOL` | `30000000` | Filters sleepy low-vol names |
+| `ORB_DYNAMIC_UNIVERSE_PM_LOOKBACK_N` | `5` | NR-N window bars |
+| `ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN` | `30` | NR-N window minutes |
+| `ORB_DYNAMIC_UNIVERSE_AUTO_REBUILD` | `1` | In-process Alpaca pull when premarket bar coverage is below threshold |
+| `ORB_CLUSTER_MAX_SECTOR_PCT` | `60` | Skip the day if ≥ this pct of picks share one GICS sector. 0 = off |
+
+Rollback: set any of the above to `0` (or the threshold to `0`) in Railway env. The runtime falls open to the legacy static-12 universe on any error.
+
+**New modules:**
+
+- `orb/live_premarket_scanner.py` — live wrapper around `orb/premarket_scanner.py`. Reads `/data/bars/<DATE>/<TICKER>.jsonl` (the bar archive). Fails open to the static 12 if premarket coverage < 40%. **Auto-rebuild in-process** via `tools.pull_premarket_for_scanner.rebuild_premarket_bars_for_date` when the scheduled 09:24 ET pre-warm didn't deliver.
+- `orb/scanner_state.py` — thread-safe module-level holder for today's `LiveScanResult`. Written by `ensure_session_started`; read by `/api/state` snapshot path + `_check_cluster_gate`.
+- `tools/pull_premarket_for_scanner.py` — both a CLI and an importable `rebuild_premarket_bars_for_date(target_date, out_root, universe_tickers)` helper. Uses Alpaca SIP entitlement, writes bar-archive-schema JSONL. Resume-friendly per-(date, ticker).
+- `data/universe/sp500.json` — 504 S&P 500 constituents (Wikipedia snapshot 2026-05-19, dot-form for Alpaca class-share tickers).
+- `data/universe/sp500_sectors.json` — per-ticker GICS sector + sub-industry.
+
+**Wired into existing modules:**
+
+- `orb/live_runtime.py`:
+  - `_is_dynamic_universe_on()` — env flag check
+  - `_run_dynamic_universe_scanner(date_iso)` — fires the scanner at session start, publishes to scanner_state, logs `[V100-SCANNER]`
+  - `_check_cluster_gate()` — consulted on every `check_entry`; returns a `cluster_gate_skip:<sector>_<pct>pct` reason when the gate fires (forensic log `[V100-CLUSTER-SKIP]`)
+  - `snapshot()` — includes a `"scanner"` block with picks, sectors, cluster gate state, fallback reason
+- `engine/scan.py`:
+  - `_v10_prewarm_dynamic_universe(now_et)` — daemon-thread pre-warm at 09:20-09:29 ET (one-shot per session, scheduled by the existing scan loop, no GHA cron per the operator's policy)
+- `dashboard_static/index.html` — 3 new pill nodes in the v10 day-status banner (Univ / cluster / picks)
+- `dashboard_static/app.js`:
+  - Main tab (`renderV10DayStatus`) populates the 3 pills with universe state, cluster gate, and the comma-separated picks list (sector breakdown in hover title)
+  - Val + Gene tabs (`renderV10PerPortfolio`) inject the same 3 chips inline. All three tabs see the same scanner output (the scanner runs once per session globally); per-portfolio independence is preserved by the existing RiskBook / FSM / kill-switch.
+
+**Test coverage (27 new tests, 1097 total strategy tests pass):**
+
+- `tests/strategy/test_orb_v1000_dynamic_universe.py` — 27 tests covering: compute_universe success + 5 fallback paths, scanner_state set/get/clear/snapshot/thread-safety, _check_cluster_gate firing states, _is_dynamic_universe_on env handling, _run_dynamic_universe_scanner env-defaults + override + exception isolation, rebuild_premarket_bars graceful no-op without creds, snapshot dict shape + JSON-serializable.
+
+**Backtest source-of-truth.** All findings come from the 120-cell broad-universe sweep in `results/broad_universe/sweep_v23_cluster_fine/`, summarized in `[[broad-universe-winner]]` memory. Combined annualized returns vs the v9.1.140 staging baseline (Keystone 12 + EOD), re-verified on the merged v10 tree at each portfolio's actual production equity:
+
+| Portfolio | Equity | Staging baseline | v10 (sec=60 cluster gate) | Δ |
+|---|---:|---:|---:|---:|
+| Main | $102,460 | $+45,935/yr | **$+72,369/yr** | +$26,434 |
+| Val | $30,591 | $+16,346/yr | **$+28,701/yr** | +$12,355 |
+| Gene | $100,000 | $+45,933/yr | **$+70,869/yr** | +$24,936 |
+| **Total** | **$233,051** | **$+108,214/yr** | **$+171,939/yr** | **+$63,725/yr (+58.9%)** |
+
+Phase B (v10.1.0) is expected to add additional lift on top by trading the broader universe directly (currently the engine still trades the static 12; the cluster gate captures most of the day-decision lift without WS expansion).
+
+---
+
 ## v9.1.140 (2026-05-19) — merge: pull main into staging (R32 reversal circuit-breaker + EOD dedup + rollback-cooldown + /close)
 
 Brings staging up to date with `main` after its v9.1.131-137 series. New on staging from main:

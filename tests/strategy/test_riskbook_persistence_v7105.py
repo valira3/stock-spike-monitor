@@ -17,6 +17,7 @@ mechanical loss of `_open_tickets` across Railway redeploys. These
 helpers fix that at the root: paper_state.json now round-trips the
 ticket dict so the post-deploy RiskBook matches the pre-deploy one.
 """
+from __future__ import annotations
 
 from orb.risk_book import RiskBook, RiskBookRegistry, _Ticket
 

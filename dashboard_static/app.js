@@ -4587,7 +4587,92 @@
         ? '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">Session:</span>' + v9chips.join('') + '</div>'
         : '';
 
-      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml;
+      // v10.0.0 -- broad-universe scanner + sector-cluster gate chips.
+      // Same state as the Main tab pills (renderV10DayStatus). The
+      // scanner runs once per session globally; each per-portfolio panel
+      // shows the same picks + cluster decision so the operator sees
+      // identical context on every tab. Each tab remains independently
+      // gated by its own RiskBook / FSM / kill-switch (those stay
+      // per-portfolio).
+      var sc10 = (v10 && v10.scanner) || {};
+      var v10chips = [];
+      // Universe pill
+      var uniBg, uniFg, uniTxt, uniTitle;
+      if (sc10.dynamic_universe_enabled === false) {
+        uniBg = "rgba(55,65,81,0.30)"; uniFg = "#9ca3af";
+        uniTxt = "Univ static12";
+        uniTitle = "Dynamic-universe scanner DISABLED.";
+      } else if (sc10.dynamic_universe_active) {
+        var nP10 = (sc10.picks || []).length;
+        uniBg = "rgba(8,145,178,0.20)"; uniFg = "#67e8f9";
+        uniTxt = "Univ dyn " + nP10;
+        uniTitle = "v10 scanner ACTIVE -- " + nP10
+          + " S&P 500 picks for " + (sc10.date || "today")
+          + ". Fallback: " + (sc10.fallback_reason || "—");
+      } else {
+        uniBg = "rgba(161,98,7,0.20)"; uniFg = "#fcd34d";
+        uniTxt = "Univ fallback";
+        uniTitle = "v10 fell back to static 12 -- reason: "
+          + (sc10.fallback_reason || "unknown");
+      }
+      v10chips.push(
+        '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+        + 'font-weight:600;background:' + uniBg + ';color:' + uniFg
+        + '" title="' + uniTitle.replace(/"/g, '&quot;') + '">'
+        + uniTxt + '</span>'
+      );
+      // Cluster gate pill
+      if (sc10.cluster_gate_active) {
+        var clusBg, clusFg, clusTxt, clusTitle;
+        if (sc10.cluster_gate_skipped_day) {
+          clusBg = "rgba(220,38,38,0.30)"; clusFg = "#fca5a5";
+          clusTxt = "DAY SKIPPED " + (sc10.cluster_top_sector || "?")
+            + " " + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "%";
+          clusTitle = "Sector-cluster day-skip gate FIRED. "
+            + (sc10.cluster_max_sector_pct || 0).toFixed(0)
+            + "% of top-K picks are in "
+            + (sc10.cluster_top_sector || "?")
+            + ". Entries blocked across ALL portfolios.";
+        } else {
+          clusBg = "rgba(22,163,74,0.18)"; clusFg = "#86efac";
+          clusTxt = "cluster " + (sc10.cluster_top_sector || "—")
+            + " " + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "%";
+          clusTitle = "Sector-cluster gate active but not triggered. "
+            + "Top sector: " + (sc10.cluster_top_sector || "—") + " ("
+            + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "% of K).";
+        }
+        v10chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+          + 'font-weight:600;background:' + clusBg + ';color:' + clusFg
+          + '" title="' + clusTitle.replace(/"/g, '&quot;') + '">'
+          + clusTxt + '</span>'
+        );
+      }
+      // Picks chip (compact -- shows comma-separated tickers)
+      var picks10 = sc10.picks || [];
+      if (picks10.length) {
+        var t10 = picks10.map(function (p) { return p.ticker; }).join(",");
+        var secs10 = {};
+        picks10.forEach(function (p) {
+          var s = p.sector || "?";
+          secs10[s] = (secs10[s] || 0) + 1;
+        });
+        var sBd = Object.keys(secs10).sort(function (a, b) {
+          return secs10[b] - secs10[a];
+        }).map(function (s) { return s + " ×" + secs10[s]; }).join(" · ");
+        v10chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+          + 'font-weight:600;background:rgba(31,41,55,0.50);color:#e5e7eb;'
+          + 'font-family:JetBrains Mono,monospace" title="Today’s scanner picks ('
+          + picks10.length + '): ' + t10 + '. Sectors: '
+          + sBd.replace(/"/g, '&quot;') + '">picks ' + t10 + '</span>'
+        );
+      }
+      var v10chipsHtml = v10chips.length
+        ? '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">v10:</span>' + v10chips.join('') + '</div>'
+        : '';
+
+      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml + v10chipsHtml;
     }
 
     // v8.3.16 -- suppress same-tick opposite_side rejects from the
@@ -6191,6 +6276,9 @@
      "v10-mbr-pill", "v10-mbr-pill-divider",
      "v10-chase-pill", "v10-chase-pill-divider",
      "v10-cooldown-pill", "v10-cooldown-pill-divider",
+     "v10-universe-pill", "v10-universe-pill-divider",
+     "v10-cluster-pill", "v10-cluster-pill-divider",
+     "v10-picks-pill", "v10-picks-pill-divider",
     ].forEach(function (id) {
       var _el = document.getElementById(id);
       if (!_el) return;
@@ -6390,6 +6478,103 @@
       } else {
         chasePill.style.display = "none";
         chaseDiv.style.display = "none";
+      }
+    }
+
+    // v10.0.0 -- broad-universe scanner + sector-cluster gate.
+    // Same three pills render on Val/Gene tabs via renderV10PerPortfolio.
+    var sc = (v10 && v10.scanner) || {};
+    var uniPill = document.getElementById("v10-universe-pill");
+    var uniDiv  = document.getElementById("v10-universe-pill-divider");
+    var clusPill = document.getElementById("v10-cluster-pill");
+    var clusDiv  = document.getElementById("v10-cluster-pill-divider");
+    var picksPill = document.getElementById("v10-picks-pill");
+    var picksDiv  = document.getElementById("v10-picks-pill-divider");
+    if (uniPill && uniDiv) {
+      if (sc.dynamic_universe_enabled === false) {
+        uniPill.textContent = "Univ static12";
+        uniPill.style.background = "#374151";
+        uniPill.style.color = "#9ca3af";
+        uniPill.title = "Dynamic-universe scanner DISABLED. Engine uses static 12-ticker universe. Set ORB_DYNAMIC_UNIVERSE=1 in Railway env to enable.";
+      } else if (sc.dynamic_universe_active) {
+        var nP = (sc.picks || []).length;
+        uniPill.textContent = "Univ dyn " + nP;
+        uniPill.style.background = "#0891b2"; // cyan-700
+        uniPill.style.color = "#cffafe";       // cyan-100
+        uniPill.title = "v10 dynamic-universe scanner ACTIVE. " + nP
+          + " picks selected from S&P 500 via compression signal at "
+          + (sc.date || "today") + ". Fallback reason if any: "
+          + (sc.fallback_reason || "—");
+      } else {
+        uniPill.textContent = "Univ fallback";
+        uniPill.style.background = "#a16207"; // amber-700
+        uniPill.style.color = "#fef3c7";       // amber-100
+        uniPill.title = "v10 dynamic-universe enabled but fell back to "
+          + "static 12 -- reason: " + (sc.fallback_reason || "unknown")
+          + ". Check premarket bar coverage at "
+          + "/data/bars/<DATE>/<TICKER>.jsonl.";
+      }
+      uniPill.style.display = "";
+      uniDiv.style.display = "";
+    }
+    if (clusPill && clusDiv) {
+      if (!sc.cluster_gate_active) {
+        clusPill.textContent = "cluster off";
+        clusPill.style.background = "#374151";
+        clusPill.style.color = "#9ca3af";
+        clusPill.title = "Sector-cluster day-skip gate disabled "
+          + "(ORB_CLUSTER_MAX_SECTOR_PCT=0). v10 default is 60%.";
+      } else if (sc.cluster_gate_skipped_day) {
+        clusPill.textContent = "DAY SKIPPED "
+          + (sc.cluster_top_sector || "?")
+          + " " + (sc.cluster_max_sector_pct || 0).toFixed(0) + "%";
+        clusPill.style.background = "#dc2626"; // red-600
+        clusPill.style.color = "#fff";
+        clusPill.title = "Day skipped by sector-cluster gate: "
+          + (sc.cluster_max_sector_pct || 0).toFixed(0) + "% of top-K picks "
+          + "are in sector " + (sc.cluster_top_sector || "?") + ", "
+          + "exceeding the threshold. All new entries blocked across all "
+          + "portfolios until the next session.";
+      } else {
+        clusPill.textContent = "cluster "
+          + (sc.cluster_top_sector || "—") + " "
+          + (sc.cluster_max_sector_pct || 0).toFixed(0) + "%";
+        clusPill.style.background = "#166534"; // green-700
+        clusPill.style.color = "#dcfce7";       // green-100
+        clusPill.title = "Sector-cluster gate ACTIVE and not triggered. "
+          + "Top sector among picks: " + (sc.cluster_top_sector || "—")
+          + " (" + (sc.cluster_max_sector_pct || 0).toFixed(0)
+          + "% of K). Threshold from ORB_CLUSTER_MAX_SECTOR_PCT.";
+      }
+      clusPill.style.display = "";
+      clusDiv.style.display = "";
+    }
+    if (picksPill && picksDiv) {
+      var picksArr = sc.picks || [];
+      if (!picksArr.length) {
+        picksPill.style.display = "none";
+        picksDiv.style.display = "none";
+      } else {
+        var tickers = picksArr.map(function (p) { return p.ticker; });
+        var sectorCounts = {};
+        picksArr.forEach(function (p) {
+          var s = p.sector || "?";
+          sectorCounts[s] = (sectorCounts[s] || 0) + 1;
+        });
+        var sectorSummary = Object.keys(sectorCounts).sort(function (a, b) {
+          return sectorCounts[b] - sectorCounts[a];
+        }).map(function (s) {
+          return s + " ×" + sectorCounts[s];
+        }).join(" · ");
+        picksPill.textContent = "picks " + tickers.join(",");
+        picksPill.style.background = "#1f2937";
+        picksPill.style.color = "#e5e7eb";
+        picksPill.style.fontFamily = "JetBrains Mono,monospace";
+        picksPill.title = "Today's premarket scanner picks (" + tickers.length
+          + " names from S&P 500): " + tickers.join(", ")
+          + "\nSector breakdown: " + sectorSummary;
+        picksPill.style.display = "";
+        picksDiv.style.display = "";
       }
     }
 

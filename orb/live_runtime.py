@@ -46,6 +46,13 @@ from typing import Mapping, Optional
 from orb.engine import OrbConfig, OrbEngine
 from orb.eod_reversal import EodReversalConfig, EodReversalEngine
 from orb.live_adapter import LiveAdapter, LiveAdapterRegistry, EntryResult, ExitResult
+from orb import scanner_state as _scanner_state
+from orb.live_premarket_scanner import (
+    compute_universe as _compute_universe,
+    default_bar_archive_root as _default_bar_archive,
+    default_sectors_path as _default_sectors_path,
+    default_universe_path as _default_universe_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +145,76 @@ def is_live_mode_on() -> bool:
     runtime stays loaded; tick() functions return no-ops.
     """
     return os.environ.get("ORB_LIVE_MODE", "1") == "1"
+
+
+def _is_dynamic_universe_on() -> bool:
+    """v10.0.0 -- ORB_DYNAMIC_UNIVERSE env flag (default "1" = on).
+
+    When on, ensure_session_started runs the premarket scanner against the
+    S&P 500 to compute today's universe + sector-cluster decision. Result
+    is published to scanner_state for /api/state consumption. Phase A of
+    v10.0.0 ships the day-skip behavior (cluster gate skips the day
+    entirely); Phase B (v10.1.0) will swap the WS-subscribed universe
+    each morning. See CHANGELOG v10.0.0.
+    """
+    return os.environ.get("ORB_DYNAMIC_UNIVERSE", "1") == "1"
+
+
+def _run_dynamic_universe_scanner(date_iso: str) -> None:
+    """Run the premarket scanner for today and publish to scanner_state.
+
+    Always returns (no exceptions propagate to the bootstrap path).
+    Fails open: on any error or missing data, sets scanner_state to a
+    "fallback" result that the dashboard renders as "dynamic universe
+    inactive" so the operator sees the degradation immediately.
+
+    Defaults match the v10.0.0 champion config from the broad-universe
+    research (compression top-7, mdv=$30M, cluster=60%).
+    """
+
+    def _f(name: str, default: float) -> float:
+        try:
+            return float(os.environ.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _i(name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    enabled = _is_dynamic_universe_on()
+    try:
+        result = _compute_universe(
+            date_str=date_iso,
+            bar_archive_root=_default_bar_archive(),
+            universe_path=_default_universe_path(),
+            sectors_path=_default_sectors_path(),
+            signal=os.environ.get("ORB_DYNAMIC_UNIVERSE_SIGNAL", "compression"),
+            top_k=_i("ORB_DYNAMIC_UNIVERSE_TOP_K", 7),
+            min_pm_bars=_i("ORB_DYNAMIC_UNIVERSE_MIN_PM_BARS", 10),
+            min_dollar_volume=_f("ORB_DYNAMIC_UNIVERSE_MIN_DOLLAR_VOL", 30_000_000.0),
+            pm_lookback_n=_i("ORB_DYNAMIC_UNIVERSE_PM_LOOKBACK_N", 5),
+            pm_min_lookback_min=_i("ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN", 30),
+            cluster_max_sector_pct=_f("ORB_CLUSTER_MAX_SECTOR_PCT", 60.0),
+            enabled=enabled,
+        )
+        _scanner_state.set_current(result)
+        logger.info(
+            "[V100-SCANNER] date=%s active=%s picks=%d cluster_skip=%s top_sector=%s "
+            "top_pct=%.0f%% fallback=%s",
+            date_iso,
+            result.dynamic_universe_active,
+            len(result.picks),
+            result.cluster_gate_skipped_day,
+            result.cluster_top_sector or "-",
+            result.cluster_max_sector_pct,
+            result.fallback_reason or "-",
+        )
+    except Exception as e:
+        logger.exception("[V100-SCANNER] failed: %s; clearing state", e)
+        _scanner_state.clear_state()
 
 
 # --- bootstrap ---
@@ -428,6 +505,17 @@ def ensure_session_started(
         except Exception as _e:
             logger.warning("[V900-SPY-LOADER] auto-load failed: %s", _e)
             spy_prior_ret_bps = None
+    # v10.0.0 -- Phase A: run premarket scanner BEFORE engine session start.
+    # Publishes today's picks + cluster-gate decision to scanner_state for
+    # /api/state consumption. The engine itself currently still trades the
+    # 12-ticker universe passed by the caller; the cluster gate is enforced
+    # by check_entry below when scanner_state.cluster_gate_skipped_day=True.
+    # v10.1.0 will additionally swap the engine's tracked universe each
+    # morning once WS subscription is dynamic.
+    try:
+        _run_dynamic_universe_scanner(date_iso)
+    except Exception as _se:
+        logger.warning("[V100-SCANNER] outer failed: %s", _se)
     result = _engine.start_new_session(
         date_iso=date_iso,
         tickers=tickers,
@@ -920,6 +1008,14 @@ def check_entry(
     a = adapters.get(portfolio_id)
     if a is None:
         return EntryResult(ok=False, reason_no=f"no_adapter:{portfolio_id}")
+    # v10.0.0 -- sector cluster gate. When the morning premarket scanner's
+    # top-K picks share one GICS sector at >= ORB_CLUSTER_MAX_SECTOR_PCT
+    # concentration, the day is flagged as a likely regime shift and ALL
+    # new entries are rejected (across every portfolio). Independent of
+    # the engine's tracked universe -- the gate decision is global per-day.
+    _cluster = _check_cluster_gate()
+    if _cluster:
+        return EntryResult(ok=False, reason_no=_cluster)
     # v9.1.131 -- rollback-cooldown gate (env-flagged, default OFF).
     # Blocks re-admit when N consecutive rollbacks have occurred on the
     # same (pid, ticker, side) within the configured window.
@@ -1052,6 +1148,29 @@ _pending_v10_sizes: dict[tuple[str, str], int] = {}
 # Set ORB_ROLLBACK_COOLDOWN_AFTER_N=0 on Railway to disable.
 _rollback_history: dict[tuple[str, str, str], list[float]] = {}
 _rollback_lock = threading.RLock()
+
+
+def _check_cluster_gate() -> Optional[str]:
+    """v10.0.0 -- block ALL admits when today's premarket scanner picks
+    are too concentrated in one GICS sector (regime-shift heuristic).
+
+    The decision is computed once per session by
+    `_run_dynamic_universe_scanner` and stored in `orb.scanner_state`.
+    This helper just consults the state. Returns a forensic-friendly
+    reason string when blocking, else None.
+    """
+    try:
+        r = _scanner_state.get_current()
+    except Exception:
+        return None
+    if r is None:
+        return None
+    if not r.cluster_gate_active or not r.cluster_gate_skipped_day:
+        return None
+    return (
+        f"cluster_gate_skip:{r.cluster_top_sector or '?'}_"
+        f"{r.cluster_max_sector_pct:.0f}pct"
+    )
 
 
 def _check_rollback_cooldown(
@@ -1527,6 +1646,20 @@ def snapshot() -> dict:
     # v9.1.0: EOD reversal addon state
     if eod is not None:
         snap["eod"] = eod.snapshot()
+    # v10.0.0: dynamic-universe scanner state (today's picks, cluster
+    # gate decision). Same dict shape across Main / Val / Gene -- the
+    # scanner runs ONCE per day and its output is global, not per-
+    # portfolio (every portfolio sees the same picks + gate decision).
+    # The UI surfaces this on all three tabs.
+    try:
+        snap["scanner"] = _scanner_state.to_snapshot_dict()
+        snap["scanner"]["dynamic_universe_enabled"] = _is_dynamic_universe_on()
+    except Exception as _se:
+        snap["scanner"] = {
+            "dynamic_universe_enabled": False,
+            "dynamic_universe_active": False,
+            "error": str(_se)[:120],
+        }
     return snap
 
 
