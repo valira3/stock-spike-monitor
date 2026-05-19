@@ -313,11 +313,15 @@ def test_check_cluster_gate_none_when_state_missing():
 
 
 def test_check_cluster_gate_none_when_not_skipped():
+    """Cluster gate active but not triggered today -- legitimate no-op."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from orb import scanner_state
     from orb.live_premarket_scanner import LiveScanResult
     from orb.live_runtime import _check_cluster_gate
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     scanner_state.set_current(LiveScanResult(
-        date_str="2026-05-20", dynamic_universe_active=True,
+        date_str=today_iso, dynamic_universe_active=True,
         cluster_gate_active=True, cluster_gate_skipped_day=False,
         cluster_max_sector_pct=25.0, cluster_top_sector="Tech",
         universe=["AAA"], picks=[], fallback_reason="",
@@ -326,11 +330,14 @@ def test_check_cluster_gate_none_when_not_skipped():
 
 
 def test_check_cluster_gate_fires_when_skipped():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from orb import scanner_state
     from orb.live_premarket_scanner import LiveScanResult
     from orb.live_runtime import _check_cluster_gate
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     scanner_state.set_current(LiveScanResult(
-        date_str="2026-05-20", dynamic_universe_active=True,
+        date_str=today_iso, dynamic_universe_active=True,
         cluster_gate_active=True, cluster_gate_skipped_day=True,
         cluster_max_sector_pct=71.4, cluster_top_sector="Information Technology",
         universe=[], picks=[], fallback_reason="",
@@ -342,18 +349,111 @@ def test_check_cluster_gate_fires_when_skipped():
 
 
 def test_check_cluster_gate_none_when_gate_disabled():
+    """cluster_gate_active=False even if skipped_day=True (shouldn't happen
+    in practice but the helper must respect cluster_gate_active)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from orb import scanner_state
     from orb.live_premarket_scanner import LiveScanResult
     from orb.live_runtime import _check_cluster_gate
-    # cluster_gate_active=False even if skipped_day=True (shouldn't happen
-    # in practice but the helper must respect cluster_gate_active)
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     scanner_state.set_current(LiveScanResult(
-        date_str="2026-05-20", dynamic_universe_active=True,
+        date_str=today_iso, dynamic_universe_active=True,
         cluster_gate_active=False, cluster_gate_skipped_day=True,
         cluster_max_sector_pct=80.0, cluster_top_sector="Tech",
         universe=[], picks=[], fallback_reason="",
     ))
     assert _check_cluster_gate() is None
+
+
+def test_check_cluster_gate_stale_date_returns_none(caplog):
+    """v10.0.1 -- scanner_state from yesterday must not block today.
+    Without this guard, a rehydrate-on-restart or a missed session-start
+    scan could leave a "skip the day" decision in place across day
+    boundaries and silently halt all trading."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import logging
+
+    from orb import scanner_state
+    from orb.live_premarket_scanner import LiveScanResult
+    from orb.live_runtime import _check_cluster_gate, _cluster_stale_logged_for
+
+    # Clear the one-shot log-set so the warning fires for this test
+    _cluster_stale_logged_for.clear()
+
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    # Pick a date that is guaranteed NOT to be today
+    stale_date = "2020-01-02"
+    assert stale_date != today_iso
+
+    scanner_state.set_current(LiveScanResult(
+        date_str=stale_date,
+        dynamic_universe_active=True,
+        cluster_gate_active=True,
+        cluster_gate_skipped_day=True,
+        cluster_max_sector_pct=85.0,
+        cluster_top_sector="Information Technology",
+        universe=[], picks=[], fallback_reason="",
+    ))
+    with caplog.at_level(logging.WARNING, logger="orb.live_runtime"):
+        out = _check_cluster_gate()
+    # Stale state must not block; result is None.
+    assert out is None
+    # And the forensic warning was logged exactly once.
+    matched = [r for r in caplog.records if "[V100-CLUSTER-STALE]" in r.message]
+    assert len(matched) == 1
+
+
+def test_check_cluster_gate_stale_warning_logged_once(caplog):
+    """Once the stale-date warning has fired for a given (stale, today)
+    pair, subsequent calls must NOT re-log -- prevents log spam when the
+    gate is consulted on every admit."""
+    import logging
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from orb import scanner_state
+    from orb.live_premarket_scanner import LiveScanResult
+    from orb.live_runtime import _check_cluster_gate, _cluster_stale_logged_for
+
+    _cluster_stale_logged_for.clear()
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    scanner_state.set_current(LiveScanResult(
+        date_str="2020-01-02",
+        dynamic_universe_active=True, cluster_gate_active=True,
+        cluster_gate_skipped_day=True,
+        cluster_max_sector_pct=80.0, cluster_top_sector="Tech",
+        universe=[], picks=[], fallback_reason="",
+    ))
+    with caplog.at_level(logging.WARNING, logger="orb.live_runtime"):
+        for _ in range(5):
+            assert _check_cluster_gate() is None
+    matched = [r for r in caplog.records if "[V100-CLUSTER-STALE]" in r.message]
+    assert len(matched) == 1, f"expected 1 stale log, got {len(matched)}"
+
+
+def test_check_cluster_gate_today_match_fires_normally():
+    """Sanity: when scanner_state.date_str matches today, the gate
+    behaves exactly as v10.0.0 -- fires the skip when concentrated."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from orb import scanner_state
+    from orb.live_premarket_scanner import LiveScanResult
+    from orb.live_runtime import _check_cluster_gate
+
+    today_iso = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    scanner_state.set_current(LiveScanResult(
+        date_str=today_iso,
+        dynamic_universe_active=True, cluster_gate_active=True,
+        cluster_gate_skipped_day=True,
+        cluster_max_sector_pct=71.4,
+        cluster_top_sector="Information Technology",
+        universe=[], picks=[], fallback_reason="",
+    ))
+    out = _check_cluster_gate()
+    assert out is not None and "cluster_gate_skip" in out
 
 
 # ----------------------------------------------------------------------------

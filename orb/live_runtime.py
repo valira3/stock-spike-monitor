@@ -1158,6 +1158,13 @@ def _check_cluster_gate() -> Optional[str]:
     `_run_dynamic_universe_scanner` and stored in `orb.scanner_state`.
     This helper just consults the state. Returns a forensic-friendly
     reason string when blocking, else None.
+
+    v10.0.1 -- date-mismatch guard. If scanner_state.date_str doesn't
+    match today's ET date, the result is stale (yesterday's scan
+    rehydrated, missed today's session-start scan, etc.). Treat as
+    inert + log [V100-CLUSTER-STALE] so the operator sees the issue
+    in the forensic feed; otherwise a stale "skip the day" decision
+    would block every trade today silently.
     """
     try:
         r = _scanner_state.get_current()
@@ -1165,11 +1172,43 @@ def _check_cluster_gate() -> Optional[str]:
         return None
     if r is None:
         return None
+    # Date-mismatch guard: today's ET date must match the scanner's date.
+    try:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        today_iso = _dt.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
+        if r.date_str and r.date_str != today_iso:
+            # Log once per stale date so the warning doesn't spam every
+            # admit; the date check itself is cheap so we still consult
+            # the gate on every call.
+            _log_cluster_stale_once(r.date_str, today_iso)
+            return None
+    except Exception:
+        # Date check failure must not strand the bot -- continue with
+        # the legacy "use whatever is in scanner_state" semantics.
+        pass
     if not r.cluster_gate_active or not r.cluster_gate_skipped_day:
         return None
     return (
         f"cluster_gate_skip:{r.cluster_top_sector or '?'}_"
         f"{r.cluster_max_sector_pct:.0f}pct"
+    )
+
+
+_cluster_stale_logged_for: set = set()
+
+
+def _log_cluster_stale_once(stale_date: str, today_iso: str) -> None:
+    """Emit [V100-CLUSTER-STALE] at most once per (stale_date, today)
+    pair so a long stale window doesn't flood logs on every admit."""
+    key = (stale_date, today_iso)
+    if key in _cluster_stale_logged_for:
+        return
+    _cluster_stale_logged_for.add(key)
+    logger.warning(
+        "[V100-CLUSTER-STALE] scanner_state carries date=%s but today=%s -- "
+        "treating gate as inert (re-run _run_dynamic_universe_scanner)",
+        stale_date, today_iso,
     )
 
 
