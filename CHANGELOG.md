@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.132 (2026-05-19) — rollback_admit ticker-orphan fix + cooldown default ON
+
+Two related fixes to the v10 rollback path.
+
+### Primary: rollback_admit no longer orphans valid earlier positions
+
+Pre-v9.1.132 `rollback_admit()` looked up `_ticker_to_ticket[ticker]`
+and deleted whatever ticket was there, regardless of whether it was
+the ticket being rolled back. When rapid re-admits stomped on the
+reverse-lookup (because every successful admit overwrites it), the
+rollback would clear the ticker mapping of an UNRELATED earlier valid
+position. Symptom: `check_exit_by_ticker(ticker)` returns
+`no_open_v10_position` even though the position still exists in
+`_open_positions` -- and legacy sentinel A fires the exit on Main.
+
+**2026-05-19 TSLA Main forensic**: 14:11 admit success -> 14:32+ ten
+re-admit/rollback cycles each stomped + cleared the reverse-lookup ->
+14:35 manage_positions exit check returned `no_open_v10_position` ->
+sentinel A exited at +$0.89 ($86 P&L) instead of letting v10 run to
+its ATR target.
+
+**Fix**: `rollback_admit()` now uses the passed `ticket_id` to target
+cleanup specifically:
+  * `_open_positions[ticket_id]` deleted only if `ticket_id` is in it
+  * `_ticker_to_ticket[ticker]` cleared only if it currently equals
+    `ticket_id` (the one being rolled back)
+  * Calls without `ticket_id=` (legacy callers) are now a no-op for
+    adapter cleanup (safer than guessing).
+
+### Mop-up: cooldown default flipped to ON
+
+`ORB_ROLLBACK_COOLDOWN_AFTER_N` defaults to 3 (was 0); window default
+stays 10 min. This was supposed to land with v9.1.131 but the squash-
+merge happened before the flip commit was pushed. Set
+`ORB_ROLLBACK_COOLDOWN_AFTER_N=0` on Railway to disable.
+
+Combined effect: even if a rollback loop starts, (a) the cooldown
+caps it at 3 attempts within 10 min and (b) the orphan fix ensures
+valid earlier positions survive any rollback that does fire.
+
+**Tests**: `tests/strategy/test_orb_rollback_admit_orphan.py` (4 cases
+including the multi-admit/rollback orphan repro); updated
+`test_orb_rollback_cooldown.py` for default-ON.
+
+---
+
 ## v9.1.131 (2026-05-19) — ORB rollback-cooldown lever (env-flagged, default OFF)
 
 Adds an opt-in cooldown that blocks re-admit on the same

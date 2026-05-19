@@ -1042,7 +1042,8 @@ _pending_v10_sizes: dict[tuple[str, str], int] = {}
 # rolling list of recent rollback timestamps (unix epoch). Consulted by
 # `_check_rollback_cooldown()` in `check_entry`; appended to by
 # `rollback_admit()` when a real unwind occurs (any_change=True).
-# Gated by env: ORB_ROLLBACK_COOLDOWN_AFTER_N (default 0 = disabled).
+# v9.1.132 -- default flipped to ON (N=3 in 10-min window).
+# Set ORB_ROLLBACK_COOLDOWN_AFTER_N=0 on Railway to disable.
 _rollback_history: dict[tuple[str, str, str], list[float]] = {}
 _rollback_lock = threading.RLock()
 
@@ -1051,19 +1052,19 @@ def _check_rollback_cooldown(
     portfolio_id: str, ticker: str, side: str,
 ) -> Optional[str]:
     """v9.1.131 -- block re-admit when consecutive rollbacks pile up
-    on the same (portfolio, ticker, side). Disabled by default.
+    on the same (portfolio, ticker, side). v9.1.132 default ON.
 
-    Reads:
-        ORB_ROLLBACK_COOLDOWN_AFTER_N -- threshold (default 0 = off)
+    Reads (with defaults):
+        ORB_ROLLBACK_COOLDOWN_AFTER_N -- threshold (default 3, 0 disables)
         ORB_ROLLBACK_COOLDOWN_MIN     -- sliding-window minutes (default 10)
 
     Returns a reason string (with count + remaining minutes) when the
     cooldown blocks admit, else None.
     """
     try:
-        after_n = int(os.environ.get("ORB_ROLLBACK_COOLDOWN_AFTER_N", "0"))
+        after_n = int(os.environ.get("ORB_ROLLBACK_COOLDOWN_AFTER_N", "3"))
     except Exception:
-        after_n = 0
+        after_n = 3
     if after_n <= 0:
         return None
     try:
@@ -1196,20 +1197,26 @@ def rollback_admit(
     # the dashboard clears and the ticker isn't shown as an open position
     # when the broker order was never filled.
     # v9.1.96: _open_positions is keyed by risk_ticket_id (not ticker).
-    # Use _ticker_to_ticket to find the correct key. v9.1.90's ticker-key
-    # lookup was a no-op; this is the correct version.
+    # v9.1.132: only remove the SPECIFIC ticket we're rolling back, and
+    # only clear the reverse-lookup if it points to OUR ticket. The
+    # pre-v9.1.132 code looked up `_ticker_to_ticket[ticker]` and
+    # blindly deleted whatever was there -- which orphaned legitimate
+    # earlier positions when a NEW admit had overwritten the reverse-
+    # lookup before this rollback ran. 2026-05-19 TSLA Main: an
+    # original 14:11 admit succeeded, then 10 re-admit+rollback cycles
+    # at 14:32+ each overwrote and cleared the reverse-lookup; the
+    # 14:11 ticket survived in _open_positions but had no ticker map
+    # so check_exit_by_ticker returned `no_open_v10_position` and
+    # legacy sentinel A fired the exit.
     try:
         adapter = get_adapter(portfolio_id)
-        if adapter is not None:
+        if adapter is not None and ticket_id:
             tk_upper = ticker.upper()
-            tid = adapter._ticker_to_ticket.get(tk_upper)
-            if tid and tid in adapter._open_positions:
-                del adapter._open_positions[tid]
-                adapter._ticker_to_ticket.pop(tk_upper, None)
+            if ticket_id in adapter._open_positions:
+                del adapter._open_positions[ticket_id]
                 any_change = True
-            elif tk_upper in adapter._ticker_to_ticket:
-                # Dangling reverse-lookup with no position — clean it up.
-                adapter._ticker_to_ticket.pop(tk_upper, None)
+            if adapter._ticker_to_ticket.get(tk_upper) == ticket_id:
+                del adapter._ticker_to_ticket[tk_upper]
                 any_change = True
     except Exception as e:
         logger.warning(
