@@ -1,4 +1,26 @@
-"""Round 24: dial partial-profit trigger below 1R (2026-05-18).
+"""Round 24: dial partial-profit trigger below 1R (2026-05-18). FALSIFIED.
+
+Result (FY Val + Main combined replay, 14 variants):
+  - Coupled (partial + BE both move below 1R): all variants neutral
+    to -$2,757/yr vs baseline. Lower partial booking costs more on
+    trades that DO reach 1R than it captures on trades that don't.
+  - Decoupled (partial below 1R, BE stays at 1R): same conclusion.
+    Runner staying un-BE'd doesn't compensate.
+  - Stacked with R21 14:00 fallback: still no improvement.
+
+Conclusion: 1R is the right partial trigger. The $43k/yr give-back
+on un-partialed trades is captured by R26 (`stale_full_exit`) at the
+position level, not by dialing the partial threshold.
+
+Status: NOT shipped. R26 (v9.1.130) ships as the answer to the
+un-partialed give-back problem instead.
+
+NOTE: references ORBConfig fields (partial_at_r_multiple,
+be_arm_at_r_multiple) that are NOT in main. Re-running requires
+re-adding those fields to tools/orb_backtest.py first.
+
+Original hypothesis
+===================
 
 Val MFE forensic found 219/393 morning trades (56%) peaked below 1R
 and never fired partial, leaving ~$43k/yr of unrealized profit

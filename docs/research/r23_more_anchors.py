@@ -1,4 +1,15 @@
-"""Round 23: more runner-exit signals + variations (2026-05-18).
+"""Round 23: more runner-exit signals + variations (2026-05-18). FALSIFIED.
+
+Result: dual-EMA cross, R-multiple lock, and N-bar VWAP confirmation
+all came in neutral-to-marginally-negative vs R21 14:00 baseline.
+No variant beat R21 on both FY AND Q4'25.
+
+Status: NOT shipped. R21 + R26 remain the live levers.
+
+NOTE: references ORBConfig fields (runner_ema_dual_cross_after_min,
+runner_r_lock_trigger_r, runner_r_lock_floor_r, runner_vwap_confirm_bars)
+that are NOT in main. Re-running requires re-adding those fields to
+tools/orb_backtest.py first.
 
 Tests three new mechanisms layered on the existing R21/R22 levers:
 

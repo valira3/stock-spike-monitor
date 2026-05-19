@@ -1,4 +1,19 @@
-"""Round 22: session-relative anchor runner exits (2026-05-18).
+"""Round 22: session-relative anchor runner exits (2026-05-18). FALSIFIED.
+
+Result (FY 2025+2026 Val combined replay):
+  - VWAP cross / EMA-9 cross / HOD trail levers: all marginally
+    positive on FY but lost to R21 14:00 on Q4'25 stability.
+  - Conclusion: session anchors do NOT beat the fixed 14:00 time
+    exit. Time is robust; indicators add noise without adding
+    edge on this corpus.
+
+Status: NOT shipped. R21 (`runner_eod_prep`) remains the production
+runner exit; R26 (`stale_full_exit`) covers the un-partialed cohort.
+
+NOTE: this script references ORBConfig fields (runner_vwap_cross_after_min,
+runner_ema9_cross_after_min, runner_hod_trail_bps, runner_hod_trail_after_min)
+that are NOT in main. Re-running requires re-adding those lever fields
+to tools/orb_backtest.py first.
 
 Problem statement
 =================
