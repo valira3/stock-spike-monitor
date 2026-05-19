@@ -360,6 +360,45 @@ def check_smoke() -> bool:
 # ---------------------------------------------------------------------------
 
 
+MIN_PYTHON = (3, 10)
+"""Minimum Python version required to run + lint the codebase.
+
+Several test files (e.g. tests/strategy/test_riskbook_persistence_v7105.py)
+use PEP 604 native `X | None` annotation syntax that ONLY parses on
+Python 3.10+. Running preflight on 3.9 fails pytest collection with a
+TypeError that looks unrelated to the actual problem. Pinning here
+fail-fasts with a clear message instead.
+
+To raise the floor in the future: bump this tuple + remove any
+`from __future__ import annotations` markers you no longer need.
+"""
+
+
+def check_python_version() -> bool:
+    """Warn (don't fail) on older Python. Tests that strictly need 3.10+
+    use `from __future__ import annotations` to keep 3.9 compatible.
+    Returns True always; the warning surfaces the future-hazard so a
+    new file using PEP 604 without the `__future__` import gets a
+    breadcrumb when its collection eventually fails downstream.
+    """
+    cur = sys.version_info[:2]
+    if cur < MIN_PYTHON:
+        print(
+            f"  {YELLOW}[WARN] Python {'.'.join(map(str, cur))} below "
+            f"recommended {'.'.join(map(str, MIN_PYTHON))}+ -- tests that use "
+            f"PEP 604 `X | None` syntax need `from __future__ import "
+            f"annotations`. If pytest collection fails below, that's why.{RESET}",
+            flush=True,
+        )
+    else:
+        print(
+            f"  {GREEN}[OK] Python {'.'.join(map(str, cur))} "
+            f"(min {'.'.join(map(str, MIN_PYTHON))}){RESET}",
+            flush=True,
+        )
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Local CI runner for stock-spike-monitor (cross-platform).",
@@ -405,6 +444,10 @@ def main() -> int:
         )
 
     failures: list[str] = []
+
+    # [0] Python version (warn-only -- check_pytest is the real gate)
+    _hdr("0", total, f"Python >= {'.'.join(map(str, MIN_PYTHON))} (warn-only)")
+    check_python_version()
 
     # [1] pytest
     _hdr("1", total, "pytest tests/strategy/")
