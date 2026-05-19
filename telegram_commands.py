@@ -1173,6 +1173,185 @@ async def cmd_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("\u2500", reply_markup=_menu_button())
 
 
+async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """v9.1.135 -- Manually close an open position on every portfolio.
+
+    Usage:  /close <TICKER>
+
+    Operator-only (enforced globally by the _auth_guard in
+    telegram_ui/runtime.py against TRADEGENIUS_OWNER_IDS; no per-handler
+    check needed). Closes the named ticker on EVERY portfolio currently
+    holding it (Main + Val + Gene). Dispatches via the appropriate path
+    per portfolio:
+      - Main: broker.orders.close_breakout (legacy)
+      - Val / Gene: executors/base.py:fire_*(reduce_only=True) via
+        engine/scan.py:_v10_dispatch_executor_fire
+
+    The broker submits MARKET DAY orders; the `price` argument is only
+    used by the cumulative-notional-cap accounting (skipped when
+    reduce_only=True), so the position's entry_price is a safe reference.
+
+    Logs `[V79-MANUAL-CLOSE]` forensic per portfolio close. Replies with
+    a per-portfolio status summary. Failures are caught and reported in
+    the same reply so one bad portfolio doesn't shadow the others.
+
+    Motivation: 2026-05-19 Val TSLA SHORT case -- the position made a
+    favorable move but never reached 1R, then unwound. The R27-R32
+    research sweeps confirmed no automated lever can catch this case
+    without destroying value on the 30+ normal trades it would
+    false-positive on. Manual operator override is the only safe
+    intervention; this command is that override surface.
+    """
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Usage: /close <TICKER>\n  Closes on every portfolio holding it.",
+            reply_markup=_menu_button(),
+        )
+        return
+    ticker = args[0].upper().strip()
+    if not ticker or not ticker.isalnum():
+        await update.message.reply_text(
+            "\u26a0\ufe0f Invalid ticker symbol.",
+            reply_markup=_menu_button(),
+        )
+        return
+
+    tg = _tg_module()
+    operator_id = update.effective_user.id if update.effective_user else "?"
+
+    # 1. Find open positions across all portfolios.
+    # Each entry: (portfolio_id, side_str, price_ref, shares).
+    targets: list[tuple[str, str, float, int]] = []
+
+    # Main: tg.positions (long) + tg.short_positions (short).
+    main_long = getattr(tg, "positions", {}) or {}
+    main_short = getattr(tg, "short_positions", {}) or {}
+    if ticker in main_long:
+        p = main_long[ticker]
+        targets.append(
+            (
+                "main",
+                "long",
+                float(p.get("entry_price") or p.get("entry") or 0.0),
+                int(p.get("shares") or 0),
+            )
+        )
+    if ticker in main_short:
+        p = main_short[ticker]
+        targets.append(
+            (
+                "main",
+                "short",
+                float(p.get("entry_price") or p.get("entry") or 0.0),
+                int(p.get("shares") or 0),
+            )
+        )
+
+    # Val / Gene: via the v10 LiveAdapter registry.
+    try:
+        from orb import live_runtime as _orb_runtime
+
+        engine = _orb_runtime.get_engine()
+        if engine is not None:
+            for pid in engine.portfolio_ids:
+                if pid == "main":
+                    continue
+                adapter = _orb_runtime.get_adapter(pid)
+                if adapter is None:
+                    continue
+                for pos in adapter.list_open_positions():
+                    if pos.ticker.upper() == ticker:
+                        targets.append(
+                            (
+                                pid,
+                                pos.side.lower(),
+                                float(pos.entry_price),
+                                int(pos.shares),
+                            )
+                        )
+    except Exception:
+        logger.exception("[V79-MANUAL-CLOSE] adapter discovery failed")
+
+    if not targets:
+        await update.message.reply_text(
+            "\u2139 No open %s positions on main/val/gene." % ticker,
+            reply_markup=_menu_button(),
+        )
+        logger.info(
+            "[V79-MANUAL-CLOSE] %s no_open_positions operator=%s",
+            ticker, operator_id,
+        )
+        return
+
+    # 2. Dispatch the close per (pid, side). Each is wrapped so a single
+    # failure doesn't strand the rest.
+    results: list[tuple[str, str, str, float, int]] = []
+    for pid, side, price_ref, shares in targets:
+        try:
+            if pid == "main":
+                from broker.orders import close_breakout as _close_breakout
+                from side import Side as _Side
+
+                _side_enum = _Side.LONG if side == "long" else _Side.SHORT
+                _close_breakout(
+                    ticker, float(price_ref), _side_enum, reason="manual_close",
+                )
+                status = "OK"
+            else:
+                from engine.scan import _v10_dispatch_executor_fire
+
+                close_side = "short" if side == "long" else "long"
+                fired = _v10_dispatch_executor_fire(
+                    pid=pid,
+                    side=close_side,
+                    ticker=ticker,
+                    price=float(price_ref),
+                    shares=int(shares),
+                    callbacks=None,
+                    reduce_only=True,
+                )
+                status = "OK" if fired else "FAILED"
+                if fired:
+                    try:
+                        from engine.portfolio_book import PORTFOLIOS as _pb_map
+
+                        _pb_pid = _pb_map.get(pid)
+                        if _pb_pid is not None:
+                            _pb_pid.record_post_trade(ticker, side)
+                    except Exception:
+                        logger.debug(
+                            "[V79-MANUAL-CLOSE] %s/%s record_post_trade skipped",
+                            pid, ticker, exc_info=True,
+                        )
+            logger.warning(
+                "[V79-MANUAL-CLOSE] %s/%s %s reason=telegram_manual_close "
+                "price=%.4f shares=%d operator=%s status=%s",
+                pid, ticker, side, price_ref, shares, operator_id, status,
+            )
+            results.append((pid, side, status, price_ref, shares))
+        except Exception as e:
+            logger.exception(
+                "[V79-MANUAL-CLOSE] %s/%s %s dispatch raised", pid, ticker, side,
+            )
+            results.append(
+                (pid, side, "ERR:%s" % type(e).__name__, price_ref, shares),
+            )
+
+    # 3. Reply with summary.
+    lines = ["\u26a0\ufe0f Manual close: %s" % ticker]
+    for pid, side, status, price, shares in results:
+        side_short = side[:1].upper()
+        lines.append(
+            "  %-4s %s %3d sh @ $%.2f -> %s"
+            % (pid, side_short, shares, price, status)
+        )
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=_menu_button(),
+    )
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show a quick tap-grid of all commands."""
     keyboard = _build_menu_keyboard()

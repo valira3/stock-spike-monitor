@@ -195,6 +195,9 @@ def run_telegram_bot():
     # v5.13.5 \u2014 Phase 1 (Section I) permit diagnostic.
     app.add_handler(CommandHandler("regime", telegram_commands.cmd_regime))
     app.add_handler(CommandHandler("monitoring", telegram_commands.cmd_monitoring))
+    # v9.1.135 -- operator-controlled manual close. Owner-gated by the
+    # _auth_guard above (group=-1) -- no per-handler owner check needed.
+    app.add_handler(CommandHandler("close", telegram_commands.cmd_close))
     app.add_handler(CommandHandler("algo", telegram_commands.cmd_algo))
     app.add_handler(CommandHandler("strategy", telegram_commands.cmd_strategy))
     app.add_handler(CommandHandler("test", telegram_commands.cmd_test))
