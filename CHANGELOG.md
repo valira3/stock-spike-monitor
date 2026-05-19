@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.138 (2026-05-18) — merge: pull prod fixes from main into staging
+
+Reconciles the staging branch (v9.1.128-137, week-replay UI + 1.9× notional cap) with main's v9.1.121-128 production hotfix series (INGEST_DISABLE_WS, executor-based resolve_equity, post-restart reconciliation, OR-retracement gate, EOD safety-net + cap-bypass fix, per-portfolio EXIT loop, removal of ORB_PORTFOLIO_FIRE). Both branches independently authored a "v9.1.128" commit with different content — this merge keeps both sets of entries below; the version is bumped to 9.1.138 to dedupe.
+
+No behavior changes in this commit beyond the textual merge: every PR's behavior is unchanged from how it ran on its origin branch. Conflicts resolved in `bot_version.py`, `trade_genius.py`, and this file (entry order).
+
+---
+
 ## v9.1.137 (2026-05-18) — replay: regenerate last-week snapshots with the 1.9× cap + morning↔EOD interaction
 
 Follow-up to v9.1.136. Operator asked to regenerate replay snapshots for 05-11→05-15 to reflect the new staging gross-cap lever, **including** the morning ↔ EOD interaction (a morning position that holds past 15:00 ET consumes gross-notional capacity that EOD r17 would otherwise use).
@@ -337,6 +345,366 @@ python tools/afternoon_backtest.py --strategy eod_reversal --corpus data \\
 ```
 
 Morning 6.5s pkl-cache run, EOD 4m20s full slip-by-slip simulation. 341 corpus days (2025-01-02 to 2026-05-13), 261 morning trade-days, 680 EOD entries, 471 morning entries (57.1% WR). 1 negative quarter of 6 (2025-Q1, -$4,448 combined — structurally weak quarter, NFLX-driven; see Keystone skill).
+
+---
+
+## v9.1.128 (2026-05-18) — Remove `ORB_PORTFOLIO_FIRE`: always-independent only
+
+The mirror-mode escape hatch is gone. After v9.1.127 closed the last
+independence gap (per-portfolio exit loop), there is no functional
+reason to keep `ORB_PORTFOLIO_FIRE` around — Val/Gene have no
+"mirror Main" mode to fall back to that's any safer than the
+always-independent path. Cleaner config surface, fewer dead-code
+branches in monitors/tests/dashboard.
+
+Code:
+
+- `executors/base.py:_on_signal` -- the independent-mode skip guard
+  on ENTRY/EXIT/PARTIAL_EXIT_* is now unconditional. The env read is
+  gone. EOD_CLOSE_ALL still dispatches (v9.1.126 safety-net sweep).
+- `engine/scan.py` -- 3 sites had env-gated short-circuits removed:
+    1. `_v10_dispatch_executor_fire`: dropped the `ORB_PORTFOLIO_FIRE`
+       check; only the `ORB_LIVE_MODE` kill switch remains.
+    2. `_v10_dispatch_executor_partial_close`: same.
+    3. `_v10_per_portfolio_exit_pass`: same.
+  Two stale "mirror mode" comments on `_orb_long_entry`/`_orb_short_entry`
+  + rollback paths cleaned up.
+- `orb/live_runtime.py:rollback_admit` -- docstring no longer
+  references mirror mode (the rollback now only fires on missing
+  executor keys or the live-mode kill switch).
+
+Monitor + dashboard:
+
+- `tools/dashboard_monitor_invariants.py:inv_val_gene_trades_match_main`
+  -- 280-line function reduced to a permanent skip stub. The
+  invariant compared Val/Gene broker trade counts against Main, which
+  only made sense in mirror mode. In always-independent mode Val/Gene
+  counts diverge by design (independent RiskBook + EOD reversal
+  fills). Kept the function as a stub so the invariant registry list
+  and historical jsonl snapshots stay parseable.
+- Other monitor comments referencing `ORB_PORTFOLIO_FIRE` updated to
+  reflect always-independent reality.
+- `dashboard_server.py`, `dashboard_static/app.js`,
+  `tools/system_check_bot.py`, `tools/dashboard_analysis.py` --
+  comment-only cleanup.
+
+Tests:
+
+- `tests/strategy/test_independent_mode_entry_guard.py` -- rewritten
+  for the v9.1.128 always-skip semantics; mirror-mode test deleted,
+  new "skip is unconditional even with the flag set to 0" test
+  pins the regression.
+- `tests/strategy/test_per_portfolio_exit_pass.py` -- mirror-mode
+  test (`test_skipped_when_mirror_mode`) deleted; fixture no longer
+  sets `ORB_PORTFOLIO_FIRE`.
+- `tests/strategy/test_executor_eod_sweep.py` -- consolidated 3
+  mode-variant tests into 2 covering the single behavior.
+- `tests/strategy/test_executor_partial_close.py` -- deleted the
+  `TestOnSignalPartialDispatch` class (4 tests that exercised
+  unreachable code).
+- `tests/strategy/test_orb_executor_fire.py` -- renamed
+  `test_explicit_zero_skips_fire` -> `test_kill_switch_skips_fire`,
+  inverted to assert `ORB_LIVE_MODE=0` is the kill switch.
+- `tests/strategy/test_orb_killswitch_threadsafety.py` -- removed
+  the `test_portfolio_fire_off_overrides_live_mode_on` test.
+- `test_orb_reaudit_fixes.py` + `test_executor_reduce_only.py` +
+  `test_dashboard_monitor_invariants.py` -- redundant `setenv` lines
+  dropped.
+
+Docs:
+
+- `CLAUDE.md` -- "Independent-mode default" section retitled
+  "Always-independent portfolios"; rollback note updated.
+- `ARCHITECTURE.md` -- env-flag table row deleted; rollback section
+  updated; per-portfolio exit pass added to the call-graph.
+- `docs/staging_and_ops_design.md` -- staging env recipe no longer
+  sets the removed flag; staging-vs-prod diff table row dropped.
+
+Operator action: the `ORB_PORTFOLIO_FIRE` Railway env variable can
+be deleted from prod + staging environments. Leaving it set has no
+effect (the code no longer reads it).
+
+## v9.1.127 (2026-05-18) — Per-portfolio EXIT loop: Val/Gene fully independent of Main
+
+Closes the v8.3.23 limitation flagged in `CLAUDE.md` and the
+`tests/strategy/test_independent_mode_entry_guard.py` docstring:
+"a future per-portfolio exit loop will replace this in v8.3.24+".
+Until this PR, Val/Gene mirrored Main's bus `EXIT_LONG`/`EXIT_SHORT`/
+`PARTIAL_EXIT_*` signals — so a position Val admitted that Main rejected
+(different RiskBook decision, fully expected in independent mode) had
+no intraday exit signal at all and could only flush at the v9.1.126
+15:57 ET EOD safety-net sweep.
+
+Val and Gene are now fully independent of Main on both entry AND exit:
+
+  - Entries: `engine/scan.py:_v10_dispatch_executor_fire`
+    -> `executor.fire_long`/`fire_short` (since v8.3.23).
+  - Exits: NEW per-portfolio pass `_v10_per_portfolio_exit_pass`
+    runs each scan cycle. For every non-main portfolio it iterates
+    `adapter.list_open_positions()`, calls
+    `_orb_runtime.check_exit_by_ticker(portfolio_id=pid)`, and on a
+    full-exit decision dispatches the close via
+    `_v10_dispatch_executor_fire(..., reduce_only=True)`. Partial-
+    profit decisions dispatch via the new
+    `_v10_dispatch_executor_partial_close` helper which calls the
+    executor's `_partial_close_position_idempotent`.
+
+Companion change in `executors/base.py:_on_signal`: the v8.3.23
+independent-mode skip guard, which previously fenced only
+`ENTRY_LONG`/`ENTRY_SHORT`, now also skips `EXIT_LONG`,
+`EXIT_SHORT`, `PARTIAL_EXIT_LONG`, `PARTIAL_EXIT_SHORT`.
+`EOD_CLOSE_ALL` stays through the bus listener as the v9.1.126
+15:57 ET safety-net sweep.
+
+Mirror mode (`ORB_PORTFOLIO_FIRE=0`) is unchanged — both entries
+and exits still flow through Main's bus on Val/Gene.
+
+Files:
+
+- `engine/scan.py` -- new `_v10_per_portfolio_exit_pass(callbacks)`
+  + `_v10_dispatch_executor_partial_close(...)` helpers; wired into
+  `scan_loop` after the per-ticker loop and before `_eod_reversal_pass`.
+  Stale "follow-up PR" docstring + comment on `_orb_long_entry` cleaned
+  up.
+- `orb/live_adapter.py` -- new `LiveAdapter.list_open_positions()`
+  accessor returns a snapshot list of open `OrbPosition` objects.
+- `executors/base.py:_on_signal` -- skip set extended to EXIT_* +
+  PARTIAL_EXIT_* in independent mode.
+
+Test coverage:
+
+- `tests/strategy/test_per_portfolio_exit_pass.py` (new) -- 10 unit
+  tests: mirror-mode skip, kill-switch skip, no-engine skip, main-pid
+  skip, full-exit long -> close_side=short with reduce_only=True,
+  full-exit short -> close_side=long, no-exit no-dispatch, partial
+  routes to partial-close dispatch, multi-portfolio iteration,
+  missing-bars defensive skip.
+- `tests/strategy/test_independent_mode_entry_guard.py` -- pre-v9.1.127
+  "EXIT/PARTIAL passes through" tests inverted to assert the new skip
+  behavior; new "mirror mode lets EXIT through" and "EOD_CLOSE_ALL
+  still passes" tests added.
+- `tests/strategy/test_executor_partial_close.py` -- the bus-mirror
+  `_on_signal` dispatch tests now set `ORB_PORTFOLIO_FIRE=0`
+  explicitly so they continue to pin the legacy mirror-mode path.
+
+## v9.1.126 (2026-05-18) — EOD safety-net: Val/Gene always sweep all positions
+
+Follow-up to v9.1.125. The 2026-05-18 audit surfaced a second hole in the
+EOD close chain: in independent mode (`ORB_PORTFOLIO_FIRE=1`, the default
+since v8.3.23) the `EOD_CLOSE_ALL` handler in `executors/base.py:_on_signal`
+**skipped** `client.close_all_positions(cancel_orders=True)` on the
+"engines own their exits" rationale. That was unsafe on two paths:
+
+  - **Morning ORB position Val/Gene admitted that Main rejected.** With
+    independent RiskBook fanout, Val/Gene can hold a position Main never
+    opened. Main's `EXIT_LONG`/`EXIT_SHORT` bus signals never reference
+    that ticker, and `orb.live_runtime.check_exit` is not yet wired into
+    a per-portfolio sentinel loop. The position stayed open past close
+    with no safety net.
+
+  - **EOD reversal stragglers if the scan loop stalled at 15:56.** The
+    v9.1.0 EOD reversal engine flushes positions in `_eod_reversal_pass`,
+    which only fires inside the scan loop. If the loop went silent past
+    15:56 (as happened on 2026-05-18 -- see v9.1.125 Bug 2), the
+    positions stayed open and the v9.1.106 skip ensured the 15:57
+    `EOD_CLOSE_ALL` safety net was a no-op.
+
+Additionally, the v9.1.106 path was outright broken: it wiped local
+tracking via `_remove_position` without closing the Alpaca leg, so
+subsequent `_reconcile_broker_positions` would see the position as a
+broker orphan and try to graft it back -- a flat-state lie either way.
+
+Fix:
+
+- `executors/base.py:_on_signal` -- `EOD_CLOSE_ALL` branch now **always**
+  calls `client.close_all_positions(cancel_orders=True)`. The independent-
+  vs-mirror conditional and the `ORB_PORTFOLIO_FIRE` env read are removed.
+  Safe because v9.1.125 moved the EOD reversal exit window from 15:59 to
+  15:56, leaving a 1-min buffer before the 15:57 `EOD_CLOSE_ALL` arrives;
+  EOD reversal positions are already flushed in the normal case, and any
+  straggler gets caught here.
+
+Test coverage:
+
+- `tests/strategy/test_executor_eod_sweep.py` (new) -- 3 unit tests:
+  independent-mode EOD_CLOSE_ALL still calls `close_all_positions`;
+  local position tracking is wiped after the broker close; the
+  `ORB_PORTFOLIO_FIRE` env var no longer gates the sweep.
+
+## v9.1.125 (2026-05-18) — EOD close: bypass cap + 5-min buffer + scheduler safety-net
+
+Real-money close-failure on 2026-05-18 (live Val account, AVGO long +
+NFLX short positions from the EOD reversal engine):
+
+  - **Bug 1 — closing orders blocked by notional cap.** When the V10
+    EOD engine tried to close Val's $36k AVGO long + $36k NFLX short on
+    its ~$30k live account, the `[V10-FIRE] notional cap` check in
+    `executors/base.py:fire_long/short` clamped the closing orders to
+    0 shares (cumulative notional already at 95%). Both close orders
+    logged `submitted=False`. Val ended up flat only because Alpaca's
+    broker-side EOD auto-flush ran; on a different broker config the
+    live position would have stayed open overnight.
+
+  - **Bug 2 — V10 EOD close fired AFTER market close.** The scan loop
+    went silent between 15:57:36 and 16:00:11 ET (~2.5 min). The V10
+    EOD engine's `is_exit_window(cur >= 15:58)` check only fires inside
+    the scan loop, so the close fired at 16:00:11 ET -- 11 SECONDS
+    after the 16:00 market close.
+
+  - **Bug 3 — legacy `eod_close` was no-op.** Scheduler fired
+    `("daily","15:58",eod_close)`, which aligned to
+    `EOD_FLUSH_ET = 15:59:59` and emitted `EOD_CLOSE_ALL`. Main had no
+    positions (V10 owns them) so the legacy `close_breakout` loop saw
+    nothing. V10 executors received the signal but skipped with
+    "independent mode -- skipping close_all_positions". Net: zero
+    closes from this path.
+
+Fixes:
+
+- `executors/base.py:fire_long`/`fire_short`/`_submit_v10_entry` --
+  new `reduce_only: bool = False` param. When True, skips the
+  cumulative-notional cap check. Logs `[V10-FIRE-CLOSE] ...
+  (reduce_only -- cap bypassed)` instead of `[V10-FIRE]`. Default
+  False preserves entry-path behavior; only close paths opt in.
+- `engine/scan.py:_v10_dispatch_executor_fire` -- forwards new
+  `reduce_only` kwarg to the executor's fire_*.
+- `engine/scan.py:_eod_fire_broker_close` -- passes `reduce_only=True`
+  so EOD reversal closes never hit the cap.
+- `orb/eod_reversal.py:EodReversalConfig.exit_et_minutes` -- default
+  `15:58` -> `15:56`. 4-min buffer before market close (vs the
+  previous 2-min) lets scan-loop ticks land the close even with
+  partial scan delays.
+- `tools/afternoon_backtest.py:AfternoonConfig.exit_bucket` -- mirror
+  change `15:59` -> `15:56` so backtest stays aligned with live.
+  AFT_EXIT_BUCKET override remains for research.
+- `engine/timing.py:EOD_FLUSH_ET` -- `15:59:59` -> `15:57:00`. The
+  legacy `eod_close` job now runs as a SAFETY NET 1 min AFTER the V10
+  engines have run; uses `client.close_position()` (different code
+  path from V10 close, independent failure mode).
+- `trade_genius.py` -- scheduler cron `("daily","15:58",eod_close)` ->
+  `("daily","15:57",eod_close)`.
+- `broker/lifecycle.py:_eod_align_to_spec` -- docstring updated; the
+  hardcoded "15:49:59" log string now reads the actual constant.
+
+Test coverage:
+
+- `tests/strategy/test_executor_reduce_only.py` (new) -- 6 unit tests:
+  default fire_long path still hits cap; `reduce_only=True` bypasses
+  cap even at 100% utilization; `_v10_dispatch_executor_fire` forwards
+  reduce_only; `_eod_fire_broker_close` always sets it True.
+
+## v9.1.124 (2026-05-18) — OR-retracement gate + monitor ATR-stop fix
+
+Two fixes triggered by the 2026-05-18 10:10 ET AVGO short, which fired
+the dashboard monitor's `or_break` and `atr_stop` WARNs at 11:55 ET.
+
+**Bug 1 — OR-retracement (real strategy gap, gate added in the bot):**
+
+The 5m-close trigger in `detect_breakout` and the actual entry price
+(`signal.proposed_entry = next_open = current_price` at scan time) are
+decoupled. The VWAP-chase gate (`ORB_MAX_VWAP_DEV_BPS=15`) can stall a
+signal until price has retraced back inside the OR range, at which
+point the entry no longer reflects the breakout premise. AVGO timeline:
+
+- ~10:05 — first 5m bar after OR locks closes at ~$415.X (below
+  OR_low $416.30) → signal fires.
+- 10:05–10:10 — VWAP-chase rejects each scan because price ($415) is
+  ~48bps below VWAP ($418-ish) → `dev_bps > 15bps threshold`.
+- 10:05–10:10 — price rallies back into the OR range.
+- 10:10:35 — price is now ~$418.37, VWAP-chase passes, entry fires at
+  $418.37 (49bps *above* OR_low).
+
+Fix in `orb/engine.py:try_enter` (runs immediately after the VWAP-chase
+block): reject when `entry_price` has retraced past the OR boundary by
+more than `cfg.or_retracement_tolerance_bps`. Default 25 bps (matches
+the dashboard monitor's `or_break` invariant threshold). New env var
+`ORB_OR_RETRACEMENT_TOLERANCE_BPS`; set to `0.0` to disable. New
+session-scoped counter `_or_retrace_reject_count` exposed via
+`OrbEngine.snapshot()`. Log tag `[V9124-OR-RETRACE]`.
+
+**Caveat:** this is a strategy-affecting change. Existing Keystone
+backtest results assume no such gate. A future research pass should
+re-run the Keystone command with `ORB_OR_RETRACEMENT_TOLERANCE_BPS=25`
+to quantify the cost (we expect a small entry-count reduction).
+
+**Bug 2 — monitor's `atr_stop` invariant computed wrong ATR (monitor-side):**
+
+`tools/system_check_bot.py:_compute_atr` required `len(bars) >= n+1`
+(15 bars for ATR(14)), and the caller fell back to `ticker_bars[:half]`
+when there weren't enough pre-entry bars. That fallback mixed POST-entry
+bars into the ATR computation, producing a value several multiples
+larger than what the live engine (`orb.engine.atr_from_5m`) actually
+used to size the stop. For AVGO at 10:10 ET, monitor saw ATR≈$3.00 and
+expected stop ≈ $5.26; bot saw ATR≈$0.72 and produced stop $1.26.
+Monitor flagged "stop ratio 0.24" but the bot was actually doing exactly
+what Keystone specifies.
+
+Fix in `tools/system_check_bot.py`:
+- `_compute_atr` now uses simple mean of the last min(N-1, n) True Ranges
+  (matches `orb.engine.atr_from_5m`), accepts as few as 2 bars, returns
+  None on <2.
+- Caller `checks_market_validation`: removed the post-entry-bars
+  fallback. When `pre_entry` has <2 bars, skip the trade instead of
+  contaminating the ATR with future data.
+
+## v9.1.123 (2026-05-18) — extend post-restart engine↔broker reconciliation to Main
+
+`orb.live_runtime.inject_missing_engine_positions` previously restricted
+itself to `val` and `gene` (per its docstring); the scan-loop reconcile
+pass at `engine/scan.py:992` correspondingly only iterated those two
+portfolios. After Main acquired the 2026-05-18 10:10 ET AVGO short
+through the legacy `callbacks.execute_short_entry` path, an automated
+`data: refresh earnings feeds` commit at 11:20 ET triggered a Railway
+redeploy. Post-restart, Main's `tg.short_positions` rehydrated from
+`paper_state.json` but the v10 RiskBook's `_open_tickets` came back
+empty — Main wasn't in any reconcile pass that would re-admit the
+ticket. The 11:25 ET monitor tick fired `no_phantom_positions=CRIT`
+with detail "main has 1 positions in /api/state but RiskBook reports
+open_count=0".
+
+The position itself was safe (Main's legacy chandelier-trail + stop +
+EOD cutoff machinery is independent of v10 ticket tracking), but the
+v10 risk-cap accounting was wrong — a fresh Main entry on the same
+session could pile up against the $2k risk cap without the engine
+knowing about the existing $820.
+
+- `orb/live_runtime.py:inject_missing_engine_positions` — docstring
+  updated to include "main". The function body was already
+  portfolio-agnostic; only the contract changed.
+- `engine/scan.py` — new reconcile block runs immediately after the
+  val/gene loop. Builds Main's broker_positions tuples from
+  `tg.positions` (longs) + `tg.short_positions` (shorts) — a different
+  source than val/gene's executor.positions because Main has no
+  executor instance — and calls `inject_missing_engine_positions("main",
+  tuples)`. Same `[V9197-INJECT]` log tag as val/gene for consistency.
+- Idempotent: if the engine already has the ticket (normal case, no
+  redeploy interrupted entry), the inject function's "already tracked"
+  short-circuit fires per ticker and the call is a no-op.
+
+## v9.1.122 (2026-05-18) — resolve_equity routes through executor for live mode
+
+`engine.portfolio_equity.alpaca_account_for_book` was hard-coded to read
+`<PID>_ALPACA_PAPER_KEY/_SECRET` with `paper=True`, regardless of the
+executor's actual mode. After Val was flipped to live trading (live
+Alpaca account `238361571`, equity ≈ $30k), the RiskBook was still
+seeded with Val's paper-account equity (≈ $102k) — a 3.4× oversizing
+on every live entry's 1% risk budget and a 6.6% effective daily-loss
+threshold instead of the configured 2%.
+
+- `engine/portfolio_equity.py:alpaca_account_for_book` now tries
+  `trade_genius._executor_inst(pid)` first. If the executor is loaded
+  and has a built client, that client (which honors `mode=live` /
+  `mode=paper` via `_build_alpaca_client`) supplies the account
+  snapshot. Legacy env-var paper lookup remains the fallback for
+  unloaded executors (backtests, partial init).
+- The 30s per-pid cache is preserved. Failures still aren't cached so
+  a transient blip recovers on the next scan cycle.
+- No behavior change for Main (still reads `tg.paper_cash`) or for
+  Val/Gene in paper mode (executor's client is paper, returns paper
+  equity — same result as before).
+- Behavior change for Val/Gene in live mode: RiskBook now reflects
+  live equity. `risk_per_trade_pct=1%` × $30k = $300 risk per entry
+  (was $1,021); daily-kill threshold `2%` × $30k = $600 (was $2,042).
 
 ---
 

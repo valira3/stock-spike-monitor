@@ -248,6 +248,10 @@ def _build_config_from_env() -> OrbConfig:
         # bypass either filter.
         min_break_bps=_f("ORB_MIN_BREAK_BPS", 5.0),
         max_vwap_dev_bps=_f("ORB_MAX_VWAP_DEV_BPS", 25.0),
+        # v9.1.124 -- OR-retracement gate (see orb/engine.py for rationale).
+        # Default 25bps matches the dashboard monitor's or_break tolerance.
+        # Set ORB_OR_RETRACEMENT_TOLERANCE_BPS=0 to disable.
+        or_retracement_tolerance_bps=_f("ORB_OR_RETRACEMENT_TOLERANCE_BPS", 25.0),
         max_vwap_dev_tickers=tuple(
             t.strip().upper()
             for t in os.environ.get(
@@ -1048,9 +1052,9 @@ def rollback_admit(portfolio_id: str, ticker: str, ticket_id: str = "", reason: 
     The dashboard surfaced this as the "phantom IN_POS" pattern
     caught by `inv_v10_in_pos_has_internal_position`.
 
-    Same shape for Val/Gene in mirror mode (ORB_PORTFOLIO_FIRE=0):
-    they admit and transition IN_POS, but their broker fire is
-    deferred so no position is ever opened in their book.
+    Same shape for Val/Gene when the executor is unavailable
+    (Alpaca keys unset, kill switch active): they admit and
+    transition IN_POS, but no broker order lands.
 
     This helper undoes both:
       1. Releases the RiskBook ticket so capacity flows back.
@@ -1206,8 +1210,14 @@ def inject_missing_engine_positions(
     track of (e.g. NFLX SHORT surviving after a mid-rollback state
     mismatch). Without injection the position card shows no stop/bar.
 
+    v9.1.123 -- accepts "main" in addition to "val"/"gene". For Main the
+    broker_positions list is built from tg.positions + tg.short_positions
+    by the scan-loop reconcile pass; without this Main missed the
+    post-redeploy ticket re-admission and tripped the
+    no_phantom_positions invariant.
+
     Args:
-        portfolio_id: "val" or "gene".
+        portfolio_id: "main", "val", or "gene".
         broker_positions: list of (ticker, side, entry_price, qty) tuples
             from the Alpaca client (avg_entry_price for entry_price).
             Use 0.0 for entry_price when Alpaca doesn't provide it —

@@ -70,13 +70,16 @@ def close_short_position(ticker, price, reason="STOP", suppress_signal=False):
 def _eod_align_to_spec(now: _datetime | None = None, sleep_fn=_time.sleep) -> float:
     """Sleep until EOD_FLUSH_ET wall-clock if called before it.
 
-    v5.13.1 prod-verify finding: scheduler fires eod_close at 15:49:00 ET
-    (HH:MM precision), but spec EOD_FLUSH_ET is 15:49:59 ET. This helper
-    blocks the calling thread until the spec wall-clock so positions are
-    flushed at exactly 15:49:59 ET, never earlier.
+    Reads `engine.timing.EOD_FLUSH_ET` -- the spec EOD-flush wall clock.
+    The scheduler fires at HH:MM precision (whole-minute trigger), so
+    this helper blocks until the second-precision target so the flush
+    lands exactly on spec, never up to 59s early. Returns the number of
+    seconds slept (for tests/visibility). Pass a fake ``sleep_fn`` and
+    ``now`` to test without waiting.
 
-    Returns the number of seconds slept (for tests/visibility). Pass a
-    fake ``sleep_fn`` and ``now`` to test without waiting.
+    History: spec was 15:49:59 ET in v5.13.0 (Tiger Sovereign era);
+    15:59:59 ET in v9.1.23; 15:56:00 ET since v9.1.125 (post-2026-05-18
+    EOD close incident, see engine/timing.py docstring).
     """
     if now is None:
         # v7.8.4: route the now=None fallback through tg._now_et so the
@@ -112,7 +115,10 @@ def _eod_align_to_spec(now: _datetime | None = None, sleep_fn=_time.sleep) -> fl
         )
         return 0.0
     logger.info(
-        "[EOD FLUSH] aligning to spec wall-clock 15:49:59 ET (sleep %.1fs)",
+        "[EOD FLUSH] aligning to spec wall-clock %02d:%02d:%02d ET (sleep %.1fs)",
+        EOD_FLUSH_ET.hour,
+        EOD_FLUSH_ET.minute,
+        EOD_FLUSH_ET.second,
         delay,
     )
     sleep_fn(delay)

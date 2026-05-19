@@ -4382,13 +4382,8 @@
   //
   // v7.50.0 -- the third arg `execData` is the /api/executor/<name>
   // payload. Used to source `trades_today` from the broker side
-  // instead of the v10 FSM RiskBook. Reason: when
-  // ORB_PORTFOLIO_FIRE=0 (default until the 5-day paper-fire
-  // observation lands) Val/Gene mirror Main via the legacy signal
-  // bus -- their v10 RiskBook trades_today stays at 0 because the
-  // fire/exit doesn't route through the v10 FSM for those pids. The
-  // broker-reported count is correct in BOTH modes (mirror and
-  // standalone-fire) and is what the operator actually wants to see.
+  // (Alpaca fills) which is what the operator actually wants to see
+  // on the per-portfolio tab.
   function renderV10PerPortfolio(name, panel, execData) {
     function esc(v) {
       return String(v == null ? "" : v)
@@ -4439,8 +4434,7 @@
     //   1. exec payload trades_today.length (live broker count)
     //   2. backend-injected day_state.broker_trades_today (from
     //      dashboard_server, falls back if exec poll hasn't landed)
-    //   3. v10 RiskBook trades_today (correct only when
-    //      ORB_PORTFOLIO_FIRE=1; stays at 0 in mirror mode)
+    //   3. v10 RiskBook trades_today (per-portfolio FSM)
     var brokerTrades = (execData && Array.isArray(execData.trades_today))
                         ? execData.trades_today.length
                         : (myDayState && myDayState.broker_trades_today != null
@@ -4462,8 +4456,7 @@
         perTickerCount[tk] = (perTickerCount[tk] || 0) + 1;
       });
     }
-    // Augment with v10 FSM trades_today (covers the ORB_PORTFOLIO_FIRE=1
-    // case where v10 fired directly).
+    // Augment with v10 FSM trades_today.
     for (var k = 0; k < dayStates.length; k++) {
       var d2 = dayStates[k];
       if ((d2.portfolio_id || "").toLowerCase() !== pid) continue;
@@ -4975,7 +4968,7 @@
 
     // v7.47.0 -- per-portfolio v10 strip + filtered activity feed.
     // v7.50.0 -- pass `data` so the renderer can read broker
-    // trades_today.length (correct in both ORB_PORTFOLIO_FIRE modes).
+    // trades_today.length.
     try { renderV10PerPortfolio(name, panel, data); }
     catch (e) { /* never break exec render */ }
 

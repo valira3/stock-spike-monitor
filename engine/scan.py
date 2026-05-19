@@ -519,6 +519,17 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
     for ticker in _scan_universe:
         _per_ticker_tick(callbacks, ticker)
 
+    # v9.1.127 -- per-portfolio EXIT pass for non-main portfolios.
+    # Val/Gene evaluate their OWN open positions against the v10 engine's
+    # exit logic and fire their own broker closes. No longer hooked to
+    # Main's bus EXIT_LONG/EXIT_SHORT (those are skipped in _on_signal
+    # when independent mode is on). Main exits via the legacy
+    # broker/positions.py:manage_positions path on Main's scan loop.
+    try:
+        _v10_per_portfolio_exit_pass(callbacks)
+    except Exception:
+        logger.exception("[V9127-EXIT] pass failed; engine state unchanged")
+
     # v9.1.0 -- EOD reversal pass. Single hook per cycle that:
     #   - at 15:30 ET ranks the EOD universe + admits top-1/top-1
     #     long/short legs per portfolio (idempotent: only fires once
@@ -1000,6 +1011,43 @@ def _orb_phantom_sweep(tg) -> None:
                     )
             except Exception as _ie:
                 logger.warning("[V9199-RECONCILE] %s inner: %s", _pid, _ie)
+        # v9.1.123 -- extend engine↔broker reconciliation to Main.
+        # Pre-v9.1.123 Main was excluded from the inject path because the
+        # function docstring restricted it to val/gene; a redeploy after
+        # Main acquired a position via the legacy callbacks.execute_entry
+        # path left the v10 RiskBook's _open_tickets empty for Main,
+        # tripping the no_phantom_positions invariant. (Observed
+        # 2026-05-18 10:10 ET AVGO short entry → 11:20 ET earnings-feed-
+        # refresh redeploy → 11:25 ET monitor CRIT.) Main's broker truth
+        # is tg.positions (longs) + tg.short_positions (shorts), not an
+        # executor, so the tuple construction is slightly different from
+        # the val/gene path above.
+        try:
+            _main_longs = getattr(tg, "positions", {}) or {}
+            _main_shorts = getattr(tg, "short_positions", {}) or {}
+            _main_broker_tuples: list = []
+            for _ticker, _pos in _main_longs.items():
+                _ticker_u = (_ticker or "").upper()
+                _entry = float(_pos.get("entry_price") or 0)
+                _qty = int(_pos.get("shares") or 0)
+                if _ticker_u and _qty > 0:
+                    _main_broker_tuples.append((_ticker_u, "long", _entry, _qty))
+            for _ticker, _pos in _main_shorts.items():
+                _ticker_u = (_ticker or "").upper()
+                _entry = float(_pos.get("entry_price") or 0)
+                _qty = int(_pos.get("shares") or 0)
+                if _ticker_u and _qty > 0:
+                    _main_broker_tuples.append((_ticker_u, "short", _entry, _qty))
+            if _main_broker_tuples:
+                _injected_main = inject_missing_engine_positions("main", _main_broker_tuples)
+                if _injected_main:
+                    logger.warning(
+                        "[V9197-INJECT] main: injected %d missing engine position(s): %s",
+                        len(_injected_main),
+                        _injected_main,
+                    )
+        except Exception as _me:
+            logger.warning("[V9199-RECONCILE] main: %s", _me)
     except Exception as _rce:
         logger.warning("[V9199-RECONCILE] outer: %s", _rce)
     # v8.3.20 -- second-level sweep: orphan recover-* tickets in
@@ -1323,17 +1371,12 @@ def _v10_dispatch_executor_fire(
     price: float,
     shares: int,
     callbacks: "EngineCallbacks | None" = None,
+    reduce_only: bool = False,
 ) -> bool:
     """v7.26.0 -- route a non-main v10 admission to its executor's fire_*.
 
-    Production-safe rollout: gated on BOTH ORB_LIVE_MODE and
-    ORB_PORTFOLIO_FIRE. Either off -> no broker call.
-
-    v7.30.0: the ORB_LIVE_MODE gate was added here for kill-switch
-    consistency. Previously fire was gated only on ORB_PORTFOLIO_FIRE,
-    so an operator setting ORB_LIVE_MODE=0 to disable v10 strategy
-    could still see Val/Gene fire if PORTFOLIO_FIRE was on. Now both
-    must agree.
+    v9.1.128: always-independent. The only kill switch is ORB_LIVE_MODE;
+    the old ORB_PORTFOLIO_FIRE escape hatch was removed.
 
     v7.30.0: also routes broker submit failures (e.g. Alpaca 5xx) to
     callbacks.report_error so Telegram/dashboard see them instead of
@@ -1343,6 +1386,11 @@ def _v10_dispatch_executor_fire(
     Callers use this to know whether to roll back the v10 admit on
     the FSM + RiskBook -- otherwise a deferred / suppressed / failed
     fire leaves the admit dangling as a phantom IN_POS.
+
+    v9.1.125: `reduce_only=True` forwards to fire_long/fire_short so
+    close orders (e.g. _eod_fire_broker_close) bypass the notional
+    cap. The cap is for new-exposure entries; closes shrink exposure
+    and must not be blocked. Default False preserves entry semantics.
     """
     if not _orb_runtime.is_live_mode_on():
         logger.info(
@@ -1353,20 +1401,10 @@ def _v10_dispatch_executor_fire(
             ticker,
         )
         return False
-    # v8.3.23 -- env default flipped "0" -> "1". Independent mode
-    # is now the default. Operators wanting the old mirror-mode
-    # behavior set ORB_PORTFOLIO_FIRE=0 explicitly in Railway env.
-    # Companion change: executors/base.py:_on_signal guards ENTRY
-    # signals when this flag is "1" to prevent double-fire.
-    if os.environ.get("ORB_PORTFOLIO_FIRE", "1") != "1":
-        logger.info(
-            "[V79-ORB-ADMIT] %s %s %s -- broker fire deferred "
-            "(ORB_PORTFOLIO_FIRE=0; legacy bus mirror still applies)",
-            pid,
-            side,
-            ticker,
-        )
-        return False
+    # v9.1.128 -- always-independent. The ORB_PORTFOLIO_FIRE escape
+    # hatch was removed; every non-main portfolio fires its own
+    # broker order via the executor. The only kill switch remaining
+    # is ORB_LIVE_MODE (checked above).
     try:
         from executors.bootstrap import get_executor
 
@@ -1420,9 +1458,21 @@ def _v10_dispatch_executor_fire(
 
     try:
         if side == "long":
-            ok = ex.fire_long(ticker, float(price), int(shares), error_callback=_err_cb)
+            ok = ex.fire_long(
+                ticker,
+                float(price),
+                int(shares),
+                error_callback=_err_cb,
+                reduce_only=reduce_only,
+            )
         else:
-            ok = ex.fire_short(ticker, float(price), int(shares), error_callback=_err_cb)
+            ok = ex.fire_short(
+                ticker,
+                float(price),
+                int(shares),
+                error_callback=_err_cb,
+                reduce_only=reduce_only,
+            )
         logger.info(
             "[V79-ORB-FIRE] %s %s %s qty=%d submitted=%s",
             pid,
@@ -1810,6 +1860,12 @@ def _eod_fire_broker_close(
 ) -> None:
     """v9.1.0 -- broker close for an EOD position. Uses the inverse
     side on the same executor surface (long -> sell, short -> cover).
+
+    v9.1.125: routes with reduce_only=True so the cumulative-notional
+    cap in fire_long/fire_short does NOT block the close. The 2026-05-18
+    incident showed the cap silently rejected the close (submitted=False)
+    when account was at 95% notional from the entry pair; only Alpaca's
+    broker-side EOD auto-flush kept the live position from staying open.
     """
     try:
         close_side = "short" if side == "long" else "long"
@@ -1819,9 +1875,10 @@ def _eod_fire_broker_close(
             ticker=ticker,
             price=float(price),
             shares=int(shares),
+            reduce_only=True,
         )
         logger.info(
-            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f",
+            "[V910-EOD-CLOSE-FIRE] %s/%s closing %s %d shares @ %.4f (reduce_only)",
             pid,
             ticker,
             side,
@@ -1837,6 +1894,197 @@ def _eod_fire_broker_close(
             shares,
             price,
         )
+
+
+def _v10_dispatch_executor_partial_close(
+    *,
+    pid: str,
+    ticker: str,
+    shares: int,
+    price: float,
+    reason: str,
+) -> bool:
+    """v9.1.127 -- route a per-portfolio partial-close to its executor.
+
+    Mirrors _v10_dispatch_executor_fire but uses the executor's
+    _partial_close_position_idempotent. Used by the per-portfolio
+    exit pass when the v10 engine returns a partial-profit decision
+    so Val/Gene take their 1R partials independently of Main's bus.
+
+    Returns True if the executor was found and the partial was
+    dispatched; False if the executor is missing or the keys are
+    unset.
+    """
+    if not _orb_runtime.is_live_mode_on():
+        return False
+    try:
+        from executors.bootstrap import get_executor
+
+        ex = get_executor(pid)
+    except Exception as e:
+        logger.warning("[V9127-PARTIAL-FIRE] %s %s get_executor raised: %s", pid, ticker, e)
+        return False
+    if ex is None:
+        return False
+    try:
+        client = ex._ensure_client()
+        if client is None:
+            return False
+        ex._partial_close_position_idempotent(
+            client,
+            ticker,
+            int(shares),
+            f"{ex.NAME} {ex.mode}",
+            reason,
+        )
+        logger.info(
+            "[V9127-PARTIAL-FIRE] %s %s shares=%d @ %.4f reason=%s",
+            pid,
+            ticker,
+            int(shares),
+            float(price),
+            reason,
+        )
+        return True
+    except Exception:
+        logger.exception("[V9127-PARTIAL-FIRE] %s %s partial-close raised", pid, ticker)
+        return False
+
+
+def _v10_per_portfolio_exit_pass(callbacks: EngineCallbacks) -> None:
+    """v9.1.127 -- per-portfolio EXIT pass for non-main portfolios.
+
+    Each non-main portfolio (Val, Gene) evaluates its OWN open positions
+    against the v10 engine's exit logic and fires its own broker close.
+    No longer hooked to Main's bus EXIT_LONG/EXIT_SHORT signals.
+
+    Mirrors what broker/positions.py:manage_positions does for Main
+    (calls _orb_runtime.check_exit_by_ticker, then fires the close)
+    but routes broker fires through executors/base.py:fire_*(reduce_only=True)
+    instead of the legacy close_breakout pipeline.
+
+    Companion: executors/base.py:_on_signal skips EXIT_LONG/EXIT_SHORT
+    and PARTIAL_EXIT_* in independent mode so this loop owns ALL exit
+    firing for Val/Gene.
+
+    v9.1.128: always runs. The only kill switch is ORB_LIVE_MODE.
+    """
+    if not _orb_runtime.is_live_mode_on():
+        return
+
+    engine = _orb_runtime.get_engine()
+    if engine is None:
+        return
+
+    for pid in list(engine.portfolio_ids):
+        if pid == "main":
+            # Main exits via broker/positions.py:manage_positions
+            # (called from trade_genius.py scan_loop -> callbacks.manage_positions).
+            # Same v10 check_exit_by_ticker logic, different broker pipeline.
+            continue
+
+        adapter = _orb_runtime.get_adapter(pid)
+        if adapter is None:
+            continue
+
+        open_positions = adapter.list_open_positions()
+        if not open_positions:
+            continue
+
+        for pos in open_positions:
+            ticker = pos.ticker
+            try:
+                bars = callbacks.fetch_1min_bars(ticker)
+            except Exception as e:
+                logger.warning("[V9127-EXIT-BAR] %s/%s fetch failed: %s", pid, ticker, e)
+                continue
+            if not bars:
+                continue
+
+            current_price = bars.get("current_price")
+            if not isinstance(current_price, (int, float)) or current_price <= 0:
+                continue
+
+            try:
+                _ts_arr = bars.get("timestamps") or []
+                _bucket = minutes_since_et_midnight(int(_ts_arr[-1])) if _ts_arr else 600
+            except Exception:
+                _bucket = 600
+            _highs = bars.get("highs") or []
+            _lows = bars.get("lows") or []
+            _bar_h = float(_highs[-1] if _highs and _highs[-1] is not None else current_price)
+            _bar_l = float(_lows[-1] if _lows and _lows[-1] is not None else current_price)
+
+            try:
+                result = _orb_runtime.check_exit_by_ticker(
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    bar_high=_bar_h,
+                    bar_low=_bar_l,
+                    bar_close=float(current_price),
+                    bar_bucket_min=_bucket,
+                )
+            except Exception:
+                logger.exception("[V9127-EXIT] %s/%s check_exit_by_ticker raised", pid, ticker)
+                continue
+
+            if result.exit:
+                logger.info(
+                    "[V9127-EXIT] %s/%s %s exit reason=%s price=%.4f shares=%d",
+                    pid,
+                    ticker,
+                    pos.side,
+                    result.reason,
+                    float(result.price or 0.0),
+                    int(pos.shares),
+                )
+                close_side = "short" if pos.side == "long" else "long"
+                _v10_dispatch_executor_fire(
+                    pid=pid,
+                    side=close_side,
+                    ticker=ticker,
+                    price=float(result.price or current_price),
+                    shares=int(pos.shares),
+                    callbacks=callbacks,
+                    reduce_only=True,
+                )
+                # v9.1.128 (audit fix): record post-trade cooldown on
+                # the portfolio's PortfolioBook. Pre-v9.1.127 this was
+                # set inside executors/base.py:_on_signal's EXIT_LONG/
+                # EXIT_SHORT handler -- now unreachable in always-
+                # independent mode. Without this call the Keystone
+                # cooldown lever (ORB_POST_TRADE_COOLDOWN_MIN=10,
+                # +$42,573/yr) was silently disabled for Val/Gene.
+                try:
+                    from engine.portfolio_book import PORTFOLIOS as _pb_map
+
+                    _pb_pid = _pb_map.get(pid)
+                    if _pb_pid is not None:
+                        _pb_pid.record_post_trade(ticker, pos.side.lower())
+                except Exception:
+                    logger.debug(
+                        "[V9128-COOLDOWN] %s/%s record_post_trade skipped",
+                        pid,
+                        ticker,
+                        exc_info=True,
+                    )
+            elif getattr(result, "partial", False):
+                logger.info(
+                    "[V9127-EXIT-PARTIAL] %s/%s %s shares=%d @ %.4f booked=$%.2f",
+                    pid,
+                    ticker,
+                    pos.side,
+                    int(getattr(result, "partial_shares", 0) or 0),
+                    float(getattr(result, "partial_price", 0) or 0.0),
+                    float(getattr(result, "partial_pnl_dollars", 0) or 0.0),
+                )
+                _v10_dispatch_executor_partial_close(
+                    pid=pid,
+                    ticker=ticker,
+                    shares=int(getattr(result, "partial_shares", 0) or 0),
+                    price=float(getattr(result, "partial_price", 0) or 0.0),
+                    reason="V10_PARTIAL_1R",
+                )
 
 
 def _compute_session_vwap_from_bars(bars_for_mtm: dict | None) -> float:
@@ -1915,14 +2163,11 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
     runs check_entry independently for each. Each portfolio has its
     own RiskBook + FSM so admissions are isolated.
 
-    Broker execution: only "main" routes through callbacks.execute_entry
-    (which is main-bound). Val and Gene admissions are tracked on
-    their LiveAdapter (position state, ticket id) and logged with
-    [V79-ORB-ENTRY] tags so dashboard/Telegram show consistent state.
-    Their actual broker orders are wired in a follow-up PR once the
-    Val/Gene executors expose a `fire_long(ticker, price, shares)`
-    surface; today their Alpaca keys are typically unset and the
-    executors are skipped at boot.
+    Broker execution: "main" routes through callbacks.execute_entry
+    (legacy pipeline). Val/Gene route through
+    _v10_dispatch_executor_fire -> executor.fire_long (v8.3.23+).
+    Exits route through _v10_per_portfolio_exit_pass for non-main
+    (v9.1.127+) and broker/positions.py:manage_positions for main.
     """
     try:
         from engine.bars import compute_5m_ohlc_and_ema9
@@ -1991,9 +2236,8 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                     _orb_runtime.stash_v10_size(pid, ticker, result.shares)
                 except Exception:
                     pass
-                # Broker fire -- only main goes through the legacy
-                # callbacks.execute_entry path today. Val/Gene execution
-                # wiring is a follow-up PR.
+                # Broker fire: main -> legacy callbacks.execute_entry;
+                # val/gene -> _v10_dispatch_executor_fire (v8.3.23+).
                 if pid == "main":
                     _fired_main = False
                     try:
@@ -2033,17 +2277,16 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                         shares=result.shares,
                         callbacks=callbacks,
                     )
-                    # v7.81.0 -- if the executor's broker fire was
-                    # deferred (ORB_PORTFOLIO_FIRE=0 mirror mode) or
-                    # the executor wasn't available, roll back the
-                    # admit so Val/Gene FSM doesn't stick IN_POS.
+                    # v7.81.0 -- if the executor wasn't available
+                    # (no keys, kill switch), roll back the admit so
+                    # Val/Gene FSM doesn't stick IN_POS.
                     if not _fired_other:
                         try:
                             _orb_runtime.rollback_admit(
                                 pid,
                                 ticker,
                                 result.ticket_id,
-                                reason="executor broker-fire deferred or unavailable",
+                                reason="executor broker-fire unavailable",
                             )
                         except Exception:
                             pass

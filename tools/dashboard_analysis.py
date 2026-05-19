@@ -250,8 +250,9 @@ def _check_eod_config(state: dict) -> list[Check]:
     if long_tkrs == exp_long and short_tkrs == exp_short:
         checks.append(
             Check(
-                "eod_fence", GREEN,
-                "Keystone v4 fence: ORCL/AAPL/MSFT/AVGO/TSLA long; ORCL/NFLX/AAPL/MSFT/TSLA short"
+                "eod_fence",
+                GREEN,
+                "Keystone v4 fence: ORCL/AAPL/MSFT/AVGO/TSLA long; ORCL/NFLX/AAPL/MSFT/TSLA short",
             )
         )
 
@@ -450,7 +451,7 @@ def _check_trade_correlation(state: dict) -> list[Check]:
                 "trades.count",
                 WARN,
                 f"{len(entries)} entries today > max {KEYSTONE['max_trades_per_day']}/day cap "
-                f"(multi-portfolio = expected if ORB_PORTFOLIO_FIRE=1)",
+                f"(multi-portfolio total -- main+val+gene combined)",
             )
         )
 

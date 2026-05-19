@@ -24,19 +24,23 @@ NEW_POSITION_CUTOFF_ET: time = time(15, 44, 59)
 
 # v5.13.0 PR-5 SHARED-EOD: EOD flush (was 15:59:50 ET in v5.12.0,
 # moved earlier to 15:49:59 per Tiger Sovereign §3).
-# v9.1.23 -- moved back to 15:59:59 because the legacy paper-book
-# flush at 15:49:59 was preempting v9.1.x EOD-reversal positions
-# (entered between 15:00 and 15:49 ET) 10 min before their own
-# 15:59 ET flatten path. Tiger Sovereign is retired, so the
-# pre-15:00 timing has no remaining rationale. The new ordering:
+# v9.1.23 -- moved back to 15:59:59.
+# v9.1.125 -- moved earlier to 15:57:00. The 2026-05-18 incident
+# (V10 EOD scan-loop tick missed the 15:58 target and fired at
+# 16:00:11 -- 12 SECONDS POST market close) demonstrated that a
+# single safety-net at 15:59:59 leaves zero margin for scan-loop
+# delays. New ordering:
 #
-#   15:55 ET  -- v10 ORB engine's eod_cutoff_minutes (`orb/engine.py:79`)
-#                closes morning ORB positions via exits.py:EXIT_EOD.
-#   15:59 ET  -- v9.1 EOD reversal engine's exit_et_minutes fires
-#                its own close via scan._eod_reversal_pass.
-#   15:59:59  -- legacy paper-book backstop catches any stragglers
-#                still in paper_state.positions before market close.
-EOD_FLUSH_ET: time = time(15, 59, 59)
+#   15:56 ET     -- v10 EOD reversal engine's exit_et_minutes fires
+#                   close via scan._eod_reversal_pass (scan-loop path).
+#   15:56 ET     -- v10 ORB engine's eod_cutoff_minutes closes morning
+#                   ORB positions via exits.py:EXIT_EOD.
+#   15:57:00 ET  -- legacy paper-book safety-net (this constant) catches
+#                   any straggler still in paper_state.positions after
+#                   the V10 engines have run. Uses direct
+#                   client.close_position() API which bypasses the
+#                   notional cap (different code path from V10 close).
+EOD_FLUSH_ET: time = time(15, 57, 0)
 
 # Hunt window: from regular-session open through SHARED-CUTOFF.
 # v15.0 SPEC: Entry Window 09:36:00 to 15:44:59 EST. ORH/ORL freeze at 09:35:59;
@@ -62,6 +66,7 @@ def _to_et(now: datetime | None = None) -> datetime:
         # an explicit datetime, but new callers may not.
         try:
             import sys as _sys
+
             _tg = _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
             return _tg._now_et() if _tg is not None else datetime.now(tz=ET)
         except Exception:

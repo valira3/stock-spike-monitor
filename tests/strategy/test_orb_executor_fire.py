@@ -11,8 +11,9 @@ confirm:
   3. get_executor("main") returns None; get_executor("val") returns the
      registered executor instance; get_executor("nonexistent") returns
      None.
-  4. _v10_dispatch_executor_fire honors ORB_PORTFOLIO_FIRE env flag:
-     off -> deferred log, no fire; on -> fire_* called.
+  4. _v10_dispatch_executor_fire honors the ORB_LIVE_MODE kill switch:
+     off -> no fire; on -> fire_* called. (v9.1.128 removed the
+     ORB_PORTFOLIO_FIRE flag; ORB_LIVE_MODE is the only kill switch.)
 """
 
 from __future__ import annotations
@@ -204,14 +205,11 @@ class TestV10DispatchExecutorFire:
                 pytest.skip("telegram unavailable in sandbox")
             raise
 
-    def test_explicit_zero_skips_fire(self, monkeypatch):
-        """v8.3.23 -- default flipped from '0' to '1' so independent
-        mode is now on by default. Operators wanting legacy mirror
-        mode set ORB_PORTFOLIO_FIRE=0 explicitly; this test verifies
-        that override path still suppresses fire_long/fire_short."""
+    def test_kill_switch_skips_fire(self, monkeypatch):
+        """v9.1.128 -- ORB_LIVE_MODE=0 is the only kill switch left.
+        Setting it to '0' must suppress fire_long/fire_short."""
         dispatch = self._import_dispatch()
-        monkeypatch.setenv("ORB_LIVE_MODE", "1")
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "0")  # explicit opt-out
+        monkeypatch.setenv("ORB_LIVE_MODE", "0")
         fake_ex = MagicMock()
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
@@ -219,16 +217,12 @@ class TestV10DispatchExecutorFire:
         fake_ex.fire_short.assert_not_called()
 
     def test_on_calls_fire_long(self, monkeypatch):
-        # v7.30.0: dispatch now requires ORB_LIVE_MODE=1 too.
         dispatch = self._import_dispatch()
         monkeypatch.setenv("ORB_LIVE_MODE", "1")
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_long.return_value = True
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
-        # v7.30.0: dispatch now passes error_callback=None when no
-        # callbacks supplied.
         fake_ex.fire_long.assert_called_once()
         args, kwargs = fake_ex.fire_long.call_args
         assert args == ("AAPL", 100.0, 10)
@@ -237,7 +231,6 @@ class TestV10DispatchExecutorFire:
     def test_on_calls_fire_short(self, monkeypatch):
         dispatch = self._import_dispatch()
         monkeypatch.setenv("ORB_LIVE_MODE", "1")
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_short.return_value = True
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):
@@ -249,14 +242,14 @@ class TestV10DispatchExecutorFire:
 
     def test_on_no_executor_no_fire(self, monkeypatch):
         dispatch = self._import_dispatch()
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
+        monkeypatch.setenv("ORB_LIVE_MODE", "1")
         with patch("executors.bootstrap.get_executor", return_value=None):
             # Should not raise
             dispatch(pid="val", side="long", ticker="AAPL", price=100.0, shares=10)
 
     def test_on_swallows_executor_exception(self, monkeypatch):
         dispatch = self._import_dispatch()
-        monkeypatch.setenv("ORB_PORTFOLIO_FIRE", "1")
+        monkeypatch.setenv("ORB_LIVE_MODE", "1")
         fake_ex = MagicMock()
         fake_ex.fire_long.side_effect = RuntimeError("boom")
         with patch("executors.bootstrap.get_executor", return_value=fake_ex):

@@ -17,6 +17,7 @@ Covers six fixes:
   6. Tighter "no_open_v10_position" assertion on the EOD-no-positions
      test (lives in test_orb_coverage_gaps.py).
 """
+
 from __future__ import annotations
 
 import logging
@@ -60,16 +61,25 @@ class TestReadPathsSnapshotRefs:
         live_runtime._reset_for_testing()
         # Must not raise
         live_runtime.feed_bar(
-            ticker="AAPL", bar_high=100.0, bar_low=99.0, bar_open=99.5,
-            bar_close=99.8, bar_volume=1000, bar_bucket_min=570,
+            ticker="AAPL",
+            bar_high=100.0,
+            bar_low=99.0,
+            bar_open=99.5,
+            bar_close=99.8,
+            bar_volume=1000,
+            bar_bucket_min=570,
         )
 
     def test_check_entry_no_op_after_reset(self, isolated_env):
         live_runtime.bootstrap()
         live_runtime._reset_for_testing()
         r = live_runtime.check_entry(
-            portfolio_id="main", ticker="AAPL", side="long",
-            five_min_close=100.0, next_open=100.0, equity=100_000.0,
+            portfolio_id="main",
+            ticker="AAPL",
+            side="long",
+            five_min_close=100.0,
+            next_open=100.0,
+            equity=100_000.0,
         )
         assert r.ok is False
         assert r.reason_no == "live_mode_off"
@@ -78,8 +88,12 @@ class TestReadPathsSnapshotRefs:
         live_runtime.bootstrap()
         live_runtime._reset_for_testing()
         r = live_runtime.check_exit(
-            portfolio_id="main", ticker="AAPL", ticket_id="T1",
-            bar_high=100.0, bar_low=99.0, bar_close=99.5,
+            portfolio_id="main",
+            ticker="AAPL",
+            ticket_id="T1",
+            bar_high=100.0,
+            bar_low=99.0,
+            bar_close=99.5,
             bar_bucket_min=570,
         )
         assert r.exit is False
@@ -88,8 +102,11 @@ class TestReadPathsSnapshotRefs:
         live_runtime.bootstrap()
         live_runtime._reset_for_testing()
         r = live_runtime.check_exit_by_ticker(
-            portfolio_id="main", ticker="AAPL",
-            bar_high=100.0, bar_low=99.0, bar_close=99.5,
+            portfolio_id="main",
+            ticker="AAPL",
+            bar_high=100.0,
+            bar_low=99.0,
+            bar_close=99.5,
             bar_bucket_min=570,
         )
         assert r.exit is False
@@ -113,7 +130,8 @@ def _make_engine_kill_on():
     )
     eng = _engine.OrbEngine(cfg, portfolio_ids=["main"])
     eng.start_new_session(
-        date_iso="2026-05-10", tickers=["AAPL"],
+        date_iso="2026-05-10",
+        tickers=["AAPL"],
         vix_close_d1=15.0,
         ticker_open_today={"AAPL": 100.0},
         ticker_prev_close={"AAPL": 100.0},
@@ -123,14 +141,18 @@ def _make_engine_kill_on():
 
 
 class TestOnExitDefensive:
-
     def test_zero_shares_skips_pnl_with_warning(self, caplog):
         eng = _make_engine_kill_on()
         rb = eng._risk.get("main")
         pos = _exits.make_position(
-            portfolio_id="main", ticker="AAPL", side="long",
-            entry_price=100.0, stop=99.0, rr=2.5,
-            shares=10, risk_ticket_id="T1",
+            portfolio_id="main",
+            ticker="AAPL",
+            side="long",
+            entry_price=100.0,
+            stop=99.0,
+            rr=2.5,
+            shares=10,
+            risk_ticket_id="T1",
         )
         # Forcibly zero out shares post-construction to simulate a
         # buggy upstream caller.
@@ -140,31 +162,39 @@ class TestOnExitDefensive:
         # P&L MUST NOT have moved -- with shares=0 the old code would
         # have counted $0 and silently suppressed the kill threshold.
         assert rb.realized_pnl_today == 0.0
-        assert any("skipping P&L accounting" in r.message
-                   for r in caplog.records)
+        assert any("skipping P&L accounting" in r.message for r in caplog.records)
 
     def test_zero_entry_price_skips_pnl_with_warning(self, caplog):
         eng = _make_engine_kill_on()
         rb = eng._risk.get("main")
         pos = _exits.make_position(
-            portfolio_id="main", ticker="AAPL", side="long",
-            entry_price=100.0, stop=99.0, rr=2.5,
-            shares=10, risk_ticket_id="T1",
+            portfolio_id="main",
+            ticker="AAPL",
+            side="long",
+            entry_price=100.0,
+            stop=99.0,
+            rr=2.5,
+            shares=10,
+            risk_ticket_id="T1",
         )
         pos.entry_price = 0.0
         with caplog.at_level(logging.WARNING, logger="orb.engine"):
             eng.on_exit(pos, _exits.ExitDecision(reason="stop", price=99.0))
         assert rb.realized_pnl_today == 0.0
-        assert any("skipping P&L accounting" in r.message
-                   for r in caplog.records)
+        assert any("skipping P&L accounting" in r.message for r in caplog.records)
 
     def test_well_formed_position_records_normally(self):
         eng = _make_engine_kill_on()
         rb = eng._risk.get("main")
         pos = _exits.make_position(
-            portfolio_id="main", ticker="AAPL", side="long",
-            entry_price=100.0, stop=99.0, rr=2.5,
-            shares=10, risk_ticket_id="T1",
+            portfolio_id="main",
+            ticker="AAPL",
+            side="long",
+            entry_price=100.0,
+            stop=99.0,
+            rr=2.5,
+            shares=10,
+            risk_ticket_id="T1",
         )
         eng.on_exit(pos, _exits.ExitDecision(reason="stop", price=99.0))
         assert rb.realized_pnl_today == pytest.approx(-10.0)
@@ -174,7 +204,6 @@ class TestOnExitDefensive:
 
 
 class TestResetClearsStashedSizes:
-
     def test_stash_cleared_on_reset_session(self, isolated_env):
         live_runtime.bootstrap()
         live_runtime.stash_v10_size("main", "AAPL", 500)
@@ -194,7 +223,6 @@ class TestResetClearsStashedSizes:
 
 
 class TestResetUnderLoad:
-
     def test_reset_during_concurrent_stash_does_not_crash(self, isolated_env):
         live_runtime.bootstrap()
 
@@ -228,9 +256,7 @@ class TestResetUnderLoad:
 
 
 class TestDispatchErrorLogging:
-
-    def test_executor_fire_raise_logs_at_error_level(self, isolated_env,
-                                                     caplog):
+    def test_executor_fire_raise_logs_at_error_level(self, isolated_env, caplog):
         # engine.scan imports cleanly, but _v10_dispatch_executor_fire
         # lazy-imports executors.bootstrap which pulls in
         # executors.base -> telegram. Probe telegram first so the test
@@ -243,23 +269,26 @@ class TestDispatchErrorLogging:
                 pytest.skip("telegram unavailable in sandbox")
             raise
         from unittest.mock import MagicMock, patch
+
         isolated_env.setenv("ORB_LIVE_MODE", "1")
-        isolated_env.setenv("ORB_PORTFOLIO_FIRE", "1")
 
         fake_ex = MagicMock()
         fake_ex.fire_long.side_effect = RuntimeError("simulated bug")
 
-        with patch("executors.bootstrap.get_executor",
-                   return_value=fake_ex):
+        with patch("executors.bootstrap.get_executor", return_value=fake_ex):
             with caplog.at_level(logging.ERROR, logger="engine.scan"):
                 _v10_dispatch_executor_fire(
-                    pid="val", side="long", ticker="AAPL",
-                    price=100.0, shares=10, callbacks=None,
+                    pid="val",
+                    side="long",
+                    ticker="AAPL",
+                    price=100.0,
+                    shares=10,
+                    callbacks=None,
                 )
         # Must log at ERROR level (not WARNING) with traceback
-        err_recs = [r for r in caplog.records
-                    if r.levelname == "ERROR"
-                    and "fire raised" in r.message]
+        err_recs = [
+            r for r in caplog.records if r.levelname == "ERROR" and "fire raised" in r.message
+        ]
         assert err_recs, f"expected ERROR-level log, got: {[r.message for r in caplog.records]}"
         # exc_info=True attaches a traceback
         assert err_recs[0].exc_info is not None

@@ -1266,18 +1266,22 @@ class TradeGeniusBase:
     # piece that makes Val and Gene fire on their OWN admissions (different
     # equity, different RiskBook), not just mirror Main's signals.
     #
-    # Production-safe rollout: gated behind ORB_PORTFOLIO_FIRE env flag in
-    # engine/scan.py. Default OFF (0); set to "1" after the 5-day paper-fire
-    # observation window confirms the per-portfolio admissions look right.
-    # Until then, Val/Gene continue to mirror Main via _on_signal as before.
+    # v9.1.128: always-independent. fire_long/fire_short are the ONLY
+    # entry/exit paths for Val/Gene; the legacy bus-mirror is removed.
     #
-    # Idempotency: coid is built with direction="V10LONG"/"V10SHORT" so v10
-    # fires get a separate coid bucket from legacy ENTRY_LONG ("LONG") fires
-    # within the same UTC minute. A double-fire (v10 admission + main bus
-    # broadcast) would land as two separate orders, each idempotent against
-    # itself -- _submit_order_idempotent handles within-bucket dupes.
-    def fire_long(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
-        """Submit a LONG v10 entry directly to Alpaca.
+    # Idempotency: coid is built with direction="V10LONG"/"V10SHORT" so
+    # within-minute retries land on the same coid bucket and
+    # _submit_order_idempotent dedups them.
+    def fire_long(
+        self,
+        ticker: str,
+        price: float,
+        shares: int,
+        *,
+        error_callback=None,
+        reduce_only: bool = False,
+    ) -> bool:
+        """Submit a LONG v10 order directly to Alpaca.
 
         Returns True if an order was submitted (or recognized as a coid
         duplicate); False on no-op (no client, no shares, exception).
@@ -1287,6 +1291,17 @@ class TradeGeniusBase:
         escalate via callbacks.report_error (Telegram / dashboard
         alert). Without it, the failure is still logged but only
         visible in the log file.
+
+        v9.1.125: `reduce_only=True` skips the cumulative-notional cap.
+        Callers MUST set this when the order is a CLOSE for an
+        existing opposite-side position (e.g. covering a SHORT). The
+        cap was designed to prevent accumulating new exposure; a close
+        REDUCES exposure and must not be blocked. The EOD reversal
+        engine's close path is the first/only caller -- on 2026-05-18
+        the cap silently rejected its close orders (`submitted=False`)
+        and the position was only flat thanks to Alpaca's broker-side
+        EOD auto-flush. Default False preserves existing entry-path
+        behavior.
         """
         if shares <= 0:
             return False
@@ -1298,12 +1313,23 @@ class TradeGeniusBase:
             price=price,
             shares=int(shares),
             error_callback=error_callback,
+            reduce_only=reduce_only,
         )
 
-    def fire_short(self, ticker: str, price: float, shares: int, *, error_callback=None) -> bool:
-        """Submit a SHORT v10 entry directly to Alpaca. Mirror of fire_long.
+    def fire_short(
+        self,
+        ticker: str,
+        price: float,
+        shares: int,
+        *,
+        error_callback=None,
+        reduce_only: bool = False,
+    ) -> bool:
+        """Submit a SHORT v10 order directly to Alpaca. Mirror of fire_long.
 
-        v7.30.0: optional `error_callback` -- see `fire_long` docstring."""
+        v7.30.0: optional `error_callback` -- see `fire_long` docstring.
+        v9.1.125: `reduce_only=True` -- see `fire_long` docstring.
+        """
         if shares <= 0:
             return False
         if not ticker:
@@ -1314,10 +1340,18 @@ class TradeGeniusBase:
             price=price,
             shares=int(shares),
             error_callback=error_callback,
+            reduce_only=reduce_only,
         )
 
     def _submit_v10_entry(
-        self, *, side: str, ticker: str, price: float, shares: int, error_callback=None
+        self,
+        *,
+        side: str,
+        ticker: str,
+        price: float,
+        shares: int,
+        error_callback=None,
+        reduce_only: bool = False,
     ) -> bool:
         """Shared body for fire_long / fire_short.
 
@@ -1326,24 +1360,42 @@ class TradeGeniusBase:
         the strategy's anchor); LIMIT IOC could short-fill and break the
         risk-cap accounting on the RiskBook. MARKET DAY ensures the full
         v10-computed quantity fills (or rejects cleanly).
+
+        v9.1.125: when `reduce_only=True`, skip the cumulative-notional
+        cap check at lines ~1390. Close orders for existing positions
+        must always submit; the cap is for new-exposure entries only.
+
+        v9.1.128 (audit fix): `reduce_only=True` also bypasses the
+        post-trade cooldown gate. The cooldown blocks RE-ENTRIES on a
+        recently exited (ticker, side); a close is an exit, never a
+        re-entry, and must never be blocked here. Without this guard,
+        an opposite-side close on a ticker whose same-side trade just
+        stopped out would be wrongly suppressed and the position
+        would linger until the 15:57 EOD safety-net sweep.
         """
         # Cooldown gate: post-loss (asymmetric) + post-trade (symmetric v9.1.111).
         # Symmetric check runs first -- it covers both wins and losses.
-        try:
-            from engine.portfolio_book import PORTFOLIOS
+        # v9.1.128: skip entirely when reduce_only=True -- cooldown is an
+        # entry-side gate and must not block closes.
+        if not reduce_only:
+            try:
+                from engine.portfolio_book import PORTFOLIOS
 
-            _pb_entry = PORTFOLIOS.get(self.NAME.lower())
-            if _pb_entry is not None:
-                _cd_sym = _pb_entry.is_in_post_trade_cooldown(ticker, side.lower())
-                if _cd_sym is not None:
-                    logger.info(
-                        "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
-                        self.NAME, side, ticker,
-                        _cd_sym.get("until_utc", "?"), _cd_sym.get("window_min", 0),
-                    )
-                    return False
-        except Exception:
-            logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
+                _pb_entry = PORTFOLIOS.get(self.NAME.lower())
+                if _pb_entry is not None:
+                    _cd_sym = _pb_entry.is_in_post_trade_cooldown(ticker, side.lower())
+                    if _cd_sym is not None:
+                        logger.info(
+                            "[%s] [V9111-SYM-CD] BLOCK %s %s -- sym cooldown until %s (%dmin)",
+                            self.NAME,
+                            side,
+                            ticker,
+                            _cd_sym.get("until_utc", "?"),
+                            _cd_sym.get("window_min", 0),
+                        )
+                        return False
+            except Exception:
+                logger.debug("[%s] cooldown pre-check skipped", self.NAME, exc_info=True)
 
         client = self._ensure_client()
         if client is None:
@@ -1367,7 +1419,13 @@ class TradeGeniusBase:
         # The TOTAL check (long_mv + abs(short_mv) + new_notional <= equity * 0.95)
         # ensures a small account (e.g. Val at $30k) can't accumulate NFLX SHORT
         # ($28k) AND an EOD position that pushes combined notional above equity.
-        if price > 0:
+        #
+        # v9.1.125: reduce_only=True bypasses this cap. A close order REDUCES
+        # exposure (existing_notional drops); blocking it because we're already
+        # at the cap is exactly backwards. The 2026-05-18 EOD incident
+        # demonstrated this: the close was rejected with submitted=False; the
+        # position was only flat thanks to Alpaca's broker-side EOD auto-flush.
+        if price > 0 and not reduce_only:
             try:
                 _acct = client.get_account()
                 _equity = float(getattr(_acct, "equity", 0) or 0) or float(
@@ -1410,17 +1468,49 @@ class TradeGeniusBase:
                         return False
             except Exception as _ce:
                 logger.debug("[%s] [V10-FIRE] equity cap skipped: %s", self.NAME, _ce)
+        elif reduce_only:
+            logger.info(
+                "[%s] [V10-FIRE-CLOSE] %s %s %d sh @ %.2f (reduce_only -- cap bypassed)",
+                self.NAME,
+                side,
+                ticker,
+                shares,
+                price,
+            )
 
         direction = f"V10{side}"  # V10LONG / V10SHORT (own coid bucket)
         coid = self._build_client_order_id(ticker, direction)
         order_side = OrderSide.BUY if side == "LONG" else OrderSide.SELL
-        req = MarketOrderRequest(
+        # v9.1.128: forward close-only intent to Alpaca via PositionIntent.
+        # alpaca-py's MarketOrderRequest has no `reduce_only` field
+        # (pydantic v2 silently drops it). The right primitive is
+        # `position_intent=PositionIntent.{SELL,BUY}_TO_CLOSE`, which tells
+        # the broker explicitly that this order closes the existing
+        # position. Defends against local<->broker position drift: if we
+        # think we have 100 shares but Alpaca only has 80, the
+        # SELL_TO_CLOSE intent caps the fill at 80 instead of accidentally
+        # shorting 20.
+        _req_kwargs = dict(
             symbol=ticker,
             qty=int(shares),
             side=order_side,
             time_in_force=TimeInForce.DAY,
             client_order_id=coid,
         )
+        if reduce_only:
+            try:
+                from alpaca.trading.enums import PositionIntent
+
+                _req_kwargs["position_intent"] = (
+                    PositionIntent.SELL_TO_CLOSE if side == "SHORT" else PositionIntent.BUY_TO_CLOSE
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] [V10-FIRE-CLOSE] PositionIntent import failed; "
+                    "submitting without broker-side close-only marker",
+                    self.NAME,
+                )
+        req = MarketOrderRequest(**_req_kwargs)
         try:
             order = self._submit_order_idempotent(client, req, coid)
         except Exception as _exc:
@@ -2303,15 +2393,18 @@ class TradeGeniusBase:
         v7.83.0 silent early-returns (qty<=0, exception in builder)
         gave no log trail post-receipt.
 
-        v8.3.23 -- INDEPENDENT MODE entry guard. When
-        ORB_PORTFOLIO_FIRE=1 (default since v8.3.23), entries are
-        dispatched per-portfolio by engine/scan.py:_v10_dispatch_executor_fire
-        -> executor.fire_long / fire_short. This listener still
-        handles EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_* (the
-        production code does not yet wire live_runtime.check_exit
-        to a per-portfolio exit loop, so bus exits are still the
-        canonical exit path). Skipping ONLY entries here prevents
-        a double-fire on independent mode.
+        v9.1.128 -- always-independent. ENTRY_LONG / ENTRY_SHORT /
+        EXIT_LONG / EXIT_SHORT / PARTIAL_EXIT_LONG / PARTIAL_EXIT_SHORT
+        are all skipped here unconditionally; their broker fires
+        happen via engine/scan.py:_v10_dispatch_executor_fire +
+        _v10_per_portfolio_exit_pass + _v10_dispatch_executor_partial_close.
+        EOD_CLOSE_ALL is the only signal still dispatched here -- it
+        triggers the 15:57 ET safety-net sweep (v9.1.126).
+
+        Mirror-mode bus dispatch code below (ENTRY/EXIT/PARTIAL_EXIT
+        handlers) is unreachable in production and kept only as
+        documentation; physical removal is scheduled for a follow-up
+        cleanup PR.
         """
         kind = event.get("kind", "")
         ticker = event.get("ticker", "")
@@ -2329,19 +2422,32 @@ class TradeGeniusBase:
             main_shares,
         )
 
-        # v8.3.23 -- skip ENTRY signals in independent mode. Exits
-        # still flow through here.
-        if kind in ("ENTRY_LONG", "ENTRY_SHORT"):
-            if os.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1":
-                logger.info(
-                    "[V8323-INDEPENDENT-SKIP] %s %s %s -- independent "
-                    "mode active; entry will fire via "
-                    "_v10_dispatch_executor_fire (not legacy bus)",
-                    self.NAME,
-                    kind,
-                    ticker,
-                )
-                return
+        # v9.1.128 -- always-independent mode. The legacy bus-mirror
+        # path (Val/Gene mirror Main's ENTRY/EXIT/PARTIAL_EXIT signals)
+        # was removed along with the ORB_PORTFOLIO_FIRE escape hatch.
+        # Entries fire via engine/scan.py:_v10_dispatch_executor_fire,
+        # exits via _v10_per_portfolio_exit_pass + reduce_only closes,
+        # partials via _v10_dispatch_executor_partial_close.
+        #
+        # EOD_CLOSE_ALL is NOT in this skip list -- it still arrives
+        # at 15:57 ET as the v9.1.126 safety-net sweep across all
+        # remaining open Alpaca positions.
+        if kind in (
+            "ENTRY_LONG",
+            "ENTRY_SHORT",
+            "EXIT_LONG",
+            "EXIT_SHORT",
+            "PARTIAL_EXIT_LONG",
+            "PARTIAL_EXIT_SHORT",
+        ):
+            logger.info(
+                "[V9128-INDEPENDENT-SKIP] %s %s %s -- always-independent; "
+                "fires via engine/scan.py per-portfolio path (not bus)",
+                self.NAME,
+                kind,
+                ticker,
+            )
+            return
 
         # v4.0.0-beta — remember the most recent event for the dashboard
         # (last_signal line on the per-executor tab). Captured before any
@@ -2896,26 +3002,27 @@ class TradeGeniusBase:
                         exc_info=True,
                     )
             elif kind == "EOD_CLOSE_ALL":
-                import os as _os_eod
-
-                # v9.1.106 -- in independent mode (ORB_PORTFOLIO_FIRE=1),
-                # Val/Gene manage their own exits via the ORB engine's
-                # EOD cutoff (15:55) and the EOD reversal engine (15:59).
-                # Calling close_all_positions here would flatten EOD reversal
-                # positions early. Skip the Alpaca close; just clear local
-                # tracking so phantom rows don't linger.
-                _independent = _os_eod.environ.get("ORB_PORTFOLIO_FIRE", "1") == "1"
-                if _independent:
-                    logger.info(
-                        "[%s] EOD_CLOSE_ALL: independent mode -- skipping"
-                        " close_all_positions (ORB+EOD engines own their exits)",
-                        self.NAME,
-                    )
-                else:
-                    client.close_all_positions(cancel_orders=True)
-                    msg = f"\u2705 {label}: EOD close_all_positions"
-                    logger.info(msg)
-                    self._send_own_telegram(msg)
+                # v9.1.126 -- ALWAYS sweep all positions on Alpaca at EOD,
+                # regardless of independent vs mirror mode. Val/Gene must
+                # close their own positions independently of Main; any
+                # straggler -- morning ORB position Val/Gene admitted that
+                # Main rejected, EOD reversal position the 15:56 scan-loop
+                # tick missed, anything else -- gets flushed here.
+                #
+                # The earlier v9.1.106 skip ("independent mode -- ORB+EOD
+                # engines own their exits") was unsafe: a position Main
+                # never held got no EXIT_LONG/EXIT_SHORT bus signal AND
+                # the executor wiped local tracking without closing the
+                # Alpaca leg, leaving the position open past market close.
+                # Safe to call now because the v9.1.125 EOD reversal exit
+                # window (15:56) precedes EOD_CLOSE_ALL (15:57) by 1 min,
+                # so EOD reversal positions are already flushed in the
+                # normal case; if the scan loop stalled they get flushed
+                # here as the safety net.
+                client.close_all_positions(cancel_orders=True)
+                msg = f"\u2705 {label}: EOD close_all_positions"
+                logger.info(msg)
+                self._send_own_telegram(msg)
                 # Always wipe local tracking so no stale rows remain.
                 for tkr in list(self.positions.keys()):
                     self._remove_position(tkr)
