@@ -36,14 +36,18 @@ def _clean_env_and_state():
         lr._rollback_history.clear()
 
 
-def test_disabled_by_default():
-    """No env vars set -> _check_rollback_cooldown always returns None."""
-    for _ in range(20):
-        lr._record_rollback("main", "TSLA", "short")
+def test_on_by_default_with_default_threshold():
+    """v9.1.132: no env vars set -> defaults to N=3 in 10-min, blocks at 3+."""
+    lr._record_rollback("main", "TSLA", "short")
+    lr._record_rollback("main", "TSLA", "short")
     assert lr._check_rollback_cooldown("main", "TSLA", "short") is None
+    lr._record_rollback("main", "TSLA", "short")
+    reason = lr._check_rollback_cooldown("main", "TSLA", "short")
+    assert reason is not None and "rollback_cooldown" in reason
 
 
 def test_disabled_when_after_n_is_zero():
+    """Explicit ORB_ROLLBACK_COOLDOWN_AFTER_N=0 disables the gate."""
     os.environ["ORB_ROLLBACK_COOLDOWN_AFTER_N"] = "0"
     for _ in range(20):
         lr._record_rollback("main", "TSLA", "short")
