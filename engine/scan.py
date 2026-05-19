@@ -55,6 +55,78 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
+# v10.0.0 -- broad-universe scanner pre-warm. One-shot per session,
+# triggered from scan_loop's pre-open window at ~09:24 ET. Fires
+# in a daemon thread so it doesn't block the 60s scan cadence.
+_v10_prewarm_done_for: set = set()
+_v10_prewarm_lock = __import__("threading").RLock()
+
+
+def _v10_prewarm_dynamic_universe(now_et) -> None:
+    """Fire the in-process premarket pull at ~09:24 ET so the
+    broad-universe scanner's data is ready when ensure_session_started
+    runs at the 09:30 ET RTH open. Idempotent: one fire per ET date.
+    Background thread; safe to call from inside scan_loop.
+
+    Skips when ORB_DYNAMIC_UNIVERSE=0 or when the bar archive directory
+    can't be resolved. On failure, the auto-rebuild path inside
+    orb.live_premarket_scanner.compute_universe is the safety net.
+    """
+    import os as _os
+    if _os.environ.get("ORB_DYNAMIC_UNIVERSE", "1") != "1":
+        return
+    # Only fire in the 09:20-09:29 ET window (one minute of slack
+    # before the cron-style 09:24 target so scan-cadence drift can't
+    # miss it; the inner once-per-date guard prevents double-fire).
+    if not (now_et.hour == 9 and 20 <= now_et.minute <= 29):
+        return
+    date_iso = now_et.strftime("%Y-%m-%d")
+    with _v10_prewarm_lock:
+        if date_iso in _v10_prewarm_done_for:
+            return
+        _v10_prewarm_done_for.add(date_iso)
+
+    def _worker():
+        try:
+            import json as _json
+            from datetime import date as _date
+            from pathlib import Path as _Path
+            from tools.pull_premarket_for_scanner import (
+                rebuild_premarket_bars_for_date,
+            )
+            from orb.live_premarket_scanner import default_bar_archive_root
+
+            uni_path = _Path("data/universe/sp500.json")
+            if not uni_path.is_file():
+                uni_path = _Path(
+                    _os.environ.get("TG_DATA_ROOT", "/data")
+                ) / "universe" / "sp500.json"
+            try:
+                uni_doc = _json.loads(uni_path.read_text())
+                tickers = list(uni_doc.get("tickers") or [])
+            except Exception:
+                tickers = []
+            if not tickers:
+                logger.warning("[V100-SCANNER-PREWARM] no universe; skip")
+                return
+            n = rebuild_premarket_bars_for_date(
+                target_date=_date.fromisoformat(date_iso),
+                out_root=default_bar_archive_root(),
+                universe_tickers=tickers,
+            )
+            logger.info(
+                "[V100-SCANNER-PREWARM] date=%s pulled %d bars across %d tickers",
+                date_iso, n, len(tickers),
+            )
+        except Exception:
+            logger.exception("[V100-SCANNER-PREWARM] worker failed")
+
+    import threading as _th
+    _th.Thread(
+        target=_worker, name="v10-scanner-prewarm", daemon=True,
+    ).start()
+
+
 def _v531_build_permit_state(tg, ticker: str) -> dict | None:
     """v5.31.0 \u2014 assemble a per-minute permit_state blob for the
     indicator snapshot stream. Captures boundary-hold (LONG + SHORT) and
@@ -185,6 +257,18 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         # to archive QQQ + per-ticker premarket bars; the live pill
         # should reflect that.
         tg._last_scan_time = datetime.now(timezone.utc)
+        # v10.0.0 -- pre-warm the broad-universe scanner data at 09:24 ET
+        # in a background thread. Triggers the same in-process Alpaca pull
+        # that orb/live_premarket_scanner.compute_universe would otherwise
+        # run on-demand at ensure_session_started, but doing it ~6 min
+        # ahead means the 09:30 ET first-scan cycle finds data ready and
+        # doesn't pay the ~30s pull latency right at the RTH open.
+        # Fully self-healing: if it fails or skipped, the scanner's
+        # on-demand auto-rebuild still kicks in at session start.
+        try:
+            _v10_prewarm_dynamic_universe(now_et)
+        except Exception:
+            logger.debug("[V100-SCANNER-PREWARM] failed (non-fatal)", exc_info=True)
         try:
             tg._clear_cycle_bar_cache()
             _qqq_pre = callbacks.fetch_1min_bars(tg.V561_INDEX_TICKER)

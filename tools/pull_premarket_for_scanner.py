@@ -4,7 +4,7 @@ broad-universe scanner has fresh data when `ensure_session_started`
 fires shortly after.
 
 Writes to `${TG_DATA_ROOT}/bars/<DATE>/<TICKER>.jsonl` in the SAME
-schema as bar_archive.py — the live scanner reads from the same
+schema as bar_archive.py \u2014 the live scanner reads from the same
 directory.
 
 Resume-friendly: per-(date, ticker) file skip means re-running mid-
@@ -109,6 +109,52 @@ def _pull(client, batch: list[str], target_date: date, out_root: Path) -> int:
                 f.write(json.dumps(r) + "\n")
         bars += len(recs)
     return bars
+
+
+def rebuild_premarket_bars_for_date(
+    *,
+    target_date: date,
+    out_root: Path,
+    universe_tickers: list[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    skip_frac: float = 0.95,
+) -> int:
+    """In-process rebuild used by the live runtime when the 09:24 ET GHA
+    cron didn't deliver. Same logic as `main()` but importable; bubbles
+    only the bar count (returns 0 on missing creds or import failure).
+    """
+    key = os.environ.get("VAL_ALPACA_PAPER_KEY")
+    sec = os.environ.get("VAL_ALPACA_PAPER_SECRET")
+    if not key or not sec:
+        return 0
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+    except ImportError:
+        return 0
+    out_root.mkdir(parents=True, exist_ok=True)
+    client = StockHistoricalDataClient(key, sec)
+    total = 0
+    for i in range(0, len(universe_tickers), batch_size):
+        batch = universe_tickers[i : i + batch_size]
+        existing = sum(
+            1 for t in batch
+            if _exists_and_nonempty(out_root / target_date.isoformat() / f"{t}.jsonl")
+        )
+        if existing / max(len(batch), 1) >= skip_frac:
+            continue
+        try:
+            total += _pull(client, batch, target_date, out_root)
+        except Exception as e:
+            import re as _re
+            bad = _re.findall(r"invalid symbol:\s*([A-Z./-]+)", str(e))
+            if bad:
+                retry = [t for t in batch if t not in bad]
+                if len(retry) < len(batch):
+                    try:
+                        total += _pull(client, retry, target_date, out_root)
+                    except Exception:
+                        pass
+    return total
 
 
 def main(argv: list[str]) -> int:

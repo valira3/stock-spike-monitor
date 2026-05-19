@@ -10,7 +10,7 @@ loader (discover_dates requires every ticker to have a file on every
 day) and pre-builds a pkl cache for all tickers. A 504-ticker run
 through that path would blow memory and OOM-style stall. This harness
 trades the pkl cache for lazy per-ticker loading at the cost of slower
-runs — fine for a research sweep against the broad universe.
+runs \u2014 fine for a research sweep against the broad universe.
 
 Usage:
     python tools/orb_broad_backtest.py \\

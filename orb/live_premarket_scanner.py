@@ -155,10 +155,52 @@ def compute_universe(
         if _has_premarket_bars(bar_archive_root, date_str, tk)
     )
     coverage = have_bars / max(len(candidates), 1)
+
+    # Auto-rebuild path: if the 09:24 ET batch pull didn't deliver
+    # (Railway sync lag, GHA workflow failure, etc.) and we're inside the
+    # scanner-window (which the caller decides \u2014 here we just attempt
+    # if coverage is below threshold AND the auto-rebuild env flag is on),
+    # try a single in-process pull from Alpaca SIP before giving up. The
+    # rebuild takes ~30s for S&P 500 / one date.
+    auto_rebuild_on = os.environ.get(
+        "ORB_DYNAMIC_UNIVERSE_AUTO_REBUILD", "1"
+    ) == "1"
+    if coverage < MIN_BAR_COVERAGE and auto_rebuild_on:
+        logger.warning(
+            "[V10-SCANNER-REBUILD] coverage %d/%d (%.1f%%) below %.0f%% "
+            "-- attempting in-process Alpaca pull for %s",
+            have_bars, len(candidates), coverage * 100,
+            MIN_BAR_COVERAGE * 100, date_str,
+        )
+        try:
+            from tools.pull_premarket_for_scanner import (
+                rebuild_premarket_bars_for_date,
+            )
+            from datetime import date as _date
+
+            n_pulled = rebuild_premarket_bars_for_date(
+                target_date=_date.fromisoformat(date_str),
+                out_root=bar_archive_root,
+                universe_tickers=candidates,
+            )
+            logger.info(
+                "[V10-SCANNER-REBUILD] pulled %d bars; re-checking coverage",
+                n_pulled,
+            )
+        except Exception as e:
+            logger.warning("[V10-SCANNER-REBUILD] pull failed: %s", e)
+        # Recompute coverage after rebuild attempt
+        have_bars = sum(
+            1 for tk in candidates
+            if _has_premarket_bars(bar_archive_root, date_str, tk)
+        )
+        coverage = have_bars / max(len(candidates), 1)
+
     if coverage < MIN_BAR_COVERAGE:
         logger.warning(
-            "[V10-SCANNER] insufficient premarket bars: %d/%d candidates "
-            "(%.1f%% < %.0f%% threshold) -- falling back to static 12",
+            "[V10-SCANNER] insufficient premarket bars after rebuild "
+            "attempt: %d/%d candidates (%.1f%% < %.0f%% threshold) -- "
+            "falling back to static 12",
             have_bars,
             len(candidates),
             coverage * 100,

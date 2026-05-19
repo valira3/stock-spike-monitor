@@ -3,7 +3,7 @@
 Computing scan features (gap, pm dollar volume, pm range, premarket bar
 count, prior close, NR-N range) for 504 tickers × 343 days takes ~3-4
 min per call when reading JSONL on demand. The features are
-deterministic for a given corpus snapshot — pre-compute once and pickle.
+deterministic for a given corpus snapshot \u2014 pre-compute once and pickle.
 
 Cache file: data_pm_universe/.feature_cache.pkl
 Schema v2: dict[(date_str, ticker)] -> tuple(gap_pct, pm_dollar_vol,

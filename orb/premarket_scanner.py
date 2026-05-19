@@ -10,7 +10,7 @@ Signal options:
   - "composite"       : z-score sum of (gap, volume, range), divided by 3
   - "compression"     : NR-N compression -- inverse of bar-range over the last N
                         premarket bars within the last M minutes (the r18
-                        signal). Higher score = TIGHTER range. ABSOLUTE — biased
+                        signal). Higher score = TIGHTER range. ABSOLUTE \u2014 biased
                         toward names that are always sleepy.
   - "compression_rel" : Relative NR-N -- today's last-N-bar range divided by the
                         14-day mean of the same statistic for this ticker.
