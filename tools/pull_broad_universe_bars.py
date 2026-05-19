@@ -155,8 +155,29 @@ def pull_batch(
         try:
             n = _pull_chunk(client, batch, cs, ce, out_root)
         except Exception as e:
-            print(f"      chunk {cs.isoformat()} FAIL: {e}", flush=True, file=sys.stderr)
-            continue
+            # Retry once with invalid symbols pruned. Alpaca raises e.g.
+            # `{"message":"invalid symbol: XYZ"}` -- parse the symbol out
+            # and re-pull the rest of the batch.
+            msg = str(e)
+            bad = []
+            import re as _re
+            for m in _re.finditer(r"invalid symbol:\s*([A-Z./-]+)", msg):
+                bad.append(m.group(1))
+            if bad:
+                retry_batch = [t for t in batch if t not in bad]
+                if len(retry_batch) < len(batch):
+                    print(f"      chunk {cs.isoformat()} retry: dropping {bad}", flush=True)
+                    try:
+                        n = _pull_chunk(client, retry_batch, cs, ce, out_root)
+                    except Exception as e2:
+                        print(f"      chunk {cs.isoformat()} RETRY-FAIL: {e2}", flush=True)
+                        continue
+                else:
+                    print(f"      chunk {cs.isoformat()} FAIL: {msg[:200]}", flush=True)
+                    continue
+            else:
+                print(f"      chunk {cs.isoformat()} FAIL: {msg[:200]}", flush=True)
+                continue
         total += n
         print(f"      chunk {cs.isoformat()}..{ce.isoformat()}  {n:>8,}b  {time.time()-t0:>5.1f}s",
               flush=True)

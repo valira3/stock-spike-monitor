@@ -138,6 +138,7 @@ def scan_day(
     top_k: int = 10,
     min_pm_bars: int = 10,
     min_dollar_volume: float = 100_000.0,
+    feature_cache: dict | None = None,
 ) -> list[ScanResult]:
     """Rank `universe` by `signal` on `date_str`; return top_k ScanResults.
 
@@ -147,15 +148,31 @@ def scan_day(
 
     Tickers with < min_pm_bars premarket bars or < min_dollar_volume in
     premarket dollar volume are dropped (illiquid noise filter).
+
+    `feature_cache` (optional): pre-built dict[(date_str, ticker)] ->
+    (gap_pct, pm_dollar_vol, pm_range_pct, n_pm_bars, prior_close).
+    When supplied, scanner skips the JSONL read path entirely. Build
+    via `orb.scanner_cache.build_cache` + `save_cache`.
     """
     corpus_root = Path(corpus_root)
     raw: list[ScanResult] = []
     for tk in universe:
-        r = _signal_features(corpus_root, tk, date_str, min_pm_bars=min_pm_bars)
-        if r is None:
-            continue
-        if r.pm_dollar_volume < min_dollar_volume:
-            continue
+        if feature_cache is not None:
+            feats = feature_cache.get((date_str, tk))
+            if feats is None:
+                continue
+            gap_pct, pm_dol, pm_rng, n_pm, _prior = feats
+            if n_pm < min_pm_bars or pm_dol < min_dollar_volume:
+                continue
+            r = ScanResult(ticker=tk, score=0.0, gap_pct=gap_pct,
+                           pm_dollar_volume=pm_dol, pm_range_pct=pm_rng,
+                           n_pm_bars=n_pm)
+        else:
+            r = _signal_features(corpus_root, tk, date_str, min_pm_bars=min_pm_bars)
+            if r is None:
+                continue
+            if r.pm_dollar_volume < min_dollar_volume:
+                continue
         raw.append(r)
 
     if not raw:

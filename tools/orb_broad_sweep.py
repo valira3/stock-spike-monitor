@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 DEFAULT_CELLS = [
@@ -42,7 +43,61 @@ DEFAULT_CELLS = [
 
 
 def _cell_id(cell: dict) -> str:
-    return f"sig={cell['signal']}_topk={cell['top_k']}_cap={cell['cap']}_mdv={cell['mdv']}"
+    base = f"sig={cell['signal']}_topk={cell['top_k']}_cap={cell['cap']}_mdv={cell['mdv']}"
+    eo = cell.get("env_overrides") or {}
+    if eo:
+        # short suffix for env overrides so cell dirs are unique
+        suffix = "_".join(f"{k.replace('ORB_','')}={v}" for k, v in sorted(eo.items()))
+        base += f"__{suffix}"
+    return base
+
+
+def _run_one_cell(args: tuple) -> dict:
+    """Module-level worker so ProcessPoolExecutor can pickle it."""
+    cell, base_env, repo_str, out_root_str, pm_corpus, universe, start, end = args
+    cid = _cell_id(cell)
+    out_root = Path(out_root_str)
+    cell_out = out_root / cid
+    env = dict(base_env)
+    env["ORB_MAX_CONCURRENT_RISK_DOLLARS"] = str(cell["cap"])
+    for k, v in (cell.get("env_overrides") or {}).items():
+        env[k] = str(v)
+    cmd = [
+        sys.executable, "tools/orb_broad_backtest.py",
+        "--pm-corpus", pm_corpus,
+        "--universe", universe,
+        "--start", start,
+        "--end", end,
+        "--out", str(cell_out),
+        "--signal", str(cell["signal"]),
+        "--top-k", str(cell["top_k"]),
+        "--min-dollar-vol", str(cell["mdv"]),
+        "--vid", cid,
+    ]
+    t0 = time.time()
+    proc = subprocess.run(cmd, cwd=repo_str, env=env, capture_output=True, text=True)
+    dt = time.time() - t0
+    if proc.returncode != 0:
+        return {"cid": cid, **cell, "status": "FAIL",
+                "stderr": proc.stderr[-300:], "wall_seconds": round(dt, 1)}
+    try:
+        summary = json.loads((cell_out / "summary.json").read_text())
+    except Exception as e:
+        return {"cid": cid, **cell, "status": "FAIL",
+                "stderr": str(e), "wall_seconds": round(dt, 1)}
+    return {
+        "cid": cid,
+        **cell,
+        "status": "OK",
+        "days_ran": summary["days_ran"],
+        "trades": summary["trades"],
+        "win_rate_pct": summary["win_rate_pct"],
+        "net_pnl": summary["net_pnl"],
+        "ending_account": summary["ending_account"],
+        "per_quarter_pnl": summary.get("per_quarter_pnl", {}),
+        "per_quarter_trades": summary.get("per_quarter_trades", {}),
+        "wall_seconds": round(dt, 1),
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -56,6 +111,8 @@ def main(argv: list[str]) -> int:
                    help="JSON list overriding DEFAULT_CELLS")
     p.add_argument("--keystone-env", action="store_true",
                    help="Inject Keystone + R21 + R26 + cap=1.9 levers (same as production)")
+    p.add_argument("--workers", type=int, default=8,
+                   help="Parallel sweep cells (this machine has 18 logical cores)")
     args = p.parse_args(argv[1:])
 
     cells = json.loads(args.cells) if args.cells else DEFAULT_CELLS
@@ -92,54 +149,42 @@ def main(argv: list[str]) -> int:
         }
         base_env.update(keystone)
 
-    rows = []
+    rows: list[dict] = []
     t_overall = time.time()
-    for i, cell in enumerate(cells, 1):
-        cid = _cell_id(cell)
-        cell_out = out_root / cid
-        env = dict(base_env)
-        env["ORB_MAX_CONCURRENT_RISK_DOLLARS"] = str(cell["cap"])
-        cmd = [
-            sys.executable, "tools/orb_broad_backtest.py",
-            "--pm-corpus", args.pm_corpus,
-            "--universe", args.universe,
-            "--start", args.start,
-            "--end", args.end,
-            "--out", str(cell_out),
-            "--signal", str(cell["signal"]),
-            "--top-k", str(cell["top_k"]),
-            "--min-dollar-vol", str(cell["mdv"]),
-            "--vid", cid,
-        ]
-        print(f"\n=== [{i}/{len(cells)}] {cid} ===", flush=True)
-        t0 = time.time()
-        proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
-        dt = time.time() - t0
-        if proc.returncode != 0:
-            print(f"FAIL: {proc.stderr[-400:]}", flush=True)
-            rows.append({"cid": cid, **cell, "status": "FAIL", "stderr": proc.stderr[-200:]})
-            continue
-        try:
-            summary = json.loads((cell_out / "summary.json").read_text())
-        except Exception as e:
-            print(f"FAIL: couldn't read summary: {e}", flush=True)
-            rows.append({"cid": cid, **cell, "status": "FAIL"})
-            continue
-        rows.append({
-            "cid": cid,
-            **cell,
-            "status": "OK",
-            "days_ran": summary["days_ran"],
-            "trades": summary["trades"],
-            "win_rate_pct": summary["win_rate_pct"],
-            "net_pnl": summary["net_pnl"],
-            "ending_account": summary["ending_account"],
-            "wall_seconds": round(dt, 1),
-        })
-        print(f"  net=${summary['net_pnl']:>+10,.0f}  "
-              f"trades={summary['trades']:>5}  "
-              f"WR={summary['win_rate_pct']:.1f}%  "
-              f"{dt:.1f}s", flush=True)
+    n_cells = len(cells)
+    print(f"Running {n_cells} cells with {args.workers}-way parallelism", flush=True)
+
+    worker_args = [
+        (cell, base_env, str(repo), str(out_root), args.pm_corpus,
+         args.universe, args.start, args.end)
+        for cell in cells
+    ]
+
+    if args.workers <= 1:
+        for i, wa in enumerate(worker_args, 1):
+            cid = _cell_id(wa[0])
+            print(f"\n=== [{i}/{n_cells}] {cid} ===", flush=True)
+            r = _run_one_cell(wa)
+            rows.append(r)
+            net = r.get("net_pnl", float("nan"))
+            tr = r.get("trades", 0)
+            wr = r.get("win_rate_pct", float("nan"))
+            print(f"  net=${net:>+10,.0f}  trades={tr:>5}  WR={wr:.1f}%  "
+                  f"{r['wall_seconds']:.1f}s  [{r['status']}]", flush=True)
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futs = {pool.submit(_run_one_cell, wa): wa for wa in worker_args}
+            done = 0
+            for fut in as_completed(futs):
+                done += 1
+                r = fut.result()
+                rows.append(r)
+                net = r.get("net_pnl", float("nan"))
+                tr = r.get("trades", 0)
+                wr = r.get("win_rate_pct", float("nan"))
+                print(f"[{done:>2}/{n_cells}] {r['cid']:60s}  "
+                      f"net=${net:>+10,.0f}  trades={tr:>5}  WR={wr:.1f}%  "
+                      f"{r['wall_seconds']:.1f}s  [{r['status']}]", flush=True)
 
     # Comparison table
     rows.sort(key=lambda r: r.get("net_pnl", -1e9), reverse=True)

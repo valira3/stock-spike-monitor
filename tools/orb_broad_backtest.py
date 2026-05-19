@@ -52,6 +52,7 @@ from tools.orb_backtest import (  # type: ignore
     run_ticker_day,
 )
 from orb.premarket_scanner import scan_day
+from orb.scanner_cache import load_cache
 
 
 def _trading_days(start: date, end: date) -> list[date]:
@@ -139,9 +140,13 @@ def main(argv: list[str]) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "per_day").mkdir(parents=True, exist_ok=True)
 
+    # Load the feature cache once (built by tools/build_scanner_cache.py).
+    feature_cache = load_cache(pm)
+    cache_note = f"feature_cache={len(feature_cache):,} rows" if feature_cache else "feature_cache=MISS (slow path)"
+
     print(f"Broad backtest: signal={args.signal} top_k={args.top_k} "
           f"universe={len(tickers)} days={len(days)}/{len(all_days)} "
-          f"corpus={pm}", flush=True)
+          f"corpus={pm} {cache_note}", flush=True)
 
     # Compounding state (mirrors orb_backtest.run)
     starting_account = cfg.account
@@ -155,12 +160,13 @@ def main(argv: list[str]) -> int:
     for d_idx, d in enumerate(days):
         date_str = d.isoformat()
 
-        # Pre-day scan
+        # Pre-day scan (uses feature cache when present; otherwise reads JSONLs)
         picks = scan_day(
             pm, date_str, tickers,
             signal=args.signal, top_k=args.top_k,
             min_pm_bars=args.min_pm_bars,
             min_dollar_volume=args.min_dollar_vol,
+            feature_cache=feature_cache,
         )
         if not picks:
             continue
@@ -222,6 +228,16 @@ def main(argv: list[str]) -> int:
     total_pnl = running_account - starting_account
     wins = sum(1 for p in grand_pairs if p.get("pnl_dollars", 0) > 0)
     losses = sum(1 for p in grand_pairs if p.get("pnl_dollars", 0) < 0)
+
+    # Per-quarter breakdown so we can spot in-sample fits / time-period overfitting
+    by_quarter: dict[str, float] = {}
+    quarter_trades: dict[str, int] = {}
+    for row in summary_per_day:
+        d = date.fromisoformat(row["date"])
+        q = f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+        by_quarter[q] = by_quarter.get(q, 0.0) + row["day_pnl"]
+        quarter_trades[q] = quarter_trades.get(q, 0) + row["trades"]
+
     summary = {
         "variant": args.vid,
         "signal": args.signal,
@@ -237,6 +253,8 @@ def main(argv: list[str]) -> int:
         "net_pnl": round(total_pnl, 2),
         "compound_daily": cfg.compound_daily,
         "wall_seconds": round(time.time() - t0, 1),
+        "per_quarter_pnl": {q: round(by_quarter[q], 2) for q in sorted(by_quarter)},
+        "per_quarter_trades": {q: quarter_trades[q] for q in sorted(quarter_trades)},
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
