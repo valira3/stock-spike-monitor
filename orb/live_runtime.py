@@ -1042,7 +1042,9 @@ _pending_v10_sizes: dict[tuple[str, str], int] = {}
 # rolling list of recent rollback timestamps (unix epoch). Consulted by
 # `_check_rollback_cooldown()` in `check_entry`; appended to by
 # `rollback_admit()` when a real unwind occurs (any_change=True).
-# Gated by env: ORB_ROLLBACK_COOLDOWN_AFTER_N (default 0 = disabled).
+# Defaults: 3 rollbacks in 10-minute window. Tunable via env
+# ORB_ROLLBACK_COOLDOWN_AFTER_N / ORB_ROLLBACK_COOLDOWN_MIN.
+# Set ORB_ROLLBACK_COOLDOWN_AFTER_N=0 to disable.
 _rollback_history: dict[tuple[str, str, str], list[float]] = {}
 _rollback_lock = threading.RLock()
 
@@ -1051,19 +1053,19 @@ def _check_rollback_cooldown(
     portfolio_id: str, ticker: str, side: str,
 ) -> Optional[str]:
     """v9.1.131 -- block re-admit when consecutive rollbacks pile up
-    on the same (portfolio, ticker, side). Disabled by default.
+    on the same (portfolio, ticker, side). On by default.
 
-    Reads:
-        ORB_ROLLBACK_COOLDOWN_AFTER_N -- threshold (default 0 = off)
+    Reads (with defaults):
+        ORB_ROLLBACK_COOLDOWN_AFTER_N -- threshold (default 3, 0 disables)
         ORB_ROLLBACK_COOLDOWN_MIN     -- sliding-window minutes (default 10)
 
     Returns a reason string (with count + remaining minutes) when the
     cooldown blocks admit, else None.
     """
     try:
-        after_n = int(os.environ.get("ORB_ROLLBACK_COOLDOWN_AFTER_N", "0"))
+        after_n = int(os.environ.get("ORB_ROLLBACK_COOLDOWN_AFTER_N", "3"))
     except Exception:
-        after_n = 0
+        after_n = 3
     if after_n <= 0:
         return None
     try:

@@ -4,25 +4,25 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
-## v9.1.131 (2026-05-19) — ORB rollback-cooldown lever (env-flagged, default OFF)
+## v9.1.131 (2026-05-19) — ORB rollback-cooldown lever (default ON)
 
-Adds an opt-in cooldown that blocks re-admit on the same
-(portfolio, ticker, side) after N consecutive rollbacks within a
-sliding window. Closes the open loophole exposed by the
-2026-05-19 10:35 ET TSLA SHORT incident: `check_entry` returned
-ok=True, `callbacks.execute_short_entry` ran without populating
+Blocks `check_entry` re-admit on the same (portfolio, ticker,
+side) after N consecutive rollbacks within a sliding window.
+Closes the loophole exposed by the 2026-05-19 10:35 ET TSLA
+SHORT incident: `check_entry` returned ok=True,
+`callbacks.execute_short_entry` ran without populating
 `tg.short_positions`, `rollback_admit` cleanly unwound the FSM +
 RiskBook -- but nothing prevented `check_entry` from re-admitting
 the same setup on the very next 5-min bar. 10 rollbacks fired in
 ~3 minutes before the operator noticed via the
 `railway_logs_clean` invariant tripping CRIT.
 
-**Default OFF** (env unset or `ORB_ROLLBACK_COOLDOWN_AFTER_N=0`).
-Enable on Railway PROD via env:
+**Default ON** with thresholds `N=3` rollbacks in `10`-minute
+window. Tunable via Railway env if needed:
 
 ```
-ORB_ROLLBACK_COOLDOWN_AFTER_N=3   # block after 3 rollbacks
-ORB_ROLLBACK_COOLDOWN_MIN=10      # within 10-minute sliding window
+ORB_ROLLBACK_COOLDOWN_AFTER_N   # default 3, 0 disables
+ORB_ROLLBACK_COOLDOWN_MIN       # default 10 minutes
 ```
 
 When the cooldown fires, `check_entry` returns
@@ -41,7 +41,8 @@ cooldown (backward-compat for any external use).
 with `rollback_cooldown` indicate the gate fired.
 
 **Tests**: `tests/strategy/test_orb_rollback_cooldown.py` covers
-disabled-by-default, threshold-fires, window-pruning.
+on-by-default, explicit-disable, threshold-fires, window-pruning,
+independent sides/portfolios.
 
 ---
 
