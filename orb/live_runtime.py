@@ -288,6 +288,12 @@ def _build_config_from_env() -> OrbConfig:
         # never hit 1R -- replaces the legacy sentinel A safety net.
         stale_full_exit_minutes=_et_to_min("ORB_STALE_FULL_EXIT_ET", 0),
         stale_full_exit_mfe_floor_r=_f("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0),
+        # R32 (v9.1.134) -- asymmetric reversal circuit-breaker. Both
+        # default 0 (disabled). Recommended PROD enable:
+        #   ORB_REVERSAL_CIRCUIT_MIN_MFE_R=1.0
+        #   ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R=1.5
+        reversal_circuit_min_mfe_r=_f("ORB_REVERSAL_CIRCUIT_MIN_MFE_R", 0.0),
+        reversal_circuit_min_giveback_r=_f("ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R", 0.0),
     )
 
 

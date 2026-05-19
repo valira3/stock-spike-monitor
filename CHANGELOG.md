@@ -4,6 +4,43 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.134 (2026-05-19) — R32 reversal circuit-breaker (live engine, env-gated)
+
+Ports the R32 asymmetric reversal circuit-breaker from
+`tools/orb_backtest.py` (research) into the live engine
+(`orb/exits.py:evaluate`). Fires ONLY when BOTH conditions hold:
+
+  (a) `MFE_R >= reversal_circuit_min_mfe_r` (position was clearly favorable)
+  (b) `(MFE_R - current_PnL_R) >= reversal_circuit_min_giveback_r`
+      (the round-trip swing exceeds the threshold)
+
+Designed to catch the rare "favorable → unfavorable" round-trip cohort
+(e.g. NFLX wild-swing days) without affecting trending winners. Fires
+BEFORE partial-at-1R / stop / target / R21 / R26 so the close prints
+at `bar_close` with the reason `reversal_circuit`.
+
+**Default OFF** (both fields = 0 in `OrbConfig`). Enable on Railway PROD via:
+
+```
+ORB_REVERSAL_CIRCUIT_MIN_MFE_R=1.0
+ORB_REVERSAL_CIRCUIT_MIN_GIVEBACK_R=1.5
+```
+
+These are the operator-approved ultra-strict thresholds from R32's
+sweep on the 252-day rth-expand corpus: cost ≈ -$21/yr (essentially
+neutral), fires ~23 times/year on the rare clear round-trip cohort.
+
+**Forensic**: new exit reason `reversal_circuit` in `trade_log.jsonl`.
+
+**Tests**: `tests/strategy/test_orb_exits_reversal_circuit.py` (7 cases:
+disabled-by-default, long fires, short fires, MFE-only-no-fire,
+giveback-only-no-fire, zero-risk-no-divide, fires-before-partial).
+
+**Files**: `orb/exits.py`, `orb/engine.py`, `orb/live_runtime.py`,
+new test file, this CHANGELOG, version bumps.
+
+---
+
 ## v9.1.133 (2026-05-19) — EOD reversal addon: block same ticker on both legs
 
 Closes 2026-05-19 15:26 ET incident: ORCL was in both `long_tickers`
