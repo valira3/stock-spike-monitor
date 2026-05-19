@@ -54,7 +54,7 @@ def _cell_id(cell: dict) -> str:
 
 def _run_one_cell(args: tuple) -> dict:
     """Module-level worker so ProcessPoolExecutor can pickle it."""
-    cell, base_env, repo_str, out_root_str, pm_corpus, universe, start, end = args
+    cell, base_env, repo_str, out_root_str, pm_corpus, universe, start, end, sectors = args
     cid = _cell_id(cell)
     out_root = Path(out_root_str)
     cell_out = out_root / cid
@@ -74,6 +74,14 @@ def _run_one_cell(args: tuple) -> dict:
         "--min-dollar-vol", str(cell["mdv"]),
         "--vid", cid,
     ]
+    if sectors:
+        cmd.extend(["--sectors", sectors])
+    cluster_pct = (cell.get("env_overrides") or {}).get("ORB_CLUSTER_MAX_SECTOR_PCT")
+    if cluster_pct is not None:
+        cmd.extend(["--cluster-skip-pct", str(cluster_pct)])
+    cluster_corr = (cell.get("env_overrides") or {}).get("ORB_CLUSTER_MAX_GAP_SAMESIGN_PCT")
+    if cluster_corr is not None:
+        cmd.extend(["--cluster-skip-corr", str(cluster_corr)])
     t0 = time.time()
     proc = subprocess.run(cmd, cwd=repo_str, env=env, capture_output=True, text=True)
     dt = time.time() - t0
@@ -113,6 +121,8 @@ def main(argv: list[str]) -> int:
                    help="Inject Keystone + R21 + R26 + cap=1.9 levers (same as production)")
     p.add_argument("--workers", type=int, default=8,
                    help="Parallel sweep cells (this machine has 18 logical cores)")
+    p.add_argument("--sectors", default="",
+                   help="Optional sectors JSON path (passed through to each cell)")
     args = p.parse_args(argv[1:])
 
     cells = json.loads(args.cells) if args.cells else DEFAULT_CELLS
@@ -156,7 +166,7 @@ def main(argv: list[str]) -> int:
 
     worker_args = [
         (cell, base_env, str(repo), str(out_root), args.pm_corpus,
-         args.universe, args.start, args.end)
+         args.universe, args.start, args.end, args.sectors)
         for cell in cells
     ]
 

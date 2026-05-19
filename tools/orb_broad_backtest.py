@@ -124,6 +124,16 @@ def main(argv: list[str]) -> int:
     p.add_argument("--pm-min-lookback-min", type=int,
                    default=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN", "30")),
                    help="compression signal: search window before 09:30 ET, in minutes")
+    p.add_argument("--sectors", default="",
+                   help="Optional path to sectors JSON (ticker->sector). Required for --cluster-skip-pct.")
+    p.add_argument("--cluster-skip-pct", type=float,
+                   default=float(os.environ.get("ORB_CLUSTER_MAX_SECTOR_PCT", "0")),
+                   help="Skip the whole day if >= this pct of top-K picks share one sector. "
+                        "Range 0-100; 0 = off (default). Requires --sectors.")
+    p.add_argument("--cluster-skip-corr", type=float,
+                   default=float(os.environ.get("ORB_CLUSTER_MAX_GAP_SAMESIGN_PCT", "0")),
+                   help="Skip the day if >= this pct of top-K picks have same-sign premarket gap "
+                        "(0-100; 0 = off). Cheap proxy for premarket-return correlation.")
     p.add_argument("--vid", default="orb_broad_universe")
     args = p.parse_args(argv[1:])
 
@@ -134,6 +144,10 @@ def main(argv: list[str]) -> int:
 
     uni = json.loads(Path(args.universe).read_text())
     tickers = uni["tickers"]
+    sectors_map: dict[str, str] = {}
+    if args.sectors:
+        sec_doc = json.loads(Path(args.sectors).read_text())
+        sectors_map = sec_doc.get("sectors", {})
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
@@ -178,6 +192,21 @@ def main(argv: list[str]) -> int:
         )
         if not picks:
             continue
+
+        # Cluster gates (skip the whole day if today's picks look correlated)
+        if args.cluster_skip_pct > 0 and sectors_map and picks:
+            from collections import Counter
+            sec_counts = Counter(sectors_map.get(r.ticker, "?") for r in picks)
+            top_sec, top_n = sec_counts.most_common(1)[0]
+            top_pct = 100.0 * top_n / len(picks)
+            if top_pct >= args.cluster_skip_pct:
+                continue
+        if args.cluster_skip_corr > 0 and picks:
+            n_pos = sum(1 for r in picks if r.gap_pct > 0)
+            n_neg = sum(1 for r in picks if r.gap_pct < 0)
+            same_sign_pct = 100.0 * max(n_pos, n_neg) / max(len(picks), 1)
+            if same_sign_pct >= args.cluster_skip_corr:
+                continue
 
         picks_record = {
             "date": date_str,
