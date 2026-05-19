@@ -29,8 +29,7 @@ file, and any lock listed here that no longer exists in code must be removed.
 | 10 | `_sla_lock` | `ingest/sla.py:78` | SLA table mutations | module | RLock |
 | 11 | `_lock` (algo_plus) | `ingest/algo_plus.py:205` | Stream subscription state | instance | Lock |
 | 12 | `_ingest_stats_lock` | `ingest/algo_plus.py:676` | Ingest-stats counters | module | Lock |
-| 13 | `_trade_log_lock` | `trade_genius.py:3847` | Append-only `trade_log.jsonl` | module | Lock |
-| 14 | `_system_test_lock` | `trade_genius.py:5740` | One-shot system-test trigger | module | Lock |
+| 13 | `_system_test_lock` | `trade_genius.py:5616` | One-shot system-test trigger | module | Lock |
 | 15 | `_lock` (volume_profile) | `volume_profile.py:634` | Volume baseline state | instance | Lock |
 | 16 | `_bootstrap_lock` | `orb/live_runtime.py:88` | OrbEngine atomic build/swap | module | RLock |
 | 17 | `_sizes_lock` | `orb/live_runtime.py:89` | Per-portfolio size dict | module | RLock |
@@ -41,6 +40,7 @@ file, and any lock listed here that no longer exists in code must be removed.
 | 22 | `_lock` (earnings_refresh) | `orb/earnings_refresh.py:71` | v10.0.1 refresh state | module | Lock |
 | 23 | `_lock` (scanner_state) | `orb/scanner_state.py:20` | v10.0.0 scanner result | module | Lock |
 | 24 | `_signal_listeners_lock` | `orb/signal_bus.py:35` | v10.0.1 bus listener list | module | Lock |
+| 24b | `_trade_log_lock` (carved) | `orb/trade_log.py:50` | v10.0.1 trade-log JSONL append (carved from trade_genius.py) | module | Lock |
 | 25 | `_cache_lock` | `engine/extended_universe.py:51` | Earnings-universe cache | module | Lock |
 | 26 | `_LOCK` (v770_flags) | `engine/v770_flags.py:60` | v770 flag cache | module | Lock |
 | 27 | `_gate_lock` | `engine/ingest_gate.py:67` | Ingest-gate state | module | Lock |

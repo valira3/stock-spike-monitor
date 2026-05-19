@@ -305,6 +305,44 @@ set_last_signal_setter(_set_last_signal)
 
 
 # ============================================================
+# TRADE LOG (v3.4.27; carved out to orb/trade_log.py in v10.0.1)
+# ============================================================
+# Implementation lives in orb.trade_log. trade_genius.py re-exports
+# the public API for back-compat with broker/orders.py,
+# telegram_commands.py, synthetic_harness, and tests that do
+# `from trade_genius import trade_log_append` etc.
+#
+# `_trade_log_last_error` is module-mutable. Module-level __getattr__
+# (PEP 562) proxies reads to orb.trade_log so `getattr(tg,
+# "_trade_log_last_error")` always sees the live value, not a stale
+# snapshot bound at import time.
+from orb.trade_log import (
+    trade_log_append,
+    trade_log_read_tail,
+    _trade_log_snapshot_pos,
+    _trade_log_lock,
+    TRADE_LOG_SCHEMA_VERSION,
+)
+from orb import trade_log as _trade_log_mod
+
+
+def __getattr__(name):
+    """PEP 562 module-level __getattr__ for mutable state owned by carved
+    modules. Reads always see the live value.
+
+    Note: tests that ASSIGN to these attributes (e.g.
+    `tg._trade_log_last_error = "boom"`) bind to trade_genius's
+    namespace and won't propagate back to orb.trade_log -- but no
+    production caller assigns to these from outside the owning module.
+    """
+    if name == "_trade_log_last_error":
+        return _trade_log_mod._trade_log_last_error
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )
+
+
+# ============================================================
 # TRADEGENIUS EXECUTOR BASE (v4.0.0-alpha)
 # ============================================================
 # Re-exports for back-compat with `m.TradeGeniusBase` / `m.TradeGeniusVal` /
@@ -526,6 +564,16 @@ TRADE_LOG_FILE         = os.getenv(
     "TRADE_LOG_PATH",
     os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "trade_log.jsonl"),
 )
+# v10.0.1 -- the trade-log impl moved to orb.trade_log; keep its path
+# constant in sync with the production-style default that locates the
+# JSONL alongside the paper-state JSON. orb.trade_log's default
+# fallback ("trade_log.jsonl" in CWD) is only used by tests that
+# import orb.trade_log directly without trade_genius.
+try:
+    import orb.trade_log as _orb_trade_log
+    _orb_trade_log.TRADE_LOG_FILE = TRADE_LOG_FILE
+except Exception:
+    pass
 PAPER_STARTING_CAPITAL = 100_000.0
 
 # Investment logger (separate file)
@@ -3804,181 +3852,9 @@ user_config: dict = {"trading_mode": "paper"}
 # ============================================================
 
 # ============================================================
-# v3.4.27 \u2014 PERSISTENT TRADE LOG (append-only JSONL)
+# (trade-log impl moved to orb/trade_log.py in v10.0.1; see the
+# `from orb.trade_log import ...` block earlier in this file.)
 # ============================================================
-# Every closed trade (longs via close_position, shorts via
-# close_short_position, and their TP counterparts) writes one JSON
-# line to TRADE_LOG_FILE. The file lives on the Railway volume so it
-# survives redeploys. Append-only \u2014 never rewritten, never rotated
-# (a year of typical volume is ~3 MB).
-#
-# Schema (v1):
-#   schema_version: int       \u2014 1
-#   bot_version:    str       \u2014 BOT_VERSION at write time
-#   date:           str       \u2014 YYYY-MM-DD (trade close date, ET)
-#   portfolio:      str       \u2014 "paper" | "tp"
-#   ticker:         str
-#   side:           str       \u2014 "LONG" | "SHORT"
-#   shares:         int
-#   entry_price:    float
-#   exit_price:     float
-#   entry_time:     str       \u2014 HH:MM:SS or ISO (as stored)
-#   exit_time:      str       \u2014 ISO-8601 UTC
-#   hold_seconds:   float|null
-#   pnl:            float     \u2014 signed dollars
-#   pnl_pct:        float     \u2014 signed percent (0.23 = +0.23%)
-#   reason:         str       \u2014 EOD | TRAIL | STOP | RETRO_CAP |
-#                               RED_CANDLE | POLARITY_SHIFT |
-#                               HARD_EJECT_TIGER | forensic_stop |
-#                               per_trade_brake | be_stop | ema_trail |
-#                               velocity_fuse | ...
-#   entry_num:      int       \u2014 add-on index (longs only; 1 for shorts)
-#   trail_active_at_exit:   bool|null
-#   trail_stop_at_exit:     float|null
-#   trail_anchor_at_exit:   float|null  (trail_high for long, trail_low for short)
-#   hard_stop_at_exit:      float|null
-#   effective_stop_at_exit: float|null  (trail_stop if armed, else hard stop)
-#
-# All writes are best-effort: any IO error is logged and swallowed so
-# a broken disk never breaks trade execution.
-# ============================================================
-
-TRADE_LOG_SCHEMA_VERSION = 1
-_trade_log_lock = threading.Lock()
-_trade_log_last_error = None  # surfaced via /api/state for visibility
-
-
-def _trade_log_snapshot_pos(pos):
-    """Extract trail + stop diagnostic fields from a position dict.
-
-    Accepts both long (trail_high) and short (trail_low) shapes.
-    Returns a dict of None-safe values. Used at close time so the
-    row captures exactly what the exit decision saw.
-    """
-    if not isinstance(pos, dict):
-        return {
-            "trail_active_at_exit": None,
-            "trail_stop_at_exit": None,
-            "trail_anchor_at_exit": None,
-            "hard_stop_at_exit": None,
-            "effective_stop_at_exit": None,
-            # v7.107.0 (audit SEV-2 fix) -- entry_stop is the
-            # IMMUTABLE stop captured at entry time, before any
-            # trail/BE/ratchet mutation. The classic R-multiple
-            # denominator. Pre-v7.107.0 trade_replay used
-            # hard_stop_at_exit (= pos["stop"] AT EXIT) which is
-            # actually the trailed stop because exits.maybe_arm_be
-            # and Alarm-F/Alarm-C all mutate pos["stop"] in place.
-            "entry_stop": None,
-        }
-    trail_active = bool(pos.get("trail_active", False))
-    trail_stop = pos.get("trail_stop")
-    # Either long (trail_high) or short (trail_low) populates anchor.
-    trail_anchor = pos.get("trail_high", pos.get("trail_low"))
-    hard_stop = pos.get("stop")
-    # v7.107.0 -- read the immutable entry stop. broker.orders sets
-    # `initial_stop` at entry time alongside `stop`; nothing mutates
-    # `initial_stop` thereafter. Fall back to `stop` only when
-    # `initial_stop` is absent (legacy positions opened pre-init_stop).
-    initial_stop = pos.get("initial_stop")
-    if initial_stop is None:
-        initial_stop = hard_stop
-    effective_stop = (
-        trail_stop if (trail_active and trail_stop is not None) else hard_stop
-    )
-    def _as_float(v):
-        return float(v) if v is not None else None
-    return {
-        "trail_active_at_exit": trail_active,
-        "trail_stop_at_exit": _as_float(trail_stop),
-        "trail_anchor_at_exit": _as_float(trail_anchor),
-        "hard_stop_at_exit": _as_float(hard_stop),
-        "effective_stop_at_exit": _as_float(effective_stop),
-        "entry_stop": _as_float(initial_stop),
-    }
-
-
-def trade_log_append(row):
-    """Append a single closed-trade row to the persistent trade log.
-
-    Best-effort: failures are logged and swallowed, never raised. The
-    lock guards against the (rare) case of two close paths firing at
-    once \u2014 writes are atomic at the OS level for small lines on
-    POSIX, but the lock keeps log order deterministic and protects
-    the _trade_log_last_error surface from races.
-    """
-    global _trade_log_last_error
-    # Defensive: never let a caller ship missing required fields.
-    required = ("ticker", "side", "pnl", "reason")
-    for f in required:
-        if f not in row:
-            _trade_log_last_error = f"missing field: {f}"
-            logger.warning("[TRADE_LOG] skipping row missing %s: %s",
-                           f, row)
-            return False
-    full = {
-        "schema_version": TRADE_LOG_SCHEMA_VERSION,
-        "bot_version": BOT_VERSION,
-    }
-    full.update(row)
-    line = json.dumps(full, default=str, separators=(",", ":"))
-    try:
-        with _trade_log_lock:
-            # Open append+ with explicit newline to keep JSONL clean.
-            with open(TRADE_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        _trade_log_last_error = None
-        return True
-    except OSError as e:
-        _trade_log_last_error = f"{type(e).__name__}: {e}"
-        logger.error(
-            "[TRADE_LOG] append failed (%s). Path=%s. Trade still "
-            "executed \u2014 only persistence failed.",
-            e, TRADE_LOG_FILE,
-        )
-        return False
-
-
-def trade_log_read_tail(limit=500, since_date=None, portfolio=None):
-    """Read the tail of the trade log, optionally filtered.
-
-    Returns a list of dicts, newest-last (same order as on disk).
-    Filtering is applied AFTER reading \u2014 trade log is small enough
-    that this is fine. Failures return an empty list; never raises.
-
-    Args:
-      limit:       max rows to return (newest)
-      since_date:  optional "YYYY-MM-DD"; only rows with date >= this
-      portfolio:   optional "paper" or "tp" filter
-    """
-    if not os.path.exists(TRADE_LOG_FILE):
-        return []
-    try:
-        with open(TRADE_LOG_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError as e:
-        logger.error("[TRADE_LOG] read failed: %s", e)
-        return []
-    rows = []
-    for ln in lines:
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            rows.append(json.loads(ln))
-        except json.JSONDecodeError:
-            # Defensively skip corrupted lines rather than blowing up
-            # the whole read.
-            continue
-    if since_date:
-        rows = [r for r in rows if r.get("date", "") >= since_date]
-    if portfolio:
-        rows = [r for r in rows if r.get("portfolio") == portfolio]
-    if limit and len(rows) > limit:
-        rows = rows[-limit:]
-    return rows
-
-
 # ============================================================
 # TELEGRAM MESSAGING
 # ============================================================
