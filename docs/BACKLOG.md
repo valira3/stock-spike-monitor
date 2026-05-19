@@ -12,25 +12,24 @@ engineering task). Don't leave silently completed items here.
 
 ## Research
 
-### Broader-universe NR-N compression / dynamic universe (2026-05-19)
+### Broad-market premarket breakout scanner → dynamic daily watchlist (2026-05-19)
 
-**Source.** The production morning ORB runs on a fixed 12-ticker universe (`AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, QQQ, SPY, TSLA`). Every day starts looking at the same 12 names regardless of which ones had a compression setup in the premarket session. R18-R21 explored building a daily "where's the energy" scanner from premarket NR-N (narrow-range N-bar) compression and routing the morning engine at a per-day-selected universe instead of the static list.
+**Original ask.** "What if we look at the very broad market for potential breakout signals during premarket and add those stocks to our breakout watch during the day (temporarily, just for that day). Can you build a backtest for that?"
 
-**Hypothesis.** A premarket scanner that ranks the broader liquid universe (e.g. S&P 100 or top-200 by ADV) by NR-N compression score at 09:25 ET, then hands the top-K names to the morning ORB engine, should outperform the static 12-ticker universe by:
+**Status to date.** Operator + prior session explored the direction in R18-R21 (dynamic-universe research). Expansion to **S&P 500 was the most promising** breadth — broader than that introduced too much noise, narrower than that left edge on the table. The premarket scanner + R18-R21 sweep scripts + ~32 GB of premarket bar corpus under `data_pm_universe/` are local on **ValsSpectre** (prior dev machine), NOT in this repo.
 
-- catching ORB setups on names that are setting up THAT day but aren't in the static list (the "missed pop" cohort)
-- skipping static-list names that are clearly NOT setting up (the "false trigger" cohort that costs slippage + risk budget)
+The headline from §9 of the local `research_guide.md` (paraphrased): the single highest-ROI next test is **concurrent-cap relief** — at relaxed entry filters, the R18 NR-N premarket signal showed crowd-out of ~$25k/yr against the fixed `ORB_MAX_CONCURRENT_RISK_DOLLARS=$2000` cap. Raising the cap to $3k-$4k may flip the OOS R18 nr5_top10 variant (-$1.9k/yr) into positive territory **without any new signal infrastructure**.
 
-The same R21 + R26 mid-day exit levers apply — the universe layer is upstream of the engine, not a replacement for it.
+**Production morning ORB context.** Currently runs a fixed 12-ticker universe (`AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, QQQ, SPY, TSLA`). Every day starts on the same 12 names regardless of which had premarket setups. The dynamic-universe layer would sit upstream of the existing engine — R21/R26 exits, VWAP-chase gate, etc. still apply.
 
-**Status.** Code + 32 GB premarket bar corpus + R18-R21 sweep scripts + premarket_scanner module + tests are local on **ValsSpectre** (prior dev machine), NOT in this repo. The original BACKLOG entry written there is the source of truth; this entry is a placeholder so the direction isn't lost. Retrieval options:
+**Two parallel test paths.**
 
-1. Transfer from ValsSpectre directly (tar + scp the local-only files; the 32 GB corpus is reproducible from Polygon premarket data so skip it).
-2. Recreate from scratch using `.github/workflows/pull-premarket.yml` (or the consolidated `pull-bars.yml` once Phase-4 lands — see Engineering section) for the corpus, then re-derive the scanner.
+1. **Concurrent-cap relief sweep** (cheap, fast) — 4 cells: `ORB_MAX_CONCURRENT_RISK_DOLLARS ∈ {$2000, $2500, $3000, $4000}`. Runs against existing 12-ticker corpus; no new data needed. Tests whether the cap is currently the binding constraint on edge.
+2. **S&P 500 premarket scanner** (expensive, real direction) — requires retrieving the ValsSpectre artifacts OR rebuilding: (a) pull S&P 500 premarket bar corpus via Polygon REST (the consolidated `pull-bars.yml` workflow — see Engineering Phase 4), (b) port `orb/premarket_scanner.py` + tests, (c) wire a `ORB_DYNAMIC_UNIVERSE` env that, when ON, replaces the static `UNIVERSE` with the top-K scanner output, (d) A/B in the `combined_replay` harness.
 
-**Action.** First, pull the original write-up + code from ValsSpectre so this stub can be replaced with the real research plan. Then expose the scanner output as `ORB_DYNAMIC_UNIVERSE=1` (default OFF, fallback to current static list) so it can be A/B tested in the same `combined_replay` harness as R21/R26.
+**Action.** Start with test path (1) — it's a 4-cell, ~2-minute sweep on the warm cache and directly tests the §9 thesis. If positive, the result strengthens the case for (2). If negative, the cap isn't the binding constraint and the broader scanner is the only remaining lever.
 
-**Owner.** Next research round. Blocked on the retrieval step above.
+**Owner.** Next research round. Path (2) blocked on artifact retrieval from ValsSpectre OR rebuild.
 
 ---
 
