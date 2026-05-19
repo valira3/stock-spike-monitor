@@ -4,6 +4,52 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.135 (2026-05-19) — /close &lt;ticker&gt; Telegram command (manual override)
+
+Operator-controlled manual position close. Usage:
+
+```
+/close <TICKER>
+```
+
+Closes the named ticker on EVERY portfolio (Main / Val / Gene) that
+currently holds it. Dispatches via the correct path per portfolio:
+
+  - Main: `broker.orders.close_breakout(ticker, price, side, reason="manual_close")`
+  - Val / Gene: `engine/scan.py:_v10_dispatch_executor_fire(reduce_only=True)`
+    (bypasses the v9.1.125 cumulative-notional cap; close shrinks exposure)
+
+Owner-only — enforced globally by `_auth_guard` (group=-1) in
+`telegram_ui/runtime.py` against `TRADEGENIUS_OWNER_IDS`. No per-handler
+check needed.
+
+After a successful Val/Gene close, the per-portfolio post-trade cooldown
+is recorded so the Keystone cooldown lever (+$42,573/yr) stays active
+for manual closes too.
+
+**Forensic**: `[V79-MANUAL-CLOSE]` log line per portfolio close (warning
+level), with ticker / side / price / shares / operator_id / status.
+
+**Reply**: per-portfolio status summary so one bad dispatch doesn't shadow
+the others.
+
+**Motivation**: 2026-05-19 Val TSLA SHORT case — a position made a
+favorable move but never reached 1R, then unwound. The R27–R32 research
+sweeps confirmed no automated lever can catch this case without
+destroying value on the 30+ normal trades it would false-positive on.
+Manual operator override is the only safe intervention; this command
+is that override surface.
+
+**Tests**: `tests/strategy/test_telegram_close_command_wiring.py` — 7
+source-inspection cases covering handler existence, runtime
+registration, BotCommand menu entry, auth-guard reliance, dispatch
+routing (Main + Val/Gene), and cooldown recording.
+
+**Files**: `telegram_commands.py`, `telegram_ui/runtime.py`,
+`trade_genius.py`, new test, this CHANGELOG, version bumps.
+
+---
+
 ## v9.1.134 (2026-05-19) — R32 reversal circuit-breaker (live engine, env-gated)
 
 Ports the R32 asymmetric reversal circuit-breaker from
