@@ -188,6 +188,25 @@ class OrbConfig:
     # tolerance the dashboard monitor's or_break invariant uses for
     # WARN classification. Set to 0.0 to disable.
     or_retracement_tolerance_bps: float = 25.0
+    # R21 (v9.1.x) -- runner_eod_prep: time-based forced exit on the
+    # runner half AFTER the partial-at-1R fires. 0 = off; production
+    # winner = 14*60 = 14:00 ET. Quarterly stability check showed
+    # +$2,414/yr (+12.7%) on Val ($30k) vs Keystone baseline, with
+    # no negative quarters. The signal is: "after locking half at 1R,
+    # the runner has typically peaked by mid-afternoon; afternoon
+    # chop tends to give back unrealized gains." Time-based exit
+    # captures the local max without bar-level MFE tracking.
+    runner_eod_prep_minutes: int = 0
+    # R26 (v9.1.130) -- stale FULL-position exit. Mirror of R21 for the
+    # un-partialed cohort: close the WHOLE position at this ET-minute
+    # if the 1R partial hasn't fired yet. 0 = off; production winner =
+    # 14*60+30 = 14:30 ET. Optional MFE-in-R floor (stale_full_exit_mfe_floor_r)
+    # spares trades that came close to 1R. Quarterly stability: 6 of 8
+    # Val/Main quarter-cells positive, +$2,955/yr combined; worst quarter
+    # -$1,086 on Main Q3'25. Replaces the legacy sentinel A safety net
+    # that v9.1.128 portfolio independence removed for Val/Gene.
+    stale_full_exit_minutes: int = 0
+    stale_full_exit_mfe_floor_r: float = 0.0
     # v9.0.0 -- prior-day SPY regime gate (R12 research). Default
     # threshold -40 bps; skip the whole day if prior session SPY
     # close-to-close return was below this. Set to 0.0 to disable.
@@ -1001,6 +1020,13 @@ class OrbEngine:
 
         v8.1.0 -- forwards cfg.partial_profit_at_1r so exits.evaluate()
         can emit EXIT_PARTIAL on first 1R touch.
+        R21 -- forwards cfg.runner_eod_prep_minutes so exits.evaluate()
+        can emit EXIT_RUNNER_EOD_PREP after the partial fires.
+
+        R26 -- forwards cfg.stale_full_exit_minutes +
+        cfg.stale_full_exit_mfe_floor_r so exits.evaluate() can emit
+        EXIT_STALE_FULL_EXIT on un-partialed positions that drift past
+        the time cutoff.
         """
         return _exits.evaluate(
             pos,
@@ -1010,6 +1036,9 @@ class OrbEngine:
             bar_bucket_min=bar_bucket_min,
             eod_cutoff_min=self.cfg.eod_cutoff_minutes,
             partial_profit_at_1r=self.cfg.partial_profit_at_1r,
+            runner_eod_prep_min=self.cfg.runner_eod_prep_minutes,
+            stale_full_exit_min=self.cfg.stale_full_exit_minutes,
+            stale_full_exit_mfe_floor_r=self.cfg.stale_full_exit_mfe_floor_r,
         )
 
     def on_partial_exit(self, pos: _exits.OrbPosition, partial_price: float) -> tuple[int, float]:

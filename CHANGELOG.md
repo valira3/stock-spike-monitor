@@ -4,6 +4,14 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.139 (2026-05-19) — merge: pull main into staging (R21 runner_eod_prep + R26 stale_full_exit + R22-R25 falsified sweeps)
+
+Brings staging up to date with `main` after v9.1.137. New on staging from main: R21 `runner_eod_prep` lever (v9.1.129), R26 `stale_full_exit` lever (v9.1.130), and the R22-R25 falsified-theory sweep scripts + FALSIFIED markers (#790, #791).
+
+No behavior changes in this commit beyond the textual merge. Conflicts resolved in `bot_version.py`, `trade_genius.py`, and this file (entry ordering). Both branches share v9.1.128 below the merged window — the entry is kept once.
+
+---
+
 ## v9.1.138 (2026-05-18) — merge: pull prod fixes from main into staging
 
 Reconciles the staging branch (v9.1.128-137, week-replay UI + 1.9× notional cap) with main's v9.1.121-128 production hotfix series (INGEST_DISABLE_WS, executor-based resolve_equity, post-restart reconciliation, OR-retracement gate, EOD safety-net + cap-bypass fix, per-portfolio EXIT loop, removal of ORB_PORTFOLIO_FIRE). Both branches independently authored a "v9.1.128" commit with different content — this merge keeps both sets of entries below; the version is bumped to 9.1.138 to dedupe.
@@ -345,6 +353,148 @@ python tools/afternoon_backtest.py --strategy eod_reversal --corpus data \\
 ```
 
 Morning 6.5s pkl-cache run, EOD 4m20s full slip-by-slip simulation. 341 corpus days (2025-01-02 to 2026-05-13), 261 morning trade-days, 680 EOD entries, 471 morning entries (57.1% WR). 1 negative quarter of 6 (2025-Q1, -$4,448 combined — structurally weak quarter, NFLX-driven; see Keystone skill).
+
+---
+## v9.1.130 (2026-05-18) — R26 stale_full_exit lever (un-partialed afternoon discipline)
+
+Complement to v9.1.129's R21 runner_eod_prep. R21 catches the runner
+half AFTER the 1R partial fires; R26 catches the WHOLE position
+BEFORE 1R ever fires. Together they cover the two distinct
+afternoon-driftback cohorts and restore the safety-net coverage that
+v9.1.128 portfolio independence removed for Val/Gene (legacy sentinel A
+is no longer routed through Val's exits).
+
+**Forensic that prompted this**: 2026-05-18 Val AVGO SHORT entered 10:10
+ET, MFE 0.17R (never hit 1R), exited 11:54 via legacy sentinel A on
+Main's bus — but under v9.1.128 independence, a future Val-only trade
+in the same shape would ride to 15:55 EOD with only ATR stop as
+protection.
+
+**Backtest** (252-day SIP corpus, 14 variants through combined-replay
+harness with 1.9x gross-notional cap): winner is **force-close at 14:30
+ET, no MFE floor**. Quarterly stability check:
+
+| Quarter | Val Δ | Main Δ |
+|---|---:|---:|
+| Q3-2025 | -$291 | -$1,086 |
+| Q4-2025 | +$1 | +$3 |
+| Q1-2026 | **+$1,272** | **+$1,597** |
+| Q2-2026 | +$800 | +$660 |
+| **Sum** | **+$1,781** | **+$1,174** |
+
+6 of 8 portfolio-quarter cells positive (3/4 Val, 3/4 Main); worst
+single quarter -$1,086 on Main Q3'25; combined +$2,955/yr against
+~$80k baseline (+3.7% lift). Most-recent quarters (Q1-Q2 2026) carry
+the bulk of the edge — good signal for going-forward.
+
+**Lever**: `ORB_STALE_FULL_EXIT_ET=14:30` (set on Railway prod env).
+Optional `ORB_STALE_FULL_EXIT_MFE_FLOOR_R` (default 0) spares trades
+whose MFE got close to 1R; production ships with no floor.
+
+**Live wiring**:
+- `orb/engine.py:OrbConfig` — `stale_full_exit_minutes: int = 0`,
+  `stale_full_exit_mfe_floor_r: float = 0.0`
+- `orb/exits.py` — new `EXIT_STALE_FULL_EXIT = "stale_full_exit"`
+  constant; new `stale_full_exit_min` + `stale_full_exit_mfe_floor_r`
+  kwargs on `evaluate()`; new `mfe_price: float` field on `OrbPosition`
+  updated each `evaluate()` call for floor comparison.
+- `orb/live_runtime.py:bootstrap` — env wiring via
+  `_et_to_min("ORB_STALE_FULL_EXIT_ET", 0)` + `_f("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0)`.
+
+**Safety guard**: the new exit fires only when `pos.partial_taken=False`
+— mutually exclusive with R21's `runner_eod_prep`. Stop/target/BE always
+win on same-bar (pessimistic ordering); R26 fires before EOD cutoff
+when both would otherwise hit.
+
+**Tests**: `tests/strategy/test_orb_stale_full_exit.py` — 13 cases
+covering default-off, partial-gate, MFE-floor variants, stop/target
+precedence, EOD ordering.
+
+**Sweep + quarterly scripts**: `docs/research/r26_stale_full_exit.py`
+and `docs/research/r26_quarterly.py`. Run `python3
+docs/research/r26_quarterly.py` to reproduce the table.
+
+**Rollout**: lever defaults OFF; operator sets
+`ORB_STALE_FULL_EXIT_ET=14:30` on Railway prod env after merge.
+
+---
+
+## v9.1.129 (2026-05-18) — R21 runner_eod_prep lever + combined-replay baseline harness
+
+R21 forensic on Val morning ORB found that 38 of 156 (24%) of EOD-held
+positions gave back >0R of unrealized P&L from the 1R peak to the
+15:55 ET close — total $3,796/yr left on the table. The cause: after
+`partial_profit_at_1r` fires (locks half at 1R), the runner half has
+no profit protection until stop/target/BE/EOD. Afternoon chop tends
+to give back the runner's unrealized gain.
+
+Backtest R21 sweep (252-day SIP corpus + 4 quarterly slices, evaluated
+through the new combined-replay harness with staging's
+gross-notional-cap interaction at 1.9x) tested 14 variants. Winner:
+**force-exit the runner half at 14:00 ET after the 1R partial has
+fired**.
+
+Quarterly stability for `runner_eod_prep=14:00` on Val ($30,185):
+
+| Period | Days | Baseline ann. | R21 ann. | Δ ($) | Δ (%) | EOD blocks |
+|---|---:|---:|---:|---:|---:|---:|
+| FY | 252 | $+18,960 (+62.8%) | $+21,374 (+70.8%) | **+$2,414** | **+12.7%** | 39 → 15 |
+| Q2 2025 | 34 | $+20,639 | $+22,444 | +$1,804 | +8.7% | 5 → 3 |
+| Q3 2025 | 64 | $+23,979 | $+25,733 | +$1,754 | +7.3% | 22 → 8 |
+| Q4 2025 | 64 | $+12,638 | $+17,432 | +$4,795 | +37.9% | 7 → 3 |
+| Q1+Q2 2026 | 90 | $+21,251 | $+22,184 | +$933 | +4.4% | 19 → 10 |
+
+All 4 quarters positive. Worst quarter (Q1+Q2 2026) still +$933/yr.
+
+Changes:
+
+- `orb/engine.py:OrbConfig` -- new `runner_eod_prep_minutes: int = 0`
+  field. Default OFF; production rollout sets it per-portfolio via
+  `ORB_RUNNER_EOD_PREP_ET=14:00` in Railway env.
+- `orb/exits.py:evaluate` -- new `runner_eod_prep_min` kwarg; new
+  `EXIT_RUNNER_EOD_PREP` reason constant. Fires only when
+  `pos.partial_taken=True` (losing trades that never reached 1R are
+  unaffected); fires after stop/target checks but before the
+  whole-session EOD cutoff.
+- `orb/engine.py:OrbEngine.evaluate_position_exit` -- forwards the
+  new kwarg.
+- `orb/live_runtime.py:bootstrap` -- env wiring via
+  `_et_to_min("ORB_RUNNER_EOD_PREP_ET", 0)`.
+
+Backtest tooling (also new):
+
+- `tools/orb_backtest.py` -- four R21 levers added (`partial_at_2r`,
+  `partial_at_3r`, `runner_mfe_trail_bps`, `runner_eod_prep_minutes`).
+  All default OFF. Per-bar behavior layered after the existing
+  partial-at-1R fire so they operate only on the runner half. Companion
+  R20 levers (eod_prep_exit, mfe_giveback, afternoon_trail) shipped
+  earlier in this branch are retained for future research.
+- `tools/combined_replay.py` (new, 252-line harness) -- replicates the
+  staging methodology established in v9.1.131-137
+  (synth_snapshots.py:synth_day._add_eod_with_interaction) extended to
+  full-corpus + daily compounding + annualization. Composes the
+  per-day output of `tools/orb_backtest.py` and `tools/afternoon_backtest.py`
+  with the gross-notional-cap interaction at 15:00 ET. `--cap-on-starting-equity`
+  flag matches staging's no-compound 5-day methodology for direct
+  comparison.
+- `docs/research/r21_partials_ladder.py` (new) -- 14-variant sweep
+  driver that runs orb_backtest morning + afternoon_backtest EOD
+  + combined_replay for each variant on Val + Main, ranks by Val
+  combined annualized $.
+
+Test coverage:
+
+- `tests/strategy/test_orb_runner_eod_prep.py` (new, 8 tests) --
+  default-off behavior, fires when threshold hit + partial_taken,
+  short-side mirror, doesn't fire before threshold, doesn't fire on
+  non-partialed positions (the safety guard), stop/target wins on
+  same-bar hit, fires before EOD cutoff.
+
+Operator rollout: lever is staged OFF in code. Set
+`ORB_RUNNER_EOD_PREP_ET=14:00` in Railway env per-portfolio when ready
+(start with Val/Gene where the $/yr lift is largest). The 14:00 time
+is the R21 sweep winner; `13:30` and `14:30` also tested positive but
+less so.
 
 ---
 

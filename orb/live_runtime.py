@@ -269,6 +269,24 @@ def _build_config_from_env() -> OrbConfig:
         # baked into the v13 final report. Set to "0:00" in Railway
         # env to disable (allows all-day entries until eod_cutoff).
         time_cutoff_minutes=_et_to_min("ORB_TIME_CUTOFF_ET", 11 * 60),
+        # R21 (v9.1.x) -- runner_eod_prep: time-based exit on the runner
+        # half after partial-at-1R fires. Default 0 = off. Production
+        # winner from R21 sweep is 14:00 ET (+$2,414/yr on Val, all
+        # quarters positive). Set ORB_RUNNER_EOD_PREP_ET=14:00 in
+        # Railway env to enable. Quarterly stability table in the R21
+        # PR description; the lever is staged off-by-default for
+        # operator-controlled rollout per-portfolio.
+        runner_eod_prep_minutes=_et_to_min("ORB_RUNNER_EOD_PREP_ET", 0),
+        # R26 (v9.1.130) -- stale FULL-position exit. Mirror of R21 for
+        # the un-partialed cohort. Production winner: 14:30 ET, no MFE
+        # floor (closes all not-yet-1R positions at 14:30). Set
+        # ORB_STALE_FULL_EXIT_ET=14:30 in Railway env to enable.
+        # Quarterly stability: +$2,955/yr combined Val+Main, 6 of 8
+        # quarter-portfolio cells positive, worst quarter -$1,086 on
+        # Main Q3'25. Catches afternoon driftback on positions that
+        # never hit 1R -- replaces the legacy sentinel A safety net.
+        stale_full_exit_minutes=_et_to_min("ORB_STALE_FULL_EXIT_ET", 0),
+        stale_full_exit_mfe_floor_r=_f("ORB_STALE_FULL_EXIT_MFE_FLOOR_R", 0.0),
     )
 
 
