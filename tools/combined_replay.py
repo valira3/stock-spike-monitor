@@ -45,6 +45,7 @@ NOTE: the morning P&L scales with equity (compound), but this script
 uses the morning pairs AS-IS. To get accurate per-equity P&L, rerun
 tools/orb_backtest.py with ORB_ACCOUNT=<equity> before this script.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -86,18 +87,20 @@ def _load_morning_day(morning_dir: Path, date: str) -> list[dict]:
         xm = _iso_to_minutes(p.get("exit_ts", ""))
         if em is None or xm is None:
             continue
-        out.append({
-            "ticker": p["ticker"],
-            "side": p["side"],
-            "entry_min": em,
-            "exit_min": xm,
-            "entry_price": float(p["entry_price"]),
-            "exit_price": float(p["exit_price"]),
-            "shares": int(p["shares"]),
-            "pnl": float(p["pnl_dollars"]),
-            "exit_reason": p.get("exit_reason", "?"),
-            "leg": "morning",
-        })
+        out.append(
+            {
+                "ticker": p["ticker"],
+                "side": p["side"],
+                "entry_min": em,
+                "exit_min": xm,
+                "entry_price": float(p["entry_price"]),
+                "exit_price": float(p["exit_price"]),
+                "shares": int(p["shares"]),
+                "pnl": float(p["pnl_dollars"]),
+                "exit_reason": p.get("exit_reason", "?"),
+                "leg": "morning",
+            }
+        )
     return out
 
 
@@ -110,18 +113,20 @@ def _load_eod_day(eod_dir: Path, date: str) -> list[dict]:
     pairs = d.get("pnl_pairs") or []
     out = []
     for p in pairs:
-        out.append({
-            "ticker": p["ticker"],
-            "side": p["side"],
-            "entry_min": int(p["entry_bucket"]),
-            "exit_min": int(p["exit_bucket"]),
-            "entry_price": float(p["entry_price"]),
-            "exit_price": float(p["exit_price"]),
-            "shares": int(p["shares"]),
-            "pnl": float(p["pnl_dollars"]),
-            "exit_reason": p.get("exit_reason", "eod"),
-            "leg": "eod",
-        })
+        out.append(
+            {
+                "ticker": p["ticker"],
+                "side": p["side"],
+                "entry_min": int(p["entry_bucket"]),
+                "exit_min": int(p["exit_bucket"]),
+                "entry_price": float(p["entry_price"]),
+                "exit_price": float(p["exit_price"]),
+                "shares": int(p["shares"]),
+                "pnl": float(p["pnl_dollars"]),
+                "exit_reason": p.get("exit_reason", "eod"),
+                "leg": "eod",
+            }
+        )
     return out
 
 
@@ -177,6 +182,7 @@ def run(
     equity: float,
     gross_notional_mult: float,
     year_prefix: str = "20",
+    cap_on_starting_equity: bool = False,
 ) -> dict:
     dates = _list_dates(corpus, year_prefix)
     rows = []
@@ -202,8 +208,15 @@ def run(
             days_eod_active += 1
         if morning and eod:
             days_both_active += 1
+        # Cap reference: starting (matches staging's 5-day snapshot
+        # methodology) or current compounded equity (more realistic for
+        # full-year annualization since live broker caps grow with equity).
+        cap_ref = starting_equity if cap_on_starting_equity else current_equity
         admitted, blocked, intr = _apply_cap_interaction(
-            morning, eod, current_equity, gross_notional_mult,
+            morning,
+            eod,
+            cap_ref,
+            gross_notional_mult,
         )
         morning_pnl = sum(p["pnl"] for p in morning)
         admitted_pnl = sum(p["pnl"] for p in admitted)
@@ -220,23 +233,23 @@ def run(
         # Daily compound.
         if current_equity > 0:
             current_equity = current_equity + day_pnl
-        rows.append({
-            "date": d,
-            "morning_pnl": round(morning_pnl, 2),
-            "eod_pnl": round(admitted_pnl, 2),
-            "eod_blocked_pnl": round(blocked_pnl, 2),
-            "blocked_count": len(blocked),
-            "day_pnl": round(day_pnl, 2),
-            "equity_after": round(current_equity, 2),
-            "held_over": intr["held_over"],
-            "cap": intr["cap"],
-        })
+        rows.append(
+            {
+                "date": d,
+                "morning_pnl": round(morning_pnl, 2),
+                "eod_pnl": round(admitted_pnl, 2),
+                "eod_blocked_pnl": round(blocked_pnl, 2),
+                "blocked_count": len(blocked),
+                "day_pnl": round(day_pnl, 2),
+                "equity_after": round(current_equity, 2),
+                "held_over": intr["held_over"],
+                "cap": intr["cap"],
+            }
+        )
 
     n = len(rows)
     total_return = (current_equity / starting_equity) - 1.0 if starting_equity else 0.0
-    annualized = (
-        (current_equity / starting_equity) ** (252.0 / n) - 1.0 if n > 0 else 0.0
-    )
+    annualized = (current_equity / starting_equity) ** (252.0 / n) - 1.0 if n > 0 else 0.0
     annualized_dollars = starting_equity * annualized
 
     return {
@@ -262,20 +275,34 @@ def run(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--morning", required=True, type=Path,
-                    help="orb_backtest output dir (contains per_day/)")
-    ap.add_argument("--eod", required=True, type=Path,
-                    help="afternoon_backtest output dir (contains per_day/)")
-    ap.add_argument("--corpus", required=True, type=Path,
-                    help="bar corpus dir (used only to enumerate dates)")
-    ap.add_argument("--equity", type=float, default=100_000.0,
-                    help="starting equity for compound calc")
-    ap.add_argument("--gross-cap", type=float, default=1.9,
-                    help="gross-notional cap multiplier (staging default 1.9)")
-    ap.add_argument("--year-prefix", default="20",
-                    help="filter dates by prefix (default '20')")
-    ap.add_argument("--out", type=Path,
-                    help="write JSON result here (else stdout summary only)")
+    ap.add_argument(
+        "--morning", required=True, type=Path, help="orb_backtest output dir (contains per_day/)"
+    )
+    ap.add_argument(
+        "--eod", required=True, type=Path, help="afternoon_backtest output dir (contains per_day/)"
+    )
+    ap.add_argument(
+        "--corpus", required=True, type=Path, help="bar corpus dir (used only to enumerate dates)"
+    )
+    ap.add_argument(
+        "--equity", type=float, default=100_000.0, help="starting equity for compound calc"
+    )
+    ap.add_argument(
+        "--gross-cap",
+        type=float,
+        default=1.9,
+        help="gross-notional cap multiplier (staging default 1.9)",
+    )
+    ap.add_argument("--year-prefix", default="20", help="filter dates by prefix (default '20')")
+    ap.add_argument("--out", type=Path, help="write JSON result here (else stdout summary only)")
+    ap.add_argument(
+        "--cap-on-starting-equity",
+        action="store_true",
+        help="cap = mult * STARTING equity (no compounding) -- "
+        "matches staging synth_day methodology; default is "
+        "to compound the cap with the running equity for "
+        "realistic annualization",
+    )
     args = ap.parse_args()
 
     result = run(
@@ -285,6 +312,7 @@ def main() -> int:
         equity=args.equity,
         gross_notional_mult=args.gross_cap,
         year_prefix=args.year_prefix,
+        cap_on_starting_equity=args.cap_on_starting_equity,
     )
 
     if args.out:

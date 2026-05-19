@@ -485,6 +485,28 @@ class ORBConfig:
     #     (long) or mfe + X * initial_risk
     #     (short). Chandelier trail. 0=off.
     afternoon_trail_start_minutes: int = 14 * 60  # default 14:00 ET.
+    # R21 partials-ladder + runner-trail (2026-05-18). The existing
+    # partial_profit_at_1r takes half off at 1R. Val morning EOD-exit
+    # data showed runner halves giving back ~$3,796/yr from their MFE
+    # peak between 1R and EOD. These four levers add stacked profit-
+    # taking on the RUNNER half (post-partial-at-1R) without touching
+    # the entry pre-1R behavior. Backtest-only.
+    partial_at_2r: bool = False  # second half-close at entry +/- 2R.
+    #     Only fires after partial_at_1r has
+    #     taken; half of remaining_shares
+    #     (= quarter of original). Requires
+    #     partial_profit_at_1r=True.
+    partial_at_3r: bool = False  # third half-close at entry +/- 3R.
+    #     Half of remaining post-2R-partial.
+    #     Requires partial_at_2r=True.
+    runner_mfe_trail_bps: float = 0.0  # >0: after the first partial fires,
+    #     trail the stop to mfe - X bps of
+    #     entry_price (long) / mfe + X bps
+    #     (short). Locks runner gains.
+    runner_eod_prep_minutes: int = 0  # >0: after the first partial fires,
+    #     force-exit the runner at this ET
+    #     minute (e.g. 14:30). Doesn't fire
+    #     for stops or losing positions.
 
     @classmethod
     def from_env(cls) -> "ORBConfig":
@@ -625,6 +647,15 @@ class ORBConfig:
             afternoon_trail_pct=_envf("ORB_AFTERNOON_TRAIL_PCT", 0.0),
             afternoon_trail_start_minutes=(
                 _et_to_minutes(_envs("ORB_AFTERNOON_TRAIL_START_ET", "14:00"))
+            ),
+            # R21 partials-ladder + runner-trail.
+            partial_at_2r=_envi("ORB_PARTIAL_AT_2R", 0) > 0,
+            partial_at_3r=_envi("ORB_PARTIAL_AT_3R", 0) > 0,
+            runner_mfe_trail_bps=_envf("ORB_RUNNER_MFE_TRAIL_BPS", 0.0),
+            runner_eod_prep_minutes=(
+                _et_to_minutes(_envs("ORB_RUNNER_EOD_PREP_ET", ""))
+                if _envs("ORB_RUNNER_EOD_PREP_ET", "")
+                else 0
             ),
         )
 
@@ -1144,6 +1175,12 @@ def run_ticker_day(
         # to entry_price -- MFE only moves favorably as the position works.
         mfe = entry_price
         initial_risk = risk  # snapshot pre-trail value for the trail width
+        # R21 partials ladder + runner trail state.
+        partial_2r_taken = False
+        partial_3r_taken = False
+        two_r = entry_price + 2 * risk if side == "long" else entry_price - 2 * risk
+        three_r = entry_price + 3 * risk if side == "long" else entry_price - 3 * risk
+        runner_trail_active = False  # set True once partial_taken=True
         for fb in forward_1m:
             # First check stop/target intra-bar (high/low pierce).
             if side == "long":
@@ -1167,6 +1204,32 @@ def run_ticker_day(
                         partial_pnl_dollars = (one_r_long - entry_price) * half
                         remaining_shares -= half
                         partial_taken = True
+                # R21 partial at 2R (half of remaining = quarter of original).
+                if (
+                    cfg.partial_at_2r
+                    and partial_taken
+                    and (not partial_2r_taken)
+                    and fb.high >= two_r
+                    and remaining_shares >= 2
+                ):
+                    quarter = remaining_shares // 2
+                    if quarter > 0:
+                        partial_pnl_dollars += (two_r - entry_price) * quarter
+                        remaining_shares -= quarter
+                        partial_2r_taken = True
+                # R21 partial at 3R (half of remaining post-2R).
+                if (
+                    cfg.partial_at_3r
+                    and partial_2r_taken
+                    and (not partial_3r_taken)
+                    and fb.high >= three_r
+                    and remaining_shares >= 2
+                ):
+                    eighth = remaining_shares // 2
+                    if eighth > 0:
+                        partial_pnl_dollars += (three_r - entry_price) * eighth
+                        remaining_shares -= eighth
+                        partial_3r_taken = True
                 # v10 lever: trailing stop after BE -- ratchet stop up by
                 # trailing_stop_pct of initial risk behind highest high
                 # since entry. trailing_stop_pct=0 disables.
@@ -1209,6 +1272,32 @@ def run_ticker_day(
                         partial_pnl_dollars = (entry_price - one_r_short) * half
                         remaining_shares -= half
                         partial_taken = True
+                # R21 partial at 2R (short mirror).
+                if (
+                    cfg.partial_at_2r
+                    and partial_taken
+                    and (not partial_2r_taken)
+                    and fb.low <= two_r
+                    and remaining_shares >= 2
+                ):
+                    quarter = remaining_shares // 2
+                    if quarter > 0:
+                        partial_pnl_dollars += (entry_price - two_r) * quarter
+                        remaining_shares -= quarter
+                        partial_2r_taken = True
+                # R21 partial at 3R (short mirror).
+                if (
+                    cfg.partial_at_3r
+                    and partial_2r_taken
+                    and (not partial_3r_taken)
+                    and fb.low <= three_r
+                    and remaining_shares >= 2
+                ):
+                    eighth = remaining_shares // 2
+                    if eighth > 0:
+                        partial_pnl_dollars += (entry_price - three_r) * eighth
+                        remaining_shares -= eighth
+                        partial_3r_taken = True
                 if fb.low <= target:
                     fill = min(fb.open, target)
                     fill = max(fb.low, fill)
@@ -1270,6 +1359,35 @@ def run_ticker_day(
                     new_stop = mfe + trail_width
                     if new_stop < stop:
                         stop = new_stop
+
+            # R21 runner MFE-trail. Activates ONLY after the first partial
+            # has fired (so we never tighten below the position's pre-1R
+            # geometry). Trail width is X bps of entry_price.
+            if cfg.runner_mfe_trail_bps > 0 and partial_taken and entry_price > 0:
+                trail_width_dollars = cfg.runner_mfe_trail_bps / 10000.0 * entry_price
+                if side == "long":
+                    new_stop = mfe - trail_width_dollars
+                    if new_stop > stop:
+                        stop = new_stop
+                else:
+                    new_stop = mfe + trail_width_dollars
+                    if new_stop < stop:
+                        stop = new_stop
+
+            # R21 runner EOD-prep. Time-based force-close on the runner
+            # only (i.e. after partial fires). Locks in the partial gain
+            # and a piece of runner P&L without holding through the
+            # afternoon giveback. Distinct from R20's whole-position
+            # eod_prep_exit_minutes.
+            if (
+                cfg.runner_eod_prep_minutes > 0
+                and partial_taken
+                and fb.bucket >= cfg.runner_eod_prep_minutes
+            ):
+                exit_price = fb.close
+                exit_reason = "runner_eod_prep"
+                exit_bkt = fb.bucket
+                break
 
             # EOD cutoff?
             if fb.bucket >= cfg.eod_cutoff_et:
