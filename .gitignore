@@ -23,3 +23,12 @@ debug_replay.py
 trade_log.jsonl
 paper_state_main.json
 data/snapshots/
+
+# Broad-universe research data — too large to commit
+data_pm_universe/
+data_broad/
+data_rth_expand/
+
+# OS noise picked up on the macOS dev machine
+.DS_Store
+*.webloc
