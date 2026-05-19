@@ -2265,6 +2265,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                                 ticker,
                                 result.ticket_id,
                                 reason="execute_entry early-returned without populating tg.positions",
+                                side="long",
                             )
                         except Exception:
                             pass
@@ -2287,6 +2288,7 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                                 ticker,
                                 result.ticket_id,
                                 reason="executor broker-fire unavailable",
+                                side="long",
                             )
                         except Exception:
                             pass
@@ -2380,6 +2382,7 @@ def _orb_short_entry(
                                 ticker,
                                 result.ticket_id,
                                 reason="execute_short_entry early-returned without populating tg.short_positions",
+                                side="short",
                             )
                         except Exception:
                             pass
@@ -2399,6 +2402,7 @@ def _orb_short_entry(
                                 ticker,
                                 result.ticket_id,
                                 reason="executor broker-fire deferred or unavailable",
+                                side="short",
                             )
                         except Exception:
                             pass

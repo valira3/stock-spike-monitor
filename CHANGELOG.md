@@ -4,6 +4,47 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.131 (2026-05-19) — ORB rollback-cooldown lever (env-flagged, default OFF)
+
+Adds an opt-in cooldown that blocks re-admit on the same
+(portfolio, ticker, side) after N consecutive rollbacks within a
+sliding window. Closes the open loophole exposed by the
+2026-05-19 10:35 ET TSLA SHORT incident: `check_entry` returned
+ok=True, `callbacks.execute_short_entry` ran without populating
+`tg.short_positions`, `rollback_admit` cleanly unwound the FSM +
+RiskBook -- but nothing prevented `check_entry` from re-admitting
+the same setup on the very next 5-min bar. 10 rollbacks fired in
+~3 minutes before the operator noticed via the
+`railway_logs_clean` invariant tripping CRIT.
+
+**Default OFF** (env unset or `ORB_ROLLBACK_COOLDOWN_AFTER_N=0`).
+Enable on Railway PROD via env:
+
+```
+ORB_ROLLBACK_COOLDOWN_AFTER_N=3   # block after 3 rollbacks
+ORB_ROLLBACK_COOLDOWN_MIN=10      # within 10-minute sliding window
+```
+
+When the cooldown fires, `check_entry` returns
+`reason_no="rollback_cooldown (3 rollbacks in 10m, 7.2m left)"`
+which surfaces in `[V79-ORB-REJECT]` activity. The window prunes
+old entries automatically; no explicit reset needed when a real
+fill eventually succeeds (next attempt sees the old rollbacks
+aged out).
+
+`rollback_admit()` gained an optional `side` kwarg (default `""`).
+All 4 callsites in `engine/scan.py` now pass `side="long"` /
+`side="short"`. Callers that don't pass side won't trip the
+cooldown (backward-compat for any external use).
+
+**Forensic** (new): `[V79-ORB-REJECT]` lines whose `reason` starts
+with `rollback_cooldown` indicate the gate fired.
+
+**Tests**: `tests/strategy/test_orb_rollback_cooldown.py` covers
+disabled-by-default, threshold-fires, window-pruning.
+
+---
+
 ## v9.1.130 (2026-05-18) — R26 stale_full_exit lever (un-partialed afternoon discipline)
 
 Complement to v9.1.129's R21 runner_eod_prep. R21 catches the runner
