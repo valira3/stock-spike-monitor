@@ -332,17 +332,24 @@ class EodReversalEngine:
             long_rod = next(r for t, r in long_picks if t == ticker)
             short_rod = next(r for t, r in short_picks if t == ticker)
             if abs(long_rod) >= abs(short_rod):
-                # Keep on long, replace on short side
+                # Keep on long, replace on short side.
+                # v9.1.137: forbidden also includes long_picks tickers so the
+                # replacement can't reintroduce a same-ticker collision when
+                # top_n > 1. At top_n=1 this is a no-op (long_picks has 1
+                # entry = the conflict ticker = already excluded by the
+                # `cand[0] == ticker` check), but it future-proofs sweeps that
+                # try top_n=2+.
                 short_picks = [p for p in short_picks if p[0] != ticker]
                 taken_short = {p[0] for p in short_picks}
+                forbidden = taken_short | {p[0] for p in long_picks}
                 replacement = None
                 for cand in reversed(eligible_short):
                     if cand[0] == ticker:
                         continue
-                    if cand[0] in taken_short:
+                    if cand[0] in forbidden:
                         continue
                     short_picks.append(cand)
-                    taken_short.add(cand[0])
+                    forbidden.add(cand[0])
                     replacement = cand[0]
                     if len(short_picks) >= self.cfg.top_n:
                         break
@@ -352,17 +359,19 @@ class EodReversalEngine:
                     ticker, long_rod, short_rod, replacement or "<empty>",
                 )
             else:
-                # Keep on short, replace on long side
+                # Keep on short, replace on long side. Same forbidden-set
+                # hardening as above (v9.1.137).
                 long_picks = [p for p in long_picks if p[0] != ticker]
                 taken_long = {p[0] for p in long_picks}
+                forbidden = taken_long | {p[0] for p in short_picks}
                 replacement = None
                 for cand in eligible_long:
                     if cand[0] == ticker:
                         continue
-                    if cand[0] in taken_long:
+                    if cand[0] in forbidden:
                         continue
                     long_picks.append(cand)
-                    taken_long.add(cand[0])
+                    forbidden.add(cand[0])
                     replacement = cand[0]
                     if len(long_picks) >= self.cfg.top_n:
                         break
