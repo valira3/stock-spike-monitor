@@ -697,18 +697,27 @@ class SimulatorRunner:
         bf_orig = _install_bar_fetch(self._feeder, self.state,
                                      _prior_close_lookup)
         self._orig["bar_fetch"] = bf_orig
-        # No-op the bar archive writers so the bot can't mutate the
-        # corpus during a run. We keep BAR_ARCHIVE_BASE pointed at the
-        # corpus for READERS (spy_regime backfill, etc); writers go
-        # nowhere. Saves the cross-day non-determinism that previously
-        # surfaced when worker N's writes ended up in worker N+1's reads.
+        # No-op the bar archive writers AND the retention-prune so the
+        # bot can't mutate the corpus during a run. We keep
+        # BAR_ARCHIVE_BASE pointed at the corpus for READERS
+        # (spy_regime backfill, _load_eod_prior_closes, etc).
+        #
+        # cleanup_old_dirs is called from broker.lifecycle.eod_close
+        # (which the runner invokes at simulated 15:57 ET). The default
+        # retain_days=30 means each worker walks BAR_ARCHIVE_BASE
+        # (= the corpus) and DELETES any date directory older than
+        # `simulated_today - 30d`. Across 14 parallel workers spanning
+        # 2025-2026, this race-deletes most of the corpus. We've watched
+        # it wipe 280 of 343 dates in a single run.
         import bar_archive as _bar_archive_mod
         import forensic_capture as _forensic_mod
         self._orig["bar_archive.write_bar"] = _bar_archive_mod.write_bar
         self._orig["bar_archive.write_daily_bar"] = _bar_archive_mod.write_daily_bar
+        self._orig["bar_archive.cleanup_old_dirs"] = _bar_archive_mod.cleanup_old_dirs
         self._orig["forensic_capture.write_daily_bar"] = _forensic_mod.write_daily_bar
         _bar_archive_mod.write_bar = lambda *a, **kw: None
         _bar_archive_mod.write_daily_bar = lambda *a, **kw: None
+        _bar_archive_mod.cleanup_old_dirs = lambda *a, **kw: []
         _forensic_mod.write_daily_bar = lambda *a, **kw: None
         rep.line(f"trade_genius booted  BOT_VERSION={tg.BOT_VERSION}")
         rep.line(f"_ProdCallbacks() resolved  prior_date={prior_date}")
