@@ -35,6 +35,10 @@ debug_replay.py
 trade_log.jsonl
 paper_state_main.json
 data/snapshots/
+# v10.0.1 — engine state snapshots from orb/persistence.py on save tick.
+# They land in repo root only when the bot runs without a /data volume
+# (local dev); production writes to /data/orb_state_*.
+orb_state_*.json
 
 # Broad-universe research data — too large to commit
 data_pm_universe/
