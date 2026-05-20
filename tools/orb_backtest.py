@@ -281,6 +281,7 @@ class ORBConfig:
     require_ema_align: bool = False  # only long if signal close > 200-EMA on 5m
     # v10 industry-standard levers
     atr_stop_mult: float = 0.0  # if > 0, use entry +- atr_stop_mult * atr instead of OR-low
+    atr_lookback_5m: int = 14  # bars used by atr_5m() at the stop-placement call site
     require_adx_above: float = 0.0  # if > 0, skip if 14-bar ADX on 5m < this threshold
     skip_gap_pct: float = 0.0  # if > 0, skip days where |open-prev_close|/prev_close > this
     require_vwap_align: bool = False  # only long > session VWAP, short < session VWAP
@@ -404,9 +405,12 @@ class ORBConfig:
     # v9.1.124 -- OR-retracement gate. When >0, reject entries where the
     # post-VWAP entry price has retraced past the OR boundary by more
     # than this tolerance in bps. Mirrors the live-engine gate in
-    # orb/engine.py:try_enter. Default 0 = OFF per backtest convention.
-    # Live default is 25 bps (matches monitor's or_break threshold).
-    or_retracement_tolerance_bps: float = 0.0
+    # orb/engine.py:try_enter. Live engine defaults to 25 bps; the 2026-
+    # 05-20 sim/backtest divergence audit confirmed leaving this at 0
+    # in the backtest produced phantom short-side wins (~$6-12k/yr) that
+    # disappear in production because the engine rejects the stale-signal
+    # admit. Default flipped to 25.0 to match the engine.
+    or_retracement_tolerance_bps: float = 25.0
     # v21 more fenced filters for mega-caps (2026-05-13).
     confirm_bars_n_tickers: tuple = ()  # fence list for confirm_bars_n.
     #     Empty = global (existing
@@ -487,6 +491,11 @@ class ORBConfig:
     # After a hard stop on (ticker, side),
     # block re-entry for this many minutes.
     # 0 = off. Production value: 30.
+    post_trade_cooldown_min: int = 0  # mirrors production POST_TRADE_COOLDOWN_MIN
+    # (added 2026-05-20). After ANY exit on (ticker, side) -- win or loss --
+    # block re-entry for this many minutes. Symmetric variant of
+    # post_loss_cooldown_min. Production v9.1.111+ uses this with value 10.
+    # 0 = off.
     # R20 afternoon-discipline levers (2026-05-18). Morning ORB positions
     # carried into the afternoon block EOD reversal entries (15:00-15:50)
     # by consuming the equity needed for the 35%-notional EOD legs. These
@@ -620,6 +629,7 @@ class ORBConfig:
             require_ema_align=_envs("ORB_REQUIRE_EMA_ALIGN", "0") == "1",
             # v10 industry levers
             atr_stop_mult=_envf("ORB_ATR_STOP_MULT", 0.0),
+            atr_lookback_5m=_envi("ORB_ATR_LOOKBACK_5M", 14),
             require_adx_above=_envf("ORB_REQUIRE_ADX_ABOVE", 0.0),
             skip_gap_pct=_envf("ORB_SKIP_GAP_PCT", 0.0),
             require_vwap_align=_envs("ORB_REQUIRE_VWAP_ALIGN", "0") == "1",
@@ -657,7 +667,7 @@ class ORBConfig:
             ),
             max_vwap_dev_bps_long=_envf("ORB_MAX_VWAP_DEV_BPS_LONG", 0.0),
             max_vwap_dev_bps_short=_envf("ORB_MAX_VWAP_DEV_BPS_SHORT", 0.0),
-            or_retracement_tolerance_bps=_envf("ORB_OR_RETRACEMENT_TOLERANCE_BPS", 0.0),
+            or_retracement_tolerance_bps=_envf("ORB_OR_RETRACEMENT_TOLERANCE_BPS", 25.0),
             confirm_bars_n_tickers=tuple(
                 t.strip().upper()
                 for t in _envs("ORB_CONFIRM_BARS_N_TICKERS", "").split(",")
@@ -701,6 +711,7 @@ class ORBConfig:
             pm_trade_end_et=_et_to_minutes(_envs("ORB_PM_TRADE_END_ET", "15:00")),
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
             post_loss_cooldown_min=_envi("ORB_POST_LOSS_COOLDOWN_MIN", 0),
+            post_trade_cooldown_min=_envi("ORB_POST_TRADE_COOLDOWN_MIN", 0),
             # R20 afternoon-discipline levers.
             eod_prep_exit_minutes=(
                 _et_to_minutes(_envs("ORB_EOD_PREP_EXIT_ET", ""))
@@ -1236,7 +1247,8 @@ def run_ticker_day(
         # stops. ATR computed on candles up to and including signal bar.
         stop_buf = entry_price * cfg.stop_buffer_bps / 10000.0
         if cfg.atr_stop_mult > 0:
-            atr = atr_5m(pre_or_5m + candles_5m[: i + 1], lookback=14)
+            atr = atr_5m(pre_or_5m + candles_5m[: i + 1],
+                         lookback=cfg.atr_lookback_5m)
             if atr > 0:
                 if side == "long":
                     stop = entry_price - cfg.atr_stop_mult * atr
@@ -1267,7 +1279,8 @@ def run_ticker_day(
         # computed from prior bars (slice [:i+1] is up to and including the
         # signal bar; entry fires on bar i+1's open).
         if cfg.vol_target_atr_pct > 0 and sig.close > 0:
-            atr_now = atr_5m(pre_or_5m + candles_5m[: i + 1], lookback=14)
+            atr_now = atr_5m(pre_or_5m + candles_5m[: i + 1],
+                             lookback=cfg.atr_lookback_5m)
             atr_pct = atr_now / sig.close * 100.0
             if atr_pct > 0:
                 scale = cfg.vol_target_atr_pct / atr_pct
@@ -2466,6 +2479,10 @@ def run(
         # Mirrors production POST_LOSS_COOLDOWN_MIN. After a hard stop,
         # block same (ticker, side) re-entry for post_loss_cooldown_min min.
         _plc_until: dict[tuple[str, str], str] = {}
+        # post-trade cooldown (symmetric): records cooldown after ANY exit
+        # (win or loss). Production v9.1.111 set this to 10 (replacing the
+        # asymmetric post-loss cooldown).
+        _ptc_until: dict[tuple[str, str], str] = {}
 
         def _ts_to_minutes(iso: str) -> int:
             # Parse HH:MM from "YYYY-MM-DDTHH:MM:SS..." -> minutes since midnight
@@ -2485,6 +2502,14 @@ def run(
                 if cfg.post_loss_cooldown_min > 0:
                     plc_key = (p["ticker"], p["side"])
                     until = _plc_until.get(plc_key)
+                    if until is not None and ts < until:
+                        rejected_idx.add(idx)
+                        continue
+                # post-trade cooldown gate (symmetric -- any exit, mirrors
+                # POST_TRADE_COOLDOWN_MIN). Production v9.1.111+ default 10.
+                if cfg.post_trade_cooldown_min > 0:
+                    ptc_key = (p["ticker"], p["side"])
+                    until = _ptc_until.get(ptc_key)
                     if until is not None and ts < until:
                         rejected_idx.add(idx)
                         continue
@@ -2540,6 +2565,13 @@ def run(
                         until_h, until_m = divmod(until_min, 60)
                         until_iso = ts[:11] + f"{until_h:02d}:{until_m:02d}" + ts[16:]
                         _plc_until[(p["ticker"], p["side"])] = until_iso
+                    # post-trade cooldown: record block window after ANY exit
+                    if cfg.post_trade_cooldown_min > 0:
+                        exit_min = _ts_to_minutes(ts)
+                        until_min = exit_min + cfg.post_trade_cooldown_min
+                        until_h, until_m = divmod(until_min, 60)
+                        until_iso = ts[:11] + f"{until_h:02d}:{until_m:02d}" + ts[16:]
+                        _ptc_until[(p["ticker"], p["side"])] = until_iso
                     # v18 rule #2 halt: realized drawdown from peak crossed
                     # the threshold. Same effect as kill_active but a
                     # different trigger.
