@@ -263,6 +263,17 @@ mcp__github__get_file_contents(
 ## Operator preferences
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
 
+## Accumulated gotchas
+Read `tasks/lessons.md` at session start — it accumulates one-line gotchas that have bitten us twice. Examples already there: corpus data must never be tracked in git, Dockerfile `COPY` lines drift when modules are deleted, Python 3.9 trips on PEP 604 `X | None` syntax. Add to it when something new bites.
+
+## Pre-commit hygiene
+The `.claude/hooks/` directory has three shell hooks that fire automatically:
+- `protect-files.sh` (PreToolUse, Edit|Write|MultiEdit): blocks edits to `.env*`, `bot_version.py`, `requirements.txt`, runtime state files, and the corpus directories.
+- `format-edits.sh` (PostToolUse, Edit|Write|MultiEdit): blocks commits with literal em-dashes (U+2014) in `.py` files; best-effort `ruff format --check` when ruff is installed.
+- `audit-command.sh` (PreToolUse, Bash): logs every shell command to `~/.claude/audit/stock-spike-monitor/audit-YYYY-MM-DD.log`; pattern-flags risky shapes (`--force`, `--no-verify`, `gh pr merge --admin`, env-var leaks) to a separate `flagged-YYYY-MM-DD.log`. Never blocks — audit trail only.
+
+Before opening a PR, run the `qcheck` skill — it codifies the skeptical-staff-engineer review against CLAUDE.md mandatory PR rules + `tasks/lessons.md` accumulated gotchas + Tier-A `run_ci.py` parity.
+
 ## Before pushing
 
 **Primary (cross-platform, Windows/macOS/Linux):**
