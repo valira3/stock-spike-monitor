@@ -467,7 +467,13 @@ def ensure_session_started(
     # boot, so this purge frees the cap from ghosts without nuking
     # real tracking.
     try:
-        purged = _engine.purge_non_recover_tickets()
+        # v9.1.141 -- pass adapters so the purge can use the
+        # position-aware invariant (purge tickets without a matching
+        # adapter._open_positions[tid]) instead of the v9.1.140
+        # prefix-only heuristic. Fixes the section-C / section-G
+        # double-load discovered after the 2026-05-20 NVDA boot
+        # cascade.
+        purged = _engine.purge_non_recover_tickets(adapters=_adapters)
         if purged:
             logger.warning(
                 "[V8322-UUID-PURGE] cleared orphan uuid tickets at session_start: %s",

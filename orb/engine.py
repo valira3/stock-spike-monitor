@@ -1384,47 +1384,58 @@ class OrbEngine:
                 rb._open_notional = 0.0
         return True
 
-    def purge_non_recover_tickets(self) -> dict:
-        """v8.3.22 -- nuke every ticket in RiskBook._open_tickets
-        that doesn't have a `recover-` prefix. The only legitimate
-        path that creates non-`recover-` tickets is `try_admit`
-        during `OrbEngine.try_enter` -- those are ephemeral uuid4().hex
-        ids (released by `on_exit` on close, or by `rollback_admit`
-        when the broker fire fails). If a uuid ticket survives across
-        a Railway redeploy + v8.3.4 rehydrate, it's leaked: the position
-        it represented was never persisted (would have been in
-        executor.positions / tg.positions and re-mirrored as a
-        `recover-*` ticket on boot via v8.3.6) so the ticket has no
-        real position behind it.
+    def purge_non_recover_tickets(self, adapters=None) -> dict:
+        """v8.3.22 -- nuke RiskBook tickets that have no backing position.
 
-        v9.1.140 -- prefix check broadened from `recover-{pid}-` to
-        just `recover-`. Multiple recover-* schemes exist in
-        production (`recover-orphan-{ticker}-{pid}` from V9161,
-        `recover-held-{ticker}-{pid}` from V9139, `recover-inject-...`,
-        AND `recover-{original_tid}` from V834-PERSIST section G).
-        The old `recover-{pid}-` check only matched
-        `recover-{pid}-{ticker}` (which nobody actually creates) and
-        purged the V834-PERSIST `recover-{original_uuid}` tickets that
-        ARE the canonical post-rehydrate state. The 2026-05-20 NVDA
-        phantom (`/api/state.positions ∋ NVDA`, `RiskBook ∌ NVDA`)
-        was caused exactly by this: V834-PERSIST restored NVDA with
-        `recover-recover-<uuid>` (since the persisted tid already had
-        a `recover-` prefix), V8322 immediately purged it because
-        the id didn't start with `recover-main-`, and V9139-RECOVER
-        then skipped re-injection because the adapter STILL had the
-        position (V8322 only touches RiskBook tickets, not adapter
-        state). Net: no RiskBook ticket, phantom persists. Broadening
-        the prefix preserves every `recover-*` shape while still
-        purging the bare uuid leaks the sweep was designed for.
-        `try_admit` uses `uuid.uuid4().hex` (32 hex chars, no prefix)
-        so accepting any `recover-` is safe -- no legitimate try_admit
-        ticket can collide with that prefix.
+        Originally a prefix-only sweep (purge anything not starting with
+        `recover-{pid}-{ticker}`); v9.1.140 broadened the prefix to any
+        `recover-`; v9.1.141 makes the check position-aware so it
+        correctly handles the section-C / section-G double-load from
+        `apply_loaded_state`.
 
-        Use case: bootstrap. Run ONCE on the first scan cycle after
-        ensure_session_started. The v8.3.6 mirror re-adds clean
-        `recover-*` tickets from held positions, so this purge only
-        clears the orphan uuid leftovers that consume budget but
-        track nothing.
+        The canonical invariant: every RiskBook ticket must have a
+        corresponding entry in `adapter._open_positions[tid]`. Anything
+        else is an orphan -- either a `try_admit` leak (broker fire
+        failed without `rollback_admit`) or a section-C duplicate from
+        the previous boot's `dump_state_to_disk` payload
+        (`apply_loaded_state` rebuilds `rb._open_tickets` from
+        `risk_books.open_tickets` AND then layers
+        `recover-{original_tid}` tickets from `open_positions` on top,
+        so without the position-aware purge the same logical position
+        ends up with two RiskBook tickets after every redeploy).
+
+        Behavior:
+          - adapters is None (legacy callers / unit tests):
+              fall back to the v9.1.140 prefix-only behavior. Anything
+              starting with `recover-` is kept, anything else is purged.
+          - adapters is provided (production caller in
+            `live_runtime._ensure_session_started_internal`):
+              keep only tickets whose tid is in
+              `adapters.get(pid)._open_positions`. Every other ticket --
+              bare uuid leaks OR `recover-*` tickets without a backing
+              position -- gets purged.
+
+        Why both branches: the unit tests (`tests/strategy/
+        test_orb_uuid_ticket_purge.py`) construct engines without
+        adapters and assert the prefix-only contract. Production
+        passes adapters and gets the tighter invariant.
+
+        The 2026-05-20 NVDA incident chain:
+          v9.1.139 and prior: prefix check was `recover-{pid}-{ticker}`
+            but V834-PERSIST section G writes `recover-{original_tid}`.
+            Shapes don't overlap, section G tickets purged at every
+            session_start, RiskBook empty while adapter held NVDA,
+            `INVARIANTS/no_phantom_positions` CRIT.
+          v9.1.140: broadened to `recover-` prefix. Section G tickets
+            survived -- but so did section C's `recover-<uuid>` from
+            the prior boot's persistence, producing 2 tickets for the
+            same position. Risk over-counted instead of under-counted
+            (safer direction) but the monitor still CRIT'd because
+            `open_count != len(positions)`.
+          v9.1.141: position-aware. Section C duplicates get purged
+            (no matching adapter position); section G tickets stay
+            (they ARE the adapter positions). Net: 1 ticket per held
+            position -- the invariant the monitor checks.
 
         Returns counters {pid: n_purged} so the caller can log a
         single `[V8322-UUID-PURGE]` summary line.
@@ -1436,11 +1447,26 @@ class OrbEngine:
         for pid, rb in self._risk._books.items():
             with rb._lock:
                 ticket_ids = list(rb._open_tickets.keys())
+            adapter = adapters.get(pid) if adapters is not None else None
+            backed_tids: set = set()
+            if adapter is not None:
+                try:
+                    backed_tids = set(adapter._open_positions.keys())
+                except Exception:
+                    backed_tids = set()
             cleared = 0
             for tid in ticket_ids:
-                if tid.startswith("recover-"):
-                    continue
-                # Anything else is uuid (try_admit) -- orphan leftover.
+                if adapter is not None:
+                    # Position-aware: keep only tickets with a matching
+                    # adapter position. Bare uuid leaks AND `recover-*`
+                    # tickets without a backing position both get purged.
+                    if tid in backed_tids:
+                        continue
+                else:
+                    # Legacy prefix-only mode for unit tests + callers
+                    # that don't pass adapters.
+                    if tid.startswith("recover-"):
+                        continue
                 with rb._lock:
                     ticket = rb._open_tickets.pop(tid, None)
                     if ticket is None:
