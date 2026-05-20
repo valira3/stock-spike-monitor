@@ -892,7 +892,7 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
     # Defensive fallback: if e1_shares is missing/zero (Entry-1 didn't
     # actually fire \u2014 shouldn't happen), preserve the old dollar-parity
     # behavior so we never silently size to 1 share.
-    from eye_of_tiger import ENTRY_1_SIZE_PCT, ENTRY_2_SIZE_PCT  # noqa: F401
+    from engine.legacy_constants import ENTRY_1_SIZE_PCT, ENTRY_2_SIZE_PCT  # noqa: F401
 
     e1_shares = int(pos.get("v5104_entry1_shares") or pos.get("shares") or 0)
     # ENTRY_2_SIZE_PCT participates in the sanity check: full = E1 + E2,

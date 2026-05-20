@@ -450,7 +450,7 @@ class PortfolioBook:
     ) -> None:
         """Record a post-exit broker-reconciliation window for this book."""
         try:
-            from eye_of_tiger import POST_EXIT_SAME_TICKER_COOLDOWN_SEC as _cd_sec
+            from engine.legacy_constants import POST_EXIT_SAME_TICKER_COOLDOWN_SEC as _cd_sec
 
             cd_sec = int(_cd_sec)
         except Exception:

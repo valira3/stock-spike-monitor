@@ -223,7 +223,7 @@ def _cancel_first_guard(ticker: str, new_side_label: str, broker_client=None) ->
 
     # Read timeout from eye_of_tiger lazily so test patches take effect.
     try:
-        from eye_of_tiger import CANCEL_ACK_TIMEOUT_MS as _timeout_ms  # type: ignore
+        from engine.legacy_constants import CANCEL_ACK_TIMEOUT_MS as _timeout_ms  # type: ignore
     except Exception:
         _timeout_ms = 1500
 
@@ -1083,7 +1083,7 @@ def paper_shares_for(price: float, ticker: str | None = None, portfolio_id: str 
     # Legacy fallback ensures tests and import-time callers keep working.
     try:
         from engine.portfolio_book import PORTFOLIOS, PORTFOLIO_MAIN
-        from eye_of_tiger import ENTRY_1_SIZE_PCT
+        from engine.legacy_constants import ENTRY_1_SIZE_PCT
 
         return PORTFOLIOS.get(PORTFOLIO_MAIN).size_for(
             ticker="?",
@@ -1092,7 +1092,7 @@ def paper_shares_for(price: float, ticker: str | None = None, portfolio_id: str 
         )
     except Exception:
         # Fallback to legacy path on any import error.
-        from eye_of_tiger import ENTRY_1_SIZE_PCT
+        from engine.legacy_constants import ENTRY_1_SIZE_PCT
 
         dollars = _tg().PAPER_DOLLARS_PER_ENTRY * ENTRY_1_SIZE_PCT
         return max(1, int(dollars // price))
@@ -1119,7 +1119,7 @@ def _maybe_apply_regime_b_short_amp(
     inclusive, disarm is exclusive.
     """
     try:
-        from eye_of_tiger import V611_REGIME_B_ENABLED as _v611_en
+        from engine.legacy_constants import V611_REGIME_B_ENABLED as _v611_en
     except Exception:
         return shares
     if not _v611_en:
@@ -1254,7 +1254,7 @@ def execute_breakout(ticker, current_price, side):
     # shorts based on the Apr 27\u2013May 1 sweep that showed +$262/wk lift
     # from tighter short stops. STOP_PCT_OF_ENTRY is preserved as a
     # back-compat alias (= STOP_PCT_LONG) for any external caller.
-    from eye_of_tiger import STOP_PCT_LONG, STOP_PCT_SHORT
+    from engine.legacy_constants import STOP_PCT_LONG, STOP_PCT_SHORT
 
     if cfg.side.is_long:
         _pct = float(STOP_PCT_LONG)
@@ -1313,7 +1313,7 @@ def execute_breakout(ticker, current_price, side):
         _v15_size_reason = "delegated to v10 (ORB_LIVE_MODE=1)"
     else:
         try:
-            from eye_of_tiger import evaluate_strike_sizing as _v15_eval_sizing
+            from engine.legacy_constants import evaluate_strike_sizing as _v15_eval_sizing
 
             _di_streams = tg.v5_di_1m_5m(ticker) if hasattr(tg, "v5_di_1m_5m") else {}
             if cfg.side.is_long:
@@ -1368,7 +1368,7 @@ def execute_breakout(ticker, current_price, side):
             _v15_size_reason = "sizing eval error \u2014 fell back to legacy starter"
     # v6.11.0 -- C25: apply regime-B short amplification after v15 sizing.
     try:
-        from eye_of_tiger import (
+        from engine.legacy_constants import (
             V611_REGIME_B_SHORT_SCALE_MULT as _v611_scale,
             V611_REGIME_B_SHORT_ARM_HHMM_ET as _v611_arm,
             V611_REGIME_B_SHORT_DISARM_HHMM_ET as _v611_disarm,

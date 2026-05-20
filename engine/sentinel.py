@@ -1562,7 +1562,7 @@ def evaluate_sentinel(
     # ``eye_of_tiger.scaled_sovereign_brake_dollars``. Otherwise the
     # spec-default ALARM_A_HARD_LOSS_DOLLARS (-$500) is used.
     if portfolio_value is not None and portfolio_value > 0:
-        from eye_of_tiger import scaled_sovereign_brake_dollars
+        from engine.legacy_constants import scaled_sovereign_brake_dollars
 
         hard_loss_threshold = scaled_sovereign_brake_dollars(portfolio_value)
     else:
