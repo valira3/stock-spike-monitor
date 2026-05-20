@@ -1526,7 +1526,6 @@ def _ticker_weather_tick(ticker: str) -> None:
     """v5.31.5 \u2014 advance per-stock 5m EMA9 + last + AVWAP cache.
 
     Mirrors the QQQ weather tick but for one trade ticker. Used by
-    the per-stock local-override gate (engine.local_weather) and by
     the dashboard's per-stock Weather card.
 
     Fail-closed: any exception leaves the prior cached entry untouched.

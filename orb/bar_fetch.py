@@ -98,10 +98,9 @@ def _alpaca_data_client():
 
 def _daily_closes_for_sma(ticker: str, needed: int = 210) -> Optional[list]:
     """v6.0.1 -- fetch the most recent ``needed`` daily closes for
-    ``ticker``, oldest-first. Used by the Daily SMA stack panel
-    (``v5_13_2_snapshot._compute_sma_stack_safe``) which caches the
-    result once per RTH calendar day so this only runs once per ticker
-    per day in steady state.
+    ``ticker``, oldest-first. Used by the Daily SMA stack panel which
+    caches the result once per RTH calendar day so this only runs once
+    per ticker per day in steady state.
 
     Returns ``None`` on any failure (no Alpaca client, alpaca-py
     missing, network error, ticker symbol unknown). Caller must treat
