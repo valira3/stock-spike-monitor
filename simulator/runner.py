@@ -237,6 +237,25 @@ class SimulatorRunner:
         os.environ["BARS_BASE_DIR"] = os.path.join(
             os.environ["TG_DATA_ROOT"], "bars"
         )
+        # bar_archive.write_bar/write_daily_bar default to TG_DATA_ROOT
+        # /bars when BAR_ARCHIVE_BASE is unset. Because we symlinked
+        # TG_DATA_ROOT/bars -> data_pm_universe to make READS find the
+        # corpus, those writes mutate the corpus directly -- producing
+        # cross-day non-determinism and (with `find -delete`) data loss.
+        # Redirect WRITES to a per-worker scratch dir; reads still use
+        # the symlinked path via BARS_BASE_DIR.
+        os.environ["BAR_ARCHIVE_BASE"] = os.path.join(
+            os.environ["TG_DATA_ROOT"], "_bar_writes"
+        )
+        os.makedirs(os.environ["BAR_ARCHIVE_BASE"], exist_ok=True)
+        # forensic_capture.write_daily_bar (called from broker.lifecycle.
+        # eod_close at 15:55 ET) defaults to TG_DATA_ROOT/bars/daily.
+        # Same symlink-into-corpus hazard as BAR_ARCHIVE_BASE -- redirect
+        # to the same scratch dir.
+        os.environ["DAILY_BAR_DIR"] = os.path.join(
+            os.environ["BAR_ARCHIVE_BASE"], "daily"
+        )
+        os.makedirs(os.environ["DAILY_BAR_DIR"], exist_ok=True)
 
         # 2. Bar feeder.
         date = self.scenario["date"]
