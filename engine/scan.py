@@ -1569,10 +1569,17 @@ def _load_eod_prior_closes(
     try:
         from pathlib import Path as _Path
         import json as _json
+        import os as _os
         from datetime import timedelta as _td
         from datetime import datetime as _dt
 
-        root = _Path("/data/bars")
+        # Honor BARS_BASE_DIR like _read_bars_from_archive does (scan.py:629)
+        # so the simulator (TG_DATA_ROOT/bars symlinked to a corpus) and
+        # any non-Railway environment can populate prior-day closes.
+        # Pre-2026-05-20 the path was hardcoded to /data/bars, which
+        # meant EOD reversal never had prior_closes in sim and `select_
+        # signals` returned 0 picks every day -> 0 EOD trades.
+        root = _Path(_os.environ.get("BARS_BASE_DIR", "/data/bars"))
         for tk in universe:
             if tk in prior_closes:
                 continue

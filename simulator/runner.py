@@ -230,6 +230,13 @@ class SimulatorRunner:
         # simulator pre-computed -- so the engine's session start, the
         # cluster gate, and the simulator's universe all agree.
         _ensure_data_root_layout(os.environ["TG_DATA_ROOT"])
+        # engine.scan._load_eod_prior_closes reads from BARS_BASE_DIR
+        # (falls back to /data/bars in production). Point it at the
+        # same symlinked-to-corpus dir so the EOD reversal addon can
+        # find prior-day closes and actually fire entries.
+        os.environ["BARS_BASE_DIR"] = os.path.join(
+            os.environ["TG_DATA_ROOT"], "bars"
+        )
 
         # 2. Bar feeder.
         date = self.scenario["date"]
@@ -802,6 +809,51 @@ class SimulatorRunner:
                 if rep is not None:
                     rep.on_warning(f"trade_log read raised: {exc}")
 
+        # 1b. EOD reversal engine -- harvest closed_legs from the engine's
+        # in-process state. The v9.1.0 EOD reversal addon runs in
+        # paper-fire-observation mode (ORB_EOD_FIRE_BROKER=0) so it
+        # NEVER writes to trade_log.jsonl; the engine just tracks open
+        # positions + closed legs internally for the dashboard. Without
+        # this harvest, ~$12k/yr of documented EOD P&L is invisible.
+        try:
+            import orb.live_runtime as _lr
+            eod = _lr.get_eod_engine() if hasattr(_lr, "get_eod_engine") else None
+            if eod is not None:
+                for pid in eod.portfolio_ids:
+                    if pid != "main":
+                        continue  # only main writes to our state shape
+                    st = eod._states.get(pid)
+                    if st is None:
+                        continue
+                    for leg in st.closed_legs:
+                        entry_iso = leg.get("entry_iso") or ""
+                        exit_iso = leg.get("exit_iso") or ""
+                        entries.append({
+                            "ticker": (leg.get("ticker") or "").upper(),
+                            "side": (leg.get("side") or "").upper(),
+                            "bucket": _ts_to_et_bucket(entry_iso),
+                            "price": float(leg.get("entry_price") or 0),
+                            "shares": int(leg.get("shares") or 0),
+                            "ticker_gap_pct": 0.0,
+                            "ticker_or_range_pct": 1.0,
+                            "strategy": "eod_reversal",
+                            "_source": "eod_engine",
+                        })
+                        exits.append({
+                            "ticker": (leg.get("ticker") or "").upper(),
+                            "reason": "EOD_REVERSAL_" + (
+                                leg.get("exit_reason") or "eod"
+                            ).upper(),
+                            "bucket": _ts_to_et_bucket(exit_iso),
+                            "price": float(leg.get("exit_price") or 0),
+                            "pnl": float(leg.get("pnl") or 0),
+                            "strategy": "eod_reversal",
+                            "_source": "eod_engine",
+                        })
+        except Exception as exc:
+            if rep is not None:
+                rep.on_warning(f"EOD reversal harvest raised: {exc}")
+
         # 2. Walk alpaca_orders for Val/Gene fills (mock broker side).
         # Skip if trade_log already covered every (ticker, side); the
         # Val/Gene executors also append to trade_log on close, so this
@@ -868,20 +920,27 @@ class SimulatorRunner:
         else:
             self.state["exits"].extend(exits)
 
-        # Realized P&L: sum the trade_log "pnl" field (the bot's own
-        # ledger), plus the mock-broker's realized_pl for Val/Gene.
+        # Realized P&L blends three sources:
+        # (1) trade_log: the bot's morning-ORB ledger (legacy main path).
+        # (2) eod_engine.closed_legs: the v9.1 EOD reversal addon's
+        #     in-process state (paper-fire-observation mode never hits
+        #     trade_log -- harvested above).
+        # (3) alpaca_realized_pl: mock-broker P&L for Val/Gene fills.
         log_pnl = sum(float(e.get("pnl") or 0.0) for e in exits
                       if e.get("_source") == "trade_log")
+        eod_pnl = sum(float(e.get("pnl") or 0.0) for e in exits
+                      if e.get("_source") == "eod_engine")
         broker_pnl = sum(float(v or 0.0)
                          for v in (self.state.get("alpaca_realized_pl") or {}).values())
-        total_realized = log_pnl + broker_pnl
+        total_realized = log_pnl + eod_pnl + broker_pnl
         self.state["realized_pl_total"] = total_realized
 
         if rep is not None:
             rep.line(
                 f"results captured: orders={len(orders)}  "
                 f"entries={len(entries)}  exits={len(exits)}  "
-                f"trade_log_pnl=${log_pnl:+.2f}  "
+                f"morning_pnl=${log_pnl:+.2f}  "
+                f"eod_pnl=${eod_pnl:+.2f}  "
                 f"broker_pnl=${broker_pnl:+.2f}  "
                 f"realized_pl=${total_realized:+.2f}"
             )
