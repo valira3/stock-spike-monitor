@@ -5,7 +5,7 @@ out in v10.0.1 as part of the post-architectural-review monolith
 reduction. trade_genius.py keeps back-compat re-exports for the
 callers that import these names from `trade_genius` (broker/orders.py,
 engine/scan.py via callbacks, executors/base.py, telegram_ui/*,
-market_brief.py, smoke_test.py, and the tests).
+smoke_test.py, and the tests).
 
 What lives here:
   - send_telegram(text, chat_id=None)        bot -> chat low-level send

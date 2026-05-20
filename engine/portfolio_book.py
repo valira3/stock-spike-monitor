@@ -42,8 +42,7 @@ class PortfolioConfig:
 
     Each PortfolioBook carries one PortfolioConfig instance. Defaults
     represent a standard $100k equity floor, both sides allowed, and all
-    tickers in universe. Main book overrides earnings_watcher_enabled=True
-    after registry setup. Val/Gene leave it False until validated.
+    tickers in universe.
     """
 
     enabled: bool = True
@@ -52,7 +51,6 @@ class PortfolioConfig:
     dollars_per_entry: float = 10000.0
     daily_loss_limit_dollars: float = 1000.0
     portfolio_equity_floor: float = 100000.0  # sizing reference, not enforced
-    earnings_watcher_enabled: bool = False  # main overrides to True
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +689,3 @@ PORTFOLIOS: PortfolioRegistry = PortfolioRegistry()
 PORTFOLIOS.register(PORTFOLIO_MAIN)
 PORTFOLIOS.register(PORTFOLIO_VAL)
 PORTFOLIOS.register(PORTFOLIO_GENE)
-
-# v7.0.0 Phase 4: main book is the only one with earnings watcher active.
-# Val and gene leave earnings_watcher_enabled=False until validated.
-PORTFOLIOS.get(PORTFOLIO_MAIN).config.earnings_watcher_enabled = True

@@ -62,25 +62,6 @@ import telegram_ui  # noqa: E402
 # missing Dockerfile COPY surfaces as ImportError at boot.
 import broker  # noqa: E402
 
-# v6.16.1 \u2014 earnings_watcher: pre/post-market DMI runaway-capture engine.
-# Gated behind EARNINGS_WATCHER_ENABLED=1 env var. The RTH core is NOT
-# touched; this is a pure add-on. Import failures are caught and printed
-# to stderr (logger is not yet initialized at this point in the module);
-# the flag is set to False so the bot continues running without it.
-# v6.16.2 hotfix: switched logger.info/error to sys.stderr prints to fix
-# NameError observed on deploy 99eb3bdb when the flag was set to 1.
-import sys as _ew_sys  # noqa: E402
-EARNINGS_WATCHER_ENABLED = os.getenv("EARNINGS_WATCHER_ENABLED", "0") == "1"
-_ew_runner = None
-if EARNINGS_WATCHER_ENABLED:
-    try:
-        from earnings_watcher import runner as _ew_runner
-        print("[EW] earnings_watcher enabled (v6.18.0)", file=_ew_sys.stderr, flush=True)
-    except Exception as _ew_exc:
-        print("[EW] import failed, disabling: %s" % _ew_exc, file=_ew_sys.stderr, flush=True)
-        EARNINGS_WATCHER_ENABLED = False
-        _ew_runner = None
-
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
     CommandHandler, ContextTypes, TypeHandler,
@@ -905,11 +886,6 @@ def _init_tickers() -> None:
     """Populate TICKERS from disk on startup; fall back to defaults
     (which include the pinned SPY/QQQ). Always ensures the
     pinned symbols are present no matter what was on disk.
-
-    v7.2.1 \u2014 also merges any tickers promoted by EW (PMR/PMC) for today.
-    Promoted tickers are warmed (volume archive backfill) so the volume
-    gate evaluates them on the very next scan instead of falling through
-    cold-start passthrough.
     """
     from_disk = _load_tickers_file()
     base = from_disk if from_disk else list(TICKERS_DEFAULT)
@@ -917,26 +893,6 @@ def _init_tickers() -> None:
     for p in TICKERS_PINNED:
         if p not in base:
             base.append(p)
-
-    # v7.2.1 \u2014 EW -> RTH promotion merge. Best-effort, non-blocking.
-    promoted_added: list = []
-    try:
-        from earnings_watcher.rth_promotion import get_promotions_for as _ew_get_promotions
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        promoted = _ew_get_promotions(today_iso)
-        for sym in promoted:
-            s = _normalise_ticker(sym) if sym else None
-            if s and s not in base:
-                base.append(s)
-                promoted_added.append(s)
-        if promoted:
-            logger.info(
-                "[EW-RTH-PROMOTION] merge today=%s found=%d added=%d (already_present=%d)",
-                today_iso, len(promoted), len(promoted_added),
-                len(promoted) - len(promoted_added),
-            )
-    except Exception as exc:
-        logger.warning("[EW-RTH-PROMOTION] merge failed: %s", exc)
 
     # Cap at TICKERS_MAX just in case a hand-edited file went wild.
     base = base[:TICKERS_MAX]
@@ -949,29 +905,6 @@ def _init_tickers() -> None:
         _save_tickers_file()
     logger.info("Ticker universe loaded: %d tickers (%s)",
                 len(TICKERS), ", ".join(TICKERS))
-
-    # v7.2.1 \u2014 warm volume history for the promoted tickers so the
-    # volume_bucket gate evaluates them on the first scan instead of
-    # COLDSTARTing. Done after TICKERS is published so a slow Alpaca
-    # response cannot delay universe init.
-    if promoted_added:
-        try:
-            from volume_warmup import warmup_ticker as _ew_warmup_ticker
-            for s in promoted_added:
-                try:
-                    res = _ew_warmup_ticker(s)
-                    logger.info(
-                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s seeded=%d bars=%d errors=%d",
-                        s, res.get("days_seeded", 0),
-                        res.get("bars_written", 0), len(res.get("errors") or []),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s failed: %s",
-                        s, exc,
-                    )
-        except Exception as exc:
-            logger.warning("[EW-RTH-PROMOTION] warmup module import failed: %s", exc)
 
 
 def _fill_metrics_for_ticker(ticker: str) -> dict:
@@ -1096,22 +1029,8 @@ def add_ticker(sym: str) -> dict:
     _rebuild_trade_tickers()
     _save_tickers_file()
     metrics = _fill_metrics_for_ticker(t)
-    # v7.2.1 \u2014 warm volume archive so volume_bucket gate doesn't COLDSTART
-    # on the next scan. Best-effort; metrics dict carries summary.
-    try:
-        from volume_warmup import warmup_ticker as _ew_warmup_ticker
-        warm = _ew_warmup_ticker(t)
-        metrics["volume_warmup"] = {
-            "days_seeded": warm.get("days_seeded", 0),
-            "bars_written": warm.get("bars_written", 0),
-            "errors": len(warm.get("errors") or []),
-        }
-    except Exception as exc:
-        logger.warning("volume_warmup %s failed: %s", t, exc)
-        metrics["volume_warmup"] = {"error": str(exc)[:80]}
-    logger.info("ticker added: %s (pdc=%s or=%s warm=%s)",
-                t, metrics["pdc"], metrics["or"],
-                metrics.get("volume_warmup", {}))
+    logger.info("ticker added: %s (pdc=%s or=%s)",
+                t, metrics["pdc"], metrics["or"])
     # v5.6.1 D6 \u2014 [WATCHLIST_ADD] hook for replay universe-reconstruction.
     try:
         _v561_log_watchlist_add(t, reason="manual")
@@ -3546,8 +3465,8 @@ user_config: dict = {"trading_mode": "paper"}
 # Implementation lives in telegram_io. trade_genius.py re-exports the
 # public surface (send_telegram, report_error, _format_error_telegram)
 # for back-compat with broker/orders.py, engine/scan.py (via
-# engine/callbacks.py), executors/base.py, telegram_ui/, market_brief,
-# smoke_test, and the tests that do `tg.send_telegram(...)` or
+# engine/callbacks.py), executors/base.py, telegram_ui/, smoke_test,
+# and the tests that do `tg.send_telegram(...)` or
 # `monkeypatch.setattr(tg, "send_telegram", ...)`.
 #
 # The carved module is host-independent: it reads TELEGRAM_TOKEN /
@@ -5706,43 +5625,6 @@ def _fire_system_test(label: str) -> None:
         )
 
 
-# v6.18.0 \u2014 daily pre-open market expectations brief.
-#
-# We register the job at TWO ET times (07:00 and 08:00) because
-# 07:00 CT == 08:00 ET during CDT (~Mar-Nov) but == 07:00 ET during
-# CST (~Nov-Mar). Each registered firing self-gates by checking the
-# real CT hour, so exactly one fires per weekday year-round.
-def _fire_market_brief() -> None:
-    """Build and send the market brief if (and only if) the wall clock in
-    America/Chicago is currently 07:xx. The double registration in JOBS
-    plus this gate makes the daily fire DST-safe.
-    """
-    try:
-        # v7.8.3: route through _now_cdt so backtest replay clock applies.
-        # Was wall-clock leak; fired the daily market-brief gate based on
-        # real Chicago time instead of replay time.
-        now_ct = _now_cdt()
-    except Exception:
-        try:
-            from zoneinfo import ZoneInfo
-            now_ct = datetime.now(ZoneInfo("America/Chicago"))
-        except Exception:
-            now_ct = None
-    if now_ct is not None and now_ct.hour != 7:
-        logger.info("market_brief: skipping fire (CT hour=%s, not 7)", now_ct.hour)
-        return
-    try:
-        from market_brief import build_market_brief
-        body = build_market_brief(BOT_VERSION, FMP_API_KEY)
-        send_telegram(body)
-        logger.info("market_brief: sent (%d chars)", len(body))
-    except Exception as exc:
-        logger.exception("market_brief: build/send failed")
-        try:
-            send_telegram("\u26a0\ufe0f Market brief failed: %s" % str(exc)[:120])
-        except Exception:
-            pass
-
 
 # v5.10.1 \u2014 _tiger_hard_eject_check retired. Section V (Triple-Lock stops)
 # in eye_of_tiger.py owns all exit decisions; legacy DI<25 hard-eject and
@@ -6120,10 +6002,6 @@ def scheduler_thread():
         ("daily", "20:00", lambda: _fire_system_test("15:00 CT (RTH close)")),
         ("daily", "22:00", lambda: _fire_system_test("17:00 CT")),
         ("daily", "00:00", lambda: _fire_system_test("19:00 CT (post-close)")),
-        # v6.18.0 \u2014 pre-open market brief at 07:00 CT (DST-safe via the
-        # gate inside _fire_market_brief; only the matching ET wall fires).
-        ("daily", "07:00", _fire_market_brief),
-        ("daily", "08:00", _fire_market_brief),
         ("daily", "09:30", reset_daily_state),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
@@ -6138,8 +6016,6 @@ def scheduler_thread():
         ("daily", "15:57", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
-        # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
-        # BMO/AMC cycles driven by the minute-by-minute window loop below.
         # v10.0.1 \u2014 weekly earnings-calendar refresh (replaces the
         # retired GHA cron). Runs Sunday 13:00 ET in a daemon thread so
         # a slow yfinance HTTP call can't block the scheduler. The fire
@@ -6155,11 +6031,6 @@ def scheduler_thread():
              name="earnings-refresh", daemon=True,
          ).start()),
     ]
-
-    # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
-    last_ew_exit_check = _now_et()
-    # v6.16.1 — earnings_watcher window cycle tracker (minute-by-minute)
-    last_ew_window_check = _now_et() - timedelta(seconds=61)
 
     logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
@@ -6232,28 +6103,6 @@ def scheduler_thread():
             threading.Thread(
                 target=gap_detect_task, daemon=True, name="gap_detect"
             ).start()
-
-        # v6.16.1 \u2014 earnings_watcher exit cycle: runs every 60 s
-        if EARNINGS_WATCHER_ENABLED and (now_et - last_ew_exit_check).total_seconds() >= 60:
-            last_ew_exit_check = now_et
-            try:
-                _ew_runner.run_exit_cycle()
-            except Exception as e:
-                logger.warning("[EW] exit cycle error: %s", e)
-
-        # v6.16.1 — earnings_watcher window cycle: re-evaluate every 60 s
-        # during active pre-market (04:00-09:29 ET) and after-hours (16:00-20:00 ET) windows
-        if EARNINGS_WATCHER_ENABLED:
-            now_hhmm = now_et.strftime("%H:%M")
-            in_premarket = "04:00" <= now_hhmm <= "09:29" and now_et.weekday() < 5
-            in_afterhours = "16:00" <= now_hhmm <= "20:00" and now_et.weekday() < 5
-            if (in_premarket or in_afterhours) and (now_et - last_ew_window_check).total_seconds() >= 60:
-                last_ew_window_check = now_et
-                try:
-                    window = "premarket" if in_premarket else "afterhours"
-                    _ew_runner.run_window_cycle(window)
-                except Exception as e:
-                    logger.warning("[EW] window cycle error: %s", e)
 
         time.sleep(30)
 

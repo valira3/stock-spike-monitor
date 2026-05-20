@@ -41,7 +41,6 @@ file, and any lock listed here that no longer exists in code must be removed.
 | 23 | `_lock` (scanner_state) | `orb/scanner_state.py:20` | v10.0.0 scanner result | module | Lock |
 | 24 | `_signal_listeners_lock` | `orb/signal_bus.py:35` | v10.0.1 bus listener list | module | Lock |
 | 24b | `_trade_log_lock` (carved) | `orb/trade_log.py:50` | v10.0.1 trade-log JSONL append (carved from trade_genius.py) | module | Lock |
-| 25 | `_cache_lock` | `engine/extended_universe.py:51` | Earnings-universe cache | module | Lock |
 | 26 | `_LOCK` (v770_flags) | `engine/v770_flags.py:60` | v770 flag cache | module | Lock |
 | 27 | `_gate_lock` | `engine/ingest_gate.py:67` | Ingest-gate state | module | Lock |
 | 28 | `_snapshot_cache_lock` | `dashboard_server.py:1619` | /api/state response cache | module | Lock |

@@ -28,7 +28,6 @@ from zoneinfo import ZoneInfo
 import volume_profile
 
 from engine.callbacks import EngineCallbacks
-from engine.extended_universe import effective_scan_tickers
 from engine.timing import minutes_since_et_midnight
 
 # v7.14.0: v10 ORB live-runtime shadow integration.
@@ -243,11 +242,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
             _qqq_pre = callbacks.fetch_1min_bars(tg.V561_INDEX_TICKER)
             if _qqq_pre:
                 tg._v561_archive_qqq_bar(_qqq_pre)
-            # v7.1.0: pre-open warm-up uses the dynamic extended-hours universe
-            # so earnings reporters get bar archive seeded before the bell
-            # if the feature flag is on. RTH branch falls back to TRADE_TICKERS.
-            _pre_open_session = "extended"
-            _pre_open_tickers = effective_scan_tickers(_pre_open_session)
+            _pre_open_tickers = list(tg.TRADE_TICKERS)
             for _t_pre in _pre_open_tickers:
                 try:
                     _b_pre = callbacks.fetch_1min_bars(_t_pre)
@@ -427,14 +422,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.info("SCAN CYCLE done in %.2fs (paused, manage only)", time.time() - cycle_start)
         return
 
-    # v7.1.0: session-aware ticker iteration. RTH unchanged (returns
-    # TRADE_TICKERS); extended hours optionally returns the prod core
-    # plus today's earnings reporters when the feature flag is on.
-    try:
-        _session = tg._market_session()
-    except Exception:
-        _session = "rth"
-    _scan_universe = effective_scan_tickers(_session)
+    _scan_universe = list(tg.TRADE_TICKERS)
 
     # v7.14.0: bootstrap + session-start the v10 ORB runtime in shadow
     # mode. Failure-tolerant: a runtime exception cannot break the

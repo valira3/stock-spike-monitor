@@ -137,8 +137,7 @@ def _ms_since(t0: float) -> int:
 def check_process_alive() -> dict:
     """Check 1 -- bot_version import + recency of any persisted-state file.
 
-    During pre-market hours the RTH state.db can sit untouched while the
-    earnings_watcher path actively writes paper_state_main.json. We treat
+    During pre-market hours the RTH state.db can sit untouched. We treat
     proof-of-life as the most recent mtime across state.db,
     paper_state_main.json, and the legacy paper_state.json.
     """

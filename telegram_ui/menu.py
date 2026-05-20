@@ -133,7 +133,6 @@ def _build_menu_keyboard():
             InlineKeyboardButton("\U0001f4c8 Status", callback_data="menu_positions"),
         ],
         [
-            InlineKeyboardButton("\U0001f5de Brief", callback_data="menu_brief"),
             InlineKeyboardButton("\U0001f4c9 Perf", callback_data="menu_perf"),
         ],
         [
@@ -336,9 +335,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if query.data == "menu_replay":
         await _invoke_from_callback(query, context, telegram_commands.cmd_replay)
-        return
-    if query.data == "menu_brief":
-        await _invoke_from_callback(query, context, telegram_commands.cmd_brief)
         return
     if query.data == "menu_or_recover":
         await _invoke_from_callback(query, context, telegram_commands.cmd_or_now)
