@@ -40,11 +40,10 @@ from side import Side, CONFIGS  # noqa: E402
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
 import tiger_buffalo_v5 as v5  # noqa: E402
-# v5.10.0/v5.10.1 \u2014 Eye-of-the-Tiger evaluators. v5_10_1_integration is the
-# live-hot-path glue that wires Sections I–VI into check_breakout /
-# manage_positions; eot is the pure-function evaluator surface.
-import eye_of_tiger as eot  # noqa: E402
-import v5_10_1_integration as eot_glue  # noqa: E402
+# v10.0.1 -- eye_of_tiger + v5_10_1_integration imports deleted.
+# Constants + sizing helpers migrated to engine/legacy_constants.py;
+# admission-gate evaluators (Section I, Boundary Hold, Entry-1/2,
+# Volume Bucket) are gone with the legacy permit gates.
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402

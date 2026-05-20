@@ -75,7 +75,7 @@ def _call_amp(
     cfg = _make_cfg(is_long)
     if now_et is None:
         now_et = _et(10, 30)
-    with mock.patch("eye_of_tiger.V611_REGIME_B_ENABLED", enabled):
+    with mock.patch("engine.legacy_constants.V611_REGIME_B_ENABLED", enabled):
         return _maybe_apply_regime_b_short_amp(
             cfg=cfg,
             shares=shares,

@@ -269,13 +269,8 @@ def eod_close():
     except Exception:
         pass
 
-    # C-R5: EOD force-close flattens any open v5 position regardless of
-    # state \u2014 we lock every track so the next session starts fresh
-    # rather than resuming a half-mid-state machine.
-    try:
-        tg.v5_lock_all_tracks("eod")
-    except Exception:
-        logger.exception("v5_lock_all_tracks failed (eod)")
+    # v10.0.1 -- v5 track state machine retired; v5_lock_all_tracks EOD
+    # hook deleted along with the rest of the tiger_buffalo_v5 surface.
     # v5.5.2 \u2014 enforce N-day retention on the bar archive once per
     # day at EOD. Failure-tolerant; never raises.
     # v6.15.5 \u2014 honour BAR_ARCHIVE_RETAIN_DAYS env (was hardcoded

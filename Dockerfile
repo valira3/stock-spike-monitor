@@ -39,22 +39,13 @@ COPY tiger_buffalo_v5.py .
 COPY qqq_regime.py .
 # v6.11.0 — SPY Regime Classifier (C25 short amplification gate).
 COPY spy_regime.py .
-# v5.10.0 — Eye-of-the-Tiger pure-function evaluators + volume baseline.
-# v5.10.1 — Live-hot-path integration glue (orchestrator).
-# Missing these COPY lines is what crash-looped the v5.10.1 Railway
-# deploy (ModuleNotFoundError on `import eye_of_tiger`); v5.10.3 wires
-# them in. Verified by tests/test_startup_smoke.py and the
-# scripts/preflight.sh dockerfile-mirror check.
-COPY eye_of_tiger.py .
+# v10.0.1 -- eye_of_tiger.py, v5_10_1_integration.py, v5_10_6_snapshot.py,
+# v5_13_2_snapshot.py COPY lines deleted along with the legacy modules
+# themselves. Constants + sizing helpers migrated to engine/legacy_constants.py.
 COPY volume_bucket.py .
-# v7.2.1 — backfill 1m bars for newly-promoted RTH tickers so volume_bucket
+# v7.2.1 -- backfill 1m bars for newly-promoted RTH tickers so volume_bucket
 # does not COLDSTART. Missing this COPY would silently disable warmup.
 COPY volume_warmup.py .
-COPY v5_10_1_integration.py .
-# v5.10.6 \u2014 dashboard /api/state v5.10 panel helper. Missing this COPY
-# would crash dashboard_server's snapshot() with ModuleNotFoundError.
-COPY v5_10_6_snapshot.py .
-COPY v5_13_2_snapshot.py .
 # v5.13.6 \u2014 per-position lifecycle event log. Missing this COPY would
 # crash trade_genius at boot since broker.orders / broker.positions
 # import the module for entry/sentinel/exit hooks.
