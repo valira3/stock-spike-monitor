@@ -41,3 +41,12 @@ pyarrow>=15.0
 # clock during replay so backtest results are reproducible across
 # wall-clock runs. Production code is unaffected.
 freezegun>=1.5,<2.0
+
+# -- Dev / CI tools (v10.0.1) ---------------------------------------
+# pytest + pytest-xdist make the strategy test suite run in parallel
+# locally (~3s vs ~12s serial). ruff is intentionally NOT pinned here
+# yet -- the repo has pre-v10.0.1 format drift in tools/* that's worth
+# a dedicated cleanup PR before making ruff a hard dep. scripts/run_ci.py
+# skips ruff gracefully when it's not installed.
+pytest>=8.0
+pytest-xdist>=3.5
