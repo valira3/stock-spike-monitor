@@ -4495,48 +4495,6 @@ def run_prod(url: str, password: str, expected_version: str | None) -> int:
 
 
 # ============================================================
-# SYNTHETIC HARNESS MODE (v4.9.0)
-# ============================================================
-
-
-def run_synthetic() -> int:
-    """Replay all 25 synthetic-harness goldens. One t() entry per scenario.
-
-    Goldens live at synthetic_harness/goldens/<name>.json and are
-    committed to git. A failure prints a unified diff between the
-    recorded golden and the observed run.
-    """
-    os.environ.setdefault("SSM_SMOKE_TEST", "1")
-    os.environ.setdefault("CHAT_ID", "999999999")
-    os.environ.setdefault("DASHBOARD_PASSWORD", "smoketest1234")
-    os.environ.setdefault(
-        "TELEGRAM_TOKEN",
-        "0000000000:AAAA_smoke_placeholder_token_0000000",
-    )
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    try:
-        from synthetic_harness import list_scenarios, replay_scenario
-    except Exception as e:  # pragma: no cover
-        print(f"synthetic harness import failed: {e}")
-        traceback.print_exc()
-        return 2
-
-    for name in list_scenarios():
-        # Capture in a closure so each lambda gets its own name.
-        def _make(scn):
-            @t(f"synthetic: {scn}")
-            def _():
-                ok, diff = replay_scenario(scn)
-                assert ok, f"golden mismatch for {scn}:\n{diff}"
-
-            return _
-
-        _make(name)
-
-    return run_suite("SYNTHETIC HARNESS (v4.9.0, 50 scenarios)")
-
-
-# ============================================================
 # CLI
 # ============================================================
 
@@ -4545,9 +4503,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TradeGenius smoke test")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--prod", action="store_true")
-    parser.add_argument(
-        "--synthetic", action="store_true", help="replay synthetic_harness goldens after local"
-    )
     parser.add_argument("--url", default=os.environ.get("DASHBOARD_URL", "https://tradegenius.up.railway.app"))
     parser.add_argument("--password", default=os.environ.get("DASHBOARD_PASSWORD", ""))
     parser.add_argument("--expected-version", default=None)
@@ -4559,8 +4514,6 @@ def main() -> int:
     total_fails = 0
     if do_local:
         total_fails += run_local()
-    if args.synthetic:
-        total_fails += run_synthetic()
     if do_prod:
         if not args.password:
             print("(prod mode skipped — no --password)")

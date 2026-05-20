@@ -1,13 +1,12 @@
 """Signal bus -- async fire-and-forget dispatch from Main's paper book
-to executor listeners (TradeGeniusVal / TradeGeniusGene / synthetic
-harness).
+to executor listeners (TradeGeniusVal / TradeGeniusGene).
 
 History. Lived inside trade_genius.py for v4.0.0-alpha through v9.1.140.
 Carved out to its own module in v10.0.1 per the post-v10.0.0
 architectural review: the bus is one of the few self-contained
 sub-systems inside the monolith and re-including the new module in
 lint is a real win. trade_genius.py keeps back-compat re-exports so
-synthetic_harness + smoke_test + tests don't need touching.
+smoke_test + tests don't need touching.
 
 Event schema (dict; same as before):
     {

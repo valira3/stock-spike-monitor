@@ -2,8 +2,8 @@
 
 Internal-contract tests for the carved module. The pre-existing
 end-to-end coverage (broker/orders.py callers, telegram_commands
-read paths, synthetic_harness monkeypatch) is unchanged because
-trade_genius.py keeps the public re-exports.
+read paths) is unchanged because trade_genius.py keeps the public
+re-exports.
 
 Covered:
   - trade_log_append: writes one JSONL line, includes schema_version

@@ -4,7 +4,7 @@ History. Lived in trade_genius.py from v3.4.27 through v9.1.140. Carved
 out to its own module in v10.0.1 as part of the post-architectural-
 review monolith reduction. trade_genius.py keeps back-compat re-exports
 for the callers that haven't migrated (broker/orders.py,
-telegram_commands.py, synthetic_harness, and several tests).
+telegram_commands.py, and several tests).
 
 Every closed trade (longs via close_position, shorts via
 close_short_position, and their TP counterparts) writes one JSON line

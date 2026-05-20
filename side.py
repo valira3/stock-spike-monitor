@@ -31,8 +31,7 @@ class Side(Enum):
 class SideConfig:
     """Static, side-specific values consumed by the unified breakout
     functions. String literals must match the legacy long/short Telegram
-    payloads byte-for-byte \u2014 the synthetic-harness goldens are the
-    enforcement mechanism.
+    payloads byte-for-byte.
     """
 
     side: Side

@@ -311,7 +311,7 @@ set_last_signal_setter(_set_last_signal)
 # ============================================================
 # Implementation lives in orb.trade_log. trade_genius.py re-exports
 # the public API for back-compat with broker/orders.py,
-# telegram_commands.py, synthetic_harness, and tests that do
+# telegram_commands.py, and tests that do
 # `from trade_genius import trade_log_append` etc.
 #
 # `_trade_log_last_error` is module-mutable. Module-level __getattr__

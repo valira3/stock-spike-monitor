@@ -23,11 +23,11 @@ DOC_PATH = REPO / "docs" / "lock_order.md"
 # Production code paths only. Mirrors the grep filter in the doc's preamble.
 # We INCLUDE: top-level .py files, orb/, engine/, executors/, ingest/, broker/,
 # telegram_ui/, dashboard_server.py, trade_genius.py.
-# We EXCLUDE: tests/, scripts/, tools/, synthetic_harness/, __pycache__/.
+# We EXCLUDE: tests/, scripts/, tools/, __pycache__/.
 PROD_DIRS = (
     "orb", "engine", "executors", "ingest", "broker", "telegram_ui",
 )
-EXCLUDE_DIRS = ("tests", "scripts", "tools", "synthetic_harness", "__pycache__")
+EXCLUDE_DIRS = ("tests", "scripts", "tools", "__pycache__")
 EXCLUDE_TOP = ("smoke_test.py",)
 
 LOCK_DECL_RE = re.compile(
