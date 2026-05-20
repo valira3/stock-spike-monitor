@@ -57,3 +57,4 @@ data_rth_expand/
 # OS noise picked up on the macOS dev machine
 .DS_Store
 *.webloc
+simulator/corpus/day_index.json
