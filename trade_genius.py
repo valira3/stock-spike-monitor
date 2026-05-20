@@ -6852,18 +6852,6 @@ logger.info(
 logger.info(
     "[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)"
 )
-# v5.13.1 \u2014 surface the Phase 2 volume-gate runtime override at boot
-# so the deploy log shows the active state of L-P2-S3 / S-P2-S3.
-try:
-    from engine import feature_flags as _ff_startup
-    _vg_state = _ff_startup.VOLUME_GATE_ENABLED
-    logger.info(
-        "[STARTUP] VOLUME_GATE_ENABLED=%s (%s)",
-        _vg_state,
-        "spec-strict path" if _vg_state else "using DISABLED_BY_FLAG path",
-    )
-except Exception as _ff_err:
-    logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
 # v6.11.0 -- C25 regime-B amp startup surface.
 try:
     from engine.legacy_constants import (

@@ -1962,54 +1962,18 @@ def snapshot() -> dict[str, Any]:
         # these as small ON/OFF pills below the KPI row so the operator
         # can see at-a-glance which spec rules are currently overridden
         # via env vars.
-        # v5.29.0 \u2014 also surface alarm_{c,d,e}_enabled so the dashboard
-        # can hide bypassed components in the Permit Matrix (volume column /
-        # card, sentinel-strip cells for Alarms C / D / E). Sourced from
-        # engine.sentinel module-level flags (ALARM_C_ENABLED etc.). The
-        # legacy engine.feature_flags shim was removed in v5.26.0; we keep
-        # the volume_gate_enabled key for compatibility with the existing
-        # KPI-row pill but read it from a hard default (False) when the
-        # shim is gone, matching production behaviour since v5.13.1.
-        # v5.30.0 \u2014 also surface alarm_f_enabled. Alarm F (chandelier
-        # trail) has no module-level kill switch in engine.sentinel, so it
-        # is unconditionally True whenever the sentinel module imports
-        # successfully. The frontend uses this flag to render the F cell
-        # in the sentinel strip the same way it conditionally renders
-        # C / D / E.
-        try:
-            from engine import sentinel as _sen
-
-            # v6.4.0 \u2014 ALARM_B_ENABLED is the new module-level toggle for
-            # the EMA9-cross alarm. Defaults False to match production; the
-            # frontend renders the B Trend Death cell as DISABLED when off.
-            # Pre-v6.4.0 builds did not export the symbol, so getattr falls
-            # back to True (B was always evaluated) for safety.
-            alarm_b_enabled = bool(getattr(_sen, "ALARM_B_ENABLED", True))
-            alarm_c_enabled = bool(getattr(_sen, "ALARM_C_ENABLED", False))
-            alarm_d_enabled = bool(getattr(_sen, "ALARM_D_ENABLED", False))
-            alarm_e_enabled = bool(getattr(_sen, "ALARM_E_ENABLED", False))
-            # Alarm F has no ALARM_F_ENABLED toggle; True when the
-            # module imports (i.e. the runtime knows what F is).
-            alarm_f_enabled = True
-        except Exception:
-            alarm_b_enabled = True
-            alarm_c_enabled = False
-            alarm_d_enabled = False
-            alarm_e_enabled = False
-            alarm_f_enabled = False
-        try:
-            from engine import feature_flags as _ff  # legacy shim, may be absent
-
-            volume_gate_enabled = bool(getattr(_ff, "VOLUME_GATE_ENABLED", False))
-        except Exception:
-            volume_gate_enabled = False
+        # v10.0.1 -- engine.sentinel + engine.feature_flags deleted. The
+        # volume gate + Alarm B/C/D/E/F surface was Tiger Sentinel state
+        # that v10 ORB doesn't expose. The dashboard renders these keys
+        # as legacy False so the frontend's Permit Matrix path renders
+        # consistently (it's hidden under body.v10-live anyway).
         feature_flags_block = {
-            "volume_gate_enabled": volume_gate_enabled,
-            "alarm_b_enabled": alarm_b_enabled,
-            "alarm_c_enabled": alarm_c_enabled,
-            "alarm_d_enabled": alarm_d_enabled,
-            "alarm_e_enabled": alarm_e_enabled,
-            "alarm_f_enabled": alarm_f_enabled,
+            "volume_gate_enabled": False,
+            "alarm_b_enabled": False,
+            "alarm_c_enabled": False,
+            "alarm_d_enabled": False,
+            "alarm_e_enabled": False,
+            "alarm_f_enabled": False,
         }
 
         # v5.5.7 \u2014 surface the paper book's most recent emitted
