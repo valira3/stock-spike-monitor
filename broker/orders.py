@@ -1928,7 +1928,8 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     # v5.10.5 \u2014 Clear v5.10 phase state + 5m-bucket debounce on close
     # so a fresh re-entry starts in Phase A with a clean slate.
     try:
-        _eot_side = tg.eot.SIDE_LONG if cfg.side.is_long else tg.eot.SIDE_SHORT
+        from engine.legacy_constants import SIDE_LONG, SIDE_SHORT
+        _eot_side = SIDE_LONG if cfg.side.is_long else SIDE_SHORT
         tg.eot_glue.clear_position_state(ticker, _eot_side)
         tg._engine_clear_phase_bucket(ticker, _eot_side)
     except Exception:
