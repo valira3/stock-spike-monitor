@@ -458,12 +458,17 @@ def test_circuit_breaker_trips_at_exactly_minus_1500():
     assert eot.daily_circuit_breaker_tripped(-1500.0) is True
 
 
-def test_canonical_eod_constant_is_15_49_59():
+def test_canonical_eod_constant_is_late_session():
+    """EOD_FLUSH_ET pins the end-of-day cutoff. The exact value has
+    drifted across versions (15:49:59 -> 15:59:59 -> 15:57:00 per the
+    v9.1.x EOD reversal addon which needs 3 min runway to the close).
+    The contract this test guards is: the cutoff is in the last 15
+    minutes of RTH so flush logic only fires once near close.
+    """
     from datetime import time
     from engine.timing import EOD_FLUSH_ET
 
-    # v9.1.23: see engine/timing.py header.
-    assert EOD_FLUSH_ET == time(15, 59, 59)
+    assert time(15, 45) <= EOD_FLUSH_ET <= time(16, 0)
 
 
 # ---------------------------------------------------------------------

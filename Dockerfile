@@ -20,6 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY trade_genius.py .
 COPY bot_version.py .
 COPY telegram_commands.py .
+# v10.0.1 -- send_telegram + report_error + _format_error_telegram carved
+# out of trade_genius.py. trade_genius re-exports the public surface but
+# the import resolves against this file at runtime; missing it makes
+# every `from telegram_io import ...` fail and crashloops the container.
+COPY telegram_io.py .
 # v6.18.0 — daily pre-open market brief module (used by /brief command,
 # main-menu Brief button, and 07:00 CT scheduler entry). Missing this COPY
 # causes ModuleNotFoundError: market_brief in cmd_brief and silently

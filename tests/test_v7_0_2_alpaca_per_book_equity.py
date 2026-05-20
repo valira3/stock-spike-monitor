@@ -38,9 +38,16 @@ def _clean_cache_and_env():
     """Reset module-level Alpaca cache and any pid env vars between tests
     so prior fixtures or earlier tests can't leak through. Also defends
     against the v7.0.1 ordering hazard (tests that previously imported
-    dashboard_server with creds already set)."""
+    dashboard_server with creds already set).
+
+    v7.76.0+: the Alpaca account cache moved from dashboard_server to
+    engine.portfolio_equity. dashboard_server still re-exports
+    `_alpaca_account_for_book` so the existing `ds._alpaca_account_for_book`
+    call sites below keep working unchanged.
+    """
     import dashboard_server as ds
-    ds._ALPACA_ACCT_CACHE.clear()
+    from engine import portfolio_equity as _pe
+    _pe._ALPACA_ACCT_CACHE.clear()
     saved = {}
     for k in (
         "VAL_ALPACA_PAPER_KEY", "VAL_ALPACA_PAPER_SECRET",
@@ -53,7 +60,7 @@ def _clean_cache_and_env():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
-    ds._ALPACA_ACCT_CACHE.clear()
+    _pe._ALPACA_ACCT_CACHE.clear()
 
 
 def _install_fake_alpaca(monkeypatch, equity=110_000.0, last_equity=100_000.0,

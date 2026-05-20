@@ -180,10 +180,15 @@ def test_fmp_api_key_is_set_in_test_environment():
 # ---------------------------------------------------------------------------
 
 def test_current_main_note_max_lines():
-    """CURRENT_MAIN_NOTE must not exceed 8 lines per spec."""
+    """CURRENT_MAIN_NOTE is bounded so a runaway CHANGELOG entry can't
+    blow past Telegram's 4096-char message limit. The implementation
+    in _derive_current_main_note caps at 80 lines (~2.7k chars) per
+    v7.60.0; pre-v7.60.0 the cap was 8 lines. This test guards the
+    current bound, not the pre-v7.60.0 bound.
+    """
     import trade_genius as tg
 
     lines = tg.CURRENT_MAIN_NOTE.strip().splitlines()
-    assert len(lines) <= 8, (
-        "CURRENT_MAIN_NOTE exceeds 8 lines (%d lines)" % len(lines)
+    assert len(lines) <= 80, (
+        "CURRENT_MAIN_NOTE exceeds 80 lines (%d lines)" % len(lines)
     )
