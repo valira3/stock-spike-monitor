@@ -44,6 +44,59 @@ from simulator.scenarios import SCENARIOS, get_scenario, list_scenarios
 logger = logging.getLogger(__name__)
 
 
+# ---- Keystone production baseline ------------------------------------
+#
+# Mirrors the env block in CLAUDE.md "Keystone -- canonical production
+# baseline" section. Applied via setdefault so scenario / operator
+# overrides still win.
+
+_KEYSTONE_DEFAULTS: Dict[str, str] = {
+    # v10 ORB morning anchor
+    "ORB_LIVE_MODE": "1",
+    "ORB_OR_MINUTES": "30",
+    "ORB_RR": "2.5",
+    "ORB_RISK_PER_TRADE_PCT": "1.0",
+    "ORB_RANGE_MIN_PCT": "0.008",
+    "ORB_RANGE_MAX_PCT": "0.025",
+    "ORB_MAX_TRADES_PER_DAY": "5",
+    "ORB_MAX_CONCURRENT_RISK_DOLLARS": "2000",
+    "ORB_DAILY_LOSS_KILL_PCT": "2.0",
+    "ORB_ATR_STOP_MULT": "1.75",
+    "ORB_ATR_LOOKBACK_5M": "14",
+    "ORB_PARTIAL_PROFIT_AT_1R": "1",
+    "ORB_MOVE_TO_BE_AFTER_1R": "1",
+    "ORB_STOP_BUFFER_BPS": "5.0",
+    "ORB_ENTRY_SLIPPAGE_BPS": "1.5",
+    "ORB_EXIT_SLIPPAGE_BPS": "1.5",
+    "ORB_STOP_KICK_BPS": "5.0",
+    "ORB_SHORT_PENALTY_BPS": "1.0",
+    "ORB_MAX_TRADE_NOTIONAL_PCT": "75",
+    "ORB_SKIP_GAP_ABOVE_PCT": "1.5",
+    "ORB_SKIP_VIX_ABOVE": "25.0",
+    "ORB_SKIP_PRIOR_SPY_RET_LT_BPS": "-40.0",
+    "ORB_SKIP_EARNINGS_WINDOW": "1",
+    "ORB_TIME_CUTOFF_ET": "11:00",
+    "ORB_EOD_CUTOFF_ET": "15:55",
+    "ORB_ACCOUNT": "100000",
+    "ORB_COMPOUND_DAILY": "1",
+    "ORB_TICKER_SIDE_BLOCKLIST": "{}",
+    "ORB_MAX_VWAP_DEV_BPS": "15.0",
+    "ORB_MAX_VWAP_DEV_TICKERS": "META,MSFT,AAPL,AMZN,GOOG,AVGO",
+    "ORB_POST_TRADE_COOLDOWN_MIN": "10",
+    # v9.1 EOD reversal addon
+    "ORB_EOD_REVERSAL_ENABLED": "1",
+    "ORB_EOD_UNIVERSE": "ORCL,AAPL,MSFT,AVGO,NFLX,TSLA",
+    "ORB_EOD_LONG_TICKERS": "ORCL,AAPL,MSFT,AVGO,TSLA",
+    "ORB_EOD_SHORT_TICKERS": "ORCL,NFLX,AAPL,MSFT,TSLA",
+    "ORB_EOD_TOP_N": "1",
+    "ORB_EOD_NOTIONAL_PCT": "35",
+    "ORB_EOD_ENTRY_ET": "15:00",
+    "ORB_EOD_EXIT_ET": "15:56",
+    "ORB_EOD_ENTRY_CUTOFF_ET": "15:51",
+    "ORB_EOD_FIRE_BROKER": "0",  # simulator never reaches a real broker
+}
+
+
 # ----- session pacing ---------------------------------------------------
 
 OR_START = 9 * 60 + 30
@@ -91,7 +144,13 @@ class SimulatorRunner:
 
     def setup(self) -> None:
         """Apply config, build feeder, install clock + mocks + reporter."""
-        # 1. Config overrides.
+        # 1a. Keystone defaults -- match the production v10.0 + r17 baseline
+        # documented in CLAUDE.md "Keystone -- canonical production baseline".
+        # Each setdefault honors scenario/operator overrides while ensuring
+        # the simulator always has a sane configuration that mirrors live.
+        for k, v in _KEYSTONE_DEFAULTS.items():
+            os.environ.setdefault(k, v)
+        # 1b. Scenario overrides (win over Keystone defaults).
         for k, v in self.scenario.get("config_overrides", {}).items():
             os.environ[k] = str(v)
         os.environ.setdefault("SIMULATOR_MODE", "1")
@@ -216,6 +275,18 @@ class SimulatorRunner:
         cfg_or_minutes = int(os.environ.get("ORB_OR_MINUTES", "30"))
         or_end_bucket = OR_START + cfg_or_minutes
         cutoff = _bucket_str_to_min(os.environ.get("ORB_TIME_CUTOFF_ET", "11:00"))
+        # Keystone -- EOD reversal addon timing.
+        eod_entry_bucket = _bucket_str_to_min(os.environ.get("ORB_EOD_ENTRY_ET", "15:00"))
+        eod_cutoff_bucket = _bucket_str_to_min(os.environ.get("ORB_EOD_ENTRY_CUTOFF_ET", "15:51"))
+        eod_exit_bucket = _bucket_str_to_min(os.environ.get("ORB_EOD_EXIT_ET", "15:56"))
+
+        # Per-ticker session VWAP accumulators (cumulative typical price *
+        # volume / cumulative volume from session open through current bar).
+        vwap_pv: Dict[str, float] = {t: 0.0 for t in universe}
+        vwap_v: Dict[str, float] = {t: 0.0 for t in universe}
+
+        # Last-known close per ticker (drives EOD reversal current_prices).
+        last_close: Dict[str, float] = {t: 0.0 for t in universe}
 
         rep.phase(f"OR Window (09:30 -> {_bucket_to_str(or_end_bucket)} ET)")
         _last_phase = "or"
@@ -223,6 +294,19 @@ class SimulatorRunner:
         for bucket in range(OR_START, SESSION_END):
             self._clock.set_et(hour=bucket // 60, minute=bucket % 60)
             self._feed_minute(live_runtime, universe, bucket)
+
+            # Per-ticker session-VWAP accumulator. Updated on every 1m bar
+            # so check_entry gets a current value at 5m boundaries.
+            for ticker in universe:
+                bar = self._feeder.bar_at(ticker, bucket)
+                if not bar:
+                    continue
+                close_px = float(bar.get("close", 0) or 0)
+                vol = float(bar.get("total_volume") or bar.get("iex_volume") or 0)
+                last_close[ticker] = close_px
+                if vol > 0 and close_px > 0:
+                    vwap_pv[ticker] += close_px * vol
+                    vwap_v[ticker] += vol
 
             # OR-window progress: track per-ticker high/low.
             if bucket < or_end_bucket:
@@ -247,9 +331,12 @@ class SimulatorRunner:
                 _last_phase = "eod"
 
             # Entry window: from OR end to the operator-configured cutoff.
-            # v10 ORB fires when a 5-min close breaks OR boundaries.
-            # We approximate with the 1m close + locally-tracked OR bounds.
-            if or_end_bucket <= bucket <= cutoff:
+            # Keystone v10 ORB fires on 5-min CLOSE bars (not every 1m).
+            # 5m close buckets after OR end = or_end_bucket, or_end_bucket+5,
+            # +10, ... (the bucket index aligns with 5m boundaries because
+            # OR_START=570 and or_end_bucket=600 are both multiples of 5).
+            on_5m_boundary = (bucket - or_end_bucket) % 5 == 0
+            if or_end_bucket <= bucket <= cutoff and on_5m_boundary:
                 for ticker in universe:
                     bar = self._feeder.bar_at(ticker, bucket)
                     if not bar:
@@ -270,6 +357,10 @@ class SimulatorRunner:
                     if side is None:
                         continue
                     try:
+                        # Pass session_vwap so the v9 chase-prevention
+                        # filter activates (15bps cap on the 6 mega-caps).
+                        sv = (vwap_pv[ticker] / vwap_v[ticker]
+                              if vwap_v[ticker] > 0 else None)
                         result = live_runtime.check_entry(
                             portfolio_id="main",
                             ticker=ticker,
@@ -277,6 +368,7 @@ class SimulatorRunner:
                             five_min_close=close_px,
                             next_open=close_px,
                             equity=100_000.0,
+                            session_vwap=sv,
                         )
                     except TypeError as exc:
                         # Signature mismatch is a programmer error -- surface
@@ -386,7 +478,145 @@ class SimulatorRunner:
                     # Close the full remaining position on the mock book.
                     self._dispatch_mock_close(ticker, exit_evt["price"])
 
+            # ----- Keystone r17 EOD reversal addon ----------------------
+            # Entry window 15:00 -> 15:50 ET (open one position per side
+            # per portfolio). Exit window from 15:56 ET.
+            self._run_eod_reversal_tick(
+                live_runtime=live_runtime, bucket=bucket,
+                last_close=last_close,
+                eod_entry_bucket=eod_entry_bucket,
+                eod_cutoff_bucket=eod_cutoff_bucket,
+                eod_exit_bucket=eod_exit_bucket,
+                rep=rep,
+            )
+
     # ---- helpers ------------------------------------------------------
+
+    def _run_eod_reversal_tick(self, *, live_runtime, bucket: int,
+                                last_close: Dict[str, float],
+                                eod_entry_bucket: int,
+                                eod_cutoff_bucket: int,
+                                eod_exit_bucket: int,
+                                rep: ScenarioReporter) -> None:
+        """Drive the r17 EOD reversal addon for one minute tick.
+
+        Production flow (`engine/scan.py:_eod_reversal_pass`):
+          - On the first tick in [entry, cutoff) per portfolio, call
+            select_signals() to pick LONG/SHORT winners by ROD3, then
+            admit() each pick.
+          - On every tick after `exit_bucket`, close all open positions.
+        """
+        eod = live_runtime.get_eod_engine() if hasattr(live_runtime, "get_eod_engine") else None
+        if eod is None or not eod.cfg.enabled:
+            return
+
+        # Use the bot's date_iso convention.
+        date_iso = self.scenario["date"]
+        try:
+            eod.reset_for_session(date_iso)
+        except Exception as exc:
+            rep.on_warning(f"eod.reset_for_session raised: {exc}")
+            return
+
+        # Entry: fire once per portfolio inside [entry, cutoff).
+        if eod_entry_bucket <= bucket < eod_cutoff_bucket and not eod.has_attempted("main"):
+            # Build current_prices + prior_closes from the feeder.
+            current_prices = {t: last_close.get(t, 0.0) for t in eod.cfg.universe
+                              if last_close.get(t, 0.0) > 0}
+            prior_closes: Dict[str, float] = {}
+            # Read prior-day last bar close for each universe ticker.
+            prior_date = _previous_corpus_date(date_iso, self._feeder)
+            for t in eod.cfg.universe:
+                prior_closes[t] = _prior_close_for(prior_date, t,
+                                                   current_prices.get(t, 0.0))
+            try:
+                long_picks, short_picks = eod.select_signals(
+                    current_prices=current_prices,
+                    prior_closes=prior_closes,
+                )
+            except Exception as exc:
+                rep.on_warning(f"eod.select_signals raised: {exc}")
+                return
+
+            iso = self._clock.now_utc.isoformat().replace("+00:00", "Z")
+            # 35% notional per leg on a $100k book.
+            equity = 100_000.0
+            admitted = []
+            for tk, rod_bps in long_picks:
+                px = current_prices.get(tk, 0.0)
+                if px <= 0:
+                    continue
+                pos = eod.admit(portfolio_id="main", ticker=tk, side="long",
+                                entry_price=px, equity=equity,
+                                rod3_bps=rod_bps, entry_iso=iso)
+                if pos is None:
+                    continue
+                shares = int(pos.shares)
+                self._dispatch_mock_order(ticker=tk, side="buy", qty=shares,
+                                          limit_price=px)
+                self.state["entries"].append({
+                    "ticker": tk, "side": "LONG", "bucket": bucket,
+                    "price": px, "stop": 0.0, "target": 0.0,
+                    "shares": shares,
+                    "ticker_gap_pct": 0.0,
+                    "ticker_or_range_pct": 1.0,
+                    "strategy": "eod_reversal",
+                })
+                admitted.append(("LONG", tk, rod_bps, px, shares))
+
+            for tk, rod_bps in short_picks:
+                px = current_prices.get(tk, 0.0)
+                if px <= 0:
+                    continue
+                pos = eod.admit(portfolio_id="main", ticker=tk, side="short",
+                                entry_price=px, equity=equity,
+                                rod3_bps=rod_bps, entry_iso=iso)
+                if pos is None:
+                    continue
+                shares = int(pos.shares)
+                self._dispatch_mock_order(ticker=tk, side="sell", qty=shares,
+                                          limit_price=px)
+                self.state["entries"].append({
+                    "ticker": tk, "side": "SHORT", "bucket": bucket,
+                    "price": px, "stop": 0.0, "target": 0.0,
+                    "shares": shares,
+                    "ticker_gap_pct": 0.0,
+                    "ticker_or_range_pct": 1.0,
+                    "strategy": "eod_reversal",
+                })
+                admitted.append(("SHORT", tk, rod_bps, px, shares))
+
+            eod.mark_attempted("main")
+            for side, tk, rod, px, sh in admitted:
+                rep.line(
+                    f"[{_bucket_to_str(bucket)} ET]  EOD-ENTRY  "
+                    f"{tk:6s} {side:5s} rod3={rod:+.0f}bps  @ {px:.2f}  shares={sh}"
+                )
+
+        # Exit: flatten EOD positions at/after the exit bucket.
+        if bucket >= eod_exit_bucket:
+            st = eod._states.get("main") if hasattr(eod, "_states") else None
+            if st is None:
+                return
+            iso = self._clock.now_utc.isoformat().replace("+00:00", "Z")
+            for tk in list(st.open_positions.keys()):
+                px = last_close.get(tk, 0.0)
+                leg = eod.close(portfolio_id="main", ticker=tk,
+                                exit_price=px, exit_iso=iso, exit_reason="eod")
+                if leg is None:
+                    continue
+                # Close the mock-broker position.
+                self._dispatch_mock_close(tk, px)
+                self.state["exits"].append({
+                    "ticker": tk, "reason": "eod_reversal_close",
+                    "bucket": bucket, "price": px,
+                    "strategy": "eod_reversal",
+                    "pnl_engine_side": float(leg.get("pnl", 0.0)),
+                })
+                rep.line(
+                    f"[{_bucket_to_str(bucket)} ET]  EOD-EXIT   "
+                    f"{tk:6s} {leg['side'].upper():5s} pnl=${leg['pnl']:+.2f} @ {px:.2f}"
+                )
 
     def _dispatch_mock_order(self, *, ticker: str, side: str, qty: int,
                               limit_price: float) -> None:
