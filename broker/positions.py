@@ -805,38 +805,13 @@ def _v5104_maybe_fire_entry_2(ticker, side, pos):
         else:
             fresh_extreme = False
 
-    # Re-evaluate Section I fresh at trigger time (spec XIV.3).
-    qqq_bars = tg.fetch_1min_bars("QQQ")
-    if not qqq_bars:
-        return
-    qqq_last = qqq_bars.get("current_price")
-    qqq_avwap = tg._opening_avwap("QQQ")
-    qqq_5m_close = tg._QQQ_REGIME.last_close
-    qqq_ema9 = tg._QQQ_REGIME.ema9
-    permit = tg.eot_glue.evaluate_section_i(
-        side_label,
-        qqq_5m_close,
-        qqq_ema9,
-        qqq_last,
-        qqq_avwap,
-    )
-    permit_open = bool(permit.get("open"))
-
-    # 1m DI for the appropriate polarity.
-    di_streams = tg.v5_di_1m_5m(ticker)
-    di_1m_now = di_streams.get("di_plus_1m") if cfg.side.is_long else di_streams.get("di_minus_1m")
-
-    decision = tg.eot_glue.evaluate_entry_2_decision(
-        ticker,
-        side_label,
-        entry_1_active=True,
-        permit_open_at_trigger=permit_open,
-        di_1m_now=di_1m_now,
-        fresh_nhod_or_nlod=fresh_extreme,
-        entry_2_already_fired=False,
-    )
-    if not decision.get("fire"):
-        return
+    # v10.0.1 -- Section I permit + entry_2_decision gates deleted.
+    # Live now matches the Keystone backtest path. The v5/v15 spec
+    # Entry-2 add-on (50% additional size after Entry-1) is no longer
+    # gated by QQQ regime + DI(1m) confirmation; it always proceeds
+    # when called. Backtest doesn't model Entry-2 add-on legs at all,
+    # so removing the gate brings live one step closer (still not
+    # equivalent until Entry-2 itself is retired or modelled).
 
     # v5.15.1 vAA-1 \u2014 SENT-E-PRE: block Strike 2/3 entries when the
     # current tick prints a divergence vs the stored peak. Strike 1

@@ -2689,46 +2689,14 @@ def _update_gate_snapshot(ticker):
         side = "LONG" if abs(price - or_h) < abs(price - or_l) else "SHORT"
         break_ok = False
 
-    # v5.13.9 \u2014 polarity = Phase 2 Boundary Hold for this side.
-    # Spec STEP 4: TWO consecutive closed 1m candles strictly outside
-    # the 5m OR edge. Reads the same evaluator the entry path uses so
-    # the dashboard cannot disagree with the bot. None when inputs are
-    # not yet available (OR not seeded, or fewer than 2 closes).
-    polarity_ok: bool | None
-    try:
-        bh_res = eot_glue.evaluate_boundary_hold_gate(ticker, side, or_h, or_l)
-        if bh_res.get("reason") in ("or_not_set", "insufficient_closes"):
-            polarity_ok = None
-        else:
-            polarity_ok = bool(bh_res.get("hold"))
-    except Exception:
-        polarity_ok = None
-
-    # v5.13.9 \u2014 index = Section I global permit for this side.
-    # Spec STEPS 1-2: LONG requires QQQ 5m close > 9-EMA AND QQQ price
-    # > 09:30 AVWAP. SHORT mirrors with strict-below. None when QQQ
-    # regime / AVWAP are not yet seeded.
-    index_ok: bool | None
-    try:
-        qqq_bars_idx = fetch_1min_bars("QQQ")
-        qqq_last = qqq_bars_idx.get("current_price") if qqq_bars_idx else None
-        qqq_avwap = _opening_avwap("QQQ")
-        qqq_5m_close = _QQQ_REGIME.last_close
-        qqq_ema9 = _QQQ_REGIME.ema9
-        if (
-            qqq_last is None
-            or qqq_avwap is None
-            or qqq_5m_close is None
-            or qqq_ema9 is None
-        ):
-            index_ok = None
-        else:
-            permit = eot_glue.evaluate_section_i(
-                side, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap
-            )
-            index_ok = bool(permit.get("open"))
-    except Exception:
-        index_ok = None
+    # v10.0.1 \u2014 polarity (Boundary Hold) + index (Section I Global Permit)
+    # gates retired along with the rest of the eot_glue surface. The
+    # dashboard gate-matrix consumes these as bool|None; we keep the
+    # dict keys present (None) so the v5.10 panel can render N/A
+    # without crashing while the panel itself is removed in a follow-up
+    # UI sweep.
+    polarity_ok: bool | None = None
+    index_ok: bool | None = None
 
     di_plus, di_minus = tiger_di(ticker)
     if di_plus is None or di_minus is None:

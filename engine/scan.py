@@ -31,7 +31,6 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import v5_10_1_integration as eot_glue
 import volume_profile
 
 from engine.callbacks import EngineCallbacks
@@ -128,16 +127,12 @@ def _v10_prewarm_dynamic_universe(now_et) -> None:
 
 
 def _v531_build_permit_state(tg, ticker: str) -> dict | None:
-    """v5.31.0 \u2014 assemble a per-minute permit_state blob for the
-    indicator snapshot stream. Captures boundary-hold (LONG + SHORT) and
-    the live trail-stop / stage of any open position so the lifecycle
-    overlay's per-minute trail-stop staircase has data.
+    """v5.31.0 \u2014 per-minute permit_state blob for the indicator snapshot
+    stream.
 
-    Failure-tolerant \u2014 returns None on any error so the caller can
-    pass it through cleanly. Boundary-hold reads use the same
-    ``eot_glue.evaluate_boundary_hold_gate`` call the gate stack uses;
-    trail-stop snapshots read off ``pos['trail_state']`` (the TrailState
-    dataclass attached lazily by ``_run_sentinel``).
+    v10.0.1: boundary-hold gate deleted along with the rest of the
+    eot_glue surface. The blob still emits trail-stop / stage data for
+    the lifecycle overlay's per-minute trail-stop staircase.
     """
     try:
         sym = (ticker or "").upper()
@@ -149,21 +144,7 @@ def _v531_build_permit_state(tg, ticker: str) -> dict | None:
         except Exception:
             pass
 
-        bh_long = None
-        bh_short = None
-        try:
-            if or_h is not None and or_l is not None:
-                _r_l = eot_glue.evaluate_boundary_hold_gate(sym, "LONG", or_h, or_l)
-                bh_long = bool(_r_l.get("hold")) if isinstance(_r_l, dict) else None
-                _r_s = eot_glue.evaluate_boundary_hold_gate(sym, "SHORT", or_h, or_l)
-                bh_short = bool(_r_s.get("hold")) if isinstance(_r_s, dict) else None
-        except Exception:
-            pass
-
         # Open-position trail-state snapshot for the lifecycle overlay.
-        # Captures the per-minute trail-stop ladder + stage transitions
-        # so a backtest can reconstruct the exact stop the engine would
-        # have proposed at any minute the position was alive.
         trail = None
         try:
             for _attr, _label in (("positions", "LONG"), ("short_positions", "SHORT")):
@@ -194,8 +175,8 @@ def _v531_build_permit_state(tg, ticker: str) -> dict | None:
             trail = None
 
         return {
-            "boundary_hold_long": bh_long,
-            "boundary_hold_short": bh_short,
+            "boundary_hold_long": None,
+            "boundary_hold_short": None,
             "or_high": or_h,
             "or_low": or_l,
             "trail": trail,
@@ -215,14 +196,8 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.exception("_refresh_market_mode failed (observation only)")
 
     # v6.14.4 \u2014 wire the volume_bucket baseline refresh into the live
-    # scan loop. The hook itself self-guards (no-op before 09:29 ET, and
-    # idempotent within a single session via _baseline_refreshed_for_date).
-    # Prior to this release the function was exported but never invoked,
-    # so the baseline stayed empty and the dashboard sat in COLDSTART.
-    try:
-        eot_glue.refresh_volume_baseline_if_needed(now_et)
-    except Exception:
-        logger.exception("refresh_volume_baseline_if_needed failed")
+    # v10.0.1 -- eot_glue.refresh_volume_baseline_if_needed call deleted
+    # along with the rest of the v5_10_1_integration surface.
 
     is_weekend = now_et.weekday() >= 5
     # v7.72.0 -- boundary moved from 09:35 to 09:30 ET. The 09:30-09:34
@@ -1337,17 +1312,9 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         )
         except Exception as e:
             logger.warning("[bar] archive hook %s: %s", ticker, e)
-        # Spec Section II.2 (Boundary Hold) requires a rolling buffer of
-        # the most recent closed 1m closes. `record_latest_1m_close` walks
-        # back from [-2] to find the newest non-None close (Yahoo keeps a
-        # forming-bar None at [-2] for most of RTH); without this hook
-        # `_last_1m_closes` stays empty and `evaluate_boundary_hold_gate`
-        # returns insufficient_closes \u2192 polarity=None forever.
-        try:
-            if _bars_for_mtm:
-                eot_glue.record_latest_1m_close(ticker, _bars_for_mtm.get("closes") or [])
-        except Exception as _e:
-            logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
+        # v10.0.1 \u2014 Section II.2 Boundary Hold gate retired; the rolling
+        # closed-1m buffer (eot_glue.record_latest_1m_close) is no longer
+        # needed and the call is deleted.
         # v7.15.0: entry routing switch.
         #
         # When ORB_LIVE_MODE=1 (default), the v10 ORB runtime owns the

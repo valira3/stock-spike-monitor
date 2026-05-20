@@ -493,15 +493,19 @@ def check_breakout(ticker, side):
     # deleted. Tiger Sovereign v15.0 BL-3 / BU-3 Volume Gate is BYPASSED
     # as of 2026-04-30 per spec amendment.
 
-    # ------------------------------------------------------------------
-    # v5.10.1 \u2014 Eye-of-the-Tiger authoritative gates (Sections I + II + III).
-    # Replaces the v5.0\u2013v5.9 G1/G3/G4 + V570 expansion + extension +
-    # stop-cap stack. The Section IV (Sovereign Brake / Velocity Fuse)
-    # is enforced inside manage_positions / manage_short_positions.
-    # ------------------------------------------------------------------
+    # v10.0.1 \u2014 Eye-of-the-Tiger (Section I + II + III) permit gates
+    # deleted. They lived only in this live-broker path; the Keystone
+    # backtest harness (tools/orb_backtest.py) never went through them
+    # and is the validated +$50k/yr source-of-truth. Live now matches
+    # backtest: no QQQ-regime / boundary-hold / volume-bucket / Section-I
+    # admission gates. The v10 strategy's own admission stack (VIX,
+    # earnings, gap, blocklist, SPY-regime, sector-cluster) in
+    # orb/day_gates.py is the canonical gate set.
     qqq_bars = tg.fetch_1min_bars("QQQ")
     if not qqq_bars:
         return False, None
+    # Still read QQQ snapshot values for the forensic decision record
+    # (no gating logic uses them; just logged for audit).
     qqq_last = qqq_bars.get("current_price")
     qqq_avwap = tg._opening_avwap("QQQ")
     qqq_5m_close = tg._QQQ_REGIME.last_close
@@ -509,88 +513,6 @@ def check_breakout(ticker, side):
     or_high_val = tg.or_high.get(ticker)
     or_low_val = tg.or_low.get(ticker)
     side_label = "LONG" if cfg.side.is_long else "SHORT"
-
-    # Section I \u2014 Global Permit
-    permit_res = tg.eot_glue.evaluate_section_i(
-        side_label,
-        qqq_5m_close,
-        qqq_ema9,
-        qqq_last,
-        qqq_avwap,
-    )
-    if not permit_res.get("open"):
-        # v5.31.5 \u2014 per-stock local-weather override. When the global
-        # QQQ permit is closed for this side, check whether the ticker's
-        # OWN price action (5m close past EMA9 OR last past opening AVWAP)
-        # plus 1m DI confirmation is decisively pointing the other way.
-        # If so, the gate opens locally and the entry path proceeds.
-        # Either rejection (or both) collapses to the same skip log,
-        # tagged so we can audit how often the override fires in prod.
-        try:
-            from engine.local_weather import evaluate_local_override
-
-            _local_reg = (tg._TICKER_REGIME or {}).get(ticker.upper()) or {}
-            _local_di = tg.v5_di_1m_5m(ticker) or {}
-            # v6.2.0 \u2014 plumb OR edges + pre-market ATR so the override
-            # can fire its new OR-break leg when QQQ permit is closed but
-            # the ticker has cleared OR by k*ATR. Failure-tolerant: any
-            # missing input collapses the leg to False inside the helper.
-            try:
-                _atr_pm_for_override = tg._v610_compute_pm_atr(ticker)
-            except Exception:
-                _atr_pm_for_override = None
-            _override = evaluate_local_override(
-                side_label,
-                _local_reg.get("last_close_5m"),
-                _local_reg.get("ema9_5m"),
-                _local_reg.get("last"),
-                _local_reg.get("avwap"),
-                _local_di.get("di_plus_1m"),
-                _local_di.get("di_minus_1m"),
-                or_high=or_high_val,
-                or_low=or_low_val,
-                atr_pm=_atr_pm_for_override,
-            )
-        except Exception as _e:
-            tg.logger.warning(
-                "[LOCAL_OVERRIDE] eval error %s/%s: %s",
-                ticker,
-                side_label,
-                _e,
-            )
-            _override = {"open": False, "reason": "eval_error"}
-        if _override.get("open"):
-            tg.logger.info(
-                "[LOCAL_OVERRIDE] ticker=%s side=%s OPEN reason=%s qqq_reason=%s",
-                ticker,
-                side_label,
-                _override.get("reason"),
-                permit_res.get("reason"),
-            )
-            # Fall through to the rest of the gate stack \u2014 the
-            # ticker's own structure has earned the entry chance.
-        else:
-            tg.logger.info(
-                "[LOCAL_OVERRIDE] ticker=%s side=%s REJECT qqq_reason=%s local_reason=%s",
-                ticker,
-                side_label,
-                permit_res.get("reason"),
-                _override.get("reason"),
-            )
-            tg._v561_log_skip(
-                ticker=ticker,
-                reason="V5100_PERMIT:%s" % permit_res.get("reason", "closed"),
-                ts_utc=tg._utc_now_iso(),
-                gate_state=None,
-            )
-            return False, None
-
-    # v5.26.0 \u2014 BL-3 / BU-3 (volume bucket gate, Section II.1) were
-    # BYPASSED per spec amendment 2026-04-30. v6.14.10 reverses that:
-    # the live evaluation is now wired in below at the entry-1 decision
-    # call via tg.eot_glue.evaluate_volume_bucket_live(ticker, now_et,
-    # bars). VOLUME_GATE_LIVE_ENFORCE=false in env disables enforcement
-    # without flipping VOLUME_GATE_ENABLED (which the dashboard reads).
 
     # v15.0 SPEC Permission Ladder:
     #   Strike 1 \u2014 2x consecutive 1m close above ORH (long) / below ORL (short).
@@ -743,55 +665,11 @@ def check_breakout(ticker, side):
         except Exception:
             pass
 
-    # Section II.2 \u2014 Boundary Hold (Entry-1 only). Stateless: the
-    # last two closed 1m closes vs the boundary edge (ORH/ORL or NHOD/NLOD).
-    # v6.2.0 \u2014 pass current ET clock so the boundary helper can
-    # relax the 2-bar hold to 1-bar before 10:30 ET (pre-momentum
-    # confirmation window). Falls back to spec-strict 2-bar hold if
-    # now_et is unavailable.
-    boundary_res = tg.eot_glue.evaluate_boundary_hold_gate(
-        ticker,
-        side_label,
-        boundary_high,
-        boundary_low,
-        now_et=now_et,
-    )
-
-    # v5.26.2 \u2014 forensic capture of the primary boundary gate result.
-    try:
-        from forensic_capture import write_boundary_record as _write_boundary_pri
-
-        _closes_pri = list(tg.eot_glue._last_1m_closes.get(ticker, []))
-        _label_pri = "NHOD_NLOD" if _next_strike_num >= 2 else "ORH_ORL"
-        _write_boundary_pri(
-            ticker=ticker,
-            side=side_label,
-            ts_utc=tg._utc_now_iso(),
-            boundary_label=_label_pri,
-            boundary_high=boundary_high,
-            boundary_low=boundary_low,
-            last_close=(_closes_pri[-1] if _closes_pri else None),
-            prior_close=(_closes_pri[-2] if len(_closes_pri) >= 2 else None),
-            consecutive_outside=boundary_res.get("consecutive_outside"),
-            hold=boundary_res.get("hold"),
-            reason=boundary_res.get("reason"),
-            strike_num=_next_strike_num,
-        )
-    except Exception:
-        pass
-
-    # v5.26.0 \u2014 [V510-CAND] gate-audit log line deleted (Volume Gate
-    # bypass leaves only the 2-candle hold for this telemetry).
-
-    if not boundary_res.get("hold"):
-        tg._v561_log_skip(
-            ticker=ticker,
-            reason="V5100_BOUNDARY:%s" % boundary_res.get("reason"),
-            ts_utc=tg._utc_now_iso(),
-            gate_state=None,
-        )
-        _emit_decision("SKIP:V5100_BOUNDARY:%s" % boundary_res.get("reason"))
-        return False, None
+    # v10.0.1 \u2014 Section II.2 Boundary Hold gate deleted. The 2-bar
+    # boundary-hold rule was a v5 spec admission gate not present in
+    # the Keystone backtest path; live now matches backtest. The v10
+    # ORB strategy's own OR-edge breakout logic in orb/state.py owns
+    # the equivalent semantics for the v10 path.
 
     # Section III Trend Confirmation \u2014 5m DI > 25, 1m DI > 25, NHOD/NLOD.
     di_streams = tg.v5_di_1m_5m(ticker)
@@ -887,21 +765,8 @@ def check_breakout(ticker, side):
                 _alarm_e_err,
             )
 
-    # v6.14.10 \u2014 wire the live volume-bucket evaluator. Returns
-    # ok=True for every non-FAIL path (disabled, live-enforce-off,
-    # pre-10am, coldstart, no-bucket, pass) so the gate can only
-    # *reject* trades when the spec demands it. FAIL is logged inside
-    # the helper as [V6_14_10-VOLGATE-FAIL].
-    try:
-        _vol_res = tg.eot_glue.evaluate_volume_bucket_live(ticker, now_et, bars)
-        _vol_ok = bool(_vol_res.get("ok", True))
-    except Exception as _vol_err:
-        tg.logger.warning(
-            "[V6_14_10-VOLGATE-ERR] %s eval error: %s; passing",
-            ticker,
-            _vol_err,
-        )
-        _vol_ok = True
+    # v10.0.1 \u2014 Volume Bucket gate deleted (v6.14.10 era). Not in the
+    # Keystone backtest path; live now matches backtest.
 
     # v7.0.0 Phase 2.5 \u2014 ratchet gate (Eugene's rule).
     # Placed AFTER the volume gate and BEFORE evaluate_entry_1_decision.
@@ -1006,28 +871,10 @@ def check_breakout(ticker, side):
         # Defensive: a Filter-7 error MUST NOT block legitimate trading.
         pass
 
-    entry1_decision = tg.eot_glue.evaluate_entry_1_decision(
-        ticker,
-        side_label,
-        permit_open=True,
-        volume_bucket_ok=_vol_ok,
-        boundary_hold_ok=True,
-        di_5m=di_5m,
-        di_1m=di_1m,
-        is_nhod_or_nlod=is_extreme_print,
-    )
-    if not entry1_decision.get("fire"):
-        tg._v561_log_skip(
-            ticker=ticker,
-            reason="V5100_ENTRY1:%s" % entry1_decision.get("reason", ""),
-            ts_utc=tg._utc_now_iso(),
-            gate_state=None,
-        )
-        _emit_decision("SKIP:V5100_ENTRY1:%s" % entry1_decision.get("reason", ""))
-        return False, None
+    # v10.0.1 -- evaluate_entry_1_decision (v5/v15 spec entry-1 gate)
+    # deleted. Live now matches the Keystone backtest path.
 
-    # All Eye-of-the-Tiger gates pass. Bars dict carries current_price
-    # forward to execute_breakout.
+    # Bars dict carries current_price forward to execute_breakout.
     try:
         tg.logger.info(
             "[V5100-ENTRY] ticker=%s side=%s entry_num=1 di_5m=%s di_1m=%s fill_price=%.4f",
@@ -1925,15 +1772,9 @@ def close_breakout(ticker, price, side, reason="STOP", suppress_signal=False):
     tg._last_exit_time[ticker] = _last_exit_now
 
     pos = positions_dict.pop(ticker)
-    # v5.10.5 \u2014 Clear v5.10 phase state + 5m-bucket debounce on close
-    # so a fresh re-entry starts in Phase A with a clean slate.
-    try:
-        from engine.legacy_constants import SIDE_LONG, SIDE_SHORT
-        _eot_side = SIDE_LONG if cfg.side.is_long else SIDE_SHORT
-        tg.eot_glue.clear_position_state(ticker, _eot_side)
-        tg._engine_clear_phase_bucket(ticker, _eot_side)
-    except Exception:
-        pass
+    # v10.0.1 \u2014 v5.10 phase-state clear and 5m-bucket debounce reset
+    # deleted along with the rest of the eot_glue surface. The v10
+    # path manages its own per-position state via orb/state.py.
 
     # v5.15.1 vAA-1 \u2014 drop the per-(ticker, side) TradeHVP and ADX
     # window when the position closes so a re-entry starts with a
