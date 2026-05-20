@@ -1713,9 +1713,72 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                 equity = 100_000.0
             if equity <= 0:
                 equity = 100_000.0
+            # 2026-05-20 -- exposure-cap gate for EOD reversal. Mirrors the
+            # morning ORB's `max_concurrent_notional_mult` (default 1.9 *
+            # equity). The EOD reversal addon historically had no cap, so
+            # at high `notional_pct` + `top_n` it would over-leverage on
+            # top of morning open positions. Production Alpaca rejects
+            # over-margin orders, but the simulator's mock client accepted
+            # them -- leading to inflated sim P&L that wouldn't materialize
+            # live. Reuse `cfg.max_concurrent_notional_mult` (default 1.9)
+            # to bound total gross.
+            try:
+                import os as _os_eod
+                _cap_mult = float(_os_eod.environ.get(
+                    "ORB_MAX_CONCURRENT_NOTIONAL_MULT", "1.9"
+                ))
+            except (TypeError, ValueError):
+                _cap_mult = 1.9
+            exposure_cap_dollars = equity * _cap_mult
+            # Compute current gross from morning open positions (tg.positions
+            # for longs + tg.short_positions for shorts). Both dicts have
+            # `entry_price` and `shares` per ticker.
+            current_gross = 0.0
+            try:
+                for _p in (getattr(tg, "positions", {}) or {}).values():
+                    if isinstance(_p, dict):
+                        _ep = _p.get("entry_price"); _sh = _p.get("shares")
+                        if isinstance(_ep, (int, float)) and isinstance(_sh, (int, float)):
+                            current_gross += abs(float(_ep) * float(_sh))
+                for _p in (getattr(tg, "short_positions", {}) or {}).values():
+                    if isinstance(_p, dict):
+                        _ep = _p.get("entry_price"); _sh = _p.get("shares")
+                        if isinstance(_ep, (int, float)) and isinstance(_sh, (int, float)):
+                            current_gross += abs(float(_ep) * float(_sh))
+            except Exception:
+                current_gross = 0.0
+            # Also count EOD positions already opened in earlier picks this
+            # tick (so e.g. long_picks[0] admit increments before
+            # long_picks[1] is checked).
+            try:
+                _st = eod._states.get(pid)
+                if _st is not None:
+                    for _ep in _st.open_positions.values():
+                        current_gross += abs(getattr(_ep, "notional_at_entry", 0.0) or 0.0)
+            except Exception:
+                pass
+
+            def _cap_allows(side: str, price: float) -> bool:
+                # Compute what THIS admit would size to, then check if total
+                # would exceed the cap. Sizing must match eod.admit logic:
+                # notional_target = equity * notional_pct / 100; shares ~=
+                # notional_target / entry_price; notional ~= shares * price.
+                notional_target = equity * eod.cfg.notional_pct / 100.0
+                shares = max(1, int(notional_target / price))
+                new_notional = shares * price
+                return (current_gross + new_notional) <= exposure_cap_dollars
+
             for ticker, rod3 in long_picks:
                 price = current_prices.get(ticker)
                 if price is None or price <= 0:
+                    continue
+                if not _cap_allows("long", price):
+                    logger.info(
+                        "[V910-EOD-CAP-REJECT] %s long %s: existing $%.0f + "
+                        "new would exceed $%.0f (%.1fx of $%.0f equity)",
+                        pid, ticker, current_gross, exposure_cap_dollars,
+                        _cap_mult, equity,
+                    )
                     continue
                 pos = eod.admit(
                     portfolio_id=pid,
@@ -1726,11 +1789,21 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                     rod3_bps=rod3,
                     entry_iso=entry_iso,
                 )
-                if pos is not None and eod.cfg.fire_broker:
-                    _eod_fire_broker(callbacks, pid, ticker, "long", price, pos.shares)
+                if pos is not None:
+                    current_gross += abs(pos.notional_at_entry)
+                    if eod.cfg.fire_broker:
+                        _eod_fire_broker(callbacks, pid, ticker, "long", price, pos.shares)
             for ticker, rod3 in short_picks:
                 price = current_prices.get(ticker)
                 if price is None or price <= 0:
+                    continue
+                if not _cap_allows("short", price):
+                    logger.info(
+                        "[V910-EOD-CAP-REJECT] %s short %s: existing $%.0f + "
+                        "new would exceed $%.0f (%.1fx of $%.0f equity)",
+                        pid, ticker, current_gross, exposure_cap_dollars,
+                        _cap_mult, equity,
+                    )
                     continue
                 pos = eod.admit(
                     portfolio_id=pid,
@@ -1741,8 +1814,10 @@ def _eod_reversal_pass(callbacks: EngineCallbacks, cur_min: int) -> None:
                     rod3_bps=rod3,
                     entry_iso=entry_iso,
                 )
-                if pos is not None and eod.cfg.fire_broker:
-                    _eod_fire_broker(callbacks, pid, ticker, "short", price, pos.shares)
+                if pos is not None:
+                    current_gross += abs(pos.notional_at_entry)
+                    if eod.cfg.fire_broker:
+                        _eod_fire_broker(callbacks, pid, ticker, "short", price, pos.shares)
             eod.mark_attempted(pid)
 
     # --- v9.1.104: intraday stop check (runs every scan cycle during hold) ---

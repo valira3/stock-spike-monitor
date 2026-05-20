@@ -314,10 +314,17 @@ def compute_universe(
 def default_bar_archive_root() -> Path:
     """Resolve the bar archive root, matching bar_archive.py's convention.
 
-    bar_archive.py writes to `${TG_DATA_ROOT}/bars` (default
-    `/data/bars` in production). Tests can override via TG_DATA_ROOT
-    or by passing an explicit path to `compute_universe`.
+    Precedence:
+      1. BARS_BASE_DIR (matches engine/scan.py and tools/orb_spy_loader.py).
+         Used by the simulator to redirect the scanner at the corpus
+         without symlinking TG_DATA_ROOT/bars (which was the pre-2026-05-20
+         approach that caused the bar-archive-write-back contamination).
+      2. ${TG_DATA_ROOT}/bars -- production default (TG_DATA_ROOT defaults
+         to /data, so the resolved path is /data/bars).
     """
+    bars_dir = os.environ.get("BARS_BASE_DIR")
+    if bars_dir:
+        return Path(bars_dir)
     root = os.environ.get("TG_DATA_ROOT", "/data")
     return Path(root) / "bars"
 

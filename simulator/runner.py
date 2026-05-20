@@ -697,6 +697,38 @@ class SimulatorRunner:
         bf_orig = _install_bar_fetch(self._feeder, self.state,
                                      _prior_close_lookup)
         self._orig["bar_fetch"] = bf_orig
+
+        # 2026-05-20 -- broad-universe trading override. Production's engine
+        # iterates `tg.TRADE_TICKERS` (a static list set at module load).
+        # The scanner_state.picks influence the cluster_gate skip but NOT
+        # the per-ticker iteration. For research runs where we WANT the
+        # bot to actually trade the scanner's top-K + EOD fence, override
+        # tg.TICKERS to the scenario's resolved universe (set in setup()
+        # from _try_dynamic_universe + eod_fence) and rebuild TRADE_TICKERS
+        # in place. Gated by SIMULATOR_TRADE_SCANNER_PICKS env to keep the
+        # default behavior unchanged (= trade the bot's compiled static
+        # universe, matching live production).
+        if os.environ.get("SIMULATOR_TRADE_SCANNER_PICKS", "0") == "1":
+            try:
+                resolved_universe = list(self.scenario.get("universe") or [])
+                if resolved_universe:
+                    self._orig.setdefault("tg.TICKERS", list(tg.TICKERS))
+                    self._orig.setdefault("tg.TRADE_TICKERS",
+                                          list(tg.TRADE_TICKERS))
+                    tg.TICKERS.clear()
+                    tg.TICKERS.extend(resolved_universe)
+                    if hasattr(tg, "_rebuild_trade_tickers"):
+                        tg._rebuild_trade_tickers()
+                    if self.reporter is not None:
+                        self.reporter.line(
+                            f"TICKERS overridden -> {len(resolved_universe)} "
+                            f"scanner-picked: {resolved_universe[:8]}..."
+                        )
+            except Exception as exc:
+                if self.reporter is not None:
+                    self.reporter.on_warning(
+                        f"TICKERS override raised: {exc}"
+                    )
         # No-op the bar archive writers AND the retention-prune so the
         # bot can't mutate the corpus during a run. We keep
         # BAR_ARCHIVE_BASE pointed at the corpus for READERS
