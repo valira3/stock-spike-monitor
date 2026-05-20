@@ -122,9 +122,14 @@ def install(bar_feeder: BarFeeder, scenario_state: dict,
                 return None
             clock = scenario_state.get("clock") if scenario_state else None
             bucket = 9 * 60 + 30 if clock is None else clock.bucket_min()
-            # bisect_right(buckets, bucket) gives count of bars with
-            # bar_bucket <= bucket. Equivalent to bars_up_to.
-            n = _bisect.bisect_right(cols["buckets"], bucket)
+            # bisect_right(buckets, bucket - 1) excludes the bar AT the
+            # current sim minute -- production cannot see a 1m bar's
+            # close until the minute is over (the bar at HH:MM closes
+            # at HH:MM:59). Including it caused a 1-minute look-ahead
+            # vs the live engine: at sim clock=10:05 we'd return
+            # current_price = close at bucket 1005, while production
+            # at 10:05:00 wall-clock only knows close at bucket 1004.
+            n = _bisect.bisect_right(cols["buckets"], bucket - 1)
             if n == 0:
                 return None
             closes = cols["closes"][:n]

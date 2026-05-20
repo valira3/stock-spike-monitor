@@ -863,6 +863,43 @@ class SimulatorRunner:
                 if rep is not None:
                     rep.on_warning(f"trade_log read raised: {exc}")
 
+        # 1a. Main partial-1R bookings -- broker/orders.py:partial_close_breakout
+        # writes PARTIAL_SELL/PARTIAL_COVER records to tg.paper_trades /
+        # tg.short_trade_history but NEVER to trade_log.jsonl (trade_log
+        # is full-closes only). The runner has been silently undercounting
+        # Main's morning P&L by ~$300-500 per winning ORB trade (the
+        # half-shares-at-1R booking). Harvest them here.
+        try:
+            import trade_genius as _tg_mod
+            this_date = self.scenario["date"]
+            for trade_list in (
+                getattr(_tg_mod, "paper_trades", None) or [],
+                getattr(_tg_mod, "short_trade_history", None) or [],
+            ):
+                for tr in trade_list:
+                    action = (tr.get("action") or "").upper()
+                    if action not in ("PARTIAL_SELL", "PARTIAL_COVER"):
+                        continue
+                    if (tr.get("date") or "")[:10] != this_date:
+                        continue
+                    tk = (tr.get("ticker") or "").upper()
+                    # paper_trades stores time as "HH:MM ET" -- strip suffix.
+                    hh_mm = (tr.get("time") or "").replace(" ET", "").strip()
+                    bucket = _hhmm_to_bucket(hh_mm)
+                    exits.append({
+                        "ticker": tk,
+                        "reason": "V10_PARTIAL_1R",
+                        "bucket": bucket,
+                        "price": float(tr.get("price") or 0),
+                        "pnl": float(tr.get("pnl") or 0),
+                        "partial": True,
+                        "shares": int(tr.get("shares") or 0),
+                        "_source": "paper_trades",
+                    })
+        except Exception as exc:
+            if rep is not None:
+                rep.on_warning(f"paper_trades harvest raised: {exc}")
+
         # 1b. EOD reversal engine -- harvest closed_legs from the engine's
         # in-process state. The v9.1.0 EOD reversal addon runs in
         # paper-fire-observation mode (ORB_EOD_FIRE_BROKER=0) so it
