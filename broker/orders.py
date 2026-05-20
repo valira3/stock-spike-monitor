@@ -1434,24 +1434,8 @@ def execute_breakout(ticker, current_price, side):
     try:
         ll = _lifecycle_logger()
         if ll is not None:
-            try:
-                import v5_13_2_snapshot as _snap
-
-                ph1 = _snap._phase1_block(tg)
-            except Exception:
-                ph1 = {}
-            try:
-                ph2 = _snap._phase2_block(tg, [ticker])
-            except Exception:
-                ph2 = []
-            try:
-                ph3 = _snap._phase3_block(
-                    tg,
-                    {ticker: pos} if cfg.side.is_long else {},
-                    {ticker: pos} if cfg.side.is_short else {},
-                )
-            except Exception:
-                ph3 = []
+            # v10.0.1 -- v5.13.2 phase1/2/3 audit blocks retired along
+            # with the rest of the v5 snapshot surface.
             entry_payload = {
                 "entry_price": float(current_price),
                 "limit_price": float(limit_price),
@@ -1461,9 +1445,6 @@ def execute_breakout(ticker, current_price, side):
                 "entry_num": int(entry_num),
                 "strike_num": int(_v570_strike_num),
                 "entry_id": _entry_id,
-                "phase1": ph1,
-                "phase2": ph2,
-                "phase3": ph3,
                 "or_high": float(or_dict.get(ticker, 0) or 0),
                 "pdc": float(tg.pdc.get(ticker, 0) or 0),
             }

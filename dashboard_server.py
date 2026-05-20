@@ -1377,24 +1377,9 @@ def _proximity_rows() -> list[dict]:
         tickers = []
     open_longs = set(getattr(m, "positions", {}) or {})
     open_shorts = set(getattr(m, "short_positions", {}) or {})
-    long_permit = False
-    short_permit = False
-    try:
-        import v5_10_6_snapshot as _v510_snap
-
-        sip = _v510_snap._section_i_permit(m) or {}
-        long_permit = bool(sip.get("long_open"))
-        short_permit = bool(sip.get("short_open"))
-    except Exception:
-        pass
-    if long_permit and short_permit:
-        permit_side = "BOTH"
-    elif long_permit:
-        permit_side = "LONG"
-    elif short_permit:
-        permit_side = "SHORT"
-    else:
-        permit_side = "NONE"
+    # v10.0.1 -- Section I permit gate retired. permit_side is a
+    # legacy field of the proximity payload kept for back-compat.
+    permit_side = "NONE"
     for t in tickers:
         px = _price_for(t)
         orh = (getattr(m, "or_high", {}) or {}).get(t)
@@ -2085,52 +2070,23 @@ def snapshot() -> dict[str, Any]:
 
         version = str(getattr(m, "BOT_VERSION", "?"))
 
-        # v5.10.6 \u2014 Eye-of-the-Tiger live state snapshot. Surfaces
-        # Section I permit, per-ticker Volume Bucket + Boundary Hold,
-        # and per-position phase + Sovereign Brake distance so the
-        # operator can see what the v5.10 algo is actually running.
-        # Defensive: on internal error returns empty blocks so the rest
-        # of /api/state still serializes.
-        try:
-            import v5_10_6_snapshot as _v510_snap
-
-            v510_block = _v510_snap.build_v510_snapshot(
-                m,
-                tickers,
-                longs,
-                shorts,
-                prices,
-            )
-        except Exception:
-            logger.exception("v5.10.6 snapshot build failed")
-            v510_block = {
-                "section_i_permit": {},
-                "per_ticker_v510": {},
-                "per_position_v510": {},
-            }
-
-        # v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 snapshot for the rewritten
-        # dashboard panel. Sits alongside the v5.10.6 fields above; the
-        # dashboard reads `tiger_sovereign` directly, while the legacy
-        # fields stay for backward compatibility.
-        try:
-            import v5_13_2_snapshot as _ts_snap
-
-            tiger_sovereign_block = _ts_snap.build_tiger_sovereign_snapshot(
-                m,
-                tickers,
-                longs,
-                shorts,
-                prices,
-            )
-        except Exception:
-            logger.exception("v5.13.2 tiger_sovereign snapshot build failed")
-            tiger_sovereign_block = {
-                "phase1": {},
-                "phase2": [],
-                "phase3": [],
-                "phase4": [],
-            }
+        # v10.0.1 -- v5.10.6 + v5.13.2 snapshot panels (Section I permit,
+        # Volume Bucket, Boundary Hold, Tiger Sovereign Phase 1-4) retired
+        # along with the rest of the legacy v5/v15 surface. Empty blocks
+        # are emitted so the JSON shape is preserved for any cached
+        # consumer; dashboard panels rendering these are deleted in the
+        # same release.
+        v510_block = {
+            "section_i_permit": {},
+            "per_ticker_v510": {},
+            "per_position_v510": {},
+        }
+        tiger_sovereign_block = {
+            "phase1": {},
+            "phase2": [],
+            "phase3": [],
+            "phase4": [],
+        }
 
         # v5.13.2 \u2014 runtime feature-flag indicators. Dashboard surfaces
         # these as small ON/OFF pills below the KPI row so the operator

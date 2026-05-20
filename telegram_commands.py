@@ -1052,53 +1052,19 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the current Phase 1 (Section I) QQQ permit state.
-
-    v5.13.5: replaces the legacy SPY/QQQ-vs-PDC global gate diagnostic.
-    Reads from v5_10_6_snapshot._section_i_permit so this view agrees
-    with the dashboard.
+    """v10.0.1 -- /regime retired. The v5/v15 Phase 1 (Section I) QQQ
+    permit gate that this command reported was deleted in the same
+    release that aligned live trading to the Keystone backtest config.
+    The v10 strategy's regime check is the SPY-regime gate (skipped
+    when prior-session SPY return < ORB_SKIP_PRIOR_SPY_RET_LT_BPS) plus
+    the sector-cluster gate -- both surfaced on the v10 day-status
+    panel of the dashboard rather than as a Telegram command.
     """
-    SEP = "\u2500" * 26
-    long_open = False
-    short_open = False
-    qqq_close = qqq_ema9 = qqq_avwap = qqq_last = None
-    try:
-        import v5_10_6_snapshot as _v510
-        import trade_genius as _tg_mod
-
-        sip = _v510._section_i_permit(_tg_mod)
-        long_open = bool(sip.get("long_open"))
-        short_open = bool(sip.get("short_open"))
-        qqq_close = sip.get("qqq_5m_close")
-        qqq_ema9 = sip.get("qqq_5m_ema9")
-        qqq_avwap = sip.get("qqq_avwap_0930")
-        qqq_last = sip.get("qqq_current_price")
-    except Exception:
-        pass
-
-    def _fmt(v):
-        return ("$%.2f" % v) if isinstance(v, (int, float)) and v else "--"
-
-    long_icon = "\u2705" if long_open else "\u274c"
-    short_icon = "\u2705" if short_open else "\u274c"
-
-    text = (
-        f"\U0001f6e1 REGIME \u2014 Phase 1 (Section I)\n"
-        f"{SEP}\n"
-        f"QQQ last:   {_fmt(qqq_last)}\n"
-        f"QQQ 5m cl:  {_fmt(qqq_close)}\n"
-        f"QQQ 9 EMA:  {_fmt(qqq_ema9)}\n"
-        f"QQQ AVWAP:  {_fmt(qqq_avwap)} (09:30)\n"
-        f"{SEP}\n"
-        f"Long permit:  {long_icon}\n"
-        f"Short permit: {short_icon}\n"
-        f"{SEP}\n"
-        f"Long  = QQQ 5m close > 9 EMA\n"
-        f"        AND QQQ > 09:30 AVWAP\n"
-        f"Short = QQQ 5m close < 9 EMA\n"
-        f"        AND QQQ < 09:30 AVWAP"
+    await update.message.reply_text(
+        "/regime retired in v10.0.1 -- Phase 1 (Section I) gate is "
+        "deleted. Live regime data lives on the dashboard v10 panel.",
+        reply_markup=_menu_button(),
     )
-    await update.message.reply_text(text, reply_markup=_menu_button())
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):

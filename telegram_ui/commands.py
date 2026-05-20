@@ -417,30 +417,16 @@ def _price_sync(ticker):
     # their LEGACY_EXITS_ENABLED env-var gate, so the conditional PDC
     # surface is also gone.
 
-    # --- Phase 1 (Section I) permit ---
-    # Read from v5_10_6_snapshot so the regime read matches the dashboard.
-    long_permit = False
-    short_permit = False
-    try:
-        import v5_10_6_snapshot as _v510
-
-        sip = _v510._section_i_permit(tg)
-        long_permit = bool(sip.get("long_open"))
-        short_permit = bool(sip.get("short_open"))
-    except Exception:
-        pass
-
-    long_icon = "\u2705" if long_permit else "\u274c"
-    short_icon = "\u2705" if short_permit else "\u274c"
-    lines.append("QQQ Long permit:  %s" % long_icon)
-    lines.append("QQQ Short permit: %s" % short_icon)
-    lines.append(SEP)
+    # v10.0.1 -- Phase 1 (Section I) permit gate retired along with the
+    # rest of the v5/v15 legacy surface. Live now matches the Keystone
+    # backtest path: no QQQ-regime permit. Long/short eligibility lines
+    # below drop the permit check.
 
     # Long entry eligible?
     in_position = ticker in tg.positions
     at_max_entries = tg.daily_entry_count.get(ticker, 0) >= 5
     long_eligible = (
-        not in_position and not at_max_entries and long_permit and not tg._trading_halted
+        not in_position and not at_max_entries and not tg._trading_halted
     )
 
     if long_eligible:
@@ -451,8 +437,6 @@ def _price_sync(ticker):
             reasons.append("in position")
         if at_max_entries:
             reasons.append("5 entries today")
-        if not long_permit:
-            reasons.append("Phase 1 long permit OFF")
         if tg._trading_halted:
             reasons.append("trading halted")
         reason_str = ", ".join(reasons)
@@ -465,7 +449,6 @@ def _price_sync(ticker):
     short_eligible = (
         not in_short
         and not at_max_shorts
-        and short_permit
         and below_or_low
         and not tg._trading_halted
     )
@@ -478,8 +461,6 @@ def _price_sync(ticker):
             s_reasons.append("in short position")
         if at_max_shorts:
             s_reasons.append("5 short entries today")
-        if not short_permit:
-            s_reasons.append("Phase 1 short permit OFF")
         if not below_or_low:
             s_reasons.append("above OR Low")
         if tg._trading_halted:
@@ -518,58 +499,18 @@ def _proximity_sync():
     longs_dict = tg.positions
     shorts_dict = tg.short_positions
 
-    # --- Global: Phase 1 (Section I) permit per side ---
-    # Read from v5_10_6_snapshot._section_i_permit so the regime read
-    # matches what the dashboard renders.
-    long_ok = False
-    short_ok = False
-    qqq_close = qqq_ema9 = qqq_avwap = qqq_last = None
-    try:
-        import v5_10_6_snapshot as _v510
-
-        sip = _v510._section_i_permit(tg)
-        long_ok = bool(sip.get("long_open"))
-        short_ok = bool(sip.get("short_open"))
-        qqq_close = sip.get("qqq_5m_close")
-        qqq_ema9 = sip.get("qqq_5m_ema9")
-        qqq_avwap = sip.get("qqq_avwap_0930")
-        qqq_last = sip.get("qqq_current_price")
-    except Exception:
-        pass
-
-    if long_ok:
-        verdict = "LONGS enabled"
-    elif short_ok:
-        verdict = "SHORTS enabled"
-    else:
-        verdict = "NO NEW TRADES"
+    # v10.0.1 -- Phase 1 (Section I) QQQ permit gate retired. The
+    # proximity command no longer reports the QQQ regime readout
+    # (5m close / 9 EMA / 09:30 AVWAP / long/short permit booleans);
+    # those gates are deleted in this release.
 
     now_ct = now_et.astimezone(tg.CDT)
     hdr_time = now_ct.strftime("%H:%M CT")
 
     lines = [
-        "\U0001f3af PROXIMITY \u2014 %s" % hdr_time,
+        "\U0001f3af PROXIMITY -- %s" % hdr_time,
         SEP,
     ]
-
-    # Phase 1 readout: QQQ 5m close, 9 EMA, 09:30 AVWAP, then permit booleans.
-    def _fmt_px(v):
-        return ("$%.2f" % v) if isinstance(v, (int, float)) and v else "--"
-
-    if qqq_last is not None:
-        lines.append("QQQ last:   %s" % _fmt_px(qqq_last))
-    if qqq_close is not None:
-        lines.append("QQQ 5m cl:  %s" % _fmt_px(qqq_close))
-    if qqq_ema9 is not None:
-        lines.append("QQQ 9 EMA:  %s" % _fmt_px(qqq_ema9))
-    if qqq_avwap is not None:
-        lines.append("QQQ AVWAP:  %s (09:30)" % _fmt_px(qqq_avwap))
-    long_icon = "\u2705" if long_ok else "\u274c"
-    short_icon = "\u2705" if short_ok else "\u274c"
-    lines.append("Long permit:  %s" % long_icon)
-    lines.append("Short permit: %s" % short_icon)
-    lines.append("Gate: %s" % verdict)
-    lines.append(SEP)
 
     # --- Per-ticker rows ---
     # Build one snapshot per ticker: price, gap_long (px - OR_High),
@@ -757,23 +698,8 @@ def _orb_sync():
 
     lines.append(SEP)
 
-    # v5.13.5: SPY/QQQ PDC gate retired (v5.9.0). Surface Phase 1
-    # (Section I) permit booleans instead so /orb agrees with /proximity
-    # and the dashboard.
-    long_permit = False
-    short_permit = False
-    try:
-        import v5_10_6_snapshot as _v510
-
-        sip = _v510._section_i_permit(tg)
-        long_permit = bool(sip.get("long_open"))
-        short_permit = bool(sip.get("short_open"))
-    except Exception:
-        pass
-    long_icon = "\u2705" if long_permit else "\u274c"
-    short_icon = "\u2705" if short_permit else "\u274c"
-    lines.append("Phase 1 long permit:  %s" % long_icon)
-    lines.append("Phase 1 short permit: %s" % short_icon)
+    # v10.0.1 -- Phase 1 (Section I) permit booleans retired along with
+    # the rest of the v5/v15 legacy surface.
 
     # Entries today
     entry_parts = []
