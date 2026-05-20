@@ -3223,9 +3223,9 @@ def v5_di_1m_5m(ticker):
     highs_1m  = [h for h in bars.get("highs",  []) if h is not None]
     lows_1m   = [lo for lo in bars.get("lows", []) if lo is not None]
     n = min(len(closes_1m), len(highs_1m), len(lows_1m))
-    if n >= v5.DMI_PERIOD + 1:
+    if n >= DI_PERIOD + 1:
         dp, dm = _compute_di(highs_1m[:n], lows_1m[:n], closes_1m[:n],
-                             period=v5.DMI_PERIOD)
+                             period=DI_PERIOD)
         out["di_plus_1m"], out["di_minus_1m"] = dp, dm
     # 5m \u2014 reuse tiger_di which already merges seed + live 5m buckets
     # and normalizes on DI_PERIOD = 15. v5 now matches v4's period
@@ -3248,8 +3248,8 @@ def v5_di_1m_5m(ticker):
         h5 = [merged[k][0] for k in keys]
         l5 = [merged[k][1] for k in keys]
         c5 = [merged[k][2] for k in keys]
-        if len(c5) >= v5.DMI_PERIOD + 1:
-            dp5, dm5 = _compute_di(h5, l5, c5, period=v5.DMI_PERIOD)
+        if len(c5) >= DI_PERIOD + 1:
+            dp5, dm5 = _compute_di(h5, l5, c5, period=DI_PERIOD)
             out["di_plus_5m"], out["di_minus_5m"] = dp5, dm5
     return out
 

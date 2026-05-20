@@ -224,19 +224,10 @@ def warmup_ticker(
             out["days_seeded"] += 1
             out["bars_written"] += wrote
 
+    # v10.0.1 -- volume baseline refresh retired along with the rest of
+    # the v5_10_1_integration surface; refresh_baseline arg ignored.
     if refresh_baseline:
-        try:
-            from v5_10_1_integration import get_volume_baseline  # type: ignore
-            bb = get_volume_baseline()
-            bb.refresh(today=end_date)
-            days_for_sym = bb.days_available(sym)
-            out["baseline_days_available"] = days_for_sym
-            logger.info(
-                "[VOL-WARMUP] baseline refreshed ticker=%s days_available=%d",
-                sym, days_for_sym,
-            )
-        except Exception as exc:
-            out["errors"].append(f"baseline_refresh:{exc}")
+        out["baseline_days_available"] = None
 
     out["elapsed_s"] = round(time.time() - t0, 2)
     logger.info(
