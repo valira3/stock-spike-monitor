@@ -258,9 +258,7 @@ mcp__github__get_file_contents(
 )
 ```
 
-The cron workflow `.github/workflows/state-snapshot.yml` updates `latest.json` every 10 min during US RTH (Mon-Fri, 13:00-21:00 UTC) by running `python -m tools.state_snapshot` against `/api/state` + `/api/executor/val` + `/api/executor/gene`. Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl`.
-
-For an immediate refresh outside the cron window: Actions tab -> state-snapshot -> Run workflow (`workflow_dispatch`).
+**State-snapshot path retired v10.0.1** (GHAs are unstable; we run scheduled production tasks via local cron now). `tools/state_snapshot.py` is still callable directly when a snapshot is needed for forensic diff — run `python -m tools.state_snapshot --out data/snapshots/<date>.json` on the operator's box. Live `/api/state` remains the canonical source for current state during the session.
 
 ## Operator preferences
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
