@@ -258,12 +258,16 @@ class ORBConfig:
     max_concurrent_risk_dollars: float = 500.0  # sum of open risk_dollars cap
     daily_loss_kill_pct: float = 0.5  # halt new entries after -0.5% intraday
     # Per-(ticker, side) concurrent-position cap.
-    # 0 = unlimited (legacy). >0 = at most this many OPEN positions per (ticker, side)
-    # at admission time. Prevents the "5 TSLA longs in 25 min" anti-pattern where
-    # the same ticker breaks above OR repeatedly within the entry window and the
-    # engine admits each break separately because post-trade cooldown only fires
-    # AFTER an exit.
-    max_concurrent_per_ticker_side: int = 0
+    # 0 = unlimited (legacy backtest behavior). >0 = at most this many OPEN
+    # positions per (ticker, side) at admission time.
+    #
+    # 2026-05-20: default flipped from 0 -> 1 to match the production engine's
+    # FSM (orb/state.py:can_enter blocks new admissions while in_position).
+    # Pre-fix the backtest counted "5 TSLA longs in 25 min" as 5 separate
+    # trades; the live engine only opens ONE. The default of 1 produces
+    # production-realistic P&L; set this to 0 (or a higher cap) explicitly
+    # if you're investigating multi-fire patterns.
+    max_concurrent_per_ticker_side: int = 1
     # Minimum minutes between two admissions on the same (ticker, side) on the
     # same trading day. 0 = no gap (legacy). Triggers on the prior ENTRY (not
     # exit) so it fires even when the prior position is still open.
@@ -355,12 +359,18 @@ class ORBConfig:
     # v19 signal-magnitude / cadence-latency filter (2026-05-13). Tests the
     # hypothesis that production fires later than the first marginal break
     # because of scan-loop cadence latency. Two independent levers:
-    min_break_bps: float = 0.0  # >0: require signal close to be
+    min_break_bps: float = 5.0  # >0: require signal close to be
     #     min_break_bps past OR_high
     #     (long) or OR_low (short)
     #     before admitting. Suppresses
     #     marginal breaks like the
     #     observed AMZN -4.5bps fire.
+    #     2026-05-20: default flipped
+    #     from 0.0 -> 5.0 to match the
+    #     production engine default in
+    #     orb/live_runtime.py:327.
+    #     Set ORB_MIN_BREAK_BPS=0
+    #     explicitly to disable.
     confirm_bars_n: int = 0  # >0: require the prior N 5m closes
     #     (including this signal bar)
     #     to ALL be past the OR
@@ -594,7 +604,7 @@ class ORBConfig:
             short_pen_bps=_envf("ORB_SHORT_PENALTY_BPS", 1.0),
             max_trade_notional_pct=_envf("ORB_MAX_TRADE_NOTIONAL_PCT", 25.0),
             max_concurrent_notional_mult=_envf("ORB_MAX_CONCURRENT_NOTIONAL_MULT", 2.0),
-            max_concurrent_per_ticker_side=_envi("ORB_MAX_CONCURRENT_PER_TICKER_SIDE", 0),
+            max_concurrent_per_ticker_side=_envi("ORB_MAX_CONCURRENT_PER_TICKER_SIDE", 1),
             same_side_entry_gap_min=_envi("ORB_SAME_SIDE_ENTRY_GAP_MIN", 0),
             # v9 risk budget: total open risk_dollars must stay <= this
             # cap. With $500 default and $250/trade risk, max 2 open
@@ -636,7 +646,7 @@ class ORBConfig:
             loss_lock_threshold_usd=_envf("ORB_LOSS_LOCK_THRESHOLD_USD", 0.0),
             peak_dd_halt_usd=_envf("ORB_PEAK_DD_HALT_USD", 0.0),
             # v19 signal-magnitude / cadence-latency filter
-            min_break_bps=_envf("ORB_MIN_BREAK_BPS", 0.0),
+            min_break_bps=_envf("ORB_MIN_BREAK_BPS", 5.0),
             confirm_bars_n=_envi("ORB_CONFIRM_BARS_N", 0),
             # v20 chase-prevention filters
             max_vwap_dev_bps=_envf("ORB_MAX_VWAP_DEV_BPS", 0.0),
@@ -2023,7 +2033,7 @@ def run(
                     _BAR_CACHE[key] = bars
 
         # Write pkl files for fast subsequent loads.
-        # Store bars as plain tuples (bucket,o,h,l,c,vol) — class-agnostic.
+        # Store bars as plain tuples (bucket,o,h,l,c,vol) -- class-agnostic.
         for tk in tickers:
             tk_data = {
                 d: [

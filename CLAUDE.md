@@ -108,26 +108,19 @@ sweep runs.
 
 **Keystone** is the locked production strategy benchmark as of 2026-05-15 (v9.1.114).
 
-**Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate **15bps** on 6 mega-caps. Sym-10m cooldown. VIX ceiling **25**. EOD 6-ticker fence (TSLA added v9.1.113).
+**Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate **15bps** on 6 mega-caps. Sym-10m cooldown. VIX ceiling **25**. EOD 6-ticker fence (TSLA added v9.1.113). MBR **5bps** + max **1** concurrent per (ticker, side) -- both engine-mandatory (matched in `orb_backtest.py` defaults 2026-05-20).
 
-**Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr; archived 2026-05-17 in `results/keystone/keystone.json` v3.0):**
+**Results (SIP corpus, Jan 2025-May 2026, 263 days that pass the SPY-D1 / VIX / earnings gates; compounded, annualized to 1yr).**
+
+These are **production-realistic** numbers: re-verified on 2026-05-20 against `tools/orb_backtest.py` with the levers that match what the live engine actually does (ORB_MIN_BREAK_BPS=5, ORB_MAX_CONCURRENT_PER_TICKER_SIDE=1; both now defaults in `orb_backtest.py`).
 
 | Component | Ann/yr | Notes |
 |---|---:|---|
-| Morning ORB | +$37,466 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown |
+| Morning ORB | +$20,033 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown + MBR=5bps + 1 concurrent/(ticker,side) |
 | EOD reversal | +$12,620 | ORCL/AAPL/MSFT/AVGO/TSLA fence, 35% notional, 15:00-15:58 ET |
-| **Combined** | **+$50,086** | **+67.8% on $100k / 17mo / 1/6 neg quarters** |
+| **Combined** | **+$32,653** | $100k book |
 
-| Quarter | Morning | EOD | Combined |
-|---|---:|---:|---:|
-| 2025-Q1 | -$5,550 | +$1,102 | -$4,448 |
-| 2025-Q2 | +$6,281 | +$6,994 | +$13,274 |
-| 2025-Q3 | +$9,959 | -$1,074 | +$8,886 |
-| 2025-Q4 | +$13,733 | +$2,046 | +$15,779 |
-| 2026-Q1 | +$5,094 | +$6,414 | +$11,508 |
-| 2026-Q2 | +$21,181 | +$1,594 | +$22,775 |
-
-> The v9.1.114 CHANGELOG initially reported +$52,518/yr combined (+$39,898 morning, +$12,620 EOD) from the lever sweep. The morning leg was revised down to +$37,466/yr on 2026-05-17 after the first clean re-verify; the EOD leg reproduces the original claim exactly. The drift is attributed to the earnings-calendar population (commit 713aa2b1, +17 min after v9.1.114) and weekly VIX refreshes landed after the sweep's numbers were captured. No code or lever regression.
+> **Historical note (pre-2026-05-20):** The v9.1.114 sweep documented +$50,086/yr combined (+$37,466 morning + $12,620 EOD), but that morning leg measured the backtest with `ORB_MIN_BREAK_BPS=0` and **no** concurrent-position cap — neither of which the live engine honors. The 2026-05-20 backtest-vs-sim divergence audit (see memory/backtest_vs_sim_divergence.md) re-ran the same Keystone env with the engine-matching levers and got +$20,033 morning. The two unstated defaults explained ~$23k/yr of the gap. `orb_backtest.py` now defaults both levers to the live-engine values so any future Keystone re-run measures the strategy the bot actually trades. A third divergence remains (backtest computes ATR over RTH-only 5m bars; live engine includes premarket bars) and accounts for the residual ~$24k/yr between the backtest morning leg (+$20k) and the simulator's scan_loop driver morning leg (-$21k). See the memory note for the full decomposition.
 
 **Standard backtest approach (combined, compounded, annualized):**
 Run morning + EOD in parallel, sum P&Ls, annualize by `× (252/341)`. Always use `ORB_COMPOUND_DAILY=1` and `AFT_COMPOUND_DAILY=1`.
@@ -147,6 +140,7 @@ ORB_SKIP_EARNINGS_WINDOW=1 ORB_TIME_CUTOFF_ET=11:00 ORB_EOD_CUTOFF_ET=15:55 \
 ORB_ACCOUNT=100000 ORB_COMPOUND_DAILY=1 ORB_TICKER_SIDE_BLOCKLIST='{}' \
 ORB_MAX_VWAP_DEV_BPS=15.0 ORB_MAX_VWAP_DEV_TICKERS='META,MSFT,AAPL,AMZN,GOOG,AVGO' \
 ORB_SKIP_VIX_ABOVE=25.0 ORB_POST_TRADE_COOLDOWN_MIN=10 \
+ORB_MIN_BREAK_BPS=5.0 ORB_MAX_CONCURRENT_PER_TICKER_SIDE=1 \
 python tools/orb_backtest.py --corpus data --out results/keystone_verify \
   --year-prefix 20 \
   --tickers AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,ORCL,QQQ,SPY,TSLA
