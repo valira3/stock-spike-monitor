@@ -1386,16 +1386,39 @@ class OrbEngine:
 
     def purge_non_recover_tickets(self) -> dict:
         """v8.3.22 -- nuke every ticket in RiskBook._open_tickets
-        that ISN'T a deterministic `recover-{pid}-{ticker}` id. The
-        only legitimate path that creates uuid-style tickets is
-        `try_admit` during `OrbEngine.try_enter` -- those are
-        ephemeral (released by `on_exit` on close, or by
-        `rollback_admit` when the broker fire fails). If a uuid
-        ticket survives across a Railway redeploy + v8.3.4 rehydrate,
-        it's leaked: the position it represented was never persisted
-        (would have been in executor.positions / tg.positions and
-        re-mirrored as a `recover-*` ticket on boot via v8.3.6) so
-        the ticket has no real position behind it.
+        that doesn't have a `recover-` prefix. The only legitimate
+        path that creates non-`recover-` tickets is `try_admit`
+        during `OrbEngine.try_enter` -- those are ephemeral uuid4().hex
+        ids (released by `on_exit` on close, or by `rollback_admit`
+        when the broker fire fails). If a uuid ticket survives across
+        a Railway redeploy + v8.3.4 rehydrate, it's leaked: the position
+        it represented was never persisted (would have been in
+        executor.positions / tg.positions and re-mirrored as a
+        `recover-*` ticket on boot via v8.3.6) so the ticket has no
+        real position behind it.
+
+        v9.1.140 -- prefix check broadened from `recover-{pid}-` to
+        just `recover-`. Multiple recover-* schemes exist in
+        production (`recover-orphan-{ticker}-{pid}` from V9161,
+        `recover-held-{ticker}-{pid}` from V9139, `recover-inject-...`,
+        AND `recover-{original_tid}` from V834-PERSIST section G).
+        The old `recover-{pid}-` check only matched
+        `recover-{pid}-{ticker}` (which nobody actually creates) and
+        purged the V834-PERSIST `recover-{original_uuid}` tickets that
+        ARE the canonical post-rehydrate state. The 2026-05-20 NVDA
+        phantom (`/api/state.positions ∋ NVDA`, `RiskBook ∌ NVDA`)
+        was caused exactly by this: V834-PERSIST restored NVDA with
+        `recover-recover-<uuid>` (since the persisted tid already had
+        a `recover-` prefix), V8322 immediately purged it because
+        the id didn't start with `recover-main-`, and V9139-RECOVER
+        then skipped re-injection because the adapter STILL had the
+        position (V8322 only touches RiskBook tickets, not adapter
+        state). Net: no RiskBook ticket, phantom persists. Broadening
+        the prefix preserves every `recover-*` shape while still
+        purging the bare uuid leaks the sweep was designed for.
+        `try_admit` uses `uuid.uuid4().hex` (32 hex chars, no prefix)
+        so accepting any `recover-` is safe -- no legitimate try_admit
+        ticket can collide with that prefix.
 
         Use case: bootstrap. Run ONCE on the first scan cycle after
         ensure_session_started. The v8.3.6 mirror re-adds clean
@@ -1415,7 +1438,7 @@ class OrbEngine:
                 ticket_ids = list(rb._open_tickets.keys())
             cleared = 0
             for tid in ticket_ids:
-                if tid.startswith(f"recover-{pid}-"):
+                if tid.startswith("recover-"):
                     continue
                 # Anything else is uuid (try_admit) -- orphan leftover.
                 with rb._lock:
