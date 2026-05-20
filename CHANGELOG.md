@@ -4,6 +4,42 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.141 (2026-05-20) — V8322 position-aware purge
+
+Follow-up to v9.1.140. After the prefix broaden landed and Railway
+booted v9.1.140, monitor flipped the phantom CRIT from
+`open_count=0` to `open_count=2` for Main NVDA — a different shape
+of the same `no_phantom_positions` invariant. Root cause: the
+prefix broaden also preserved `apply_loaded_state` section C's
+restored tickets (which, after one round-trip through
+`dump_state_to_disk`, also start with `recover-`), so each held
+position now carried *two* RiskBook tickets — one from section C
+(no backing adapter position), one from section G (the canonical
+mirror of `adapter._open_positions`). Risk over-counted on every
+boot.
+
+**Fix:** `OrbEngine.purge_non_recover_tickets(adapters=...)` now
+purges any ticket without a matching `adapter._open_positions[tid]`
+entry. The new invariant is "every RiskBook ticket has a backing
+adapter position" — independent of prefix. Section C duplicates
+(no backing position) get purged; section G mirrors stay (they ARE
+the adapter positions).
+
+Backwards compatibility: when `adapters` is omitted, the
+v9.1.140 prefix-only behavior is preserved. Unit tests in
+`test_orb_uuid_ticket_purge.py` exercise that path unchanged.
+
+**Forensic:** same `[V8322-UUID-PURGE]` log line. Expect counts to
+match `len(section_C_loaded) - len(section_G_kept)` per pid on
+boot. After EOD on a clean session, expect `{}`.
+
+**Tests:**
+- `test_orb_uuid_ticket_purge.py` — added 4 cases for the
+  adapter-aware path (position-backed kept, no-position purged,
+  mixed double-load section C+G, fallback when adapter is None)
+
+---
+
 ## v9.1.140 (2026-05-20) — V8322 purges V834-PERSIST recover tickets
 
 `OrbEngine.purge_non_recover_tickets()` matched only

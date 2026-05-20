@@ -198,3 +198,107 @@ class TestPurgeNonRecoverTickets:
         with rb._lock:
             assert "recover-abc123def456uuid" in rb._open_tickets
             assert "abc123def456uuid" not in rb._open_tickets
+
+
+class _FakeAdapter:
+    """Stand-in for `orb.live_adapter.LiveAdapter` exposing only the
+    `_open_positions` dict that V8322 inspects in adapter-aware mode."""
+
+    def __init__(self, tids):
+        self._open_positions = {tid: object() for tid in tids}
+
+
+class _FakeAdapterRegistry:
+    """Stand-in for `orb.live_adapter.LiveAdapters` with a `.get(pid)`."""
+
+    def __init__(self, by_pid):
+        self._by_pid = dict(by_pid)
+
+    def get(self, pid):
+        return self._by_pid.get(pid)
+
+
+class TestPurgePositionAware:
+    """v9.1.141 -- adapter-aware mode tests. When the caller passes
+    `adapters`, V8322's invariant flips from prefix-matching to
+    "ticket must have a backing position". This catches the
+    section-C / section-G double-load case that v9.1.140 could not."""
+
+    def test_backed_ticket_kept_regardless_of_prefix(self):
+        """A bare uuid ticket WITH a matching adapter position must
+        survive when the adapter-aware path is active. It represents
+        a real position whose ticket happens not to carry a recover-
+        prefix (e.g. fresh try_admit on the current session)."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _insert_ticket(eng, "main", "live_uuid_no_prefix", risk=180, notional=72000)
+        adapters = _FakeAdapterRegistry({
+            "main": _FakeAdapter(["live_uuid_no_prefix"]),
+        })
+        out = eng.purge_non_recover_tickets(adapters=adapters)
+        assert out == {}
+        rb = eng._risk.get("main")
+        assert rb.open_count == 1
+        assert rb.open_notional == pytest.approx(72000.0)
+
+    def test_recover_ticket_without_position_purged(self):
+        """A recover- prefixed ticket without a matching adapter
+        position is still an orphan -- purge it. This is the bug
+        v9.1.140 introduced: section C duplicates that happen to
+        start with `recover-` survived the prefix-only check."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _insert_ticket(eng, "main", "recover-orphan-no-position", risk=200, notional=80000)
+        adapters = _FakeAdapterRegistry({
+            "main": _FakeAdapter([]),  # adapter has zero positions
+        })
+        out = eng.purge_non_recover_tickets(adapters=adapters)
+        assert out == {"main": 1}
+        rb = eng._risk.get("main")
+        assert rb.open_count == 0
+        assert rb.open_risk == pytest.approx(0.0)
+
+    def test_section_c_purged_section_g_kept_with_adapter(self):
+        """The exact post-rehydrate shape that produced the
+        2026-05-20 `open_count=2` CRIT.
+
+        Pre-state: 2 tickets for NVDA -- `recover-<uuid>` (section C
+        from prior boot's persisted open_tickets) AND
+        `recover-recover-<uuid>` (section G's wrap of the same
+        persisted tid, which IS the adapter's keyed position).
+
+        Adapter has 1 position, keyed by section G's
+        `recover-recover-<uuid>`. V8322 must purge the section C
+        ticket (no position backing) and keep the section G ticket."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        # Section C, no adapter backing.
+        _insert_ticket(eng, "main", "recover-abc123", risk=140, notional=77000)
+        # Section G, mirrors adapter position.
+        _insert_ticket(eng, "main", "recover-recover-abc123", risk=140, notional=77000)
+        rb = eng._risk.get("main")
+        assert rb.open_count == 2
+        assert rb.open_risk == pytest.approx(280.0)
+        adapters = _FakeAdapterRegistry({
+            "main": _FakeAdapter(["recover-recover-abc123"]),
+        })
+        out = eng.purge_non_recover_tickets(adapters=adapters)
+        assert out == {"main": 1}
+        assert rb.open_count == 1
+        assert rb.open_risk == pytest.approx(140.0)
+        with rb._lock:
+            assert "recover-recover-abc123" in rb._open_tickets
+            assert "recover-abc123" not in rb._open_tickets
+
+    def test_adapter_none_falls_back_to_prefix_only(self):
+        """When `adapters` is None (legacy callers / unit tests that
+        haven't migrated), the v9.1.140 prefix-only contract holds.
+        This keeps the existing test suite + any out-of-tree callers
+        working without modification."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _insert_ticket(eng, "main", "recover-keep-me", risk=100, notional=50000)
+        _insert_ticket(eng, "main", "bare_uuid_orphan", risk=110, notional=44000)
+        out = eng.purge_non_recover_tickets(adapters=None)
+        assert out == {"main": 1}
+        rb = eng._risk.get("main")
+        assert rb.open_count == 1
+        with rb._lock:
+            assert "recover-keep-me" in rb._open_tickets
+            assert "bare_uuid_orphan" not in rb._open_tickets
