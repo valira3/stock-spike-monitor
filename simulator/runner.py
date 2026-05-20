@@ -178,17 +178,29 @@ class SimulatorRunner:
         for k, v in self.scenario.get("config_overrides", {}).items():
             os.environ[k] = str(v)
         os.environ.setdefault("SIMULATOR_MODE", "1")
-        # Force in-process state -- no /data volume writes.
-        os.environ.setdefault("TG_DATA_ROOT", "/tmp/simulator_data")
-        os.makedirs(os.environ["TG_DATA_ROOT"], exist_ok=True)
-        # Pin orb_state persistence inside TG_DATA_ROOT so a stale
-        # ./orb_state_<date>.json in the repo root doesn't poison a
-        # clean run (the bot writes there when PAPER_STATE_PATH unset).
-        _tg_root = os.environ["TG_DATA_ROOT"]
-        os.environ.setdefault("PAPER_STATE_PATH",
-                              os.path.join(_tg_root, "paper_state.json"))
-        os.environ.setdefault("ORB_STATE_PERSIST_PATH",
-                              os.path.join(_tg_root, "orb_state_{date}.json"))
+        # Force in-process state -- no /data volume writes. Per-day +
+        # per-PID subdirectory so concurrent workers in the same batch
+        # never share trade_log.jsonl / paper_state.json / orb_state_*.json.
+        # The pre-2026-05-20 design used one shared /tmp/simulator_data
+        # which produced cross-day P&L contamination when multiple
+        # workers wrote to the same trade_log.jsonl at once.
+        _sim_base = os.environ.pop("TG_DATA_ROOT", None) or "/tmp/simulator_data"
+        _scenario_date = self.scenario.get("date", "no-date")
+        _isolated_root = os.path.join(
+            _sim_base, f"{_scenario_date}-pid{os.getpid()}"
+        )
+        os.environ["TG_DATA_ROOT"] = _isolated_root
+        os.makedirs(_isolated_root, exist_ok=True)
+        _tg_root = _isolated_root
+        # Always overwrite PAPER_STATE_PATH + ORB_STATE_PERSIST_PATH +
+        # TRADE_LOG_PATH so they point INSIDE this run's isolated root.
+        # (setdefault on the parent path was the old bug: once the env
+        # var was set in worker 1, worker 2's setdefault was a no-op.)
+        os.environ["PAPER_STATE_PATH"] = os.path.join(_tg_root, "paper_state.json")
+        os.environ["ORB_STATE_PERSIST_PATH"] = os.path.join(
+            _tg_root, "orb_state_{date}.json"
+        )
+        os.environ["TRADE_LOG_PATH"] = os.path.join(_tg_root, "trade_log.jsonl")
         # Production env stubs required by trade_genius bootstrap.
         # The scan_loop driver path imports trade_genius in-process and
         # the import-time checks (SSM_SMOKE_TEST, FMP_API_KEY, etc.)
