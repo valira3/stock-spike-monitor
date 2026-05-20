@@ -893,6 +893,55 @@ _RISK_HIGH_USD = 2500.0  # above this = stop too loose or oversized
 _COOLDOWN_MIN = 10  # sym-10m cooldown (ORB_POST_TRADE_COOLDOWN_MIN=10, deployed v9.1.111)
 
 
+def _build_currently_open_set(raw: dict[str, Any]) -> set[tuple[str, str]]:
+    """v9.1.139 -- compute the set of (ticker, side) tuples currently open
+    across Main + Val + Gene from a fetched `raw` dict.
+
+    Used by checks that need to filter out CLOSED historical trades from
+    today's trade_log surface (e.g. risk_sizing, atr_stop). On closed
+    trades, the original entry-row data is historical fact and there's
+    no operator action available.
+
+    Handles all three production shapes for `state.positions` /
+    `state.short_positions`:
+      - dict {ticker: meta}  (some legacy endpoints)
+      - list [{...}, {...}]  (current /api/state)
+      - None                  (no positions field at all)
+    """
+    state = raw.get("/api/state") or {}
+
+    def _yield_main(field, default_side):
+        if not field:
+            return
+        if isinstance(field, dict):
+            for tk in field.keys():
+                yield (str(tk).upper(), default_side)
+        elif isinstance(field, list):
+            for p in field:
+                if not isinstance(p, dict):
+                    continue
+                tk = (p.get("ticker") or p.get("symbol") or "").upper()
+                side = (p.get("side") or default_side).upper()
+                if tk and side in ("LONG", "SHORT"):
+                    yield (tk, side)
+
+    out: set[tuple[str, str]] = set()
+    for t in _yield_main(state.get("positions"), "LONG"):
+        out.add(t)
+    for t in _yield_main(state.get("short_positions"), "SHORT"):
+        out.add(t)
+    for pid_key in ("/api/executor/val", "/api/executor/gene"):
+        ex = raw.get(pid_key) or {}
+        for p in (ex.get("positions") or []):
+            if not isinstance(p, dict):
+                continue
+            sym = (p.get("symbol") or p.get("ticker") or "").upper()
+            side = (p.get("side") or "").upper()
+            if sym and side in ("LONG", "SHORT"):
+                out.add((sym, side))
+    return out
+
+
 def _parse_entry_min(entry_time: str) -> int | None:
     """Parse 'HH:MM:SS' entry_time into minutes-past-midnight. Returns None on failure."""
     try:
@@ -989,12 +1038,22 @@ def checks_trade_log(raw: dict[str, Any]) -> list[Check]:
     # ------------------------------------------------------------------ #
     # 2. Risk per trade sizing                                            #
     # ------------------------------------------------------------------ #
+    # v9.1.139: skip CLOSED positions. The risk_dollars on a closed entry
+    # row is historical fact and nothing actionable can be done once the
+    # position has exited. The 2026-05-20 ORCL $96 incident sent a fresh
+    # Telegram alert every 5-min monitor cycle for hours after the
+    # 11:18 ET close. Filter by `currently_open` (same set the atr_stop
+    # check uses) so closed trades drop out of the warning surface.
+    _trade_log_open = _build_currently_open_set(raw)
     risk_issues: list[str] = []
     for t in today:
         ep = float(t.get("entry_price") or 0)
         stop = float(t.get("entry_stop") or 0)
         sh = float(t.get("shares") or 0)
         if not (ep and stop and sh):
+            continue
+        _row_side = (t.get("side") or "").upper()
+        if (str(t.get("ticker","")).upper(), _row_side) not in _trade_log_open:
             continue
         risk = abs(ep - stop) * sh
         if risk < _RISK_LOW_USD:
@@ -1372,20 +1431,9 @@ def checks_market_validation(
     # firing the WARN every 5 min until midnight ET. Once the position is
     # flat, the original stop is historical and nothing actionable can be
     # done. Build the open-set across Main + Val + Gene and filter.
-    currently_open: set[tuple[str, str]] = set()
-    for _tk in (state.get("positions") or {}).keys():
-        currently_open.add((str(_tk).upper(), "LONG"))
-    for _tk in (state.get("short_positions") or {}).keys():
-        currently_open.add((str(_tk).upper(), "SHORT"))
-    for _pid_key in ("/api/executor/val", "/api/executor/gene"):
-        _ex_data = raw.get(_pid_key) or {}
-        for _p in (_ex_data.get("positions") or []):
-            if not isinstance(_p, dict):
-                continue
-            _sym = (_p.get("symbol") or _p.get("ticker") or "").upper()
-            _side = (_p.get("side") or "").upper()
-            if _sym and _side in ("LONG", "SHORT"):
-                currently_open.add((_sym, _side))
+    # v9.1.139: shared helper handles dict/list/None shapes for both
+    # Main positions fields + Val/Gene executor positions.
+    currently_open = _build_currently_open_set(raw)
 
     atr_issues: list[str] = []
     atr_ok_count = 0

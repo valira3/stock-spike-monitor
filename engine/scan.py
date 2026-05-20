@@ -2269,6 +2269,19 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                             )
                         except Exception:
                             pass
+                    else:
+                        # v9.1.139: force-dump persistence so the just-admitted
+                        # RiskBook ticket lands on disk before any restart.
+                        # Closes the 2026-05-20 NVDA window where a restart
+                        # between admit + throttled-dump-tick left RiskBook
+                        # empty but tg.positions populated.
+                        try:
+                            _orb_runtime.persist_engine_state(force=True)
+                        except Exception:
+                            logger.debug(
+                                "[V9139-PERSIST-ADMIT] force-dump after main long admit failed",
+                                exc_info=True,
+                            )
                 else:
                     _fired_other = _v10_dispatch_executor_fire(
                         pid=pid,
@@ -2292,6 +2305,15 @@ def _orb_long_entry(callbacks: EngineCallbacks, tg, ticker: str, bars_for_mtm: d
                             )
                         except Exception:
                             pass
+                    else:
+                        # v9.1.139: force-dump after Val/Gene admit too.
+                        try:
+                            _orb_runtime.persist_engine_state(force=True)
+                        except Exception:
+                            logger.debug(
+                                "[V9139-PERSIST-ADMIT] force-dump after %s long admit failed",
+                                pid, exc_info=True,
+                            )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] long %s portfolio=%s reason=%s",
@@ -2386,6 +2408,15 @@ def _orb_short_entry(
                             )
                         except Exception:
                             pass
+                    else:
+                        # v9.1.139: force-dump persistence (see _orb_long_entry).
+                        try:
+                            _orb_runtime.persist_engine_state(force=True)
+                        except Exception:
+                            logger.debug(
+                                "[V9139-PERSIST-ADMIT] force-dump after main short admit failed",
+                                exc_info=True,
+                            )
                 else:
                     _fired_other_s = _v10_dispatch_executor_fire(
                         pid=pid,
@@ -2406,6 +2437,15 @@ def _orb_short_entry(
                             )
                         except Exception:
                             pass
+                    else:
+                        # v9.1.139: force-dump after Val/Gene short admit.
+                        try:
+                            _orb_runtime.persist_engine_state(force=True)
+                        except Exception:
+                            logger.debug(
+                                "[V9139-PERSIST-ADMIT] force-dump after %s short admit failed",
+                                pid, exc_info=True,
+                            )
             elif result.reason_no and result.reason_no != "no_signal":
                 logger.debug(
                     "[V79-ORB-REJECT] short %s portfolio=%s reason=%s",

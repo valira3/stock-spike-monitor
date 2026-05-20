@@ -484,6 +484,16 @@ def ensure_session_started(
         _inject_orphan_positions()
     except Exception as _oe:
         logger.debug("[V9161-ORPHAN] inject failed: %s", _oe)
+    # v9.1.139 -- auto-recover RiskBook tickets from held tg.positions /
+    # tg.short_positions / executor.positions. Mirrors the V9161 pattern
+    # but pulls source-of-truth from the broker positions themselves
+    # (no env-var bootstrap needed). Closes the 2026-05-20 NVDA window
+    # where a mid-day restart left tg.positions populated but RiskBook
+    # empty, producing the `INVARIANTS/no_phantom_positions` CRIT.
+    try:
+        _recover_riskbook_from_held_positions()
+    except Exception as _re:
+        logger.debug("[V9139-RECOVER] auto-recover failed: %s", _re)
     _record_activity(
         kind="session_start",
         detail="date "
@@ -583,6 +593,133 @@ def _inject_orphan_positions() -> None:
                 logger.warning("[V9161-ORPHAN] failed to inject %s/%r: %s", pid, spec, _e)
 
 
+def _recover_riskbook_from_held_positions() -> None:
+    """v9.1.139 -- after rehydrate, walk broker-held positions and
+    synthesize a recover- RiskBook ticket for any (pid, ticker) that's
+    HELD but missing from the RiskBook.
+
+    Source of truth per pid:
+      - main:       trade_genius.positions + trade_genius.short_positions
+      - val/gene:   executors[pid].positions
+
+    The 2026-05-20 NVDA incident: NVDA was admitted at 10:21 ET, a
+    Railway restart fired before the next throttled persistence dump
+    completed, the restart rehydrated `tg.positions` from
+    `paper_state.json` (a separate file) but NOT the RiskBook ticket
+    (which lives in `/data/orb_state_<date>.json` and hadn't been
+    dumped yet). Result: `tg.positions ∋ NVDA` but `RiskBook ∌ NVDA`,
+    which the monitor flagged as the CRIT `no_phantom_positions`.
+
+    This helper auto-heals that state on every session_started
+    bootstrap. The forensic [V9139-RECOVER] tells you when a position
+    was rescued.
+
+    Idempotent: if the ticker is already tracked in any open ticket
+    for the same pid, skip.
+    """
+    import os as _os
+
+    if _engine is None or _adapters is None:
+        return
+    from orb import risk_book as _rb_mod
+    from orb.exits import make_position as _make_pos
+
+    # Build a map of pid -> list of (ticker, side, entry, stop, shares).
+    held: dict[str, list[tuple[str, str, float, float, int]]] = {pid: [] for pid in _engine.portfolio_ids}
+
+    # Main: read tg.positions (long) + tg.short_positions (short).
+    try:
+        import trade_genius as _tg
+        for ticker, pos in (getattr(_tg, "positions", None) or {}).items():
+            if not isinstance(pos, dict):
+                continue
+            entry = float(pos.get("entry") or pos.get("entry_price") or 0)
+            stop = float(pos.get("entry_stop") or pos.get("stop") or 0)
+            shares = int(pos.get("shares") or 0)
+            if entry > 0 and stop > 0 and shares > 0 and abs(entry - stop) > 0.001:
+                held.setdefault("main", []).append((ticker.upper(), "long", entry, stop, shares))
+        for ticker, pos in (getattr(_tg, "short_positions", None) or {}).items():
+            if not isinstance(pos, dict):
+                continue
+            entry = float(pos.get("entry") or pos.get("entry_price") or 0)
+            stop = float(pos.get("entry_stop") or pos.get("stop") or 0)
+            shares = int(pos.get("shares") or 0)
+            if entry > 0 and stop > 0 and shares > 0 and abs(entry - stop) > 0.001:
+                held.setdefault("main", []).append((ticker.upper(), "short", entry, stop, shares))
+    except Exception as _te:
+        logger.debug("[V9139-RECOVER] main read failed: %s", _te)
+
+    # Val/Gene: read executor.positions dict.
+    try:
+        from executors.bootstrap import get_executor
+
+        for pid in _engine.portfolio_ids:
+            if pid == "main":
+                continue
+            ex = get_executor(pid)
+            if ex is None:
+                continue
+            for ticker, pos in (getattr(ex, "positions", None) or {}).items():
+                if not isinstance(pos, dict):
+                    continue
+                side = str(pos.get("side") or "").lower()
+                if side not in ("long", "short"):
+                    continue
+                entry = float(pos.get("entry_price") or pos.get("entry") or 0)
+                stop = float(pos.get("stop") or pos.get("entry_stop") or 0)
+                qty = int(pos.get("qty") or pos.get("shares") or 0)
+                if entry > 0 and stop > 0 and qty > 0 and abs(entry - stop) > 0.001:
+                    held.setdefault(pid, []).append((ticker.upper(), side, entry, stop, qty))
+    except Exception as _ee:
+        logger.debug("[V9139-RECOVER] executor read failed: %s", _ee)
+
+    # For each pid, synthesize recover- tickets for any held position
+    # not currently tracked in the RiskBook.
+    rr = float(getattr(_engine.cfg, "rr", 2.5) or 2.5)
+    for pid, items in held.items():
+        if not items:
+            continue
+        adapter = _adapters.get(pid)
+        rb = _engine._risk.get(pid)
+        if adapter is None or rb is None:
+            continue
+        # Build set of tickers ALREADY tracked in this RiskBook (any ticket).
+        tracked_tickers = {p.ticker.upper() for p in adapter._open_positions.values()}
+        for ticker, side, entry, stop, shares in items:
+            if ticker in tracked_tickers:
+                logger.debug("[V9139-RECOVER] %s/%s already tracked, skipping", pid, ticker)
+                continue
+            try:
+                recover_tid = f"recover-held-{ticker}-{pid}"
+                pos = _make_pos(
+                    portfolio_id=pid,
+                    ticker=ticker,
+                    side=side,
+                    entry_price=entry,
+                    stop=stop,
+                    rr=rr,
+                    shares=shares,
+                    risk_ticket_id=recover_tid,
+                )
+                with rb._lock:
+                    rb._open_tickets[recover_tid] = _rb_mod._Ticket(
+                        ticket_id=recover_tid,
+                        risk_dollars=pos.risk_dollars,
+                        notional=pos.notional,
+                    )
+                    rb._open_risk += pos.risk_dollars
+                    rb._open_notional += pos.notional
+                adapter._open_positions[recover_tid] = pos
+                adapter._ticker_to_ticket[ticker] = recover_tid
+                logger.warning(
+                    "[V9139-RECOVER] synthesized ticket %s/%s %s entry=%.4f stop=%.4f shares=%d tid=%s "
+                    "(tg.positions had this but RiskBook was empty -- closing the post-restart gap)",
+                    pid, ticker, side, entry, stop, shares, recover_tid,
+                )
+            except Exception as _ie:
+                logger.warning("[V9139-RECOVER] failed for %s/%s: %s", pid, ticker, _ie)
+
+
 # v8.3.4 -- engine state persistence wrappers.
 #
 # Why: prior to v8.3.4, every in-memory engine artifact (OR windows,
@@ -678,7 +815,7 @@ def _try_rehydrate_engine_state(date_iso: str) -> dict:
     return counters
 
 
-def persist_engine_state() -> bool:
+def persist_engine_state(force: bool = False) -> bool:
     """v9.1.8 -- public hook to dump the live engine state to disk.
 
     Called by the scan loop (engine/scan.py:scan_loop) once per cycle
@@ -691,12 +828,22 @@ def persist_engine_state() -> bool:
     write the same payload 60x/min. Fail-soft: never raises.
     Returns True on a successful write, False otherwise (including
     when throttled).
+
+    v9.1.139: `force=True` bypasses the throttle. Callers should set
+    this after a stateful event that MUST be persisted before a
+    potential restart -- e.g. a RiskBook admit. The 2026-05-20 NVDA
+    incident: position admitted at 10:21 ET, a Railway restart fired
+    before the next scheduled dump (throttle window), and the restart
+    rehydrated `tg.positions` from `paper_state.json` but NOT the
+    RiskBook ticket -- leaving the bot in a `tg.positions ∋ NVDA`
+    but `RiskBook ∌ NVDA` state. Force-dumping at admit time closes
+    that window.
     """
     global _persist_last_iso
     if _engine is None or not _session_date:
         return False
     now_iso = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
-    if _persist_last_iso:
+    if not force and _persist_last_iso:
         try:
             elapsed = (
                 _datetime.datetime.fromisoformat(now_iso)
