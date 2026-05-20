@@ -3,11 +3,17 @@
 Cross-sectional last-30-min reversal on a fenced subset of mega-caps.
 Implements the R17 backtest finding (docs/r17_afternoon_backtest_report.md):
 
-  Universe (default):        ORCL, AAPL, MSFT, AVGO, NFLX
-  Long-side eligible:        ORCL, AAPL, MSFT, AVGO
-  Short-side eligible:       ORCL, NFLX, AAPL, MSFT
-  Entry:                     15:30 ET (signal at this minute's start)
-  Exit:                      15:59 ET (close of last regular bar)
+  Universe (default):        ORCL, AAPL, MSFT, AVGO, NFLX, TSLA
+                             (TSLA re-added v9.1.113, +$3,930/yr)
+  Long-side eligible:        ORCL, AAPL, MSFT, AVGO, TSLA
+  Short-side eligible:       ORCL, NFLX, AAPL, MSFT, TSLA
+  Entry:                     15:30 ET (signal at this minute's start);
+                             cutoff: no new admissions past 15:50 ET.
+  Exit:                      15:56 ET (default; v9.1.125 -- gives a
+                             4-min buffer for the close print to land
+                             before the 15:57 broker safety-net flatten
+                             at EOD_FLUSH_ET. Was 15:59 in the R17
+                             paper; 15:56 wins +$942/yr on the corpus).
   Sizing:                    35% notional per leg, fixed
   Selection:                 top-1 long (lowest ROD3) + top-1 short
                              (highest ROD3) of the eligible per-side

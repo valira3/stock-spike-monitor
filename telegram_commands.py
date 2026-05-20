@@ -201,6 +201,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /version     Release notes\n"
         "\n"
         "Admin\n"
+        "  /close TICK  Force close (all)\n"
         "  /reset       Reset portfolio\n"
         "  /ticker list       Show list\n"
         "  /ticker add SYM    Track\n"

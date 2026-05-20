@@ -147,5 +147,10 @@ ENV PAPER_STATE_PATH=/data/paper_state.json
 ENV PAPER_LOG_PATH=/data/investment.log
 ENV TICKERS_FILE=/data/tickers.json
 ENV STATE_DB_PATH=/data/state.db
+# v10.0.1 -- pin trade log under /data so it survives Railway redeploys.
+# Without this, orb/trade_log.py falls back to CWD ("trade_log.jsonl")
+# and writes to the container root, wiping the closed-trade history on
+# every redeploy. Railway dashboard env can still override.
+ENV TRADE_LOG_PATH=/data/trade_log.jsonl
 
 CMD ["python", "trade_genius.py"]
