@@ -10,6 +10,8 @@ Newest entries at the top. Lead with the rule. Follow with the why.
 
 ## 2026-05-20
 
+- **`find /tmp/simulator_data -delete` will follow the `bars/` symlink and wipe the corpus.** The runner's `_ensure_data_root_layout` creates `<TG_DATA_ROOT>/bars` as a symlink to `data_pm_universe/`. `find -delete` traverses INTO that symlink during the depth-first walk and `unlink()`s every JSONL inside the target. On 2026-05-20 this deleted 258 of 343 corpus days; recovery via `tools/restore_corpus_from_cache.py` reconstructed them from the `.bt_cache/<date>/<ticker>.pkl` files. **Always use** `rm -rf /tmp/simulator_data && mkdir -p /tmp/simulator_data` (rm doesn't descend into symlinks for cleanup) **or** delete the `bars` symlink FIRST: `find /tmp/simulator_data -type l -delete; rm -rf /tmp/simulator_data; mkdir -p /tmp/simulator_data`.
+
 - **Bar/corpus data lives on the Railway `/data` volume, never in git.** `data/20YY-MM-DD/`, `data/.cache_v2/`, `data/bars/`, `data/dynamic_universe/`, `data/tick-data/` are all gitignored. Before May 2026, ~6,600 corpus files (~2.5 GB) had been accidentally committed during research; they were untracked en masse. If you see new files under `data/2025-*/` or `data/2026-*/` in `git status`, do **not** commit them.
 
 - **The `Dockerfile` has explicit per-file `COPY` lines and drifts out of sync when modules are deleted.** Any time you delete a top-level `.py` (e.g. `market_brief.py`, `volume_bucket.py`) or a package (`earnings_watcher/`), grep the Dockerfile for matching `COPY` lines and remove them — otherwise `docker-boot` CI fails with `failed to calculate checksum of ref ... not found`.
