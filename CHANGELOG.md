@@ -4,6 +4,37 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.138 (2026-05-20) — /close on Val/Gene executor bots
+
+v9.1.135 added `/close &lt;TICKER&gt;` to the MAIN bot (`TELEGRAM_TOKEN`)
+but the Val/Gene executors run their OWN Telegram bots (`VAL_TELEGRAM_TG`
+/ `GENE_TELEGRAM_TG`, e.g. `@tgval3_bot`) with a separate command set.
+When the operator typed `/close` on the Val live-account bot, nothing
+happened because the handler wasn't registered there.
+
+Fix: add `cmd_close` to `executors/base.py:TradeGeniusBase` so every
+executor bot (Val, Gene, future) gets the command. Per-portfolio
+scoped: each executor bot only sees / closes positions on its own
+Alpaca account (the bot you DM is the bot that fires the close).
+
+Dispatches via the executor's existing `_close_position_idempotent`
+with `reason="manual_close"` -- same code path as legacy stop-out /
+EOD close, so the spec-mandated order type fires (MARKET for
+manual_close per `broker.order_types.order_type_for_reason`).
+
+Owner-gated globally via the executor's `_auth_guard` (group=-1)
+against `TRADEGENIUS_OWNER_IDS`. No per-handler check needed.
+
+**Forensic**: `[V79-MANUAL-CLOSE]` log line per close (warning level,
+includes ticker / side / qty / operator_id).
+
+**Menu**: `/close` now appears in the `TG_MENU_COMMANDS` slash-menu
+for the executor bots.
+
+**Files**: `executors/base.py`, this CHANGELOG, version bumps.
+
+---
+
 ## v9.1.137 (2026-05-19) — EOD dedup top_n&gt;1 hardening
 
 Forward-proofs the v9.1.133 same-ticker dedup against the edge case

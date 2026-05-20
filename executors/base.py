@@ -3118,6 +3118,73 @@ class TradeGeniusBase:
                 lines.append(f"  alpaca error: {e}")
         await update.message.reply_text("\n".join(lines))
 
+    async def cmd_close(self, update, context):
+        """v9.1.138 -- close a single position on THIS executor's portfolio.
+
+        Usage: /close <TICKER>
+
+        Owner-gated globally by `_auth_guard` (group=-1). Per-portfolio
+        scoped: each executor bot (Val, Gene) only sees / closes positions
+        for its own Alpaca account. Use /halt to flatten everything.
+
+        Dispatches via `_close_position_idempotent` with reason
+        "manual_close" -- same code path as legacy stop-out / EOD close,
+        which picks the spec-mandated order type (MARKET for manual_close
+        per broker.order_types.order_type_for_reason).
+
+        Logs [V79-MANUAL-CLOSE] forensic per close. Replies with the
+        result so the operator sees confirmation in the same chat.
+
+        Motivation: 2026-05-19 Val TSLA SHORT case -- positions sometimes
+        slip past every automated lever (R32 reversal-circuit included).
+        Operator override is the only safe intervention for the edge
+        cases; /close lets the operator fire it from the SAME bot that
+        sends the position alerts (no app-switching).
+        """
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /close <TICKER>")
+            return
+        ticker = args[0].upper().strip()
+        if not ticker or not ticker.isalnum():
+            await update.message.reply_text(f"\u26a0\ufe0f {self.NAME}: invalid ticker symbol")
+            return
+        client = self._ensure_client()
+        if client is None:
+            await update.message.reply_text(f"\u274c {self.NAME}: no alpaca client")
+            return
+        pos = self.positions.get(ticker) or {}
+        side = pos.get("side")
+        qty = int(pos.get("qty") or 0)
+        operator_id = update.effective_user.id if update.effective_user else "?"
+        if qty <= 0 or side not in ("LONG", "SHORT"):
+            await update.message.reply_text(
+                f"\u2139 {self.NAME}: no open {ticker} position on this account."
+            )
+            logger.info(
+                "[V79-MANUAL-CLOSE] %s/%s no_open_position operator=%s",
+                self.NAME, ticker, operator_id,
+            )
+            return
+        try:
+            self._close_position_idempotent(
+                client, ticker, f"{self.NAME} {self.mode}", reason="manual_close",
+            )
+            await update.message.reply_text(
+                f"\u26a0\ufe0f {self.NAME}: manual close fired -- {side} {qty} sh {ticker}"
+            )
+            logger.warning(
+                "[V79-MANUAL-CLOSE] %s/%s %s qty=%d reason=telegram_manual_close operator=%s",
+                self.NAME, ticker, side, qty, operator_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "[V79-MANUAL-CLOSE] %s/%s close raised", self.NAME, ticker,
+            )
+            await update.message.reply_text(
+                f"\u274c {self.NAME}: close {ticker} failed: {type(e).__name__}: {str(e)[:120]}"
+            )
+
     async def cmd_halt(self, update, context):
         """Emergency close_all_positions."""
         client = self._ensure_client()
@@ -3267,6 +3334,7 @@ class TradeGeniusBase:
         ("cash", "Account balance snapshot"),
         ("signal", "Last signal from main"),
         ("mode", "Show or change mode (paper / live)"),
+        ("close", "Close a position: /close TICKER"),
         ("halt", "Emergency halt \u2014 flatten all"),
         ("ping", "Liveness check"),
         ("version", "Show running version"),
@@ -3314,6 +3382,7 @@ class TradeGeniusBase:
         app.add_handler(CommandHandler("orders", self.cmd_orders))
         app.add_handler(CommandHandler("cash", self.cmd_cash))
         app.add_handler(CommandHandler("signal", self.cmd_signal))
+        app.add_handler(CommandHandler("close", self.cmd_close))
         app.add_handler(CommandHandler("halt", self.cmd_halt))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
         app.add_handler(CommandHandler("version", self.cmd_version))
