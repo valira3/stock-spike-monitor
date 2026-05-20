@@ -7,16 +7,19 @@ that every push needs.
 
 Usage:
     python scripts/run_ci.py              # fast checks (pytest + version + em-dash + ruff)
+    python scripts/run_ci.py --wide       # also run pytest tests/ (needs prod deps)
     python scripts/run_ci.py --smoke      # also run python smoke_test.py (31 local tests)
     python scripts/run_ci.py --slow       # include pytest.mark.slow tests
-    python scripts/run_ci.py --all        # fast + smoke + slow
+    python scripts/run_ci.py --all        # fast + wide + smoke + slow
 
 Checks run in order:
-  [1/5] pytest tests/strategy/   (fast, no telegram dep, 231+ tests)
+  [1/5] pytest tests/strategy/   (fast, no telegram dep, 1100+ tests)
   [2/5] BOT_VERSION consistency  (bot_version.py == trade_genius.py == CHANGELOG top)
   [3/5] CURRENT_MAIN_NOTE guard  (leading line must start with vX.Y.Z)
   [4/5] Em-dash literal check    (new .py lines added vs origin/main must not carry U+2014)
   [5/5] ruff check + ruff format --check  (only if ruff is installed)
+  [opt] pytest tests/ (wide)     (top-level suite; needs telegram+alpaca-py+lxml+.env.monitor;
+                                  pass --wide or --all; skipped if deps missing)
   [opt] python smoke_test.py     (31 local smoke tests; pass --smoke or --all)
 
 Sibling local runners:
@@ -131,7 +134,15 @@ def _base_ref() -> str | None:
 
 
 def check_pytest(slow: bool) -> bool:
-    """[1] Run pytest tests/strategy/ (fast lane; no telegram dep)."""
+    """[1] Run pytest tests/strategy/ (fast lane; no telegram dep).
+
+    The fast lane is tests/strategy/ -- pure-Python unit tests that don't
+    need the `telegram` package or live env vars. v10.0.1 broadened the
+    pre-push gate scope, but tests/ (the wider top-level suite) still
+    requires the full prod-dep set (telegram, FMP_API_KEY, alpaca-py,
+    etc.). Operators who have those installed locally can run
+    `pytest tests/` directly; the GHA path is retired (v10.0.1).
+    """
     # Verify pytest is importable before building a full command.
     probe = subprocess.run(
         [sys.executable, "-m", "pytest", "--version"],
@@ -150,6 +161,58 @@ def check_pytest(slow: bool) -> bool:
     if not slow:
         cmd += ["-m", "not slow"]
     # Use pytest-xdist parallelism if available
+    xdist_probe = subprocess.run(
+        [sys.executable, "-c", "import xdist"],
+        cwd=REPO,
+        capture_output=True,
+    )
+    if xdist_probe.returncode == 0:
+        cmd += ["-n", "auto"]
+    proc = _run(cmd)
+    return proc.returncode == 0
+
+
+def check_pytest_wide() -> bool:
+    """[opt] Run pytest tests/ (full top-level suite excluding strategy).
+
+    Requires the production dependency set (telegram, FMP_API_KEY,
+    alpaca-py credentials in .env.monitor, lxml). Skipped gracefully
+    when those aren't available so CI stays green on a slimmer env.
+
+    Toggled by --wide; the post-v10.0.1 cleanup retired 36 legacy test
+    files so this lane now passes cleanly when the env is wired up.
+    """
+    probe = subprocess.run(
+        [sys.executable, "-m", "pytest", "--version"],
+        cwd=REPO,
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        _skip("pytest not installed -- skipping wide lane")
+        return True
+
+    # Sanity-check that the deps trade_genius import needs are reachable.
+    # If not, skip the wide lane with a clear breadcrumb rather than
+    # surfacing a confusing ModuleNotFoundError later.
+    needed = ("telegram", "alpaca", "lxml")
+    missing = []
+    for name in needed:
+        rc = subprocess.run(
+            [sys.executable, "-c", f"import {name}"],
+            cwd=REPO,
+            capture_output=True,
+        )
+        if rc.returncode != 0:
+            missing.append(name)
+    if missing:
+        _skip(f"wide lane skipped -- missing: {', '.join(missing)} (pip install -r requirements.txt)")
+        return True
+
+    cmd = [
+        sys.executable, "-m", "pytest", "tests/",
+        "--ignore=tests/strategy",
+        "-q", "--tb=short",
+    ]
     xdist_probe = subprocess.run(
         [sys.executable, "-c", "import xdist"],
         cwd=REPO,
@@ -415,18 +478,28 @@ def main() -> int:
         help="Include pytest.mark.slow tests (adds ~70s).",
     )
     parser.add_argument(
+        "--wide",
+        action="store_true",
+        help=(
+            "Also run pytest tests/ (excluding tests/strategy). Needs the "
+            "full prod dep set (telegram, alpaca-py, lxml, .env.monitor). "
+            "Skipped gracefully when deps are missing."
+        ),
+    )
+    parser.add_argument(
         "--all",
         dest="all_checks",
         action="store_true",
-        help="Equivalent to --smoke --slow.",
+        help="Equivalent to --smoke --slow --wide.",
     )
     args = parser.parse_args()
 
     smoke = args.smoke or args.all_checks
     slow = args.slow or args.all_checks
+    wide = args.wide or args.all_checks
 
     total_fast = 5
-    total = total_fast + (1 if smoke else 0)
+    total = total_fast + (1 if smoke else 0) + (1 if wide else 0)
 
     print(f"{BOLD}=== run_ci.py (stock-spike-monitor local CI) ==={RESET}", flush=True)
     if slow:
@@ -469,9 +542,17 @@ def main() -> int:
     if not check_ruff(base_ref):
         failures.append("ruff lint/format")
 
+    # [opt] wide lane
+    next_step = total_fast + 1
+    if wide:
+        _hdr(str(next_step), total, "pytest tests/ (wide lane; needs prod deps)")
+        if not check_pytest_wide():
+            failures.append("pytest tests/ (wide lane)")
+        next_step += 1
+
     # [opt] smoke
     if smoke:
-        _hdr(str(total_fast + 1), total, "python smoke_test.py (31 local tests)")
+        _hdr(str(next_step), total, "python smoke_test.py (31 local tests)")
         if not check_smoke():
             failures.append("smoke_test.py")
 
