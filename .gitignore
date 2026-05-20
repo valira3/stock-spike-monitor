@@ -7,6 +7,7 @@ __pycache__/
 .claude/projects/
 replay_week.html
 data/.bt_cache/
+data/.cache_v2/
 data/ui_audit/
 data/monitor/
 data/snapshots/
@@ -14,8 +15,16 @@ data/snapshots/
 # main does not. Without this rule, a checkout of rth-expand into the working
 # tree shows those dates as untracked, and `git add` sweeps them in (PR #799
 # mishap). Tracked dates already in main keep tracking — gitignore only
-# affects untracked files.
+# affects untracked files. Corpus untracked wholesale on staging on 2026-05-20.
 data/20*/
+data/bars/
+data/dynamic_universe/
+data/tick-data/
+data/tick_cache/
+data/tickers.json
+data/preflight/
+data/earnings_watcher/
+data/trade_log.jsonl
 results/*
 !results/keystone/
 results/keystone/*
