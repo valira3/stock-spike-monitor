@@ -39,12 +39,10 @@ from side import Side, CONFIGS  # noqa: E402
 # front of the v4 entry/close paths and decides when to fire each
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
-import tiger_buffalo_v5 as v5  # noqa: E402
-# v5.10.0/v5.10.1 \u2014 Eye-of-the-Tiger evaluators. v5_10_1_integration is the
-# live-hot-path glue that wires Sections I–VI into check_breakout /
-# manage_positions; eot is the pure-function evaluator surface.
-import eye_of_tiger as eot  # noqa: E402
-import v5_10_1_integration as eot_glue  # noqa: E402
+# v10.0.1 -- eye_of_tiger + v5_10_1_integration imports deleted.
+# Constants + sizing helpers migrated to engine/legacy_constants.py;
+# admission-gate evaluators (Section I, Boundary Hold, Entry-1/2,
+# Volume Bucket) are gone with the legacy permit gates.
 # v5.1.2 \u2014 forensic capture: bar archive + indicators.
 import indicators  # noqa: E402
 import bar_archive  # noqa: E402
@@ -63,25 +61,6 @@ import telegram_ui  # noqa: E402
 # v5.11.2 \u2014 broker/ package extraction (PR1: stops). Same rationale \u2014
 # missing Dockerfile COPY surfaces as ImportError at boot.
 import broker  # noqa: E402
-
-# v6.16.1 \u2014 earnings_watcher: pre/post-market DMI runaway-capture engine.
-# Gated behind EARNINGS_WATCHER_ENABLED=1 env var. The RTH core is NOT
-# touched; this is a pure add-on. Import failures are caught and printed
-# to stderr (logger is not yet initialized at this point in the module);
-# the flag is set to False so the bot continues running without it.
-# v6.16.2 hotfix: switched logger.info/error to sys.stderr prints to fix
-# NameError observed on deploy 99eb3bdb when the flag was set to 1.
-import sys as _ew_sys  # noqa: E402
-EARNINGS_WATCHER_ENABLED = os.getenv("EARNINGS_WATCHER_ENABLED", "0") == "1"
-_ew_runner = None
-if EARNINGS_WATCHER_ENABLED:
-    try:
-        from earnings_watcher import runner as _ew_runner
-        print("[EW] earnings_watcher enabled (v6.18.0)", file=_ew_sys.stderr, flush=True)
-    except Exception as _ew_exc:
-        print("[EW] import failed, disabling: %s" % _ew_exc, file=_ew_sys.stderr, flush=True)
-        EARNINGS_WATCHER_ENABLED = False
-        _ew_runner = None
 
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler,
@@ -109,7 +88,7 @@ TRADEGENIUS_OWNER_IDS   = {
 }
 
 BOT_NAME    = "TradeGenius"
-BOT_VERSION = "9.1.137"
+BOT_VERSION = "10.0.0"
 
 # Release-note surface: CURRENT_MAIN_NOTE describes the release actively
 # being deployed; MAIN_RELEASE_NOTE aliases it for /version. Full per-release
@@ -152,7 +131,11 @@ def _derive_current_main_note() -> str:
         if not changelog.is_file():
             return fallback
         import re as _re
-        heading_re = _re.compile(r"^##\s+v(\S+)\s*\([^)]*\)\s*--\s*(.+?)\s*$")
+        # v10.0.1 -- accept both literal "--" and real em-dash since
+        # CHANGELOG.md style allows the latter (CLAUDE.md exception).
+        heading_re = _re.compile(
+            "^##\\s+v(\\S+)\\s*\\([^)]*\\)\\s*(?:--|" + "\u2014" + ")\\s*(.+?)\\s*$"
+        )
         lines = changelog.read_text().splitlines()
         i = 0
         title = None
@@ -273,175 +256,99 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# SIGNAL BUS (v4.0.0-alpha)
+# SIGNAL BUS (v4.0.0-alpha; carved out to orb/signal_bus.py in v10.0.1)
 # ============================================================
-# Main's paper book is the brain; executor bots (TradeGeniusVal, and
-# in v4.0.0-beta TradeGeniusGene) subscribe to this bus and mirror
-# signals onto Alpaca. Dispatch is async fire-and-forget: each listener
-# runs in its own daemon thread so the main loop never blocks on an
-# Alpaca round-trip and a single bad listener can't take the bus down.
-#
-# Event schema (dict):
-#   {
-#     "kind": "ENTRY_LONG" | "ENTRY_SHORT" | "EXIT_LONG" | "EXIT_SHORT" | "EOD_CLOSE_ALL",
-#     "ticker": "AAPL",               # omitted on EOD_CLOSE_ALL
-#     "price": 175.42,                # main's reference price
-#     "reason": "BREAKOUT" | "STOP" | "TRAIL" | "RED_CANDLE" | ... ,
-#     "timestamp_utc": "2026-04-24T13:45:12Z",
-#     "main_shares": 57,              # audit-only: shares main paper book traded
-#   }
-_signal_listeners: list = []
-_signal_listeners_lock = threading.Lock()
+# Lives in orb.signal_bus now. trade_genius.py re-exports the public
+# API + keeps `last_signal` as a module-level variable here so the
+# dashboard's `getattr(trade_genius, "last_signal")` and the existing
+# tests' direct writes (`tg.last_signal = X`) keep working unchanged.
+# Event schema unchanged. See orb/signal_bus.py for full docstring.
+from orb.signal_bus import (
+    _signal_listeners,
+    _signal_listeners_lock,
+    signal_bus_status,
+    register_signal_listener,
+    _emit_signal,
+    set_last_signal_setter,
+)
 
-
-# v7.90.0 -- public read of the signal-bus state, surfaced on
-# /api/state.signal_bus so the dashboard monitor can assert during
-# RTH that at least one executor has subscribed. Before v7.90.0 the
-# bus was opaque from outside the process and a Val/Gene listener
-# that failed to register was undetectable until trade-count
-# divergence (the val_gene_trades_match_main invariant) flagged it
-# hours later.
-def signal_bus_status() -> dict:
-    """Return a snapshot of registered signal-bus listeners.
-
-    Shape: {"n_listeners": int, "names": [str, ...]}.
-
-    v8.3.19 -- names use the RUNTIME instance class name, not the
-    Python `__qualname__` (which reflects where the method is
-    DEFINED, not its bound `self.__class__`). Pre-v8.3.19,
-    TradeGeniusVal._on_signal -> `__qualname__` was
-    "TradeGeniusBase._on_signal" (inherited) which broke the
-    v8.3.13 subscription probe: it matched "TradeGeniusBase." for
-    BOTH val and gene and surfaced both as `subscribed=false` even
-    when one or both were actually listening.
-
-    Now we extract `type(fn.__self__).__name__` when the listener is
-    a bound method, falling back to qualname for free-function
-    listeners (tests / synthetic harness use those).
-    """
-    with _signal_listeners_lock:
-        listeners = list(_signal_listeners)
-    names: list[str] = []
-    for fn in listeners:
-        try:
-            inst = getattr(fn, "__self__", None)
-            if inst is not None:
-                cls_name = type(inst).__name__
-                meth_name = getattr(fn, "__name__", "_on_signal")
-                names.append(f"{cls_name}.{meth_name}")
-            else:
-                names.append(getattr(fn, "__qualname__", repr(fn)))
-        except Exception:
-            names.append(repr(fn))
-    return {"n_listeners": len(names), "names": names}
-
-# v5.5.7 \u2014 Most recent signal emitted by the main paper book. The
-# per-executor TradeGeniusBase already keeps its own ``last_signal`` for
-# the Val/Gene exec panels; this module-level mirror is the equivalent
-# for the Main (internal paper) tab so the dashboard's /api/state can
-# surface it the same way as the executor payloads.
+# Canonical mirror. orb.signal_bus._emit_signal updates this via the
+# setter wired below.
 last_signal: "dict | None" = None
 
 
-def register_signal_listener(fn):
-    """Subscribe a callable fn(event: dict) -> None to the signal bus.
-
-    Idempotent: re-registering the same callable is a no-op. Prevents
-    double-execution of ENTRY/EXIT against Alpaca when an executor's
-    ``start()`` is called more than once (e.g. supervisor re-spawn, a
-    module reload during hot-patching, or a paranoid init-retry path).
-    The read-test-append is held under ``_signal_listeners_lock`` so
-    two concurrent ``start()`` calls cannot both observe "not present"
-    and both append the same callable.
-    """
-    with _signal_listeners_lock:
-        if fn in _signal_listeners:
-            logger.info(
-                "signal_bus: listener already registered, skipping (%s) total=%d",
-                getattr(fn, "__qualname__", repr(fn)), len(_signal_listeners),
-            )
-            return
-        _signal_listeners.append(fn)
-        total = len(_signal_listeners)
-    logger.info(
-        "signal_bus: listener registered (%s) total=%d",
-        getattr(fn, "__qualname__", repr(fn)), total,
-    )
-
-
-def _emit_signal(event: dict) -> None:
-    """Fire an event to every listener in its own daemon thread.
-
-    Async fire-and-forget: main's paper book never blocks on Alpaca.
-    Per-listener exceptions are logged but never break the bus.
-
-    v7.85.0 -- emits [SIGNAL-BUS-EMIT] (once per call, with kind+ticker)
-    and [SIGNAL-BUS-DISPATCH] (once per listener) forensic logs so the
-    dashboard monitor's grep can audit "did emit fire?" vs "did
-    dispatch fire?" vs "did the listener's _on_signal run?". Pre-
-    v7.85.0 the bus produced no log on the happy path, only on
-    listener exceptions, making mirror-bus drift undebuggable.
-    """
-    # v5.5.7 \u2014 capture the latest event for the Main-tab LAST SIGNAL
-    # card before dispatching, so even a listener-less moment (or a
-    # crashing listener) still updates what the dashboard renders.
+def _set_last_signal(value):
     global last_signal
-    try:
-        last_signal = {
-            "kind": event.get("kind", ""),
-            "ticker": event.get("ticker", ""),
-            "price": float(event.get("price", 0.0) or 0.0),
-            "reason": event.get("reason", ""),
-            "timestamp_utc": event.get("timestamp_utc", _utc_now_iso()),
-        }
-    except Exception:
-        last_signal = None
+    last_signal = value
 
-    # Snapshot the listener list so a concurrent register/unregister can't
-    # mutate what we iterate. Held under the same lock as registration.
-    with _signal_listeners_lock:
-        listeners = list(_signal_listeners)
-    # v7.85.0 -- one EMIT log per event, INFO level.
-    # v7.90.0 -- escalate to WARNING when listeners=0. The bus has
-    # at least one subscriber in every production configuration
-    # (Val and/or Gene executors register at startup); n_listeners=0
-    # means Main fired a signal into the void and no executor will
-    # mirror it. That is the most common root cause of the
-    # val_gene_trades_match_main dashboard-monitor violation, and
-    # without an explicit WARN it is invisible in log tails until a
-    # trade-count audit catches it.
-    if not listeners:
-        logger.warning(
-            "[SIGNAL-BUS-EMIT-VOID] kind=%s ticker=%s n_listeners=0 "
-            "-- Main emitted a signal but no executor is subscribed",
-            event.get("kind", ""), event.get("ticker", ""),
-        )
-        return
-    logger.info(
-        "[SIGNAL-BUS-EMIT] kind=%s ticker=%s n_listeners=%d",
-        event.get("kind", ""), event.get("ticker", ""), len(listeners),
+
+# Wire the setter at import time so the carved bus can keep this
+# module's last_signal in sync without circular imports.
+set_last_signal_setter(_set_last_signal)
+
+
+# ============================================================
+# TRADE LOG (v3.4.27; carved out to orb/trade_log.py in v10.0.1)
+# ============================================================
+# Implementation lives in orb.trade_log. trade_genius.py re-exports
+# the public API for back-compat with broker/orders.py,
+# telegram_commands.py, and tests that do
+# `from trade_genius import trade_log_append` etc.
+#
+# `_trade_log_last_error` is module-mutable. Module-level __getattr__
+# (PEP 562) proxies reads to orb.trade_log so `getattr(tg,
+# "_trade_log_last_error")` always sees the live value, not a stale
+# snapshot bound at import time.
+from orb.trade_log import (
+    trade_log_append,
+    trade_log_read_tail,
+    _trade_log_snapshot_pos,
+    _trade_log_lock,
+    TRADE_LOG_SCHEMA_VERSION,
+)
+from orb import trade_log as _trade_log_mod
+
+
+# ============================================================
+# 1-MINUTE BAR FETCH (carved out to orb/bar_fetch.py in v10.0.1)
+# ============================================================
+# Alpaca-primary + Yahoo-fallback 1m bar helpers + the per-cycle bar
+# cache + the previous-day-close cache + the one-shot dual-source-failure
+# guard set. Implementation lives in orb.bar_fetch; this re-export keeps
+# every existing tg.fetch_1min_bars / tg._fetch_1min_bars_alpaca /
+# tg._alpaca_data_client / tg._cycle_bar_cache test monkey-patch working
+# unchanged, because trade_genius's `fetch_1min_bars` orchestrator (still
+# in this module, on the telegram-failure-notify boundary) resolves these
+# names via its own globals -- which contain the imported references.
+from orb.bar_fetch import (
+    _alpaca_data_client,
+    _daily_closes_for_sma,
+    _alpaca_pdc,
+    _fetch_1min_bars_alpaca,
+    _fetch_1min_bars_yahoo,
+    _clear_cycle_bar_cache,
+    _cycle_bar_cache,
+    _alpaca_pdc_cache,
+    _dual_source_critical_emitted,
+    YAHOO_HEADERS,
+    YAHOO_TIMEOUT,
+)
+
+
+def __getattr__(name):
+    """PEP 562 module-level __getattr__ for mutable state owned by carved
+    modules. Reads always see the live value.
+
+    Note: tests that ASSIGN to these attributes (e.g.
+    `tg._trade_log_last_error = "boom"`) bind to trade_genius's
+    namespace and won't propagate back to orb.trade_log -- but no
+    production caller assigns to these from outside the owning module.
+    """
+    if name == "_trade_log_last_error":
+        return _trade_log_mod._trade_log_last_error
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
     )
-
-    def _wrap(fn, ev):
-        try:
-            fn(ev)
-        except Exception:
-            logger.exception(
-                "signal_bus: listener %s raised on event %r",
-                getattr(fn, "__qualname__", repr(fn)),
-                ev.get("kind"),
-            )
-
-    for fn in listeners:
-        # v7.85.0 -- one DISPATCH log per listener, before thread start.
-        logger.info(
-            "[SIGNAL-BUS-DISPATCH] kind=%s ticker=%s listener=%s",
-            event.get("kind", ""), event.get("ticker", ""),
-            getattr(fn, "__qualname__", repr(fn)),
-        )
-        threading.Thread(
-            target=_wrap, args=(fn, event), daemon=True,
-        ).start()
 
 
 # ============================================================
@@ -461,105 +368,22 @@ val_executor: "TradeGeniusBase | None" = None
 gene_executor: "TradeGeniusBase | None" = None
 
 
-ET = ZoneInfo("America/New_York")
-CDT = ZoneInfo("America/Chicago")   # user display timezone
-
-
-def _now_et() -> datetime:
-    """Current time in ET \u2014 for market-hour gate logic only."""
-    return datetime.now(timezone.utc).astimezone(ET)
-
-
-def _now_cdt() -> datetime:
-    """Current time in CDT \u2014 for all user-facing display."""
-    return datetime.now(timezone.utc).astimezone(CDT)
-
-
-def _utc_now_iso() -> str:
-    """UTC ISO timestamp string for internal storage."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _to_cdt_hhmm(iso_str: str) -> str:
-    """Decode a stored ISO timestamp to 'HH:MM CDT' for display.
-    Handles both UTC-stored (new) and ET-stored (legacy) strings."""
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ET)   # legacy ET-stored fallback
-        return dt.astimezone(CDT).strftime("%H:%M CDT")
-    except Exception:
-        return iso_str
-
-
-def _to_cdt_hhmmss(iso_str: str) -> str:
-    """Decode a stored ISO timestamp to 'HH:MM:SS' (CDT) for display."""
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ET)
-        return dt.astimezone(CDT).strftime("%H:%M:%S")
-    except Exception:
-        return iso_str
-
-
-# v7.89.0 -- ET-zoned twins of the CDT helpers above. The dashboard
-# (and the broker order labels it consumes) now render times in ET
-# instead of CT so the web UI matches the market clock everywhere.
-# The CDT helpers above stay in place because the Telegram surface
-# still consumes them; they'll migrate in a follow-up release.
-def _to_et_hhmm(iso_str: str) -> str:
-    """Decode a stored ISO timestamp to 'HH:MM ET' for display."""
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ET)
-        return dt.astimezone(ET).strftime("%H:%M ET")
-    except Exception:
-        return iso_str
-
-
-def _to_et_hhmmss(iso_str: str) -> str:
-    """Decode a stored ISO timestamp to 'HH:MM:SS' (ET) for display."""
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ET)
-        return dt.astimezone(ET).strftime("%H:%M:%S")
-    except Exception:
-        return iso_str
-
-
-def _parse_time_to_cdt(ts):
-    """Normalise any stored timestamp format to HH:MM CDT."""
-    if not ts:
-        return "??:??"
-    ts = str(ts).strip()
-    # ISO format with timezone offset (stored as UTC)
-    if "T" in ts and ("+" in ts or ts.endswith("Z")):
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            cdt_dt = dt.astimezone(CDT)
-            return cdt_dt.strftime("%H:%M")
-        except Exception:
-            pass
-    # HH:MM:SS or HH:MM \u2014 already local (CDT), just truncate
-    parts = ts.split(":")
-    if len(parts) >= 2:
-        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
-    return ts[:5]
-
-
-def _is_today(ts_str: str) -> bool:
-    """Check if an ISO timestamp string is from today (ET-based)."""
-    if not ts_str:
-        return False
-    try:
-        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        today_et = _now_et().date()
-        return dt.astimezone(ET).date() == today_et
-    except Exception:
-        return False
+# v10.0.1 -- ET / CDT / ISO time helpers carved to engine/timefmt.py.
+# trade_genius re-exports for back-compat with the 99 call sites that
+# use `tg._now_et` / `from trade_genius import _now_et` / etc.
+from engine.timefmt import (  # noqa: E402, F401
+    ET,
+    CDT,
+    _now_et,
+    _now_cdt,
+    _utc_now_iso,
+    _to_cdt_hhmm,
+    _to_cdt_hhmmss,
+    _to_et_hhmm,
+    _to_et_hhmmss,
+    _parse_time_to_cdt,
+    _is_today,
+)
 
 
 # ── Matplotlib (optional \u2014 graceful skip if not installed) ──────────────
@@ -587,46 +411,9 @@ if MATPLOTLIB_AVAILABLE:
     threading.Thread(target=_warm_matplotlib, daemon=True).start()
 
 
-def _parse_date_arg(args):
-    """Parse optional date argument from command args. Returns date in ET."""
-    import datetime as _dt
-    today = _now_et().date()
-    if not args:
-        return today
-    raw = " ".join(args).strip().lower()
-    if raw == "yesterday":
-        d = today - timedelta(days=1)
-        while d.weekday() >= 5:
-            d -= timedelta(days=1)
-        return d
-    # Try YYYY-MM-DD
-    try:
-        return _dt.date.fromisoformat(raw)
-    except ValueError:
-        pass
-    # Try integer = last N days (for /perf)
-    try:
-        n = int(raw)
-        if 1 <= n <= 365:
-            return today - timedelta(days=n)
-    except ValueError:
-        pass
-    # Try "Apr 17" or "April 17"
-    for fmt in ["%b %d", "%B %d"]:
-        try:
-            parsed = _dt.datetime.strptime(raw, fmt)
-            return parsed.replace(year=today.year).date()
-        except ValueError:
-            pass
-    # Try weekday names
-    days_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-    for abbr, num in days_map.items():
-        if raw.startswith(abbr):
-            delta = (today.weekday() - num) % 7
-            if delta == 0:
-                delta = 7
-            return today - timedelta(days=delta)
-    return today  # fallback
+# v10.0.1 -- _parse_date_arg moved to engine.timefmt with the rest of
+# the time-helper block; re-exported here.
+from engine.timefmt import _parse_date_arg  # noqa: E402, F401
 
 
 # Short reason labels for compact /dayreport display.
@@ -666,6 +453,16 @@ TRADE_LOG_FILE         = os.getenv(
     "TRADE_LOG_PATH",
     os.path.join(os.path.dirname(PAPER_STATE_FILE) or ".", "trade_log.jsonl"),
 )
+# v10.0.1 -- the trade-log impl moved to orb.trade_log; keep its path
+# constant in sync with the production-style default that locates the
+# JSONL alongside the paper-state JSON. orb.trade_log's default
+# fallback ("trade_log.jsonl" in CWD) is only used by tests that
+# import orb.trade_log directly without trade_genius.
+try:
+    import orb.trade_log as _orb_trade_log
+    _orb_trade_log.TRADE_LOG_FILE = TRADE_LOG_FILE
+except Exception:
+    pass
 PAPER_STARTING_CAPITAL = 100_000.0
 
 # Investment logger (separate file)
@@ -1089,11 +886,6 @@ def _init_tickers() -> None:
     """Populate TICKERS from disk on startup; fall back to defaults
     (which include the pinned SPY/QQQ). Always ensures the
     pinned symbols are present no matter what was on disk.
-
-    v7.2.1 \u2014 also merges any tickers promoted by EW (PMR/PMC) for today.
-    Promoted tickers are warmed (volume archive backfill) so the volume
-    gate evaluates them on the very next scan instead of falling through
-    cold-start passthrough.
     """
     from_disk = _load_tickers_file()
     base = from_disk if from_disk else list(TICKERS_DEFAULT)
@@ -1101,26 +893,6 @@ def _init_tickers() -> None:
     for p in TICKERS_PINNED:
         if p not in base:
             base.append(p)
-
-    # v7.2.1 \u2014 EW -> RTH promotion merge. Best-effort, non-blocking.
-    promoted_added: list = []
-    try:
-        from earnings_watcher.rth_promotion import get_promotions_for as _ew_get_promotions
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        promoted = _ew_get_promotions(today_iso)
-        for sym in promoted:
-            s = _normalise_ticker(sym) if sym else None
-            if s and s not in base:
-                base.append(s)
-                promoted_added.append(s)
-        if promoted:
-            logger.info(
-                "[EW-RTH-PROMOTION] merge today=%s found=%d added=%d (already_present=%d)",
-                today_iso, len(promoted), len(promoted_added),
-                len(promoted) - len(promoted_added),
-            )
-    except Exception as exc:
-        logger.warning("[EW-RTH-PROMOTION] merge failed: %s", exc)
 
     # Cap at TICKERS_MAX just in case a hand-edited file went wild.
     base = base[:TICKERS_MAX]
@@ -1133,29 +905,6 @@ def _init_tickers() -> None:
         _save_tickers_file()
     logger.info("Ticker universe loaded: %d tickers (%s)",
                 len(TICKERS), ", ".join(TICKERS))
-
-    # v7.2.1 \u2014 warm volume history for the promoted tickers so the
-    # volume_bucket gate evaluates them on the first scan instead of
-    # COLDSTARTing. Done after TICKERS is published so a slow Alpaca
-    # response cannot delay universe init.
-    if promoted_added:
-        try:
-            from volume_warmup import warmup_ticker as _ew_warmup_ticker
-            for s in promoted_added:
-                try:
-                    res = _ew_warmup_ticker(s)
-                    logger.info(
-                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s seeded=%d bars=%d errors=%d",
-                        s, res.get("days_seeded", 0),
-                        res.get("bars_written", 0), len(res.get("errors") or []),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[EW-RTH-PROMOTION] volume_warmup ticker=%s failed: %s",
-                        s, exc,
-                    )
-        except Exception as exc:
-            logger.warning("[EW-RTH-PROMOTION] warmup module import failed: %s", exc)
 
 
 def _fill_metrics_for_ticker(ticker: str) -> dict:
@@ -1280,22 +1029,8 @@ def add_ticker(sym: str) -> dict:
     _rebuild_trade_tickers()
     _save_tickers_file()
     metrics = _fill_metrics_for_ticker(t)
-    # v7.2.1 \u2014 warm volume archive so volume_bucket gate doesn't COLDSTART
-    # on the next scan. Best-effort; metrics dict carries summary.
-    try:
-        from volume_warmup import warmup_ticker as _ew_warmup_ticker
-        warm = _ew_warmup_ticker(t)
-        metrics["volume_warmup"] = {
-            "days_seeded": warm.get("days_seeded", 0),
-            "bars_written": warm.get("bars_written", 0),
-            "errors": len(warm.get("errors") or []),
-        }
-    except Exception as exc:
-        logger.warning("volume_warmup %s failed: %s", t, exc)
-        metrics["volume_warmup"] = {"error": str(exc)[:80]}
-    logger.info("ticker added: %s (pdc=%s or=%s warm=%s)",
-                t, metrics["pdc"], metrics["or"],
-                metrics.get("volume_warmup", {}))
+    logger.info("ticker added: %s (pdc=%s or=%s)",
+                t, metrics["pdc"], metrics["or"])
     # v5.6.1 D6 \u2014 [WATCHLIST_ADD] hook for replay universe-reconstruction.
     try:
         _v561_log_watchlist_add(t, reason="manual")
@@ -1343,8 +1078,8 @@ SHARES         = 10
 PAPER_DOLLARS_PER_ENTRY = float(os.getenv("PAPER_DOLLARS_PER_ENTRY", "10000"))
 
 SCAN_INTERVAL  = 15      # seconds between scans (v9.1.47: 60 -> 15)
-YAHOO_TIMEOUT  = 8       # seconds
-YAHOO_HEADERS  = {"User-Agent": "Mozilla/5.0"}
+# YAHOO_TIMEOUT / YAHOO_HEADERS moved to orb/bar_fetch.py in v10.0.1
+# and re-exported above with the rest of the bar-fetch surface.
 
 # v5.26.0 \u2014 Tiger Sovereign Phase 2 entry gates (spec-strict).
 #
@@ -1710,7 +1445,6 @@ def _ticker_weather_tick(ticker: str) -> None:
     """v5.31.5 \u2014 advance per-stock 5m EMA9 + last + AVWAP cache.
 
     Mirrors the QQQ weather tick but for one trade ticker. Used by
-    the per-stock local-override gate (engine.local_weather) and by
     the dashboard's per-stock Weather card.
 
     Fail-closed: any exception leaves the prior cached entry untouched.
@@ -2693,53 +2427,6 @@ daily_short_entry_count: dict = {}   # {ticker: int} \u2014 resets daily, separa
 daily_short_entry_date: str = ""     # v4.7.0 \u2014 mirror of daily_entry_date for shorts
 short_trade_history: list = []       # max 500 closed paper shorts
 
-# v5.0.0 \u2014 Tiger/Buffalo two-stage state-machine tracks. Per-ticker per-
-# direction. Schema and transitions defined in STRATEGY.md (canonical
-# spec) and tiger_buffalo_v5.py. Persisted in paper_state.json under
-# the "v5_tracks" key. v4 paper_state files load with empty tracks
-# (defaults to IDLE) \u2014 see paper_state.py load_paper_state.
-v5_long_tracks: dict = {}    # {ticker: track_dict}
-v5_short_tracks: dict = {}   # {ticker: track_dict}
-# C-R1: at most one direction is active per ticker per session.
-v5_active_direction: dict = {}  # {ticker: "long"|"short"|None}
-
-
-def v5_lock_all_tracks(reason: str) -> int:
-    """v6.3.2 \u2014 lock every live v5 track to LOCKED_FOR_DAY.
-
-    Implements the C-R4 (daily-loss-limit), C-R5 (EOD), and C-R6
-    (Sovereign Regime Shield) contract referenced by smoke_test
-    cases C-R4/C-R5 and called from broker/lifecycle.eod_close. Was
-    referenced but never defined since the v5 series shipped
-    (smoke tests only enforced source-string presence, not behaviour),
-    so EOD lock and daily-breaker lock were silently swallowed by
-    the surrounding try/except at every call site.
-
-    Args:
-        reason: short tag ("eod", "daily_loss", "shield", "test")
-            included in the log line. No semantic effect.
-
-    Returns:
-        Total number of tracks transitioned (long + short).
-    """
-    n = 0
-    for _bucket in (v5_long_tracks, v5_short_tracks):
-        for _track in _bucket.values():
-            try:
-                v5.transition_to_locked(_track)
-                n += 1
-            except Exception:
-                logger.exception(
-                    "v5_lock_all_tracks: transition failed for %s", _track,
-                )
-    if n:
-        logger.info(
-            "[V5-LOCK] reason=%s locked_tracks=%d (long=%d short=%d)",
-            reason, n, len(v5_long_tracks), len(v5_short_tracks),
-        )
-    return n
-
-
 # Daily loss limit (Feature 2 / System B realized+MTM circuit breaker).
 # v6.6.1 (C-B fix): same DAILY_LOSS_LIMIT env var as DAILY_LOSS_LIMIT_DOLLARS
 # at line ~499 (System A realized-only kill-switch). Both constants MUST stay
@@ -2769,9 +2456,6 @@ _MAIN_BOOK.paper_trades = paper_trades
 _MAIN_BOOK.paper_all_trades = paper_all_trades
 _MAIN_BOOK.trade_history = trade_history
 _MAIN_BOOK.short_trade_history = short_trade_history
-_MAIN_BOOK.v5_long_tracks = v5_long_tracks
-_MAIN_BOOK.v5_short_tracks = v5_short_tracks
-_MAIN_BOOK.v5_active_direction = v5_active_direction
 # v7.72.0 -- bridge paper_cash too. Pre-v7.72.0 the global
 # `tg.paper_cash` was the only source updated on every fill (broker/
 # positions.py + broker/orders.py mutate it via `+= cfg.*cash_delta`),
@@ -2875,46 +2559,14 @@ def _update_gate_snapshot(ticker):
         side = "LONG" if abs(price - or_h) < abs(price - or_l) else "SHORT"
         break_ok = False
 
-    # v5.13.9 \u2014 polarity = Phase 2 Boundary Hold for this side.
-    # Spec STEP 4: TWO consecutive closed 1m candles strictly outside
-    # the 5m OR edge. Reads the same evaluator the entry path uses so
-    # the dashboard cannot disagree with the bot. None when inputs are
-    # not yet available (OR not seeded, or fewer than 2 closes).
-    polarity_ok: bool | None
-    try:
-        bh_res = eot_glue.evaluate_boundary_hold_gate(ticker, side, or_h, or_l)
-        if bh_res.get("reason") in ("or_not_set", "insufficient_closes"):
-            polarity_ok = None
-        else:
-            polarity_ok = bool(bh_res.get("hold"))
-    except Exception:
-        polarity_ok = None
-
-    # v5.13.9 \u2014 index = Section I global permit for this side.
-    # Spec STEPS 1-2: LONG requires QQQ 5m close > 9-EMA AND QQQ price
-    # > 09:30 AVWAP. SHORT mirrors with strict-below. None when QQQ
-    # regime / AVWAP are not yet seeded.
-    index_ok: bool | None
-    try:
-        qqq_bars_idx = fetch_1min_bars("QQQ")
-        qqq_last = qqq_bars_idx.get("current_price") if qqq_bars_idx else None
-        qqq_avwap = _opening_avwap("QQQ")
-        qqq_5m_close = _QQQ_REGIME.last_close
-        qqq_ema9 = _QQQ_REGIME.ema9
-        if (
-            qqq_last is None
-            or qqq_avwap is None
-            or qqq_5m_close is None
-            or qqq_ema9 is None
-        ):
-            index_ok = None
-        else:
-            permit = eot_glue.evaluate_section_i(
-                side, qqq_5m_close, qqq_ema9, qqq_last, qqq_avwap
-            )
-            index_ok = bool(permit.get("open"))
-    except Exception:
-        index_ok = None
+    # v10.0.1 \u2014 polarity (Boundary Hold) + index (Section I Global Permit)
+    # gates retired along with the rest of the eot_glue surface. The
+    # dashboard gate-matrix consumes these as bool|None; we keep the
+    # dict keys present (None) so the v5.10 panel can render N/A
+    # without crashing while the panel itself is removed in a follow-up
+    # UI sweep.
+    polarity_ok: bool | None = None
+    index_ok: bool | None = None
 
     di_plus, di_minus = tiger_di(ticker)
     if di_plus is None or di_minus is None:
@@ -3314,125 +2966,6 @@ def _seed_di_buffer_from_premarket(
     return {"seeded": seeded, "skipped": skipped, "source": str(day_dir)}
 
 
-def _alpaca_data_client():
-    """Build a read-only StockHistoricalDataClient using whatever
-    Alpaca paper credentials are in the environment. Tries Val first,
-    then Gene. Returns None if no keys are set or alpaca-py import
-    fails \u2014 caller must tolerate a None return.
-    """
-    key = os.getenv("VAL_ALPACA_PAPER_KEY", "").strip() \
-          or os.getenv("GENE_ALPACA_PAPER_KEY", "").strip()
-    secret = os.getenv("VAL_ALPACA_PAPER_SECRET", "").strip() \
-             or os.getenv("GENE_ALPACA_PAPER_SECRET", "").strip()
-    if not key or not secret:
-        return None
-    try:
-        from alpaca.data.historical import StockHistoricalDataClient
-        return StockHistoricalDataClient(key, secret)
-    except Exception as e:
-        logger.debug("alpaca data client build failed: %s", e)
-        return None
-
-
-def _daily_closes_for_sma(ticker: str, needed: int = 210) -> list[float] | None:
-    """v6.0.1 \u2014 fetch the most recent ``needed`` daily closes for
-    ``ticker``, oldest-first. Used by the Daily SMA stack panel
-    (``v5_13_2_snapshot._compute_sma_stack_safe``) which caches the
-    result once per RTH calendar day so this only runs once per ticker
-    per day in steady state.
-
-    Returns ``None`` on any failure (no Alpaca client, alpaca-py
-    missing, network error, ticker symbol unknown). Caller must treat
-    ``None`` as "not available" and the frontend renders the fallback.
-    """
-    sym = (ticker or "").strip().upper()
-    if not sym:
-        return None
-    client = _alpaca_data_client()
-    if client is None:
-        return None
-    try:
-        from alpaca.data.requests import StockBarsRequest  # type: ignore
-        from alpaca.data.timeframe import TimeFrame  # type: ignore
-    except Exception as e:
-        logger.debug("alpaca StockBarsRequest import failed: %s", e)
-        return None
-    # Pull a generous calendar window (need ``needed`` trading days; ~252
-    # trading days per year, so 1.6x covers weekends/holidays comfortably).
-    from datetime import datetime, timedelta, timezone
-
-    end = datetime.now(timezone.utc)
-    # Roughly 1.7 calendar days per trading day handles weekends + holidays.
-    lookback_days = max(int(needed * 1.7), 60)
-    start = end - timedelta(days=lookback_days)
-    try:
-        # v6.5.0 P-5 \u2014 promoted to SIP feed (Algo Plus unlocks consolidated
-        # tape). Falls back to IEX if SIP returns empty (defense-in-depth
-        # per spec section 5 risk register).
-        req = StockBarsRequest(
-            symbol_or_symbols=sym,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=end,
-            feed="sip",
-        )
-        resp = client.get_stock_bars(req)
-        _daily_sma_bars_tmp = None
-        try:
-            _d = getattr(resp, "data", None)
-            if isinstance(_d, dict):
-                _daily_sma_bars_tmp = _d.get(sym)
-        except Exception:
-            _daily_sma_bars_tmp = None
-        if not _daily_sma_bars_tmp:
-            logger.debug("daily-bars SIP empty for %s, retrying IEX", sym)
-            req_iex = StockBarsRequest(
-                symbol_or_symbols=sym,
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=end,
-                feed="iex",
-            )
-            resp = client.get_stock_bars(req_iex)
-    except Exception as e:
-        logger.debug("daily-bars fetch failed for %s: %s", sym, e)
-        return None
-    bars = None
-    try:
-        # alpaca-py BarSet has a ``data`` dict[symbol, list[Bar]] and
-        # also indexes via __getitem__; both shapes have shown up across
-        # versions, so try both.
-        data = getattr(resp, "data", None)
-        if isinstance(data, dict):
-            bars = data.get(sym)
-        if bars is None:
-            try:
-                bars = resp[sym]
-            except Exception:
-                bars = None
-    except Exception as e:
-        logger.debug("daily-bars unpack failed for %s: %s", sym, e)
-        return None
-    if not bars:
-        return None
-    closes: list[float] = []
-    for b in bars:
-        c = getattr(b, "close", None)
-        if c is None:
-            continue
-        try:
-            closes.append(float(c))
-        except (TypeError, ValueError):
-            continue
-    if not closes:
-        return None
-    # Trim to the most recent ``needed`` values.
-    if len(closes) > needed:
-        closes = closes[-needed:]
-    return closes
-
-
-
 
 # ------------------------------------------------------------
 # Opening Range seed (v4.0.3-beta)
@@ -3516,27 +3049,6 @@ def tiger_di(ticker):
     return _compute_di(highs, lows, closes)
 
 
-# ============================================================
-# v5.0.0 \u2014 Tiger/Buffalo state-machine integration helpers
-# ============================================================
-# Spec: STRATEGY.md (canonical). Pure-function rule logic lives in
-# tiger_buffalo_v5.py; this block is the runtime glue that pulls live
-# market data into the spec helpers and persists track state.
-def v5_get_track(ticker: str, direction: str) -> dict:
-    """Return the live track for (ticker, direction), creating an IDLE
-    record if absent. C-R1 mutex is enforced separately by callers.
-    """
-    if direction == v5.DIR_LONG:
-        bucket = v5_long_tracks
-    elif direction == v5.DIR_SHORT:
-        bucket = v5_short_tracks
-    else:
-        raise ValueError(f"unknown direction {direction!r}")
-    if ticker not in bucket:
-        bucket[ticker] = v5.new_track(direction)
-    return bucket[ticker]
-
-
 def v5_di_1m_5m(ticker):
     """Compute DI+ and DI- on both 1m and 5m timeframes for a ticker.
     Used by L-P2-R1 / S-P2-R1 (gates need both timeframes).
@@ -3560,9 +3072,9 @@ def v5_di_1m_5m(ticker):
     highs_1m  = [h for h in bars.get("highs",  []) if h is not None]
     lows_1m   = [lo for lo in bars.get("lows", []) if lo is not None]
     n = min(len(closes_1m), len(highs_1m), len(lows_1m))
-    if n >= v5.DMI_PERIOD + 1:
+    if n >= DI_PERIOD + 1:
         dp, dm = _compute_di(highs_1m[:n], lows_1m[:n], closes_1m[:n],
-                             period=v5.DMI_PERIOD)
+                             period=DI_PERIOD)
         out["di_plus_1m"], out["di_minus_1m"] = dp, dm
     # 5m \u2014 reuse tiger_di which already merges seed + live 5m buckets
     # and normalizes on DI_PERIOD = 15. v5 now matches v4's period
@@ -3585,8 +3097,8 @@ def v5_di_1m_5m(ticker):
         h5 = [merged[k][0] for k in keys]
         l5 = [merged[k][1] for k in keys]
         c5 = [merged[k][2] for k in keys]
-        if len(c5) >= v5.DMI_PERIOD + 1:
-            dp5, dm5 = _compute_di(h5, l5, c5, period=v5.DMI_PERIOD)
+        if len(c5) >= DI_PERIOD + 1:
+            dp5, dm5 = _compute_di(h5, l5, c5, period=DI_PERIOD)
             out["di_plus_5m"], out["di_minus_5m"] = dp5, dm5
     return out
 
@@ -3944,258 +3456,38 @@ user_config: dict = {"trading_mode": "paper"}
 # ============================================================
 
 # ============================================================
-# v3.4.27 \u2014 PERSISTENT TRADE LOG (append-only JSONL)
+# (trade-log impl moved to orb/trade_log.py in v10.0.1; see the
+# `from orb.trade_log import ...` block earlier in this file.)
 # ============================================================
-# Every closed trade (longs via close_position, shorts via
-# close_short_position, and their TP counterparts) writes one JSON
-# line to TRADE_LOG_FILE. The file lives on the Railway volume so it
-# survives redeploys. Append-only \u2014 never rewritten, never rotated
-# (a year of typical volume is ~3 MB).
+# ============================================================
+# TELEGRAM MESSAGING (moved to telegram_io.py in v10.0.1)
+# ============================================================
+# Implementation lives in telegram_io. trade_genius.py re-exports the
+# public surface (send_telegram, report_error, _format_error_telegram)
+# for back-compat with broker/orders.py, engine/scan.py (via
+# engine/callbacks.py), executors/base.py, telegram_ui/, smoke_test,
+# and the tests that do `tg.send_telegram(...)` or
+# `monkeypatch.setattr(tg, "send_telegram", ...)`.
 #
-# Schema (v1):
-#   schema_version: int       \u2014 1
-#   bot_version:    str       \u2014 BOT_VERSION at write time
-#   date:           str       \u2014 YYYY-MM-DD (trade close date, ET)
-#   portfolio:      str       \u2014 "paper" | "tp"
-#   ticker:         str
-#   side:           str       \u2014 "LONG" | "SHORT"
-#   shares:         int
-#   entry_price:    float
-#   exit_price:     float
-#   entry_time:     str       \u2014 HH:MM:SS or ISO (as stored)
-#   exit_time:      str       \u2014 ISO-8601 UTC
-#   hold_seconds:   float|null
-#   pnl:            float     \u2014 signed dollars
-#   pnl_pct:        float     \u2014 signed percent (0.23 = +0.23%)
-#   reason:         str       \u2014 EOD | TRAIL | STOP | RETRO_CAP |
-#                               RED_CANDLE | POLARITY_SHIFT |
-#                               HARD_EJECT_TIGER | forensic_stop |
-#                               per_trade_brake | be_stop | ema_trail |
-#                               velocity_fuse | ...
-#   entry_num:      int       \u2014 add-on index (longs only; 1 for shorts)
-#   trail_active_at_exit:   bool|null
-#   trail_stop_at_exit:     float|null
-#   trail_anchor_at_exit:   float|null  (trail_high for long, trail_low for short)
-#   hard_stop_at_exit:      float|null
-#   effective_stop_at_exit: float|null  (trail_stop if armed, else hard stop)
-#
-# All writes are best-effort: any IO error is logged and swallowed so
-# a broken disk never breaks trade execution.
-# ============================================================
-
-TRADE_LOG_SCHEMA_VERSION = 1
-_trade_log_lock = threading.Lock()
-_trade_log_last_error = None  # surfaced via /api/state for visibility
-
-
-def _trade_log_snapshot_pos(pos):
-    """Extract trail + stop diagnostic fields from a position dict.
-
-    Accepts both long (trail_high) and short (trail_low) shapes.
-    Returns a dict of None-safe values. Used at close time so the
-    row captures exactly what the exit decision saw.
-    """
-    if not isinstance(pos, dict):
-        return {
-            "trail_active_at_exit": None,
-            "trail_stop_at_exit": None,
-            "trail_anchor_at_exit": None,
-            "hard_stop_at_exit": None,
-            "effective_stop_at_exit": None,
-            # v7.107.0 (audit SEV-2 fix) -- entry_stop is the
-            # IMMUTABLE stop captured at entry time, before any
-            # trail/BE/ratchet mutation. The classic R-multiple
-            # denominator. Pre-v7.107.0 trade_replay used
-            # hard_stop_at_exit (= pos["stop"] AT EXIT) which is
-            # actually the trailed stop because exits.maybe_arm_be
-            # and Alarm-F/Alarm-C all mutate pos["stop"] in place.
-            "entry_stop": None,
-        }
-    trail_active = bool(pos.get("trail_active", False))
-    trail_stop = pos.get("trail_stop")
-    # Either long (trail_high) or short (trail_low) populates anchor.
-    trail_anchor = pos.get("trail_high", pos.get("trail_low"))
-    hard_stop = pos.get("stop")
-    # v7.107.0 -- read the immutable entry stop. broker.orders sets
-    # `initial_stop` at entry time alongside `stop`; nothing mutates
-    # `initial_stop` thereafter. Fall back to `stop` only when
-    # `initial_stop` is absent (legacy positions opened pre-init_stop).
-    initial_stop = pos.get("initial_stop")
-    if initial_stop is None:
-        initial_stop = hard_stop
-    effective_stop = (
-        trail_stop if (trail_active and trail_stop is not None) else hard_stop
-    )
-    def _as_float(v):
-        return float(v) if v is not None else None
-    return {
-        "trail_active_at_exit": trail_active,
-        "trail_stop_at_exit": _as_float(trail_stop),
-        "trail_anchor_at_exit": _as_float(trail_anchor),
-        "hard_stop_at_exit": _as_float(hard_stop),
-        "effective_stop_at_exit": _as_float(effective_stop),
-        "entry_stop": _as_float(initial_stop),
-    }
-
-
-def trade_log_append(row):
-    """Append a single closed-trade row to the persistent trade log.
-
-    Best-effort: failures are logged and swallowed, never raised. The
-    lock guards against the (rare) case of two close paths firing at
-    once \u2014 writes are atomic at the OS level for small lines on
-    POSIX, but the lock keeps log order deterministic and protects
-    the _trade_log_last_error surface from races.
-    """
-    global _trade_log_last_error
-    # Defensive: never let a caller ship missing required fields.
-    required = ("ticker", "side", "pnl", "reason")
-    for f in required:
-        if f not in row:
-            _trade_log_last_error = f"missing field: {f}"
-            logger.warning("[TRADE_LOG] skipping row missing %s: %s",
-                           f, row)
-            return False
-    full = {
-        "schema_version": TRADE_LOG_SCHEMA_VERSION,
-        "bot_version": BOT_VERSION,
-    }
-    full.update(row)
-    line = json.dumps(full, default=str, separators=(",", ":"))
-    try:
-        with _trade_log_lock:
-            # Open append+ with explicit newline to keep JSONL clean.
-            with open(TRADE_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        _trade_log_last_error = None
-        return True
-    except OSError as e:
-        _trade_log_last_error = f"{type(e).__name__}: {e}"
-        logger.error(
-            "[TRADE_LOG] append failed (%s). Path=%s. Trade still "
-            "executed \u2014 only persistence failed.",
-            e, TRADE_LOG_FILE,
-        )
-        return False
-
-
-def trade_log_read_tail(limit=500, since_date=None, portfolio=None):
-    """Read the tail of the trade log, optionally filtered.
-
-    Returns a list of dicts, newest-last (same order as on disk).
-    Filtering is applied AFTER reading \u2014 trade log is small enough
-    that this is fine. Failures return an empty list; never raises.
-
-    Args:
-      limit:       max rows to return (newest)
-      since_date:  optional "YYYY-MM-DD"; only rows with date >= this
-      portfolio:   optional "paper" or "tp" filter
-    """
-    if not os.path.exists(TRADE_LOG_FILE):
-        return []
-    try:
-        with open(TRADE_LOG_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError as e:
-        logger.error("[TRADE_LOG] read failed: %s", e)
-        return []
-    rows = []
-    for ln in lines:
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            rows.append(json.loads(ln))
-        except json.JSONDecodeError:
-            # Defensively skip corrupted lines rather than blowing up
-            # the whole read.
-            continue
-    if since_date:
-        rows = [r for r in rows if r.get("date", "") >= since_date]
-    if portfolio:
-        rows = [r for r in rows if r.get("portfolio") == portfolio]
-    if limit and len(rows) > limit:
-        rows = rows[-limit:]
-    return rows
-
-
-# ============================================================
-# TELEGRAM MESSAGING
-# ============================================================
-def send_telegram(text, chat_id=None):
-    """Send text message to Telegram. Splits long messages. Retries on 429."""
-    cid = chat_id or CHAT_ID
-    if not text or not text.strip() or not TELEGRAM_TOKEN or not cid:
-        return
-
-    parts, current = [], ""
-    for line in text.splitlines(keepends=True):
-        if len(current) + len(line) > 3800:
-            if current:
-                parts.append(current.rstrip())
-            current = line
-        else:
-            current += line
-    if current:
-        parts.append(current.rstrip())
-
-    total = len(parts)
-    for i, part in enumerate(parts, 1):
-        prefix = "%d/%d " % (i, total) if total > 1 else ""
-        payload = json.dumps({"chat_id": cid, "text": prefix + part}).encode()
-        url = "https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_TOKEN
-        for attempt in range(5):
-            try:
-                req = urllib.request.Request(
-                    url, data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    status = resp.status
-                if status == 429:
-                    wait = 2 ** attempt
-                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
-                    time.sleep(wait)
-                    continue
-                time.sleep(0.3)
-                break
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    wait = 2 ** attempt
-                    logger.warning("Telegram 429 \u2014 sleeping %ds", wait)
-                    time.sleep(wait)
-                    continue
-                logger.error("Telegram send error (attempt %d): %s", attempt + 1, e)
-                time.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error("Telegram send error (attempt %d): %s", attempt + 1, e)
-                time.sleep(2 ** attempt)
-
-
-# ============================================================
-# v4.11.0 \u2014 health-pill error reporting
-# ============================================================
-# report_error() is the single entry point for "operator should be
-# paged about this" events. It does three things, in order:
-#   1. Logs via the existing logger so existing log surfaces still see
-#      the event (file logs, stderr, the dashboard ring buffer prior
-#      to v4.11.0 \u2014 the dashboard log tail card itself was deleted in
-#      this release, but the underlying logger handlers stay).
-#   2. Appends to error_state so the dashboard health pill counter +
-#      tap-to-expand list reflect the event.
-#   3. If error_state's dedup gate says "send", routes a Telegram
-#      message to the right channel: main bot for "main" events,
-#      executor's own bot for "val" / "gene".
-#
-# The 5-min dedup is per (executor, code) so a flapping ORDER_REJECT
-# does not spam the channel; the dashboard count still increments on
-# every event.
-import error_state as _error_state
-
+# The carved module is host-independent: it reads TELEGRAM_TOKEN /
+# CHAT_ID from env on its own, and routes per-executor pages through
+# an injected executor-lookup callback (wired at import time below).
+from telegram_io import (
+    send_telegram,
+    report_error,
+    _format_error_telegram,
+    set_executor_lookup,
+)
 
 def _executor_inst(name: str):
-    """Return the live executor instance for "val"/"gene", or None."""
+    """Return the live executor instance for "val"/"gene", or None.
+
+    Used by report_error (now in telegram_io) to route per-executor
+    pages through the executor's own Telegram bot. Wired into the
+    carved module via set_executor_lookup below; resolves at call
+    time so val_executor / gene_executor (populated during bootstrap)
+    are visible even though they don't exist yet at import time.
+    """
     n = (name or "").strip().lower()
     if n == "val":
         return val_executor
@@ -4204,493 +3496,7 @@ def _executor_inst(name: str):
     return None
 
 
-def _format_error_telegram(executor: str, code: str, summary: str, detail: str = "") -> str:
-    """Format a Telegram error message respecting the \u226434 chars/line rule.
-
-    Layout:
-      \U0001f6a8 X \u00b7 CODE
-      <summary>
-      <detail line(s)>
-
-      ts: HH:MM:SS ET
-    """
-    ex_label = (executor or "").upper()
-    head = f"\U0001f6a8 {ex_label} \u00b7 {code}"
-
-    def _wrap(text: str, width: int = 34) -> list[str]:
-        out: list[str] = []
-        for raw_line in (text or "").splitlines() or [""]:
-            line = raw_line.rstrip()
-            if len(line) <= width:
-                out.append(line)
-                continue
-            # Greedy word-wrap. If a single word is >width, hard-split it.
-            words = line.split(" ")
-            buf = ""
-            for w in words:
-                if not buf:
-                    if len(w) <= width:
-                        buf = w
-                    else:
-                        # Hard-split overlong word.
-                        while len(w) > width:
-                            out.append(w[:width])
-                            w = w[width:]
-                        buf = w
-                elif len(buf) + 1 + len(w) <= width:
-                    buf = buf + " " + w
-                else:
-                    out.append(buf)
-                    if len(w) <= width:
-                        buf = w
-                    else:
-                        while len(w) > width:
-                            out.append(w[:width])
-                            w = w[width:]
-                        buf = w
-            if buf:
-                out.append(buf)
-        return out
-
-    parts: list[str] = []
-    parts.append(head if len(head) <= 34 else head[:34])
-    parts.extend(_wrap(summary))
-    if detail:
-        parts.extend(_wrap(detail))
-
-    try:
-        ts = _now_et().strftime("%H:%M:%S ET")
-    except Exception:
-        ts = ""
-    if ts:
-        parts.append("")
-        parts.append(f"ts: {ts}")
-    return "\n".join(parts)
-
-
-def report_error(executor: str, code: str, severity: str, summary: str,
-                 detail: str = "") -> bool:
-    """Page-the-operator entry point. See module-level docstring above.
-
-    Returns True iff a Telegram message was actually dispatched (i.e.
-    the dedup gate elapsed). Dashboard count always increments.
-    """
-    # 1. Log via existing logger. Preserve the same level mapping the
-    #    rest of the codebase uses: "warning" -> WARNING, otherwise
-    #    ERROR. CRITICAL events still log at ERROR; the distinction is
-    #    only relevant for the dashboard pill color.
-    sev = (severity or "").strip().lower()
-    log_msg = f"[{(executor or '').upper()}/{code}] {summary}"
-    try:
-        if sev == "warning":
-            logger.warning(log_msg)
-        else:
-            logger.error(log_msg)
-    except Exception:
-        pass
-
-    # 2. Append to error_state ring + check dedup gate.
-    try:
-        ts_iso = _utc_now_iso()
-    except Exception:
-        ts_iso = ""
-    try:
-        should_send = _error_state.record_error(
-            executor=executor,
-            code=code,
-            severity=severity,
-            summary=summary,
-            detail=detail,
-            ts=ts_iso,
-        )
-    except Exception:
-        # Never let error reporting itself raise.
-        logger.exception("report_error: error_state.record_error failed")
-        return False
-
-    if not should_send:
-        return False
-
-    # 3. Dispatch to the right Telegram channel.
-    try:
-        text = _format_error_telegram(executor, code, summary, detail)
-    except Exception:
-        logger.exception("report_error: format failed")
-        return False
-
-    ex = (executor or "").strip().lower()
-    try:
-        if ex in ("val", "gene"):
-            inst = _executor_inst(ex)
-            if inst is not None:
-                inst._send_own_telegram(text)
-            else:
-                # Executor not enabled \u2014 fall back to main bot so the
-                # operator still gets paged.
-                send_telegram(text)
-        else:
-            send_telegram(text)
-    except Exception:
-        logger.exception("report_error: telegram dispatch failed")
-        return False
-    return True
-
-
-# ============================================================
-# YAHOO FINANCE DATA
-# ============================================================
-# Per-scan-cycle cache for 1-min bars. scan_loop() calls
-# _clear_cycle_bar_cache() at the start of each cycle; any call to
-# fetch_1min_bars within the same cycle reuses the cached response.
-# This lets observers (RSI, breadth) read the same bars the scan loop
-# already fetched without doubling network calls.
-_cycle_bar_cache: dict = {}
-
-# v6.0.5 \u2014 pdc cache keyed by (ticker_upper, et_date_iso). Alpaca's daily
-# previous-close is yesterday's RTH close which doesn't change intra-session,
-# so we look it up once per ticker per ET trading day instead of on every
-# scan cycle. Value is float (success) or None (lookup failed; we'll retry
-# next cycle in case the daily endpoint was transient).
-_alpaca_pdc_cache: dict = {}
-
-# v6.0.5 \u2014 one-shot guard so the dual-source-failure CRITICAL notification
-# only fires once per ticker per process lifetime. Without this, a sustained
-# outage (e.g. Alpaca + Yahoo both down for an hour) would spam a
-# notification every scan cycle (~12/min). The flag resets on process
-# restart, which is the right reset semantics: a redeploy means we want to
-# know if it's still broken.
-_dual_source_critical_emitted: set = set()
-
-
-def _clear_cycle_bar_cache():
-    """Reset the per-cycle bar cache. Called at the top of scan_loop()."""
-    _cycle_bar_cache.clear()
-
-
-def _alpaca_pdc(ticker: str, client) -> float | None:
-    """Return previous-day RTH close for ``ticker`` from Alpaca daily bars.
-
-    Cached per ticker per ET date. ``None`` on any failure (caller must
-    tolerate \u2014 downstream code reads bars["pdc"] with a 0-fallback).
-    """
-    sym = (ticker or "").strip().upper()
-    if not sym:
-        return None
-    et = ZoneInfo("America/New_York")
-    today_et = datetime.now(et).date().isoformat()
-    ckey = (sym, today_et)
-    if ckey in _alpaca_pdc_cache:
-        return _alpaca_pdc_cache[ckey]
-    if client is None:
-        return None
-    try:
-        from alpaca.data.requests import StockBarsRequest  # type: ignore
-        from alpaca.data.timeframe import TimeFrame  # type: ignore
-        from alpaca.data.enums import DataFeed  # type: ignore
-    except Exception as e:
-        logger.debug("alpaca pdc import failed for %s: %s", sym, e)
-        return None
-    # Pull a 10 calendar-day window so we always have at least one prior
-    # trading day even across long weekends / market holidays.
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=10)
-    try:
-        # v6.5.0 P-5 \u2014 promoted to SIP feed; falls back to IEX if SIP
-        # returns empty (defense-in-depth per spec section 5 risk register).
-        req = StockBarsRequest(
-            symbol_or_symbols=sym,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=end,
-            feed=DataFeed.SIP,
-        )
-        resp = client.get_stock_bars(req)
-        rows = []
-        if hasattr(resp, "data"):
-            rows = resp.data.get(sym, []) or []
-        if not rows:
-            logger.debug("pdc SIP empty for %s, retrying IEX", sym)
-            req_iex = StockBarsRequest(
-                symbol_or_symbols=sym,
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=end,
-                feed=DataFeed.IEX,
-            )
-            resp_iex = client.get_stock_bars(req_iex)
-            if hasattr(resp_iex, "data"):
-                rows = resp_iex.data.get(sym, []) or []
-        # Alpaca's daily bars come oldest-first; the LAST bar with a
-        # timestamp strictly before today's ET date is yesterday's RTH
-        # close (Alpaca closes the daily bar at 16:00 ET so today's bar,
-        # if present mid-session, is still forming and must be skipped).
-        prev_close = None
-        for b in rows:
-            ts = getattr(b, "timestamp", None)
-            if ts is None:
-                continue
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            bar_date_et = ts.astimezone(et).date().isoformat()
-            if bar_date_et >= today_et:
-                continue
-            c = getattr(b, "close", None)
-            if c is None:
-                continue
-            try:
-                prev_close = float(c)
-            except (TypeError, ValueError):
-                continue
-        _alpaca_pdc_cache[ckey] = prev_close
-        return prev_close
-    except Exception as e:
-        logger.debug("alpaca pdc fetch failed for %s: %s", sym, e)
-        # Negative-cache for this ET day so we don't retry every cycle
-        # if the call is structurally broken (e.g. delisted symbol).
-        # Yahoo fallback path will still supply pdc when it runs.
-        return None
-
-
-# v8.3.2 \u2014 SIP completeness helpers live in engine/data_completeness.py
-# so they're independently importable + unit-testable without dragging
-# in trade_genius's telegram / alpaca / FMP deps.
-from engine.data_completeness import (
-    _or_expected_bars,
-    _count_alpaca_rows_in_or_window,
-    _is_or_coverage_thin,
-    _merge_alpaca_rows_by_timestamp,
-)
-
-
-def _fetch_1min_bars_alpaca(ticker: str) -> dict | None:
-    """v6.0.5 \u2014 Alpaca-IEX 1m bar fetch in the same dict shape as the
-    legacy Yahoo path. Covers 08:00\u201318:00 ET so the premarket warm-up
-    loop and the bar archive keep working exactly like they did under
-    Yahoo's ``includePrePost=true``.
-
-    Returns the same dict shape as ``_fetch_1min_bars_yahoo`` on success,
-    or ``None`` on any failure (no creds, alpaca-py missing, network
-    error, empty response). Caller is responsible for falling back to
-    Yahoo on ``None``.
-
-    Lists are oldest-first to match Yahoo's ordering. Unlike Yahoo,
-    Alpaca only emits a bar when at least one trade prints in that
-    minute, so closes/highs/lows are guaranteed non-None\u2014which is the
-    whole reason for this swap. The trailing-None walk-back in
-    broker/positions.py stays in place as defense-in-depth for the
-    Yahoo fallback case.
-    """
-    sym = (ticker or "").strip().upper()
-    if not sym:
-        return None
-    t0 = time.time()
-    client = _alpaca_data_client()
-    if client is None:
-        logger.debug("Alpaca %s: no data client", sym)
-        return None
-    try:
-        from alpaca.data.requests import StockBarsRequest  # type: ignore
-        from alpaca.data.timeframe import TimeFrame  # type: ignore
-        from alpaca.data.enums import DataFeed  # type: ignore
-    except Exception as e:
-        logger.debug("alpaca 1m import failed for %s: %s", sym, e)
-        return None
-    et = ZoneInfo("America/New_York")
-    now_et = datetime.now(et)
-    # v6.5.0 P-4 \u2014 expanded window from 08:00–18:00 to 04:00–20:00 ET
-    # to capture full premarket (04:00–09:30) and after-hours (16:00–20:00)
-    # sessions now available via Algo Plus SIP feed.
-    start_et = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
-    end_et = now_et.replace(hour=20, minute=0, second=0, microsecond=0) + timedelta(minutes=1)
-    try:
-        # v6.5.0 P-5 \u2014 promoted to SIP feed; falls back to IEX if SIP
-        # returns empty (defense-in-depth per spec section 5 risk register).
-        req = StockBarsRequest(
-            symbol_or_symbols=sym,
-            timeframe=TimeFrame.Minute,
-            start=start_et.astimezone(timezone.utc),
-            end=end_et.astimezone(timezone.utc),
-            feed=DataFeed.SIP,
-        )
-        resp = client.get_stock_bars(req)
-    except Exception as e:
-        logger.debug("Alpaca %s: fetch failed: %s (%.2fs)", sym, e, time.time() - t0)
-        return None
-    rows = []
-    try:
-        if hasattr(resp, "data"):
-            rows = resp.data.get(sym, []) or resp.data.get(ticker, []) or []
-    except Exception:
-        rows = []
-    sip_count = len(rows)
-    # v8.3.2 — SIP→IEX merge fallback on thin result, not just empty.
-    # Why: pre-v8.3.2, the IEX retry only fired when SIP returned ZERO
-    # bars. If SIP returned a partial result (e.g. 9 of an expected 30
-    # OR-window bars due to a transient feed glitch), we accepted the
-    # thin data, the OR window locked with bars_seen<15, and the FSM
-    # transitioned to PHASE_BLOCKED_OR_INSUFFICIENT for the rest of
-    # the day. v8.3.2 counts in-OR-window bars (09:30–09:59 ET) and
-    # retries IEX + merges by timestamp if SIP's coverage is thin.
-    # Yahoo via _fetch_1min_bars_yahoo() remains the last-ditch
-    # fallback when even SIP+IEX merged comes up short.
-    or_expected = _or_expected_bars(now_et)
-    sip_or_count = _count_alpaca_rows_in_or_window(rows, et)
-    iex_count = 0
-    if not rows or _is_or_coverage_thin(sip_or_count, or_expected):
-        try:
-            req_iex = StockBarsRequest(
-                symbol_or_symbols=sym,
-                timeframe=TimeFrame.Minute,
-                start=start_et.astimezone(timezone.utc),
-                end=end_et.astimezone(timezone.utc),
-                feed=DataFeed.IEX,
-            )
-            resp_iex = client.get_stock_bars(req_iex)
-            iex_rows = []
-            if hasattr(resp_iex, "data"):
-                iex_rows = (resp_iex.data.get(sym, [])
-                            or resp_iex.data.get(ticker, []) or [])
-            iex_count = len(iex_rows)
-            if iex_rows:
-                rows = _merge_alpaca_rows_by_timestamp(rows, iex_rows)
-        except Exception as e_iex:
-            logger.debug("Alpaca %s: IEX fallback failed: %s", sym, e_iex)
-    merged_count = len(rows)
-    merged_or_count = _count_alpaca_rows_in_or_window(rows, et)
-    # Forensic: one log line per fetch when we had to fire the IEX
-    # retry. Silent on the steady-state happy path (SIP full coverage).
-    if sip_or_count != merged_or_count or sip_count != merged_count:
-        logger.info(
-            "[V83-SIP-COMPLETENESS] sym=%s sip=%d iex=%d merged=%d "
-            "sip_or=%d merged_or=%d or_expected=%d",
-            sym, sip_count, iex_count, merged_count,
-            sip_or_count, merged_or_count, or_expected,
-        )
-    if not rows:
-        logger.debug("Alpaca %s: empty rows after SIP+IEX (%.2fs)", sym, time.time() - t0)
-        return None
-    # If merged result is STILL thin on the OR window, return None so
-    # the caller falls through to the Yahoo branch (last-ditch).
-    if _is_or_coverage_thin(merged_or_count, or_expected, hard=True):
-        logger.warning(
-            "[V83-SIP-COMPLETENESS] sym=%s thin-after-merge "
-            "sip=%d iex=%d merged_or=%d/%d — falling back to Yahoo",
-            sym, sip_count, iex_count, merged_or_count, or_expected,
-        )
-        return None
-    timestamps: list[int] = []
-    opens: list[float] = []
-    highs: list[float] = []
-    lows: list[float] = []
-    closes: list[float] = []
-    volumes: list[int] = []
-    for b in rows:
-        ts = getattr(b, "timestamp", None)
-        if ts is None:
-            continue
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        try:
-            timestamps.append(int(ts.timestamp()))
-            opens.append(float(getattr(b, "open", 0) or 0))
-            highs.append(float(getattr(b, "high", 0) or 0))
-            lows.append(float(getattr(b, "low", 0) or 0))
-            closes.append(float(getattr(b, "close", 0) or 0))
-            volumes.append(int(getattr(b, "volume", 0) or 0))
-        except (TypeError, ValueError):
-            continue
-    if not timestamps or not closes:
-        logger.debug("Alpaca %s: no usable bars after parse (%.2fs)", sym, time.time() - t0)
-        return None
-    # current_price MUST be near-real-time: engine/scan.py uses it as the
-    # entry execution price (px = bars["current_price"]). Yahoo's
-    # ``regularMarketPrice`` was tick-current; Alpaca's last 1m bar close
-    # is up to ~60s stale. To preserve entry-pricing semantics on the
-    # Alpaca path we ask FMP for the live quote (already the bot's
-    # canonical realtime source \u2014 see get_fmp_quote use sites). Last
-    # bar close is the fallback if FMP is down so we never regress to 0.
-    current_price = 0
-    try:
-        _fmp_q = get_fmp_quote(sym) or {}
-        _fmp_px = _fmp_q.get("price")
-        if _fmp_px is not None:
-            current_price = float(_fmp_px) or 0
-    except Exception:
-        current_price = 0
-    if not current_price and closes:
-        current_price = closes[-1]
-    pdc_val = _alpaca_pdc(sym, client) or 0
-    out = {
-        "timestamps": timestamps,
-        "opens": opens,
-        "highs": highs,
-        "lows": lows,
-        "closes": closes,
-        "volumes": volumes,
-        "current_price": current_price,
-        "pdc": pdc_val,
-    }
-    logger.debug("Alpaca %s: %d bars, %.2fs", sym, len(timestamps), time.time() - t0)
-    return out
-
-
-def _fetch_1min_bars_yahoo(ticker):
-    """Legacy Yahoo Finance 1m fetch. Kept as a fallback when the
-    Alpaca primary path returns None.
-
-    Returns dict with keys: timestamps, opens, highs, lows, closes,
-    volumes, current_price, pdc.  Returns None on failure.
-    """
-    t0 = time.time()
-    # v5.30.1 \u2014 includePrePost=true so the 08:00\u201309:30 ET premarket
-    # warm-up loop in engine.scan actually receives bars to archive into
-    # /data/bars/<today>/<ticker>.jsonl. Prior to this the loop ran every
-    # minute starting at 08:00 ET but Yahoo only returned RTH bars, so
-    # the bar archive (and the dashboard charts that read from it) stayed
-    # frozen at yesterday's 19:59 close until 09:30. Including premarket
-    # bars does not affect entry / OR / sentinel logic: callers downstream
-    # filter by ts (e.g. opening-range collection bounds bars to
-    # [09:30, 09:36) ET) so premarket bars only flow where they should
-    # \u2014 the bar archive and the dashboard chart panel.
-    url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/%s"
-        "?interval=1m&range=1d&includePrePost=true" % ticker
-    )
-    try:
-        req = urllib.request.Request(url, headers=YAHOO_HEADERS)
-        with urllib.request.urlopen(req, timeout=YAHOO_TIMEOUT) as resp:
-            data = json.loads(resp.read())
-
-        result = data.get("chart", {}).get("result")
-        if not result:
-            logger.debug("Yahoo %s: empty result (%.2fs)", ticker, time.time() - t0)
-            return None
-        r = result[0]
-        meta = r.get("meta", {})
-        quote = r.get("indicators", {}).get("quote", [{}])[0]
-        timestamps = r.get("timestamp", [])
-
-        if not timestamps:
-            logger.debug("Yahoo %s: no timestamps (%.2fs)", ticker, time.time() - t0)
-            return None
-
-        logger.debug("Yahoo %s: %.2fs", ticker, time.time() - t0)
-        out = {
-            "timestamps": timestamps,
-            "opens": quote.get("open", []),
-            "highs": quote.get("high", []),
-            "lows": quote.get("low", []),
-            "closes": quote.get("close", []),
-            "volumes": quote.get("volume", []),
-            "current_price": meta.get("regularMarketPrice", 0),
-            "pdc": (meta.get("previousClose")
-                    or meta.get("chartPreviousClose")
-                    or 0),
-        }
-        return out
-    except Exception as e:
-        logger.debug("Yahoo %s: fetch failed: %s (%.2fs)", ticker, e, time.time() - t0)
-        return None
+set_executor_lookup(_executor_inst)
 
 
 def fetch_1min_bars(ticker):
@@ -5436,7 +4242,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
     # is paper_cash + open long market value \u2212 open short liability,
     # mirrored from the /accounts and /portfolio commands.
     try:
-        from eye_of_tiger import scaled_daily_circuit_breaker_dollars
+        from engine.legacy_constants import scaled_daily_circuit_breaker_dollars
 
         portfolio_value_now = paper_cash
         for _pt, _pp in positions.items():
@@ -5534,14 +4340,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
                 )
         # v6.3.2 C-R4: lock every v5 track on daily-breaker trip so
         # in-flight tracks cannot resume tomorrow mid-state. Mirrors the
-        # C-R5 EOD lock path. The smoke-test C-R4 source-string check
-        # has been failing on main since the v5 series shipped because
-        # the function was never defined; v6.3.2 ships the function and
-        # this wiring together.
-        try:
-            v5_lock_all_tracks("daily_loss")
-        except Exception:
-            logger.exception("v5_lock_all_tracks failed (daily_loss)")
+        # v10.0.1 -- v5_lock_all_tracks deleted with the v5 track state machine.
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % effective_limit
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt
@@ -6307,10 +5106,9 @@ def _check_ingest_gate() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 def _check_sqlite_reachable() -> CheckResult:
-    """Check 8 \u2014 SQLite reachability via v5_long_tracks table.
-
-    Note: shadow_positions was removed in v5.x; v5_long_tracks is the active
-    positions-persistence table. Check verifies DB reachability as intended.
+    """Check 8 -- SQLite reachability. v10.0.1 retires the v5_long_tracks
+    table probe; we just open the connection and read the SQLite version
+    pragma so the check still verifies the DB is usable.
     """
     t0 = time.monotonic()
     def _ms():
@@ -6318,10 +5116,10 @@ def _check_sqlite_reachable() -> CheckResult:
     try:
         import persistence as _pers
         conn = _pers._conn()
-        row = conn.execute("SELECT COUNT(*) FROM v5_long_tracks LIMIT 1").fetchone()
-        count = row[0] if row else 0
+        row = conn.execute("SELECT sqlite_version()").fetchone()
+        ver = row[0] if row else "?"
         return CheckResult("SQLite", "C", "ok",
-                           "positions=%s" % format(count, ","), _ms())
+                           "sqlite=%s" % ver, _ms())
     except Exception as exc:
         return CheckResult("SQLite", "C", "critical",
                            "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
@@ -6827,43 +5625,6 @@ def _fire_system_test(label: str) -> None:
         )
 
 
-# v6.18.0 \u2014 daily pre-open market expectations brief.
-#
-# We register the job at TWO ET times (07:00 and 08:00) because
-# 07:00 CT == 08:00 ET during CDT (~Mar-Nov) but == 07:00 ET during
-# CST (~Nov-Mar). Each registered firing self-gates by checking the
-# real CT hour, so exactly one fires per weekday year-round.
-def _fire_market_brief() -> None:
-    """Build and send the market brief if (and only if) the wall clock in
-    America/Chicago is currently 07:xx. The double registration in JOBS
-    plus this gate makes the daily fire DST-safe.
-    """
-    try:
-        # v7.8.3: route through _now_cdt so backtest replay clock applies.
-        # Was wall-clock leak; fired the daily market-brief gate based on
-        # real Chicago time instead of replay time.
-        now_ct = _now_cdt()
-    except Exception:
-        try:
-            from zoneinfo import ZoneInfo
-            now_ct = datetime.now(ZoneInfo("America/Chicago"))
-        except Exception:
-            now_ct = None
-    if now_ct is not None and now_ct.hour != 7:
-        logger.info("market_brief: skipping fire (CT hour=%s, not 7)", now_ct.hour)
-        return
-    try:
-        from market_brief import build_market_brief
-        body = build_market_brief(BOT_VERSION, FMP_API_KEY)
-        send_telegram(body)
-        logger.info("market_brief: sent (%d chars)", len(body))
-    except Exception as exc:
-        logger.exception("market_brief: build/send failed")
-        try:
-            send_telegram("\u26a0\ufe0f Market brief failed: %s" % str(exc)[:120])
-        except Exception:
-            pass
-
 
 # v5.10.1 \u2014 _tiger_hard_eject_check retired. Section V (Triple-Lock stops)
 # in eye_of_tiger.py owns all exit decisions; legacy DI<25 hard-eject and
@@ -6990,12 +5751,7 @@ def reset_daily_state():
             _v561_reset_or_snap_state()
         except Exception:
             logger.exception("reset_daily_state: _v561 OR snap reset failed")
-        # v5.0.0 \u2014 fresh session: clear all v5 state-machine tracks so
-        # tomorrow's first ARMED transition gets a clean tab. C-R5 / C-R6
-        # only LOCK; only the daily reset clears.
-        v5_long_tracks.clear()
-        v5_short_tracks.clear()
-        v5_active_direction.clear()
+        # v10.0.1 -- v5 track state machine retired; no per-session clear needed.
         # v4.11.0 \u2014 health-pill: clear today's error counts at the
         # same boundary as the existing daily counters so the pill
         # rolls back to green at session reset.
@@ -7180,6 +5936,36 @@ def gap_detect_task() -> None:
 # ============================================================
 # SCHEDULER THREAD
 # ============================================================
+def _earnings_refresh_with_alert():
+    """Fire the weekly earnings-calendar refresh and surface failures
+    via Telegram.
+
+    v10.0.1: the dashboard does not yet render the earnings_refresh
+    status block (it's available at /api/state.earnings_refresh but no
+    UI consumer reads it), so a refresh failure -- including the silent
+    lxml-missing trap -- would only be visible to an operator who
+    manually curls the JSON. Routing through report_error makes any
+    non-"ok" status fire the standard 5-min-deduped Telegram page so
+    the operator hears about it on Sunday afternoon instead of finding
+    out via stale earnings data the following Monday morning.
+    """
+    try:
+        from orb import earnings_refresh as _er
+        s = _er.fire_refresh()
+        if s.last_status != "ok":
+            severity = "warning" if s.last_status == "empty_payload" else "critical"
+            report_error(
+                executor="main",
+                code="EARNINGS_REFRESH",
+                severity=severity,
+                summary=f"weekly refresh: {s.last_status}",
+                detail=(s.error_msg or "")[:200],
+            )
+    except Exception as exc:
+        # Don't ever let the alert itself crash the scheduler thread.
+        logger.exception("[V100-EARNINGS-REFRESH] alert wrapper crashed: %s", exc)
+
+
 def scheduler_thread():
     """Background scheduler \u2014 all times in ET."""
     DAY_NAMES = [
@@ -7216,10 +6002,6 @@ def scheduler_thread():
         ("daily", "20:00", lambda: _fire_system_test("15:00 CT (RTH close)")),
         ("daily", "22:00", lambda: _fire_system_test("17:00 CT")),
         ("daily", "00:00", lambda: _fire_system_test("19:00 CT (post-close)")),
-        # v6.18.0 \u2014 pre-open market brief at 07:00 CT (DST-safe via the
-        # gate inside _fire_market_brief; only the matching ET wall fires).
-        ("daily", "07:00", _fire_market_brief),
-        ("daily", "08:00", _fire_market_brief),
         ("daily", "09:30", reset_daily_state),
         ("daily", "09:35",
          lambda: threading.Thread(target=collect_or, daemon=True).start()),
@@ -7234,14 +6016,21 @@ def scheduler_thread():
         ("daily", "15:57", eod_close),
         ("daily", "15:48", send_eod_report),
         ("sunday", "18:00", send_weekly_digest),
-        # v6.16.1 — earnings_watcher: single-shot entries REMOVED.
-        # BMO/AMC cycles driven by the minute-by-minute window loop below.
+        # v10.0.1 \u2014 weekly earnings-calendar refresh (replaces the
+        # retired GHA cron). Runs Sunday 13:00 ET in a daemon thread so
+        # a slow yfinance HTTP call can't block the scheduler. The fire
+        # function itself updates orb.earnings_refresh module state for
+        # /api/state staleness surfacing; if the refresh ends in any
+        # status other than "ok" we fire a Telegram alert via
+        # report_error so the operator sees the failure even though
+        # nothing on the dashboard renders the earnings_refresh status
+        # block yet.
+        ("sunday", "13:00",
+         lambda: threading.Thread(
+             target=_earnings_refresh_with_alert,
+             name="earnings-refresh", daemon=True,
+         ).start()),
     ]
-
-    # v6.16.1 \u2014 earnings_watcher exit monitoring tracker
-    last_ew_exit_check = _now_et()
-    # v6.16.1 — earnings_watcher window cycle tracker (minute-by-minute)
-    last_ew_window_check = _now_et() - timedelta(seconds=61)
 
     logger.info("Scheduler started \u2014 market times ET, display CDT (UTC offset: %s)",
                 datetime.now(timezone.utc).strftime("%z"))
@@ -7314,28 +6103,6 @@ def scheduler_thread():
             threading.Thread(
                 target=gap_detect_task, daemon=True, name="gap_detect"
             ).start()
-
-        # v6.16.1 \u2014 earnings_watcher exit cycle: runs every 60 s
-        if EARNINGS_WATCHER_ENABLED and (now_et - last_ew_exit_check).total_seconds() >= 60:
-            last_ew_exit_check = now_et
-            try:
-                _ew_runner.run_exit_cycle()
-            except Exception as e:
-                logger.warning("[EW] exit cycle error: %s", e)
-
-        # v6.16.1 — earnings_watcher window cycle: re-evaluate every 60 s
-        # during active pre-market (04:00-09:29 ET) and after-hours (16:00-20:00 ET) windows
-        if EARNINGS_WATCHER_ENABLED:
-            now_hhmm = now_et.strftime("%H:%M")
-            in_premarket = "04:00" <= now_hhmm <= "09:29" and now_et.weekday() < 5
-            in_afterhours = "16:00" <= now_hhmm <= "20:00" and now_et.weekday() < 5
-            if (in_premarket or in_afterhours) and (now_et - last_ew_window_check).total_seconds() >= 60:
-                last_ew_window_check = now_et
-                try:
-                    window = "premarket" if in_premarket else "afterhours"
-                    _ew_runner.run_window_cycle(window)
-                except Exception as e:
-                    logger.warning("[EW] window cycle error: %s", e)
 
         time.sleep(30)
 
@@ -8085,21 +6852,9 @@ logger.info(
 logger.info(
     "[V560] Unified AVWAP gates: L-P1 (G1/G3/G4), S-P1 (G1/G3/G4)"
 )
-# v5.13.1 \u2014 surface the Phase 2 volume-gate runtime override at boot
-# so the deploy log shows the active state of L-P2-S3 / S-P2-S3.
-try:
-    from engine import feature_flags as _ff_startup
-    _vg_state = _ff_startup.VOLUME_GATE_ENABLED
-    logger.info(
-        "[STARTUP] VOLUME_GATE_ENABLED=%s (%s)",
-        _vg_state,
-        "spec-strict path" if _vg_state else "using DISABLED_BY_FLAG path",
-    )
-except Exception as _ff_err:
-    logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
 # v6.11.0 -- C25 regime-B amp startup surface.
 try:
-    from eye_of_tiger import (
+    from engine.legacy_constants import (
         V611_REGIME_B_ENABLED as _v611_enabled,
         V611_REGIME_B_SHORT_SCALE_MULT as _v611_mult,
         V611_REGIME_B_SHORT_ARM_HHMM_ET as _v611_arm,

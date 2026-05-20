@@ -2,34 +2,33 @@
 """run_ci.py -- cross-platform local CI runner (Windows/macOS/Linux).
 
 Supersedes the bash-only scripts/preflight.sh for day-to-day development on
-Windows. Runs the same checks that GHA strategy-tests.yml, version-bump-check.yml,
-and scripts-lint.yml cover, so those workflows are not needed for iteration.
+Windows. Runs the strategy-test / version-consistency / em-dash / ruff checks
+that every push needs.
 
 Usage:
     python scripts/run_ci.py              # fast checks (pytest + version + em-dash + ruff)
+    python scripts/run_ci.py --wide       # also run pytest tests/ (needs prod deps)
     python scripts/run_ci.py --smoke      # also run python smoke_test.py (31 local tests)
     python scripts/run_ci.py --slow       # include pytest.mark.slow tests
-    python scripts/run_ci.py --all        # fast + smoke + slow
+    python scripts/run_ci.py --all        # fast + wide + smoke + slow
 
 Checks run in order:
-  [1/5] pytest tests/strategy/   (fast, no telegram dep, 231+ tests)
+  [1/5] pytest tests/strategy/   (fast, no telegram dep, 1100+ tests)
   [2/5] BOT_VERSION consistency  (bot_version.py == trade_genius.py == CHANGELOG top)
   [3/5] CURRENT_MAIN_NOTE guard  (leading line must start with vX.Y.Z)
   [4/5] Em-dash literal check    (new .py lines added vs origin/main must not carry U+2014)
   [5/5] ruff check + ruff format --check  (only if ruff is installed)
+  [opt] pytest tests/ (wide)     (top-level suite; needs telegram+alpaca-py+lxml+.env.monitor;
+                                  pass --wide or --all; skipped if deps missing)
   [opt] python smoke_test.py     (31 local smoke tests; pass --smoke or --all)
 
-GHA workflows superseded by this script (kept but no longer needed for iteration):
-  - .github/workflows/strategy-tests.yml
-  - .github/workflows/version-bump-check.yml
-  - .github/workflows/scripts-lint.yml  (shellcheck only, soft-fail; low value locally)
+Sibling local runners:
+  - scripts/run_smoke.py    (post-push smoke: Railway-version wait + 31 local + 9 prod tests)
+  - scripts/run_monitor.py  (every-5-min dashboard health check during US RTH)
 
-GHA workflows intentionally left active (need secrets / Railway / GHA compute):
-  - .github/workflows/post-deploy-smoke.yml  (Railway polling + Telegram alert)
-  - .github/workflows/lever-sweep.yml / lever-sweep-auto.yml
-  - .github/workflows/pull-rth-bars.yml / pull-tick-data.yml / refresh-data-feeds.yml
-  - .github/workflows/rth-merge-warning.yml / trade-replay.yml / docker-boot.yml
-  - .github/workflows/monitor.yml  (already moved to scripts/run_monitor.py)
+GitHub Actions are no longer the canonical path for any of these; the
+.github/workflows/*.yml files that remain are kept for emergency
+workflow_dispatch only.
 """
 
 from __future__ import annotations
@@ -135,7 +134,15 @@ def _base_ref() -> str | None:
 
 
 def check_pytest(slow: bool) -> bool:
-    """[1] Run pytest tests/strategy/ (fast lane; no telegram dep)."""
+    """[1] Run pytest tests/strategy/ (fast lane; no telegram dep).
+
+    The fast lane is tests/strategy/ -- pure-Python unit tests that don't
+    need the `telegram` package or live env vars. v10.0.1 broadened the
+    pre-push gate scope, but tests/ (the wider top-level suite) still
+    requires the full prod-dep set (telegram, FMP_API_KEY, alpaca-py,
+    etc.). Operators who have those installed locally can run
+    `pytest tests/` directly; the GHA path is retired (v10.0.1).
+    """
     # Verify pytest is importable before building a full command.
     probe = subprocess.run(
         [sys.executable, "-m", "pytest", "--version"],
@@ -154,6 +161,58 @@ def check_pytest(slow: bool) -> bool:
     if not slow:
         cmd += ["-m", "not slow"]
     # Use pytest-xdist parallelism if available
+    xdist_probe = subprocess.run(
+        [sys.executable, "-c", "import xdist"],
+        cwd=REPO,
+        capture_output=True,
+    )
+    if xdist_probe.returncode == 0:
+        cmd += ["-n", "auto"]
+    proc = _run(cmd)
+    return proc.returncode == 0
+
+
+def check_pytest_wide() -> bool:
+    """[opt] Run pytest tests/ (full top-level suite excluding strategy).
+
+    Requires the production dependency set (telegram, FMP_API_KEY,
+    alpaca-py credentials in .env.monitor, lxml). Skipped gracefully
+    when those aren't available so CI stays green on a slimmer env.
+
+    Toggled by --wide; the post-v10.0.1 cleanup retired 36 legacy test
+    files so this lane now passes cleanly when the env is wired up.
+    """
+    probe = subprocess.run(
+        [sys.executable, "-m", "pytest", "--version"],
+        cwd=REPO,
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        _skip("pytest not installed -- skipping wide lane")
+        return True
+
+    # Sanity-check that the deps trade_genius import needs are reachable.
+    # If not, skip the wide lane with a clear breadcrumb rather than
+    # surfacing a confusing ModuleNotFoundError later.
+    needed = ("telegram", "alpaca", "lxml")
+    missing = []
+    for name in needed:
+        rc = subprocess.run(
+            [sys.executable, "-c", f"import {name}"],
+            cwd=REPO,
+            capture_output=True,
+        )
+        if rc.returncode != 0:
+            missing.append(name)
+    if missing:
+        _skip(f"wide lane skipped -- missing: {', '.join(missing)} (pip install -r requirements.txt)")
+        return True
+
+    cmd = [
+        sys.executable, "-m", "pytest", "tests/",
+        "--ignore=tests/strategy",
+        "-q", "--tb=short",
+    ]
     xdist_probe = subprocess.run(
         [sys.executable, "-c", "import xdist"],
         cwd=REPO,
@@ -364,6 +423,133 @@ def check_smoke() -> bool:
 # ---------------------------------------------------------------------------
 
 
+MIN_PYTHON = (3, 10)
+"""Minimum Python version required to run + lint the codebase.
+
+Several test files (e.g. tests/strategy/test_riskbook_persistence_v7105.py)
+use PEP 604 native `X | None` annotation syntax that ONLY parses on
+Python 3.10+. Running preflight on 3.9 fails pytest collection with a
+TypeError that looks unrelated to the actual problem. Pinning here
+fail-fasts with a clear message instead.
+
+To raise the floor in the future: bump this tuple + remove any
+`from __future__ import annotations` markers you no longer need.
+"""
+
+
+def check_simulator() -> bool:
+    """Run a fast simulator anomaly check on a tiny representative set.
+
+    Picks one day per category (~3-5 days), runs them through the
+    simulator in parallel, evaluates DEFAULT_RULES. Fails only on
+    ERROR-severity rule violations. Designed to complete in <30s on
+    a 4-worker machine. Gracefully degrades when the corpus is
+    missing (e.g. sandbox/CI without /data corpus mounted).
+    """
+    corpus_root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    if not os.path.isdir(corpus_root):
+        print(
+            f"  {YELLOW}[SKIP] simulator corpus not found at {corpus_root}; "
+            f"set SIMULATOR_CORPUS_ROOT or mount data/ to enable{RESET}",
+            flush=True,
+        )
+        return True
+
+    # The simulator package lives at the repo root, but this script
+    # runs from scripts/. Make sure the import path covers both.
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    try:
+        from simulator.batch import BatchConfig, run_days
+        from simulator.corpus_index import (
+            build_index, load_index, pick_representative,
+        )
+        from simulator.expectations import DEFAULT_RULES, evaluate
+    except Exception as exc:
+        print(f"  {YELLOW}[SKIP] simulator import failed: {exc}{RESET}",
+              flush=True)
+        return True
+
+    index_path = str(REPO / "simulator" / "corpus" / "day_index.json")
+    rows = load_index(index_path)
+    if not rows:
+        # First-time build (cheap -- a couple of seconds for 343 days).
+        try:
+            rows = build_index(corpus_root=corpus_root, out_path=index_path)
+        except Exception as exc:
+            print(f"  {YELLOW}[SKIP] corpus index build failed: {exc}{RESET}",
+                  flush=True)
+            return True
+
+    if not rows:
+        print(f"  {YELLOW}[SKIP] corpus index empty{RESET}", flush=True)
+        return True
+
+    dates = pick_representative(rows, per_category=1)
+    if not dates:
+        print(f"  {YELLOW}[SKIP] no representative days{RESET}", flush=True)
+        return True
+
+    universe = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOG", "AVGO",
+                "NFLX", "ORCL", "TSLA", "QQQ", "SPY"]
+    cfg = BatchConfig(workers=0, show_progress=False, corpus_root=corpus_root)
+    results = run_days(dates, universe, cfg)
+    rows_by_date = {r["date"]: r for r in rows}
+
+    errors = 0
+    warnings = 0
+    bad_days: list[str] = []
+    for r in results:
+        if r.get("error"):
+            errors += 1
+            bad_days.append(f"{r['date']}: {r['error']}")
+            continue
+        failures = evaluate(rows_by_date.get(r["date"], {}), r, DEFAULT_RULES)
+        for f in failures:
+            if f.severity == "ERROR":
+                errors += 1
+                bad_days.append(f"{r['date']} [{f.rule_name}]: {f.why_fail}")
+            elif f.severity == "WARN":
+                warnings += 1
+
+    if errors:
+        print(f"  {RED}[FAIL] simulator: {errors} ERROR-severity anomaly(ies) "
+              f"across {len(results)} days, {warnings} warnings{RESET}",
+              flush=True)
+        for b in bad_days[:10]:
+            print(f"    {b}", flush=True)
+        return False
+
+    print(f"  {GREEN}[OK]{RESET} simulator: {len(results)} representative days "
+          f"clean ({warnings} warnings)", flush=True)
+    return True
+
+
+def check_python_version() -> bool:
+    """Warn (don't fail) on older Python. Tests that strictly need 3.10+
+    use `from __future__ import annotations` to keep 3.9 compatible.
+    Returns True always; the warning surfaces the future-hazard so a
+    new file using PEP 604 without the `__future__` import gets a
+    breadcrumb when its collection eventually fails downstream.
+    """
+    cur = sys.version_info[:2]
+    if cur < MIN_PYTHON:
+        print(
+            f"  {YELLOW}[WARN] Python {'.'.join(map(str, cur))} below "
+            f"recommended {'.'.join(map(str, MIN_PYTHON))}+ -- tests that use "
+            f"PEP 604 `X | None` syntax need `from __future__ import "
+            f"annotations`. If pytest collection fails below, that's why.{RESET}",
+            flush=True,
+        )
+    else:
+        print(
+            f"  {GREEN}[OK] Python {'.'.join(map(str, cur))} "
+            f"(min {'.'.join(map(str, MIN_PYTHON))}){RESET}",
+            flush=True,
+        )
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Local CI runner for stock-spike-monitor (cross-platform).",
@@ -380,18 +566,39 @@ def main() -> int:
         help="Include pytest.mark.slow tests (adds ~70s).",
     )
     parser.add_argument(
+        "--wide",
+        action="store_true",
+        help=(
+            "Also run pytest tests/ (excluding tests/strategy). Needs the "
+            "full prod dep set (telegram, alpaca-py, lxml, .env.monitor). "
+            "Skipped gracefully when deps are missing."
+        ),
+    )
+    parser.add_argument(
+        "--simulator",
+        action="store_true",
+        help=(
+            "Run a fast simulator-based anomaly gate (~30s). Picks one "
+            "representative day per market-regime category and asserts "
+            "the v10 gates behave as defined in DEFAULT_RULES. Skipped "
+            "gracefully if the corpus is not mounted."
+        ),
+    )
+    parser.add_argument(
         "--all",
         dest="all_checks",
         action="store_true",
-        help="Equivalent to --smoke --slow.",
+        help="Equivalent to --smoke --slow --wide --simulator.",
     )
     args = parser.parse_args()
 
     smoke = args.smoke or args.all_checks
     slow = args.slow or args.all_checks
+    wide = args.wide or args.all_checks
+    sim = args.simulator or args.all_checks
 
     total_fast = 5
-    total = total_fast + (1 if smoke else 0)
+    total = total_fast + (1 if smoke else 0) + (1 if wide else 0) + (1 if sim else 0)
 
     print(f"{BOLD}=== run_ci.py (stock-spike-monitor local CI) ==={RESET}", flush=True)
     if slow:
@@ -409,6 +616,10 @@ def main() -> int:
         )
 
     failures: list[str] = []
+
+    # [0] Python version (warn-only -- check_pytest is the real gate)
+    _hdr("0", total, f"Python >= {'.'.join(map(str, MIN_PYTHON))} (warn-only)")
+    check_python_version()
 
     # [1] pytest
     _hdr("1", total, "pytest tests/strategy/")
@@ -430,9 +641,25 @@ def main() -> int:
     if not check_ruff(base_ref):
         failures.append("ruff lint/format")
 
+    # [opt] wide lane
+    next_step = total_fast + 1
+    if wide:
+        _hdr(str(next_step), total, "pytest tests/ (wide lane; needs prod deps)")
+        if not check_pytest_wide():
+            failures.append("pytest tests/ (wide lane)")
+        next_step += 1
+
+    # [opt] simulator anomaly gate
+    if sim:
+        _hdr(str(next_step), total,
+             "simulator anomaly gate (representative days)")
+        if not check_simulator():
+            failures.append("simulator anomaly gate")
+        next_step += 1
+
     # [opt] smoke
     if smoke:
-        _hdr(str(total_fast + 1), total, "python smoke_test.py (31 local tests)")
+        _hdr(str(next_step), total, "python smoke_test.py (31 local tests)")
         if not check_smoke():
             failures.append("smoke_test.py")
 
@@ -445,19 +672,15 @@ def main() -> int:
         print(flush=True)
         print(
             "Fix the issues above, then re-run:\n"
-            "  python scripts/run_ci.py\n\n"
-            "GHA post-deploy-smoke (Railway polling + Telegram) is separate and\n"
-            "only runs after merge to main -- no local equivalent needed.",
+            "  python scripts/run_ci.py",
             flush=True,
         )
         return 1
 
     print(f"{BOLD}{GREEN}=== run_ci.py PASS ==={RESET}", flush=True)
     print(
-        "\nReady to push. GHA post-deploy-smoke will auto-fire after merge.\n"
-        "If GHA strategy-tests / version-bump-check / scripts-lint are\n"
-        "redundant given this local run, add [skip-version] to the PR body\n"
-        "for doc-only changes (those workflows still run on PR open).",
+        "\nReady to push. After the push, run:\n"
+        "  python scripts/run_smoke.py   (waits for Railway rollout, then 31 local + 9 prod tests)",
         flush=True,
     )
     return 0

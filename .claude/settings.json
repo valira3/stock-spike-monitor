@@ -1,6 +1,28 @@
 {
+  "$comment": "Project-level Claude Code config. Team baseline -- check this in. Personal allowances belong in settings.local.json (gitignored).",
   "permissions": {
     "defaultMode": "bypassPermissions",
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/.env.monitor)",
+      "Read(**/.env.monitor.*)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(**/.env.*)",
+      "Edit(bot_version.py)",
+      "Edit(requirements.txt)",
+      "Edit(**/dashboard_secret.key)",
+      "Edit(**/paper_state*.json)",
+      "Edit(**/trade_log.jsonl)",
+      "Edit(**/state.db)",
+      "Edit(data/.cache_v2/**)",
+      "Edit(data/bars/**)",
+      "Edit(data/tick-data/**)",
+      "Edit(data/dynamic_universe/**)"
+    ],
     "allow": [
       "Bash(*)",
       "Bash(railway logs *)",
@@ -13,6 +35,42 @@
       "Bash(curl -sk *)",
       "Bash(curl -s *)",
       "Bash(tasklist *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/protect-files.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/audit-command.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/format-edits.sh",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

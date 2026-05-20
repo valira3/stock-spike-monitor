@@ -20,36 +20,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY trade_genius.py .
 COPY bot_version.py .
 COPY telegram_commands.py .
-# v6.18.0 — daily pre-open market brief module (used by /brief command,
-# main-menu Brief button, and 07:00 CT scheduler entry). Missing this COPY
-# causes ModuleNotFoundError: market_brief in cmd_brief and silently
-# disables the daily auto-send.
-COPY market_brief.py .
+# v10.0.1 -- send_telegram + report_error + _format_error_telegram carved
+# out of trade_genius.py. trade_genius re-exports the public surface but
+# the import resolves against this file at runtime; missing it makes
+# every `from telegram_io import ...` fail and crashloops the container.
+COPY telegram_io.py .
 COPY paper_state.py .
 COPY side.py .
 COPY error_state.py .
-# v5.0.0 — Tiger/Buffalo state-machine module (imported by trade_genius.py).
-COPY tiger_buffalo_v5.py .
+# v10.0.1 -- tiger_buffalo_v5.py, eye_of_tiger.py, v5_10_1_integration.py,
+# v5_10_6_snapshot.py, v5_13_2_snapshot.py, market_brief.py, volume_bucket.py,
+# volume_warmup.py COPY lines deleted along with the legacy modules themselves.
+# Constants + sizing helpers migrated to engine/legacy_constants.py.
 # v5.9.0 — QQQ Regime Shield (5m EMA3/EMA9 cross) module.
 COPY qqq_regime.py .
 # v6.11.0 — SPY Regime Classifier (C25 short amplification gate).
 COPY spy_regime.py .
-# v5.10.0 — Eye-of-the-Tiger pure-function evaluators + volume baseline.
-# v5.10.1 — Live-hot-path integration glue (orchestrator).
-# Missing these COPY lines is what crash-looped the v5.10.1 Railway
-# deploy (ModuleNotFoundError on `import eye_of_tiger`); v5.10.3 wires
-# them in. Verified by tests/test_startup_smoke.py and the
-# scripts/preflight.sh dockerfile-mirror check.
-COPY eye_of_tiger.py .
-COPY volume_bucket.py .
-# v7.2.1 — backfill 1m bars for newly-promoted RTH tickers so volume_bucket
-# does not COLDSTART. Missing this COPY would silently disable warmup.
-COPY volume_warmup.py .
-COPY v5_10_1_integration.py .
-# v5.10.6 \u2014 dashboard /api/state v5.10 panel helper. Missing this COPY
-# would crash dashboard_server's snapshot() with ModuleNotFoundError.
-COPY v5_10_6_snapshot.py .
-COPY v5_13_2_snapshot.py .
 # v5.13.6 \u2014 per-position lifecycle event log. Missing this COPY would
 # crash trade_genius at boot since broker.orders / broker.positions
 # import the module for entry/sentinel/exit hooks.
@@ -112,23 +98,14 @@ COPY executors/ ./executors/
 # ingest.algo_plus as ingest_algo_plus). Holds AlgoPlusIngest,
 # BarAssembler, ConnectionHealth, GapDetector, RestBackfillWorker.
 COPY ingest/ ./ingest/
-# v6.16.2 \u2014 earnings_watcher/ package (Phase 1 NHOD+DMI pre/post-market
-# capture engine; gated behind EARNINGS_WATCHER_ENABLED env var). Missing
-# this COPY would crash trade_genius at boot when the flag is set
-# (ModuleNotFoundError: earnings_watcher), as observed on deploy 99eb3bdb.
-COPY earnings_watcher/ ./earnings_watcher/
+# v10.0.1 -- earnings_watcher/ package deleted (Tiger Sentinel chain retired).
 
 # v6.6.0 — ingest_config.py (root-level tunable constants used by
 # engine/ingest_gate.py and ingest/sla.py). Missing this COPY causes
 # ModuleNotFoundError: ingest_config when /test checks the ingest gate.
 COPY ingest_config.py .
-# v6.11.3 -- scripts/ package (pre-market readiness check, Phase 1).
-# Missing this COPY makes the 04:30 ET cron fail with FileNotFoundError
-# (script literally not in the container) and silently breaks the
-# Telegram /test pre-market section since telegram_commands swallows
-# the ImportError. v6.11.1 shipped without this COPY; v6.11.2 was
-# correctly built but the auth fix never executed in production for
-# the same reason. Going forward this directory must ship.
+# v10.0.1 -- scripts/premarket_check.py deleted; the scripts/ COPY is
+# only kept to ship the in-container preflight + monitor + run helpers.
 COPY scripts/ ./scripts/
 
 # Dashboard module + static UI (env-gated; bot runs without DASHBOARD_PASSWORD set)
@@ -142,5 +119,10 @@ ENV PAPER_STATE_PATH=/data/paper_state.json
 ENV PAPER_LOG_PATH=/data/investment.log
 ENV TICKERS_FILE=/data/tickers.json
 ENV STATE_DB_PATH=/data/state.db
+# v10.0.1 -- pin trade log under /data so it survives Railway redeploys.
+# Without this, orb/trade_log.py falls back to CWD ("trade_log.jsonl")
+# and writes to the container root, wiping the closed-trade history on
+# every redeploy. Railway dashboard env can still override.
+ENV TRADE_LOG_PATH=/data/trade_log.jsonl
 
 CMD ["python", "trade_genius.py"]

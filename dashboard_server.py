@@ -1377,24 +1377,9 @@ def _proximity_rows() -> list[dict]:
         tickers = []
     open_longs = set(getattr(m, "positions", {}) or {})
     open_shorts = set(getattr(m, "short_positions", {}) or {})
-    long_permit = False
-    short_permit = False
-    try:
-        import v5_10_6_snapshot as _v510_snap
-
-        sip = _v510_snap._section_i_permit(m) or {}
-        long_permit = bool(sip.get("long_open"))
-        short_permit = bool(sip.get("short_open"))
-    except Exception:
-        pass
-    if long_permit and short_permit:
-        permit_side = "BOTH"
-    elif long_permit:
-        permit_side = "LONG"
-    elif short_permit:
-        permit_side = "SHORT"
-    else:
-        permit_side = "NONE"
+    # v10.0.1 -- Section I permit gate retired. permit_side is a
+    # legacy field of the proximity payload kept for back-compat.
+    permit_side = "NONE"
     for t in tickers:
         px = _price_for(t)
         orh = (getattr(m, "or_high", {}) or {}).get(t)
@@ -1402,19 +1387,14 @@ def _proximity_rows() -> list[dict]:
         best_pct = None
         best_label = ""
         if px and px > 0:
+            # v10.0.1 -- Section I permit retired; both OR boundaries
+            # are always candidates. The permit_side="NONE" marker
+            # above is kept for proximity-payload back-compat.
             candidates: list[tuple[str, float]] = []
-            if long_permit and orh:
+            if orh:
                 candidates.append(("OR-high", orh))
-            if short_permit and orl:
+            if orl:
                 candidates.append(("OR-low", orl))
-            if not candidates:
-                # No permit active \u2014 still report whichever boundary is
-                # closer so the operator sees how far we are, but mark
-                # the row "no permit" via permit_side="NONE".
-                if orh:
-                    candidates.append(("OR-high", orh))
-                if orl:
-                    candidates.append(("OR-low", orl))
             for label, lvl in candidates:
                 if lvl:
                     d = abs(px - lvl) / px
@@ -1788,131 +1768,6 @@ def _ingest_volume_feed_status(m) -> str:
             return "disabled_no_creds"
 
 
-def _earnings_watcher_snapshot() -> dict:
-    """v6.17.0 \u2014 read EW last_cycle.json + open positions for /api/state.
-
-    Returns a dict with: enabled, version, current_window, universe_size,
-    last_cycle (with skip_reasons), open_positions. Never raises \u2014 a
-    missing file or parse error degrades to enabled=false.
-    """
-    import json as _json
-    import os as _os
-    from datetime import datetime as _dt, timezone as _tz
-    from pathlib import Path as _Path
-
-    # v7.2.2 -- read EW version from bot_version.py instead of hardcoding,
-    # so the dashboard always reflects the actual deployed version.
-    _ew_version = "unknown"
-    try:
-        from bot_version import BOT_VERSION as _bv  # type: ignore
-
-        _ew_version = str(_bv)
-    except Exception:
-        try:
-            import trade_genius as _tg_mod  # type: ignore
-
-            _ew_version = str(getattr(_tg_mod, "BOT_VERSION", "unknown"))
-        except Exception:
-            _ew_version = "unknown"
-
-    out = {
-        "enabled": _os.environ.get("EARNINGS_WATCHER_ENABLED", "0") == "1",
-        "version": _ew_version,
-        "current_window": "closed",
-        "universe_size": 0,
-        "last_cycle": None,
-        "open_positions": [],
-    }
-
-    # current_window derivation (ET): premarket 04:00\u201309:29, afterhours 16:00\u201320:00
-    try:
-        try:
-            from zoneinfo import ZoneInfo as _Zi
-
-            _now_et = _dt.now(_Zi("America/New_York"))
-        except Exception:
-            _now_et = _dt.now(_tz.utc).replace(tzinfo=None)
-        _mins = _now_et.hour * 60 + _now_et.minute
-        if 240 <= _mins < 570:
-            out["current_window"] = "premarket"
-        elif 570 <= _mins < 960:
-            out["current_window"] = "rth_idle"
-        elif 960 <= _mins < 1200:
-            out["current_window"] = "afterhours"
-        else:
-            out["current_window"] = "closed"
-    except Exception:
-        pass
-
-    base = _os.environ.get("TG_DATA_ROOT", "/data")
-    ew_dir = _Path(base) / "earnings_watcher"
-
-    # last_cycle.json (signal pulse + skip_reasons)
-    # v6.18.0 \u2014 surface the full cycle telemetry (skipped_evaluated,
-    # skipped_open, orders_submitted) so the dashboard can show why a
-    # cycle produced 0 signals without round-tripping to the container.
-    try:
-        lc = ew_dir / "last_cycle.json"
-        if lc.exists():
-            data = _json.loads(lc.read_text())
-            out["last_cycle"] = {
-                "window": data.get("window"),
-                "ts_utc": data.get("ts_utc"),
-                "date": data.get("date"),
-                "universe_size": data.get("universe_size", 0),
-                "evaluated": data.get("evaluated", 0),
-                "skipped_evaluated": data.get("skipped_evaluated", 0),
-                "skipped_open": data.get("skipped_open", 0),
-                "signals": data.get("signals", 0),
-                "orders_submitted": data.get("orders_submitted", 0),
-                "orders_filled": data.get("orders_filled", 0),
-                "exits": data.get("exits", 0),
-                "skip_reasons": data.get("skip_reasons", {}),
-            }
-            out["universe_size"] = data.get("universe_size", 0)
-    except Exception:
-        pass
-
-    # v6.18.0 \u2014 evaluated_today.json: list of tickers actually pulled
-    # into the cycle this session, broken out by window. Lets the dashboard
-    # answer "what's being watched right now?" instead of just a count.
-    try:
-        et = ew_dir / "evaluated_today.json"
-        if et.exists():
-            ed = _json.loads(et.read_text())
-            # Shape: { "YYYY-MM-DD": { "premarket": [...], "afterhours": [...] } }
-            if isinstance(ed, dict) and ed:
-                latest_date = sorted(ed.keys())[-1]
-                day = ed.get(latest_date) or {}
-                out["watched_today"] = {
-                    "date": latest_date,
-                    "premarket": list(day.get("premarket") or [])[:120],
-                    "afterhours": list(day.get("afterhours") or [])[:120],
-                }
-    except Exception:
-        pass
-
-    # open_positions.json (live trades managed by EW)
-    try:
-        op = ew_dir / "open_positions.json"
-        if op.exists():
-            positions = _json.loads(op.read_text()) or {}
-            for tkr, p in positions.items():
-                out["open_positions"].append(
-                    {
-                        "ticker": tkr,
-                        "side": p.get("side"),
-                        "entry_px": p.get("entry_px"),
-                        "qty": p.get("qty"),
-                        "notional": p.get("notional"),
-                        "conv": p.get("conv"),
-                        "entry_ts_utc": p.get("entry_ts_utc"),
-                    }
-                )
-    except Exception:
-        pass
-
-    return out
 
 
 def snapshot() -> dict[str, Any]:
@@ -2085,105 +1940,40 @@ def snapshot() -> dict[str, Any]:
 
         version = str(getattr(m, "BOT_VERSION", "?"))
 
-        # v5.10.6 \u2014 Eye-of-the-Tiger live state snapshot. Surfaces
-        # Section I permit, per-ticker Volume Bucket + Boundary Hold,
-        # and per-position phase + Sovereign Brake distance so the
-        # operator can see what the v5.10 algo is actually running.
-        # Defensive: on internal error returns empty blocks so the rest
-        # of /api/state still serializes.
-        try:
-            import v5_10_6_snapshot as _v510_snap
-
-            v510_block = _v510_snap.build_v510_snapshot(
-                m,
-                tickers,
-                longs,
-                shorts,
-                prices,
-            )
-        except Exception:
-            logger.exception("v5.10.6 snapshot build failed")
-            v510_block = {
-                "section_i_permit": {},
-                "per_ticker_v510": {},
-                "per_position_v510": {},
-            }
-
-        # v5.13.2 \u2014 Tiger Sovereign Phase 1\u20134 snapshot for the rewritten
-        # dashboard panel. Sits alongside the v5.10.6 fields above; the
-        # dashboard reads `tiger_sovereign` directly, while the legacy
-        # fields stay for backward compatibility.
-        try:
-            import v5_13_2_snapshot as _ts_snap
-
-            tiger_sovereign_block = _ts_snap.build_tiger_sovereign_snapshot(
-                m,
-                tickers,
-                longs,
-                shorts,
-                prices,
-            )
-        except Exception:
-            logger.exception("v5.13.2 tiger_sovereign snapshot build failed")
-            tiger_sovereign_block = {
-                "phase1": {},
-                "phase2": [],
-                "phase3": [],
-                "phase4": [],
-            }
+        # v10.0.1 -- v5.10.6 + v5.13.2 snapshot panels (Section I permit,
+        # Volume Bucket, Boundary Hold, Tiger Sovereign Phase 1-4) retired
+        # along with the rest of the legacy v5/v15 surface. Empty blocks
+        # are emitted so the JSON shape is preserved for any cached
+        # consumer; dashboard panels rendering these are deleted in the
+        # same release.
+        v510_block = {
+            "section_i_permit": {},
+            "per_ticker_v510": {},
+            "per_position_v510": {},
+        }
+        tiger_sovereign_block = {
+            "phase1": {},
+            "phase2": [],
+            "phase3": [],
+            "phase4": [],
+        }
 
         # v5.13.2 \u2014 runtime feature-flag indicators. Dashboard surfaces
         # these as small ON/OFF pills below the KPI row so the operator
         # can see at-a-glance which spec rules are currently overridden
         # via env vars.
-        # v5.29.0 \u2014 also surface alarm_{c,d,e}_enabled so the dashboard
-        # can hide bypassed components in the Permit Matrix (volume column /
-        # card, sentinel-strip cells for Alarms C / D / E). Sourced from
-        # engine.sentinel module-level flags (ALARM_C_ENABLED etc.). The
-        # legacy engine.feature_flags shim was removed in v5.26.0; we keep
-        # the volume_gate_enabled key for compatibility with the existing
-        # KPI-row pill but read it from a hard default (False) when the
-        # shim is gone, matching production behaviour since v5.13.1.
-        # v5.30.0 \u2014 also surface alarm_f_enabled. Alarm F (chandelier
-        # trail) has no module-level kill switch in engine.sentinel, so it
-        # is unconditionally True whenever the sentinel module imports
-        # successfully. The frontend uses this flag to render the F cell
-        # in the sentinel strip the same way it conditionally renders
-        # C / D / E.
-        try:
-            from engine import sentinel as _sen
-
-            # v6.4.0 \u2014 ALARM_B_ENABLED is the new module-level toggle for
-            # the EMA9-cross alarm. Defaults False to match production; the
-            # frontend renders the B Trend Death cell as DISABLED when off.
-            # Pre-v6.4.0 builds did not export the symbol, so getattr falls
-            # back to True (B was always evaluated) for safety.
-            alarm_b_enabled = bool(getattr(_sen, "ALARM_B_ENABLED", True))
-            alarm_c_enabled = bool(getattr(_sen, "ALARM_C_ENABLED", False))
-            alarm_d_enabled = bool(getattr(_sen, "ALARM_D_ENABLED", False))
-            alarm_e_enabled = bool(getattr(_sen, "ALARM_E_ENABLED", False))
-            # Alarm F has no ALARM_F_ENABLED toggle; True when the
-            # module imports (i.e. the runtime knows what F is).
-            alarm_f_enabled = True
-        except Exception:
-            alarm_b_enabled = True
-            alarm_c_enabled = False
-            alarm_d_enabled = False
-            alarm_e_enabled = False
-            alarm_f_enabled = False
-        try:
-            from engine import feature_flags as _ff  # legacy shim, may be absent
-
-            volume_gate_enabled = bool(getattr(_ff, "VOLUME_GATE_ENABLED", False))
-        except Exception:
-            volume_gate_enabled = False
+        # v10.0.1 -- engine.sentinel + engine.feature_flags deleted. The
+        # volume gate + Alarm B/C/D/E/F surface was Tiger Sentinel state
+        # that v10 ORB doesn't expose. The dashboard renders these keys
+        # as legacy False so the frontend's Permit Matrix path renders
+        # consistently (it's hidden under body.v10-live anyway).
         feature_flags_block = {
-            "volume_gate_enabled": volume_gate_enabled,
-            "alarm_b_enabled": alarm_b_enabled,
-            "alarm_c_enabled": alarm_c_enabled,
-            "alarm_d_enabled": alarm_d_enabled,
-            "alarm_e_enabled": alarm_e_enabled,
-            "alarm_f_enabled": alarm_f_enabled,
+            "volume_gate_enabled": False,
+            "alarm_b_enabled": False,
+            "alarm_c_enabled": False,
+            "alarm_d_enabled": False,
+            "alarm_e_enabled": False,
+            "alarm_f_enabled": False,
         }
 
         # v5.5.7 \u2014 surface the paper book's most recent emitted
@@ -2624,9 +2414,6 @@ def snapshot() -> dict[str, Any]:
             "ingest_status": ingest_status,
             # v6.11.0 -- C25 SPY regime + amp window state.
             **_v611_regime_snapshot(),
-            # v6.17.0 \u2014 earnings_watcher panel surface. Reads
-            # last_cycle.json + open_positions.json from /data/earnings_watcher.
-            "earnings_watcher": _earnings_watcher_snapshot(),
             # v9.1.65 -- EOD reversal open positions for the Main portfolio.
             # Tracked in EodReversalEngine separately from paper_state so
             # Main tab can show EOD positions even when callbacks.execute_entry
@@ -3070,6 +2857,61 @@ async def h_version(request):
     except Exception:
         version = "?"
     return web.json_response({"version": version})
+
+
+# ─────────────────────────────────────────────────────────────
+# Replay Today -- build a live-data replay from today's snapshots.
+# POST /api/replay/today   {"date": "YYYY-MM-DD"} (optional)
+# Returns {"ok": true, "url": "<presigned-R2-url>", "snapshots": N}
+# ─────────────────────────────────────────────────────────────
+async def h_replay_today(request):
+    from aiohttp import web
+    import asyncio
+
+    if not _check_auth(request):
+        return web.Response(status=401)
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    date = body.get("date") or None
+
+    try:
+        loop = asyncio.get_event_loop()
+
+        def _build():
+            import sys, pathlib, traceback
+            sys.path.insert(0, str(pathlib.Path(__file__).parent))
+            # Load .env.monitor so R2/GitHub vars are available
+            _env = pathlib.Path(__file__).parent / ".env.monitor"
+            if _env.exists():
+                import os
+                for line in _env.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            try:
+                from scripts.replay_today import build_today_replay
+                return build_today_replay(date)
+            except Exception:
+                traceback.print_exc()
+                raise
+
+        url, actual_date = await loop.run_in_executor(None, _build)
+        if url:
+            return web.json_response({"ok": True, "url": url, "date": actual_date})
+        else:
+            return web.json_response(
+                {"ok": False, "error": "No snapshot data found for recent trading days. "
+                 "Snapshots are captured every 5 min during RTH -- try again after 09:30 ET."},
+                status=404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5254,6 +5096,7 @@ def _build_app():
     app.router.add_get("/api/state", h_state)
     app.router.add_get("/api/ws_state", h_ws_state)
     app.router.add_get("/api/version", h_version)
+    app.router.add_post("/api/replay/today", h_replay_today)
     app.router.add_get("/api/v10/projection", h_v10_projection)
     app.router.add_get("/api/trade_log", h_trade_log)
     # v4.0.0-beta — per-executor tabs + index ticker strip.

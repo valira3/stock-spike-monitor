@@ -4,6 +4,436 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v10.0.0 (2026-05-19) — broad-universe premarket scanner + sector-cluster day-skip gate
+
+**Headline.** Replaces the fixed 12-ticker Keystone strategy with a **per-day broad-universe scanner** that ranks the S&P 500 by premarket NR-N compression and a **sector-cluster gate** that skips the day when the top-K picks share one GICS sector at high concentration. Validated by the 120-cell broad-universe sweep (`docs/research/r18_broad_universe.md`) — annualized **+$24,936/yr vs staging baseline (+54.3%)** on the $100k corpus, with **4/6 quarters positive**.
+
+This release ships **Phase A** of the rollout: the scanner runs, the cluster gate fires (the dominant lever, +$20k/yr), and the UI surfaces today's picks + gate state on Main / Val / Gene tabs. Phase B (v10.1.0) will swap the WS-subscribed universe each morning so the broader-universe picks actually get traded; until then the engine continues to trade the static 12 but with the cluster gate gating every admission.
+
+**New env levers (all default ON to match the champion config):**
+
+| Lever | Default | Notes |
+|---|---|---|
+| `ORB_DYNAMIC_UNIVERSE` | `1` | Master flag for the scanner |
+| `ORB_DYNAMIC_UNIVERSE_SIGNAL` | `compression` | NR-N (inverse last-5-bar range in last 30 min) |
+| `ORB_DYNAMIC_UNIVERSE_TOP_K` | `7` | Picks per day |
+| `ORB_DYNAMIC_UNIVERSE_MIN_DOLLAR_VOL` | `30000000` | Filters sleepy low-vol names |
+| `ORB_DYNAMIC_UNIVERSE_PM_LOOKBACK_N` | `5` | NR-N window bars |
+| `ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN` | `30` | NR-N window minutes |
+| `ORB_DYNAMIC_UNIVERSE_AUTO_REBUILD` | `1` | In-process Alpaca pull when premarket bar coverage is below threshold |
+| `ORB_CLUSTER_MAX_SECTOR_PCT` | `60` | Skip the day if ≥ this pct of picks share one GICS sector. 0 = off |
+
+Rollback: set any of the above to `0` (or the threshold to `0`) in Railway env. The runtime falls open to the legacy static-12 universe on any error.
+
+**New modules:**
+
+- `orb/live_premarket_scanner.py` — live wrapper around `orb/premarket_scanner.py`. Reads `/data/bars/<DATE>/<TICKER>.jsonl` (the bar archive). Fails open to the static 12 if premarket coverage < 40%. **Auto-rebuild in-process** via `tools.pull_premarket_for_scanner.rebuild_premarket_bars_for_date` when the scheduled 09:24 ET pre-warm didn't deliver.
+- `orb/scanner_state.py` — thread-safe module-level holder for today's `LiveScanResult`. Written by `ensure_session_started`; read by `/api/state` snapshot path + `_check_cluster_gate`.
+- `tools/pull_premarket_for_scanner.py` — both a CLI and an importable `rebuild_premarket_bars_for_date(target_date, out_root, universe_tickers)` helper. Uses Alpaca SIP entitlement, writes bar-archive-schema JSONL. Resume-friendly per-(date, ticker).
+- `data/universe/sp500.json` — 504 S&P 500 constituents (Wikipedia snapshot 2026-05-19, dot-form for Alpaca class-share tickers).
+- `data/universe/sp500_sectors.json` — per-ticker GICS sector + sub-industry.
+
+**Wired into existing modules:**
+
+- `orb/live_runtime.py`:
+  - `_is_dynamic_universe_on()` — env flag check
+  - `_run_dynamic_universe_scanner(date_iso)` — fires the scanner at session start, publishes to scanner_state, logs `[V100-SCANNER]`
+  - `_check_cluster_gate()` — consulted on every `check_entry`; returns a `cluster_gate_skip:<sector>_<pct>pct` reason when the gate fires (forensic log `[V100-CLUSTER-SKIP]`)
+  - `snapshot()` — includes a `"scanner"` block with picks, sectors, cluster gate state, fallback reason
+- `engine/scan.py`:
+  - `_v10_prewarm_dynamic_universe(now_et)` — daemon-thread pre-warm at 09:20-09:29 ET (one-shot per session, scheduled by the existing scan loop, no GHA cron per the operator's policy)
+- `dashboard_static/index.html` — 3 new pill nodes in the v10 day-status banner (Univ / cluster / picks)
+- `dashboard_static/app.js`:
+  - Main tab (`renderV10DayStatus`) populates the 3 pills with universe state, cluster gate, and the comma-separated picks list (sector breakdown in hover title)
+  - Val + Gene tabs (`renderV10PerPortfolio`) inject the same 3 chips inline. All three tabs see the same scanner output (the scanner runs once per session globally); per-portfolio independence is preserved by the existing RiskBook / FSM / kill-switch.
+
+**Test coverage (27 new tests, 1097 total strategy tests pass):**
+
+- `tests/strategy/test_orb_v1000_dynamic_universe.py` — 27 tests covering: compute_universe success + 5 fallback paths, scanner_state set/get/clear/snapshot/thread-safety, _check_cluster_gate firing states, _is_dynamic_universe_on env handling, _run_dynamic_universe_scanner env-defaults + override + exception isolation, rebuild_premarket_bars graceful no-op without creds, snapshot dict shape + JSON-serializable.
+
+**Backtest source-of-truth.** All findings come from the 120-cell broad-universe sweep in `results/broad_universe/sweep_v23_cluster_fine/`, summarized in `[[broad-universe-winner]]` memory. Combined annualized returns vs the v9.1.140 staging baseline (Keystone 12 + EOD), re-verified on the merged v10 tree at each portfolio's actual production equity:
+
+| Portfolio | Equity | Staging baseline | v10 (sec=60 cluster gate) | Δ |
+|---|---:|---:|---:|---:|
+| Main | $102,460 | $+45,935/yr | **$+72,369/yr** | +$26,434 |
+| Val | $30,591 | $+16,346/yr | **$+28,701/yr** | +$12,355 |
+| Gene | $100,000 | $+45,933/yr | **$+70,869/yr** | +$24,936 |
+| **Total** | **$233,051** | **$+108,214/yr** | **$+171,939/yr** | **+$63,725/yr (+58.9%)** |
+
+Phase B (v10.1.0) is expected to add additional lift on top by trading the broader universe directly (currently the engine still trades the static 12; the cluster gate captures most of the day-decision lift without WS expansion).
+
+---
+
+## v9.1.140 (2026-05-19) — merge: pull main into staging (R32 reversal circuit-breaker + EOD dedup + rollback-cooldown + /close)
+
+Brings staging up to date with `main` after its v9.1.131-137 series. New on staging from main:
+
+- v9.1.131: `ORB_ROLLBACK_COOLDOWN_*` lever (env-flagged, default OFF) — blocks re-entry after a rollback exit
+- v9.1.132: `rollback_admit` ticker-orphan fix + post_trade_cooldown default ON
+- v9.1.133: EOD reversal blocks the same ticker on both long + short legs
+- v9.1.134: R32 reversal circuit-breaker (live engine, env-gated)
+- v9.1.135: `/close <ticker>` Telegram command (manual override)
+- v9.1.136: monitor — `atr_stop` skips closed positions
+- v9.1.137: EOD dedup hardening for `top_n > 1`
+
+Also: v9.1.131-137 commit chain on main included #797-#805. Earnings calendar refreshed to 2026-05-19 14:51 UTC.
+
+No behavior changes in this merge commit beyond the textual merge. Conflicts resolved in `bot_version.py`, `trade_genius.py`, `.gitignore`, `tools/orb_earnings_calendar.py` (took main's newer timestamp), and this file (entry ordering — main's 9.1.131-137 entries sit between staging's 9.1.139 broad-universe summary and the shared 9.1.130 entry). Version bumped to 9.1.140 to dedupe.
+
+---
+
+## v9.1.139 (2026-05-19) — merge: pull main into staging (R21 runner_eod_prep + R26 stale_full_exit + R22-R25 falsified sweeps)
+
+Brings staging up to date with `main` after v9.1.137. New on staging from main: R21 `runner_eod_prep` lever (v9.1.129), R26 `stale_full_exit` lever (v9.1.130), and the R22-R25 falsified-theory sweep scripts + FALSIFIED markers (#790, #791).
+
+No behavior changes in this commit beyond the textual merge. Conflicts resolved in `bot_version.py`, `trade_genius.py`, and this file (entry ordering). Both branches share v9.1.128 below the merged window — the entry is kept once.
+
+---
+
+## v9.1.138 (2026-05-18) — merge: pull prod fixes from main into staging
+
+Reconciles the staging branch (v9.1.128-137, week-replay UI + 1.9× notional cap) with main's v9.1.121-128 production hotfix series (INGEST_DISABLE_WS, executor-based resolve_equity, post-restart reconciliation, OR-retracement gate, EOD safety-net + cap-bypass fix, per-portfolio EXIT loop, removal of ORB_PORTFOLIO_FIRE). Both branches independently authored a "v9.1.128" commit with different content — this merge keeps both sets of entries below; the version is bumped to 9.1.138 to dedupe.
+
+No behavior changes in this commit beyond the textual merge: every PR's behavior is unchanged from how it ran on its origin branch. Conflicts resolved in `bot_version.py`, `trade_genius.py`, and this file (entry order).
+
+---
+
+## v9.1.137 (2026-05-18) — replay: regenerate last-week snapshots with the 1.9× cap + morning↔EOD interaction
+
+Follow-up to v9.1.136. Operator asked to regenerate replay snapshots for 05-11→05-15 to reflect the new staging gross-cap lever, **including** the morning ↔ EOD interaction (a morning position that holds past 15:00 ET consumes gross-notional capacity that EOD r17 would otherwise use).
+
+**Changes:**
+
+- `scripts/build_replay_week.sh` — `MORN_ENV` now sets `ORB_MAX_CONCURRENT_NOTIONAL_MULT=1.9` so the per-day `orb_replay_day` invocations replay against the same lever as staging production.
+- `tools/synth_snapshots.py:synth_day` — new optional `gross_notional_mult` arg (default 1.9). New `_add_eod_with_interaction` helper: sums morning positions still open at bucket 900 (15:00 ET), computes remaining gross capacity, and admits/blocks EOD r17 candidates FCFS against that budget. Logs the blocked count + held-over notional per day so the interaction is auditable.
+
+**Updated weekly P&L (vs prior 0.95×-cap replay):**
+
+| Date | Main (new) | Val (new) | Δ Main | Δ Val |
+|---|---:|---:|---:|---:|
+| Mon 05-11 | -$788 | -$238 | -$836 | -$252 |
+| Tue 05-12 | +$388 | -$5 | +$100 | -$92 |
+| Wed 05-13 | +$2,471 | +$771 | +$469 | +$170 |
+| Thu 05-14 | +$3,323 | +$1,065 | +$494 | +$218 |
+| Fri 05-15 | +$191 | +$55 | +$246 | +$71 |
+| **Week** | **+$5,586** | **+$1,648** | **+$474** | **+$115** |
+
+Worst-day deepens on Mon (Main -$55 → -$788, Val -$16 → -$238) — more morning trades admitted, more potential downside on adverse-OR days. Best-day grows on Thu by ~$500.
+
+**EOD blocked by morning held-over notional** (Val only — Main's $190k cap has room):
+- 05-13: Val 1 EOD blocked (held-over $43k of $57k cap → $14k left, below the $21k both-leg requirement)
+- 05-14: Val 1 EOD blocked (held-over $38k)
+- 05-15: Val 2 EOD blocked = full EOD shutdown (held-over $48k)
+
+The interaction is significant on the $30k Val account: large morning positions can fully crowd out the EOD r17 strategy on the same day. On the $100k Main account, the $190k cap has room for both legs and no EOD is ever blocked across the week.
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `8964cb3c`).
+
+---
+
+## v9.1.136 (2026-05-18) — staging: bump ORB_MAX_CONCURRENT_NOTIONAL_MULT 0.95 → 1.9 (95% Reg T utilization)
+
+Operator question — what is `MAX_CONCURRENT_NOTIONAL_MULT` set on production? — surfaced that **production has been running with the live-engine code default of 0.95** (= 95% of equity = ~47.5% of Reg T buying power) while ALL prior backtests were anchored to the looser `tools/orb_backtest.py` default of 2.0 (full Reg T). Production has been over half a year of paper-fire data leaving half of Reg T BP unused.
+
+**True-prod-anchored sweep on Val staging ($30,185), 341-day corpus:**
+
+| Gross mult | BP util | Ann/yr | Min day | Sharpe | #<-$1k days |
+|---:|---:|---:|---:|---:|---:|
+| 0.95 (prod today) | ~48% | +$7,548 | -$430 | 3.38 | 0 |
+| 1.5 | ~75% | +$11,275 | -$794 | 2.80 | 0 |
+| 1.7 | ~85% | +$11,563 | -$804 | 2.82 | 0 |
+| **1.9 (95% Reg T, 5% safety)** | **~95%** | **+$13,686** | -$843 | 3.04 | **0** |
+| 2.0 (full Reg T) | ~100% | +$14,473 | -$863 | 3.05 | 0 |
+
+Doubling the gross-notional cap (0.95 → 1.9) nearly doubles annual P&L (+81%) while Sharpe drops only modestly (3.38 → 3.04). Worst day worsens by $413 (-$430 → -$843), but no #<-$1k day appears at any cap level in 341 days. **The "safety margin" benefit of 0.95 costs ~$6k/yr in foregone P&L for $413 less drawdown on the worst day — a $14:$1 P&L:safety trade not worth taking.**
+
+Why production was at 0.95: a defensive initial setting from early paper-fire days. 17+ months of clean data with zero margin-related incidents make that ceiling over-tight.
+
+**Action**: set `ORB_MAX_CONCURRENT_NOTIONAL_MULT=1.9` on Railway **staging** environment (commit hash `n/a` — Railway env-var change, not a code change). Production remains at 0.95 until 1-2 weeks of staging paper-fire validates the new ceiling. Promotion to production handled via a follow-up env-var change once observation period is clean.
+
+Caveat: 5% safety on `MAX_CONCURRENT_NOTIONAL_MULT` is gross-notional based and does not account for Reg T's asymmetric short-margin (50% long / 150% short). The current ORB strategy takes both sides as OR breaks dictate but doesn't enforce per-side balance, so a strong-trend day could put all $57k of gross capacity into longs. For tighter safety, a future change would add per-side caps + a true BP-utilization formula. Documented in the 7-layer architecture proposal but not implemented in this commit.
+
+---
+
+## v9.1.135 (2026-05-17) — replay: P&L sparkline reads diff, fix at synth source
+
+P&L sparkline beneath the Day P&L KPI was rendering a flat line at $0. v9.1.133 added a `currentState()` bridge that mirrors `state.portfolios.main` → `state.portfolio` at render time, fixing the KPI tile — but the sparkline pre-computes ALL points from `d.portfolio.day_pnl` directly in each diff (so it can draw the full ghost trajectory + dim-future-fill style). That data was untouched by the `currentState()` bridge.
+
+`synth_snapshots.py` now sets `state.portfolio.{equity, day_pnl, vs_start, cash, long_mv, short_liab}` per snapshot, mirroring `portfolios.main`. The diffs carry real values and the sparkline renders a real intraday curve. Verified: 69 unique P&L transitions on Mon 05-11 (was 1 — flat $0).
+
+Re-synthesized + pushed 5 days to snapshots-live (commit `53f6a098`).
+
+---
+
+## v9.1.134 (2026-05-17) — replay: full snapshot-path audit + Val independence
+
+Comprehensive audit of every dashboard field that drives visible UI vs every field the snapshot pipeline (synth → diff → currentState merge) actually carries. Found three real gaps and one logic bug.
+
+**Bug: Val tab was deriving its positions from Main × 30%.**
+
+The `/api/executor/val` fetch shim in `replay_dashboard.py` mapped each Main position to a "Val" position with `shares = round(main.shares × 30185/100000)`. This was wrong: Val is an independent portfolio with its own admissions, cooldowns, and equity. `orb_replay_day` runs Val separately ($30,185 starting equity) and can produce different share counts (or even different tickers if Val's risk book rejects something Main admits). The shim now reads `state.portfolios.val` directly — the per-portfolio block we ship in every snapshot's diff since v9.1.132.
+
+**Gap: stale v10.* fields across every snapshot.**
+
+Audit revealed these dashboard reads stayed pinned to the base-state's 05-15 09:30 values:
+
+| Field | Drives | Fix |
+|---|---|---|
+| `v10.risk_books.main.realized_pnl_today` | v10 ORB realized P&L gauge | synth computes `sum(pnl for exits ≤ minute)` per snapshot |
+| `v10.risk_books.main.admit_count` | v10 trades-today counter | synth computes `count(entries ≤ minute)` |
+| `v10.activity` | "Recent Activity" feed | synth builds flattened ENTRY/EXIT events, cap 30 |
+| `eod_positions` | EOD time-bar session badge | synth fills with currently-open EOD tickers |
+| `gates.scan_paused` | scanner-paused banner | synth toggles True outside 9:30-15:54 ET |
+
+**Bug: redundant Val data in state.portfolios.val** was being computed but never read by the shim. Now read end-to-end.
+
+Verified end-to-end on Mon 05-11:
+- 09:30 ET: realized=$0, admits=0, scan_paused=False, activity=[]
+- 10:30 ET: realized=$0, admits=1, day_pnl=-$285.60 (unrealized only), activity=[ENTRY AAPL]
+- 15:30 ET: realized=$0, admits=3 (post-EOD), eod_positions=[ORCL, TSLA]
+- 15:55 ET: realized=-$72.67 (AAPL BE-stop exit), scan_paused=True, activity=[…4 entries…]
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `862cc809`). After Railway deploys 9.1.134, next click on the dashboard replay button generates a fresh HTML with the full state path verified.
+
+---
+
+## v9.1.133 (2026-05-17) — replay: bridge state.portfolio (singular) to state.portfolios.main
+
+v9.1.132 added `state.portfolios.main.day_pnl` (realized + unrealized) to every snapshot diff. Day P&L KPI on the Main tab **still** read $0.00. Root cause: `dashboard_static/app.js:renderKPIs` reads `p = sl.portfolio || {}` where `sl = paperSlice(s) = { portfolio: s.portfolio, ... }` — that's `state.portfolio` (singular legacy field), NOT `state.portfolios.main`.
+
+The singular field came from the base state and never got rewritten across snapshots, so `p.day_pnl` was always the base value (`0.0`).
+
+Fix in `_HEAD_PATCH.currentState()`: after merging `diff.portfolios` into `s.portfolios`, mirror `main`'s `equity` / `day_pnl` into `s.portfolio` so the KPI tile reflects intraday realized + unrealized. Doesn't require regenerating snapshots — the merge happens client-side in the replay's JS, so the next click on the dashboard button (post-Railway-deploy) picks up the fix.
+
+Verified path: `state.portfolios.main.day_pnl = -$300.80` (synthesized) → `currentState().portfolio.day_pnl = -$300.80` → `renderKPIs` displays -$300.80. Previously this chain broke at the second step.
+
+---
+
+## v9.1.132 (2026-05-17) — replay: Day P&L includes unrealized + per-portfolio diff
+
+Two replay-fidelity bugs uncovered by clicking through the v9.1.131 synthesized week:
+
+**1. Day P&L stuck at $0 throughout the day on every snapshot.**
+
+`synth_snapshots.py` emitted `day_pnl = realized` only, so the dashboard KPI sat at $0 while open positions carried real unrealized swings (Mon 15:40 ET had Main `day_pnl=$0` even though AAPL/ORCL/TSLA totaled -$300 unrealized). The live bot's KPI is realized + unrealized — the synth now matches. Each portfolio block also carries explicit `realized_pnl` / `unrealized_pnl` so the dashboard can render the split.
+
+**2. Val (and Gene) panels never updated as the scrubber advanced.**
+
+The replay's per-snapshot `diff` carried only the top-level legacy `positions` / `trades_today` fields (which the Main tab reads through `paperSlice`). Val and Gene panels read from `state.portfolios.<pid>.{positions,trades_today,equity,day_pnl}` — those came from the base state and never changed. So on Val you'd see whatever positions the base happened to capture, regardless of scrubber position. Suspected cause of the "play forward shows no positions but jumping back does" symptom too.
+
+Fixes:
+
+- `scripts/replay_today.py` — new `_slim_portfolios()` helper emits a slim per-portfolio view (`positions / trades_today / equity / day_pnl / realized_pnl / unrealized_pnl / strip`) for each pid in the diff. Wired into `snapshots_to_diffs` so it ships in every snapshot.
+- `scripts/replay_dashboard.py:build_html` — `slim_diffs` (both single-day and multi-day paths) now carries `portfolios` alongside the legacy top-level fields.
+- `scripts/replay_dashboard.py:_HEAD_PATCH.currentState()` — merges `diff.portfolios` over `state.portfolios` per pid, preserving any base-state keys (`subscribed`, `strip`, etc.) the diff doesn't override.
+- `tools/synth_snapshots.py` — `day_pnl = realized + sum(unrealized)`. `equity` adjusted accordingly. Each portfolio block exports `realized_pnl` and `unrealized_pnl` as separate fields.
+
+Re-synthesized + pushed all 5 days to `snapshots-live` (commit `25498b28`).
+
+---
+
+## v9.1.131 (2026-05-17) — synth_snapshots: 5-day counterfactual snapshot backfill
+
+`snapshots-live` had only 1 usable day (05-15); 05-12/13/14 wrote metadata headers only (no `/api/state` payload) due to a state-snapshot writer regression, and 05-11 was missing entirely. Operator flagged the captures as unreliable and asked for a synthetic backfill so the dashboard replay button returns a full week.
+
+New `tools/synth_snapshots.py` builds deterministic `/api/state` snapshots from three sources:
+
+- `results/week_replay_v2/<portfolio>_<DATE>.jsonl` — admit/exit events from `tools/orb_replay_day` (the live v10 engine against archived 1-min SIP bars).
+- `results/week_replay/<portfolio>_eod/per_day/<DATE>.json` — pnl pairs from `tools/afternoon_backtest`.
+- `data/<DATE>/<TICKER>.jsonl` — 1-min bars for mark/unrealized math on still-open positions.
+
+Emits **80 snapshots per day** (5-min ET buckets from 09:30 to 16:05) in the snapshots-live schema. Each snapshot carries both Main ($100k) and Val ($30,185) portfolios, with equity/day_pnl updating as exits fire and `trades_today` + `positions` evolving in real time. Synthetic by construction — this is what the current Keystone v9.1.114 algorithm WOULD have done, not what live fired.
+
+Bundled with this commit:
+- 5 day-files pushed to `snapshots-live` branch (commit `06002105`), overwriting the unreliable captures.
+- `data/snapshots/` added to `.gitignore` on the staging branch so the synth output doesn't leak into staging commits.
+- `tools/synth_snapshots.py` available for re-running the backfill anytime (idempotent; safe to re-run after updating any backtest result).
+
+**Trading simulation summary (Main / Val, per-day P&L):**
+
+| Date | Main | Val | Trades on Main |
+|---|---:|---:|---|
+| Mon 05-11 | +$48 | +$14 | 1 morning (AAPL long, BE stop) + 2 EOD |
+| Tue 05-12 | +$288 | +$87 | 1 morning (NFLX long, BE stop) + 2 EOD |
+| Wed 05-13 | +$2,002 | +$601 | 2 morning (GOOG + TSLA, both EOD-flush wins) + 2 EOD |
+| Thu 05-14 | **+$2,829** | **+$847** | 2 morning (ORCL hit target at 11:09, MSFT EOD-flush) + 2 EOD |
+| Fri 05-15 | -$55 | -$16 | 1 morning (AMZN long, EOD-flush near-flat) + 2 EOD |
+| **Week** | **+$5,112** | **+$1,533** | |
+
+Once Railway redeploys 9.1.131, clicking the gamepad icon in the dashboard header opens an R2 URL containing all 5 days bundled with the date dropdown.
+
+---
+
+## v9.1.130 (2026-05-17) — dashboard replay button now serves the multi-day replay
+
+The `#tg-replay-btn` in the live dashboard (top-right of the header, the gamepad icon) already POSTs to `/api/replay/today`, which calls `scripts.replay_today.build_today_replay()`. v9.1.129 added multi-day support to the underlying `replay_dashboard.build_html`, but `build_today_replay()` itself was still single-day -- so clicking the button still landed on a single-day HTML with no date dropdown.
+
+This commit closes that loop end-to-end:
+
+- **`scripts/replay_today.py:build_today_replay()`** now defaults to **multi-day mode** when called with no explicit `date`. Walks back up to 14 calendar days to collect up to 5 trading days that have ≥10 payload-bearing snapshots (skips weekends and metadata-only-header days). Bundles them via `rd.build_html(... days_map=..., default_date=most_recent)` and uploads to `replay/week_<latest>.html` (8-hour signed URL). Explicit `--date YYYY-MM-DD` still produces the legacy single-day artifact.
+
+- **`find_recent_trading_days()`** is the new helper. `min_snapshots=10` filter excludes 05-12 / 05-13-style header-only files where the snapshot writer only emitted a metadata line.
+
+- **`dashboard_static/index.html`** -- button tooltip updated from "Replay most recent trading day" to "Replay last 5 trading days (date dropdown + time-travel scrubbing)" so the new behavior is discoverable on hover.
+
+No dashboard JS changes needed -- the button still POSTs `{}` to `/api/replay/today` and opens whatever URL the server returns. The server now returns a week-bundle URL by default.
+
+**Behavior today (2026-05-17):** only 05-15 has real captures on `snapshots-live`; older days lost their per-bucket payloads to a writer regression. Today's click returns a single-day URL (the dropdown only shows when ≥2 days have real data). Once the next few weekday captures land naturally, clicks will start returning a proper 5-day bundle with the dropdown visible.
+
+---
+
+## v9.1.129 (2026-05-17) — replay_dashboard: date dropdown on the R2-shared replay
+
+The standalone `replay_week.html` (added in v9.1.125) had a date picker; the R2-shared `live_<DATE>.html` (the URL the operator actually opens — the one ending with the cloudflarestorage.com signature) did not. v9.1.128 added the picker to the wrong file. This commit adds it where it belongs.
+
+**New `--dates` CLI flag** (singular `--date` still works for backwards compatibility):
+```
+python scripts/replay_dashboard.py --share --env prod \\
+    --dates 2026-05-11,2026-05-12,2026-05-13,2026-05-14,2026-05-15
+```
+
+`build_html` now accepts an optional `days_map = {date: {"diffs": [...], "base": {...}}}` and a `default_date`. When `>1` date is supplied:
+
+- A cyan-bordered **DATE** pill appears in the replay bar, between the speed button and the timestamp.
+- All days' diffs + base states are bundled inline as `window.__TT_DAYS`.
+- On dropdown change, `_NAV_SCRIPT` swaps `__TT_BASE` / `__TT_DIFFS` to the selected day's bundle, resets the scrubber to bucket 0, flushes the intraday-cache, and re-fires the SSE so the dashboard re-renders against the new state.
+- R2 key becomes `replay/week_<latest>.html`; presigned URL valid for **8 hours** (vs 1 hour for single-day) so a week's worth of switching fits in one signing window.
+
+**`_load_captured_snapshots` now handles both snapshot schemas** — the legacy `{"dashboard": {"/api/state": ...}}` format AND the newer `{"state": ..., "ts_et": ...}` format on the `snapshots-live` branch. The user's actual on-disk snapshots are the newer schema; without this fix every multi-day call fell straight through to the live-fetch fallback.
+
+**Caveat**: real captured snapshots only exist for dates the `state-snapshot` workflow ran. For older dates without captures, the script falls back to live-fetching the dashboard state and synthesizing a 30-min grid labeled with the target date — the dropdown still works but the day's activity isn't historically accurate. Run the snapshot capture for a few days to backfill before relying on multi-day for analysis.
+
+---
+
+## v9.1.128 (2026-05-17) — week-replay: unmissable date picker + canvas null guard
+
+Operator reported "I don't see the dropdown" after v9.1.126. Headless-DOM verification confirmed the dropdown does render (5 options, Fri 05-15 selected, change event re-renders trade list) — but the styling could be missed at a glance. This bump makes it impossible to miss and adds a defensive guard for canvas-less browsers.
+
+- **Label changed from "DATE" to "REPLAY DATE"** so the affordance is obvious even with the dropdown closed.
+- **Pill container** now has a 2px cyan border (was 1px), thicker letter-spacing on the label, larger font (15px on the selected value, was 14px), beefier caret (stroke-width 2.5, was 2), and a soft cyan glow on hover so the picker announces itself.
+- **`drawChart`** now bails out cleanly if `canvas.getContext('2d')` returns null (defensive against headless / canvas-less environments — irrelevant in real browsers but kills the `Cannot read properties of null` traceback in JSDOM and similar tools used for testing).
+
+Verified via JSDOM: `dropdown options: 5 (expected 5)`, `default selected: Fri May 15`, `after change to 05-13 ... trades shown: 4` (the re-render fires correctly).
+
+---
+
+## v9.1.127 (2026-05-17) — chore: drop literal em-dash slipped into replay_backtest_week.py docstring
+
+Fix-forward — v9.1.126 introduced two literal U+2014 em-dashes in the `replay_backtest_week.py` module docstring. CI's em-dash guard flagged it, but the `;`-chained commit + push command ran anyway, so the bad lines landed on `staging`. Replaced both with `--` per the CLAUDE.md rule (`.py` files use the escape, CHANGELOG/README may use the real glyph).
+
+---
+
+## v9.1.126 (2026-05-17) — Week-replay v2: live-engine fidelity + prominent dropdown + one-step runner
+
+Three follow-up fixes to v9.1.125's week-replay viewer.
+
+**1. Switched morning trades from `orb_backtest.py` to `orb_replay_day`.**
+
+The v9.1.125 viewer pulled morning trades from `tools/orb_backtest.py`, which is a simplified 5-min-candle simulator built for lever sweeps. On 2026-05-15 that produced 2 NFLX shorts; the live v10 engine on the same bars produced an AMZN long. The discrepancy comes from the rejected/admitted set diverging between the two code paths.
+
+The v2 viewer drives `tools/orb_replay_day` (which calls `orb.live_runtime` end-to-end against the archived 1-min bars) per (date, portfolio). Trade counts and shares now line up with what the live engine would actually emit: 1-2 morning admits/day, exits paired by `ticket_id`, OR boundaries from the engine's `or_lock` event, stop prices from the admit event.
+
+Week-by-week:
+
+| Date | Main P&L | Val P&L |
+|---|---:|---:|
+| 05-11 | +$48 | +$14 |
+| 05-12 | +$288 | +$87 |
+| 05-13 | +$2,002 | +$601 |
+| 05-14 | +$2,829 | +$847 |
+| 05-15 | -$55 | -$16 |
+| **Total** | **+$5,112** | **+$1,533** |
+
+**2. Made the date dropdown unmissable.**
+
+The v9.1.125 dropdown was a plain `<select>` inside a label — visible but easy to scan past. The v2 dropdown sits in a pill-bordered container with a cyan-accent "DATE" label, larger font, custom caret SVG. The selected date and the dropdown caret are both prominent enough to read from across the room.
+
+**3. New `scripts/build_replay_week.sh` -- one-step end-to-end runner.**
+
+Pulls any missing dates from Alpaca via `tools/fetch_alpaca_bars.py`, runs `tools.orb_replay_day` for each (date, portfolio) in parallel, runs `tools/afternoon_backtest.py` for the EOD r17 leg, then renders the HTML. Defaults to last 5 trading days; override via `DATES=...` env or `OUT=...` env. Picks up Val's $30,185 paper equity automatically.
+
+Run:
+```
+bash scripts/build_replay_week.sh           # last 5 trading days
+DATES=2026-05-12,2026-05-13 bash scripts/build_replay_week.sh
+```
+
+---
+
+## v9.1.125 (2026-05-17) — Week-replay counterfactual viewer + intraday-cache race fix
+
+Two related changes to the replay path:
+
+**1. New `scripts/replay_backtest_week.py` — counterfactual week viewer.**
+
+Standalone HTML that shows what the current Keystone v9.1.114 algorithm WOULD have traded for the past 5 trading days against real Alpaca SIP bars, for both the Main ($100k) and Val ($30,185 live equity) books. Different from `scripts/replay_dashboard.py`, which replays what the live bot actually did — this is the "if the current algo had been running, here's the trade-by-trade behavior" view.
+
+- Date dropdown (defaults to most recent trading day) + Main/Val tabs.
+- Scrubber walks 9:30 → 16:00 ET minute by minute; play/pause + 1×/2×/3× speed + jump buttons (9:30 / 10:30 / 15:30 / 16:00).
+- 12 small candle charts (one per universe ticker) with entry/exit markers, stop reference lines, OR-window highlight (9:30-10:00), and EOD-window highlight (15:00-15:58) overlaid only when the scrubber has passed the entry.
+- Trades sidebar shows the per-day order list with active/closed/future status that updates as the scrubber moves.
+- Self-contained HTML (~1.5 MB inline JSON) — no server required, opens via `file://`.
+
+Run:
+```
+# 1. Backfill any missing days via tools/fetch_alpaca_bars.py.
+# 2. Run per-portfolio backtests (account=100000 for main, 30185 for val).
+# 3. python scripts/replay_backtest_week.py --out replay_week.html
+```
+
+**2. Fix `_intradayCache` race in `scripts/replay_dashboard.py:navigate()`.**
+
+The v9.1.117 cache-flush hook was gated on `typeof window.__tgFlushIntradayCache === 'function'` — silently dropped if app.js hadn't finished loading. Users who scrubbed the timeline immediately on page load saw bars that depended on which snapshot app.js's first fetch happened to land on (60s TTL on `_intradayCache`).
+
+Replaced with a retry-on-backoff IIFE: tries flushing immediately, then retries every 50 ms for up to 500 ms total (10 attempts). Once app.js loads and defines the flusher, the next retry succeeds and the cache clears so the next refresh reads fresh bars. The auto-memory note `replay_ticker_keyed_caches.md` has the follow-up documented.
+
+**Bundled corpus:** added `data/2026-05-14/` + `data/2026-05-15/` (12 tickers × 391 RTH SIP bars each) — pulled from Alpaca during the week-replay generation.
+
+---
+
+## v9.1.124 (2026-05-17) — docs: drop GHA framing from scripts/run_ci.py
+
+The repo moved off GitHub Actions for routine workflows (smoke is now `scripts/run_smoke.py`, monitor is `scripts/run_monitor.py`), but `scripts/run_ci.py` still printed "GHA post-deploy-smoke will auto-fire after merge" on PASS and referenced strategy-tests.yml / version-bump-check.yml / scripts-lint.yml in its module docstring. Updated the docstring to describe what the script actually does (without the GHA framing), point at the sibling local runners (`run_smoke.py`, `run_monitor.py`), and note that the remaining `.github/workflows/*.yml` files are kept for emergency workflow_dispatch only. PASS message now points operators at `python scripts/run_smoke.py` as the post-push verification step.
+
+---
+
+## v9.1.123 (2026-05-17) — chore: ignore data/ui_audit + data/monitor
+
+Fix-forward from v9.1.122 — `git add data/` for the SIP corpus expansion accidentally swept in two untracked subtrees that should never have been committed:
+
+- `data/ui_audit/` — 17 PNG screenshots produced by a separate UI-audit workflow (~150KB binary).
+- `data/monitor/` — local heartbeat output from `scripts/run_monitor.py` (`system_check_*.jsonl`, `latest.json`, ~9MB).
+
+`.gitignore` now excludes both subtrees, and the files were removed from the index via `git rm --cached`. They remain in the working tree for the local workflows that produce them; future `git add data/` calls will skip them.
+
+---
+
+## v9.1.122 (2026-05-17) — Keystone v3.0: first archived clean re-verify of v9.1.114 baseline
+
+The v9.1.114 CHANGELOG claimed +$52,518/yr combined ($39,898 morning + $12,620 EOD) for the Keystone v5 lever sweep but never checkpointed a corresponding `results/keystone/keystone.json`. Today's clean re-run with the same config (15bps VWAP, VIX 25, sym-10m cooldown, TSLA in EOD fence) reproduces **+$50,086/yr combined ($37,466 morning + $12,620 EOD)** — within the skill's 10% investigate threshold, EOD an exact match. The morning drift is attributed to the earnings-calendar population (commit `713aa2b1`, landed 17 min after the v9.1.114 baseline was reported) and weekly VIX refreshes since. No code or lever regression.
+
+**Changes:**
+
+- `results/keystone/keystone.json` — new v3.0 archive (was missing) with full v9.1.114 config, per-quarter table, and explanatory changelog field.
+- `CLAUDE.md` Keystone table — synced to +$50,086/yr combined with a note explaining the CHANGELOG-vs-reproducible drift.
+- `.claude/skills/keystone-backtest/SKILL.md` — full refresh: v9.1.114 config commands (was on v2.1 25bps/VIX 22/30min-loss-cooldown), v3.0 numbers, anti-patterns updated to flag pre-v9.1.111 levers and missing TSLA in EOD fence.
+- `tools/dashboard_analysis.py` — KEYSTONE dict bumped `skip_vix_above` 22→25 and `max_vwap_dev_bps` 25→15 to match production (was lagging v9.1.114; `tools/system_check_bot.py` already correct).
+- `docs/generate_algo_summary_pdf.py` — three headline values: morning $39,898→$37,466, combined $52,518→$50,086, return +74.7%→+67.8%. Rolling min/max range left as-is (needs separate computation).
+- `data/<dates>/*.jsonl` — corpus expansion: 1,500+ tracked day-files now carry the full extended-hours bar range that the SIP corpus delivered (~2x line count per file). Backtest fidelity improves; replay artifacts are unchanged. `CRLF→LF` and mode bits normalized as a side effect.
+
+**How it ran:**
+
+```
+python tools/orb_backtest.py --corpus data --out results/keystone/morning --year-prefix 20 \\
+  --tickers AAPL,AMZN,AVGO,GOOG,META,MSFT,NFLX,NVDA,ORCL,QQQ,SPY,TSLA
+python tools/afternoon_backtest.py --strategy eod_reversal --corpus data \\
+  --out results/keystone/eod --year-prefix 20
+```
+
+Morning 6.5s pkl-cache run, EOD 4m20s full slip-by-slip simulation. 341 corpus days (2025-01-02 to 2026-05-13), 261 morning trade-days, 680 EOD entries, 471 morning entries (57.1% WR). 1 negative quarter of 6 (2025-Q1, -$4,448 combined — structurally weak quarter, NFLX-driven; see Keystone skill).
+
+---
+
 ## v9.1.137 (2026-05-19) — EOD dedup top_n&gt;1 hardening
 
 Forward-proofs the v9.1.133 same-ticker dedup against the edge case
@@ -399,6 +829,8 @@ Operator rollout: lever is staged OFF in code. Set
 is the R21 sweep winner; `13:30` and `14:30` also tested positive but
 less so.
 
+---
+
 ## v9.1.128 (2026-05-18) — Remove `ORB_PORTFOLIO_FIRE`: always-independent only
 
 The mirror-mode escape hatch is gone. After v9.1.127 closed the last
@@ -757,6 +1189,8 @@ threshold instead of the configured 2%.
   live equity. `risk_per_trade_pct=1%` × $30k = $300 risk per entry
   (was $1,021); daily-kill threshold `2%` × $30k = $600 (was $2,042).
 
+---
+
 ## v9.1.121 (2026-05-17) — INGEST_DISABLE_WS env flag for prod-priority SIP slot
 
 Alpaca's SIP feed has a hard 1-connection-per-account limit (held for 90s
@@ -855,6 +1289,72 @@ Bundled test-isolation fix:
   `test_three_portfolios_independent`. Function-patch (not env var)
   because per-file `isolated_env` fixtures iterate `os.environ` and wipe
   every `ORB_*` key, which would have nuked an env-var-based override.
+## v9.1.118 (2026-05-17) — Replay parity: Val/Gene tabs get the same scrubber decorations as Main
+
+The replay nav script targeted three Main-only ID selectors, so operators on the
+Val (or Gene) tab during a scrubber sweep saw a degraded experience versus Main:
+
+- **Position rows never auto-expanded their inline intraday charts.** The
+  `_autoExpandCharts` selector `#pos-body tr[data-pos-ticker]` matched only
+  Main's positions table. Val/Gene use `[data-f="pos-body"]` (the IIFE-2
+  renderer per CLAUDE.md's cross-tab rule), so their rows stayed collapsed
+  and the operator had to click each row by hand after every scrubber move.
+- **Day P&L sparkline never drew under the Val/Gene KPI.** `_pnlSparkline` was
+  hard-coded to `getElementById('k-pnl')`, hitting only Main's KPI.
+- **Scan-paused / kill banner stayed verbose on Val/Gene.** The banner
+  simplification was hard-coded to `getElementById('banner')`.
+
+Fix in `scripts/replay_dashboard.py`: all three call sites now iterate over
+both ID and `[data-f="..."]` selectors so the decoration fires once per panel.
+Existing per-mount caches (`card.__pnlSparkCv`) already key off the card, so
+Main and Val/Gene get their own canvases without collision.
+
+Also bundled (per the [[replay-em-dash-debt]] auto-memory): 18 literal em-dash
+characters added in v9.1.115-v9.1.117 across `scripts/replay_dashboard.py` (12),
+`scripts/gen_scenarios.py` (3), `dashboard_server.py` (2), and
+`scripts/replay_today.py` (1) are replaced with `--` in comments and
+string-escape `—` in the JSON error message. `scripts/run_ci.py` step 3
+(em-dash check) was failing on every staging push because of these; now drops
+to a clean diff against `origin/main` until new debt is added.
+
+No production behavior change. Replay-only fix.
+
+## v9.1.117 (2026-05-16) — Replay determinism: flush intraday cache on scrubber move
+
+Jumping the replay scrubber directly to EOD produced different chart bars than
+scrolling through to the same scrubber position. Root cause: `_intradayCache` in
+`dashboard_static/app.js` is keyed only by ticker with a 60s wall-clock TTL.
+The replay `fetch` shim returns *time-dependent* payloads (bars, lifecycle,
+`_stop_refs`, mark price all derived from `currentState().server_time_label`),
+but the cache check fires before the shim — so the first chart payload for a
+ticker was frozen for 60s of real time, far longer than any scrubber sweep at
+3× playback (≈150 ms/tick).
+
+Fix:
+- Expose `window.__tgFlushIntradayCache()` from app.js (no behavior change in
+  production — the 60s TTL still self-heals live charts).
+- `scripts/replay_dashboard.py` calls the flusher at the top of `navigate()`
+  so every scrubber move re-fetches chart payloads against the new scenario
+  time.
+
+After this fix, jumping to 15:55 and scrolling to 15:55 produce identical
+bars / lifecycle / stop overlays / mark.
+
+## v9.1.116 (2026-05-16) — Dashboard replay system + live staging improvements
+
+Full-day time-travel replay (scripts/replay_dashboard.py, gen_scenarios.py):
+session timeline bar with OR/ACTIVE/QUIET/EOD zones, event markers (entry/exit/kill),
+white scrubbing cursor tracking ET time. Chart overlays: stop (red), 1R (amber),
++2.5R target (green), current mark (blue) — bypasses TDZ bug in app.js line 1962.
+Auto-expanded inline charts for open positions; progress bar above chart; EOD
+positions with OR-anchored stops so progress bars render. Val tab now shows
+positions (field mapping fix). Day P&L sparkline. Proximity matrix sparklines.
+"Replay Day" button in staging header → POST /api/replay/today endpoint builds
+live-data replay from snapshots-live branch snapshots (falls back up to 7 trading
+days). Scan-paused banner: slate/soft styling for expected mid-day state, concise
+one-line text. ||| divider elements hidden off-hours. ORB + EOD sections fused into
+one card. Backtest baseline hidden globally. Startup notification updated: v10 ORB
+description instead of retired Tiger Sovereign; [STAGING] prefix for staging env.
 
 ## v9.1.115 (2026-05-16) — RTH state snapshot logging + time-travel dashboard replay
 

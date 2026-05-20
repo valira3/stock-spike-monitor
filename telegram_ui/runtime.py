@@ -112,15 +112,20 @@ def send_startup_message():
     n_paper_pos = len(tg.positions)
     paper_cash_fmt = f"{tg.paper_cash:,.2f}"
 
+    import os as _os
+    is_staging = "staging" in _os.environ.get("RAILWAY_SERVICE_NAME", "").lower() \
+              or "staging" in _os.environ.get("DASHBOARD_BASE_URL", "").lower()
+    env_tag = "\U0001f9ea [STAGING] " if is_staging else ""
+
     main_msg = (
-        f"\U0001f680 v{tg.BOT_VERSION} deployed\n"
+        f"{env_tag}\U0001f680 v{tg.BOT_VERSION} deployed\n"
         f"{tg.CURRENT_MAIN_NOTE}\n"
         f"{SEP}\n"
         f"Universe: {universe}\n"
-        f"Strategy: Tiger Sovereign | Phase 1-4\n"
-        f"Phase 1: QQQ 9 EMA + 09:30 AVWAP\n"
+        f"Strategy: v10 ORB anchor + EOD reversal\n"
+        f"OR window: 9:30-10:00 ET | entries 10:00-11:00 ET\n"
         f"Scan:     every {tg.SCAN_INTERVAL}s\n"
-        f"Stops:    entry \u00b1 0.75% (cap)\n"
+        f"Stops:    ATR\u00d71.75 | partial at 1R | target 2.5R\n"
         f"{SEP}\n"
         f"\U0001f4c4 Paper:  ${paper_cash_fmt} cash | {n_paper_pos} positions\n"
         f"Market:   {market_status}\n"
@@ -204,8 +209,6 @@ def run_telegram_bot():
     app.add_handler(CommandHandler("menu", telegram_commands.cmd_menu))
     # v3.4.32 \u2014 runtime ticker universe management
     app.add_handler(CommandHandler("ticker", telegram_commands.cmd_ticker))
-    # v6.18.0 \u2014 daily pre-open market expectations brief
-    app.add_handler(CommandHandler("brief", telegram_commands.cmd_brief))
 
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(monitoring_callback, pattern="^monitoring_"))

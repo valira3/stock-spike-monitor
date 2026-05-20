@@ -110,22 +110,24 @@ sweep runs.
 
 **Strategy:** v10 ORB morning (9:30-11:00 ET) + r17 EOD reversal addon (15:00-15:58 ET). No blocklist. VWAP-chase gate **15bps** on 6 mega-caps. Sym-10m cooldown. VIX ceiling **25**. EOD 6-ticker fence (TSLA added v9.1.113).
 
-**Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr):**
+**Results (SIP corpus, Jan 2025-May 2026, 341 days, compounded, annualized to 1yr; archived 2026-05-17 in `results/keystone/keystone.json` v3.0):**
 
 | Component | Ann/yr | Notes |
 |---|---:|---|
-| Morning ORB | +$39,898 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown |
+| Morning ORB | +$37,466 | VWAP **15bps** gate + VIX ≤**25** + sym-10m cooldown |
 | EOD reversal | +$12,620 | ORCL/AAPL/MSFT/AVGO/TSLA fence, 35% notional, 15:00-15:58 ET |
-| **Combined** | **+$52,518** | **+74.7% on $100k / 17mo / 1/6 neg quarters** |
+| **Combined** | **+$50,086** | **+67.8% on $100k / 17mo / 1/6 neg quarters** |
 
 | Quarter | Morning | EOD | Combined |
 |---|---:|---:|---:|
-| 2025-Q1 | -$5,406 | +$1,102 | -$4,304 |
-| 2025-Q2 | +$6,298 | +$6,994 | +$13,291 |
-| 2025-Q3 | +$9,999 | -$1,074 | +$8,926 |
-| 2025-Q4 | +$14,260 | +$2,046 | +$16,306 |
-| 2026-Q1 | +$10,048 | +$6,414 | +$16,462 |
-| 2026-Q2 | +$18,791 | +$1,594 | +$20,385 |
+| 2025-Q1 | -$5,550 | +$1,102 | -$4,448 |
+| 2025-Q2 | +$6,281 | +$6,994 | +$13,274 |
+| 2025-Q3 | +$9,959 | -$1,074 | +$8,886 |
+| 2025-Q4 | +$13,733 | +$2,046 | +$15,779 |
+| 2026-Q1 | +$5,094 | +$6,414 | +$11,508 |
+| 2026-Q2 | +$21,181 | +$1,594 | +$22,775 |
+
+> The v9.1.114 CHANGELOG initially reported +$52,518/yr combined (+$39,898 morning, +$12,620 EOD) from the lever sweep. The morning leg was revised down to +$37,466/yr on 2026-05-17 after the first clean re-verify; the EOD leg reproduces the original claim exactly. The drift is attributed to the earnings-calendar population (commit 713aa2b1, +17 min after v9.1.114) and weekly VIX refreshes landed after the sweep's numbers were captured. No code or lever regression.
 
 **Standard backtest approach (combined, compounded, annualized):**
 Run morning + EOD in parallel, sum P&Ls, annualize by `× (252/341)`. Always use `ORB_COMPOUND_DAILY=1` and `AFT_COMPOUND_DAILY=1`.
@@ -256,12 +258,21 @@ mcp__github__get_file_contents(
 )
 ```
 
-The cron workflow `.github/workflows/state-snapshot.yml` updates `latest.json` every 10 min during US RTH (Mon-Fri, 13:00-21:00 UTC) by running `python -m tools.state_snapshot` against `/api/state` + `/api/executor/val` + `/api/executor/gene`. Daily JSONL history at `data/snapshots/YYYY-MM-DD.jsonl`.
-
-For an immediate refresh outside the cron window: Actions tab -> state-snapshot -> Run workflow (`workflow_dispatch`).
+**State-snapshot path retired v10.0.1** (GHAs are unstable; we run scheduled production tasks via local cron now). `tools/state_snapshot.py` is still callable directly when a snapshot is needed for forensic diff — run `python -m tools.state_snapshot --out data/snapshots/<date>.json` on the operator's box. Live `/api/state` remains the canonical source for current state during the session.
 
 ## Operator preferences
 - **Timezone (updated v7.89.0)**: always show times to the operator in US Eastern Time (ET — EDT during DST, EST otherwise). When referencing market hours or schedules, list ET first and only include UTC alongside if necessary for disambiguation. Example: "next cron tick at 09:57 ET (13:57 UTC)". The previous CT preference (v7.72.0) is retired so user-facing times match the market clock the bot keys all decisions off of. Internal code, log timestamps, and forensic tags continue to use UTC/ET as designed; storage-layer ISO timestamps remain UTC.
+
+## Accumulated gotchas
+Read `tasks/lessons.md` at session start — it accumulates one-line gotchas that have bitten us twice. Examples already there: corpus data must never be tracked in git, Dockerfile `COPY` lines drift when modules are deleted, Python 3.9 trips on PEP 604 `X | None` syntax. Add to it when something new bites.
+
+## Pre-commit hygiene
+The `.claude/hooks/` directory has three shell hooks that fire automatically:
+- `protect-files.sh` (PreToolUse, Edit|Write|MultiEdit): blocks edits to `.env*`, `bot_version.py`, `requirements.txt`, runtime state files, and the corpus directories.
+- `format-edits.sh` (PostToolUse, Edit|Write|MultiEdit): blocks commits with literal em-dashes (U+2014) in `.py` files; best-effort `ruff format --check` when ruff is installed.
+- `audit-command.sh` (PreToolUse, Bash): logs every shell command to `~/.claude/audit/stock-spike-monitor/audit-YYYY-MM-DD.log`; pattern-flags risky shapes (`--force`, `--no-verify`, `gh pr merge --admin`, env-var leaks) to a separate `flagged-YYYY-MM-DD.log`. Never blocks — audit trail only.
+
+Before opening a PR, run the `qcheck` skill — it codifies the skeptical-staff-engineer review against CLAUDE.md mandatory PR rules + `tasks/lessons.md` accumulated gotchas + Tier-A `run_ci.py` parity.
 
 ## Before pushing
 

@@ -5,16 +5,33 @@ __pycache__/
 # Skills, settings, and commands remain tracked (.claude/skills/, .claude/settings*.json).
 .claude/scheduled_tasks.lock
 .claude/projects/
+replay_week.html
 data/.bt_cache/
+data/.cache_v2/
+data/ui_audit/
+data/monitor/
+data/snapshots/
 # Corpus protection (2026-05-19): rth-expand branch has 3,150 corpus dates
 # main does not. Without this rule, a checkout of rth-expand into the working
 # tree shows those dates as untracked, and `git add` sweeps them in (PR #799
 # mishap). Tracked dates already in main keep tracking — gitignore only
-# affects untracked files.
+# affects untracked files. Corpus untracked wholesale on staging on 2026-05-20.
 data/20*/
-data/monitor/
-data/snapshots/
-results/
+data/bars/
+data/dynamic_universe/
+data/tick-data/
+data/tick_cache/
+data/tickers.json
+data/preflight/
+data/earnings_watcher/
+data/trade_log.jsonl
+results/*
+!results/keystone/
+results/keystone/*
+!results/keystone/keystone.json
+!results/bench/
+results/bench/*
+!results/bench/*.md
 CODE_REVIEW.md
 .env
 .env.monitor
@@ -26,3 +43,19 @@ paper_state.json
 debug_replay.py
 trade_log.jsonl
 paper_state_main.json
+data/snapshots/
+# v10.0.1 — engine state snapshots from orb/persistence.py on save tick.
+# They land in repo root only when the bot runs without a /data volume
+# (local dev); production writes to /data/orb_state_*.
+orb_state_*.json
+
+# Broad-universe research data — too large to commit
+data_pm_universe/
+data_broad/
+data_rth_expand/
+
+# OS noise picked up on the macOS dev machine
+.DS_Store
+*.webloc
+simulator/corpus/day_index.json
+simulator/corpus/synthetic/

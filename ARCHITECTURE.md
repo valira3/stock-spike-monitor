@@ -873,13 +873,12 @@ notification entry used by paper_state, error_state, and the scheduler.
 ### broker/ (post-v5.11.2)
 
 v5.11.2 split the broker / position-management surface out of
-`trade_genius.py`. This is real-money path code; the synthetic harness
-(`synthetic_harness/scenarios/`) exercises every function via
-`m.<name>(...)` dispatch. The v5.11.x deprecation aliases that mirrored
-this surface back into `trade_genius`'s namespace were purged in v5.12.0;
-callers (synthetic_harness, smoke_test, telegram_commands) now import the
-broker names directly from `broker.{stops, orders, positions, lifecycle}`.
-Strict layering: stops → orders → positions → lifecycle.
+`trade_genius.py`. This is real-money path code. The v5.11.x deprecation
+aliases that mirrored this surface back into `trade_genius`'s namespace
+were purged in v5.12.0; callers (smoke_test, telegram_commands) now
+import the broker names directly from
+`broker.{stops, orders, positions, lifecycle}`. Strict layering:
+stops → orders → positions → lifecycle.
 
 | File | Responsibility |
 | --- | --- |
@@ -897,8 +896,8 @@ owns the Alpaca-paper-keys handshake, signal-bus subscription, and per-
 executor error rings; the subclasses just set `NAME` / `ENV_PREFIX`. The
 v5.11.x deprecation aliases that bridged extracted helpers back into
 `trade_genius`'s namespace have been removed in v5.12.0 — callers
-(synthetic_harness, smoke_test, telegram_commands) now import from the
-canonical packages directly.
+(smoke_test, telegram_commands) now import from the canonical packages
+directly.
 
 | File | Responsibility |
 | --- | --- |
@@ -1179,8 +1178,6 @@ persistence.py             # v5.1.8 SQLite-backed state store (/data/state.db)
 shadow_pnl.py              # v5.2.0 real-time shadow-strategy P&L tracker
 telegram_commands.py       # slash-command handlers
 smoke_test.py              # local + prod smoke tests
-synthetic_harness/         # 50-scenario byte-equal replay harness
-    runner.py, recorder.py, market.py, clock.py, scenarios/, goldens/
 tests/golden/              # v5.11.0 byte-equal harness gating engine/* moves
     record_session.py, verify.py, v5_10_7_session_2026-04-28.jsonl
 scripts/
@@ -1422,9 +1419,8 @@ instead of submitting an order Alpaca will reject. If
 `[SIZING_FALLBACK]` and falls back to the legacy
 `int(dollars_per_entry // price)` path so live trading never
 hard-fails on a transient API error. Paper book sizing
-(`paper_shares_for` / `PAPER_DOLLARS_PER_ENTRY`) is **unchanged** and
-remains byte-equal under the synthetic-harness goldens. Per spec
-C-R7, SPY/QQQ are pinned filter rows on the dashboard and serve as
+(`paper_shares_for` / `PAPER_DOLLARS_PER_ENTRY`) is **unchanged**. Per
+spec C-R7, SPY/QQQ are pinned filter rows on the dashboard and serve as
 L-P1-G1/G2 / S-P1-G1/G2 inputs; they are NEVER traded directly.
 
 ---
@@ -2372,33 +2368,7 @@ ungated from `paper_holds`, `_v521_all_shadow_config_names` registry,
 (per-config open + recent-closed list, Shadow tab visibility), plus
 dashboard-route contract tests against a stub aiohttp app.
 
-### 13.2 Synthetic harness (`synthetic_harness/`)
-
-50 named, byte-equal-replay scenarios under
-`synthetic_harness/scenarios/{long_entries, short_entries,
-long_closes, short_closes, scan_loops, edge_cases}.py` with goldens
-under `synthetic_harness/goldens/*.json`. CLI:
-
-```
-python -m synthetic_harness list
-python -m synthetic_harness record <scenario>
-python -m synthetic_harness replay <scenario>
-python -m synthetic_harness diff   <scenario>
-```
-
-Each scenario seeds module state through `_reset_module_state`, drives
-the bot through a `FrozenClock` and `SyntheticMarket`, and records
-`OutputRecorder` events. `replay_scenario()` strips
-`trade_genius_version` from both the observed and golden dicts before
-compare (v4.11.5), so a `BOT_VERSION` bump alone never invalidates
-all 50 goldens. `record_scenario()` still stamps the current version
-into freshly-recorded goldens.
-
-`smoke_test.py --synthetic` lifts the local smoke total by replaying
-all 50 goldens. **v5.1.0 / v5.1.1 / v5.1.2 are observation-only**, so
-the 50/50 byte-equal still passes after each release without re-record.
-
-### 13.3 CI guards
+### 13.2 CI guards
 
 - **`version-bump-check.yml`** — blocks PRs to `main` unless **both**
   `BOT_VERSION` in `trade_genius.py` and the top `## ` heading in

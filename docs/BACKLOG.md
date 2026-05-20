@@ -12,6 +12,27 @@ engineering task). Don't leave silently completed items here.
 
 ## Research
 
+### Broad-market premarket breakout scanner → dynamic daily watchlist (2026-05-19)
+
+**Original ask.** "What if we look at the very broad market for potential breakout signals during premarket and add those stocks to our breakout watch during the day (temporarily, just for that day). Can you build a backtest for that?"
+
+**Status to date.** Operator + prior session explored the direction in R18-R21 (dynamic-universe research). Expansion to **S&P 500 was the most promising** breadth — broader than that introduced too much noise, narrower than that left edge on the table. The premarket scanner + R18-R21 sweep scripts + ~32 GB of premarket bar corpus under `data_pm_universe/` are local on **ValsSpectre** (prior dev machine), NOT in this repo.
+
+The headline from §9 of the local `research_guide.md` (paraphrased): the single highest-ROI next test is **concurrent-cap relief** — at relaxed entry filters, the R18 NR-N premarket signal showed crowd-out of ~$25k/yr against the fixed `ORB_MAX_CONCURRENT_RISK_DOLLARS=$2000` cap. Raising the cap to $3k-$4k may flip the OOS R18 nr5_top10 variant (-$1.9k/yr) into positive territory **without any new signal infrastructure**.
+
+**Production morning ORB context.** Currently runs a fixed 12-ticker universe (`AAPL, AMZN, AVGO, GOOG, META, MSFT, NFLX, NVDA, ORCL, QQQ, SPY, TSLA`). Every day starts on the same 12 names regardless of which had premarket setups. The dynamic-universe layer would sit upstream of the existing engine — R21/R26 exits, VWAP-chase gate, etc. still apply.
+
+**Two parallel test paths.**
+
+1. **Concurrent-cap relief sweep** (cheap, fast) — 4 cells: `ORB_MAX_CONCURRENT_RISK_DOLLARS ∈ {$2000, $2500, $3000, $4000}`. Runs against existing 12-ticker corpus; no new data needed. Tests whether the cap is currently the binding constraint on edge.
+2. **S&P 500 premarket scanner** (expensive, real direction) — requires retrieving the ValsSpectre artifacts OR rebuilding: (a) pull S&P 500 premarket bar corpus via Polygon REST (the consolidated `pull-bars.yml` workflow — see Engineering Phase 4), (b) port `orb/premarket_scanner.py` + tests, (c) wire a `ORB_DYNAMIC_UNIVERSE` env that, when ON, replaces the static `UNIVERSE` with the top-K scanner output, (d) A/B in the `combined_replay` harness.
+
+**Action.** Start with test path (1) — it's a 4-cell, ~2-minute sweep on the warm cache and directly tests the §9 thesis. If positive, the result strengthens the case for (2). If negative, the cap isn't the binding constraint and the broader scanner is the only remaining lever.
+
+**Owner.** Next research round. Path (2) blocked on artifact retrieval from ValsSpectre OR rebuild.
+
+---
+
 ### Chase-fence expansion to TSLA + NVDA (2026-05-13)
 
 **Source.** Live observation 2026-05-13: TSLA + NVDA dominated today's trading

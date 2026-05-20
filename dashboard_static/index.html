@@ -23,7 +23,7 @@
      contrast). Operator first-glance should answer "what am I
      holding?" not "what's SPY doing?". Smaller font + dim text +
      less padding makes it secondary context. -->
-<div id="idx-strip" class="idx-strip idx-strip-demoted" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:10.5px;color:#9ca3af;padding:4px 14px;white-space:nowrap;position:relative">
+<div id="idx-strip" class="idx-strip idx-strip-demoted" title="Major indices (SPY/QQQ/DIA/IWM/VIX). [AH] = after-hours move. [NQ/ES …] = front-month future vs prior close." style="background:#0a0d12;border-bottom:1px solid #1f2937;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;font-size:13px;color:#9ca3af;padding:6px 14px;white-space:nowrap;position:relative">
   <span id="idx-placeholder" style="color:#5b6572">indices loading…</span>
 </div>
 
@@ -70,17 +70,48 @@
     <span style="color:#e7ecf3">Live</span>
     <span id="h-tick" style="color:#e7ecf3;font-variant-numeric:tabular-nums" title="Seconds until next scan loop iteration" aria-label="next scan countdown">&mdash;</span>
   </span>
-  <!-- v4.11.0 — per-executor health pill. Tap to expand last 10 errors.
-       Bound to whichever tab is active (main/val/gene). -->
-  <button type="button" id="tg-health-pill" class="tg-health-pill h-green" aria-haspopup="true" aria-expanded="false" aria-label="Errors today" title="Errors today">
-    <span id="tg-health-dot" class="tg-health-dot"></span>
-    <span id="tg-health-count" class="tg-health-count">0</span>
-  </button>
-  <div id="tg-health-pop" class="tg-health-pop" role="dialog" aria-label="Recent errors" style="display:none">
-    <div class="tg-health-pop-head"><span id="tg-health-pop-title">Errors today</span><button type="button" id="tg-health-close" aria-label="Close">&times;</button></div>
-    <div id="tg-health-list" class="tg-health-list"><div class="tg-health-empty">No errors today.</div></div>
-  </div>
   <span id="tg-brand-clock" title="Current US/Eastern (ET) market clock" style="font-size:14px;font-weight:600;color:#ffffff;font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">&mdash;</span>
+  <!-- Replay icon button — builds a multi-day scrubable replay from the last 5 trading days' snapshots -->
+  <button type="button" id="tg-replay-btn"
+    title="Replay last 5 trading days (date dropdown + time-travel scrubbing)"
+    onclick="(function(btn){
+      if (btn.disabled) return;
+      btn.disabled = true;
+      var orig = btn.innerHTML;
+      btn.innerHTML = '<span style=&quot;animation:spin 1s linear infinite;display:inline-block&quot;>&#8987;</span>';
+      fetch('/api/replay/today', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            credentials:'include', body:'{}'})
+        .then(function(r){ return r.ok ? r.json() : {ok:false,error:'HTTP '+r.status}; })
+        .then(function(d){
+          if (d.ok && d.url) {
+            window.open(d.url, '_blank', 'noopener');
+          } else {
+            alert('Replay unavailable: ' + (d.error || 'no snapshots found'));
+          }
+        })
+        .catch(function(e){ alert('Replay error: ' + e.message); })
+        .finally(function(){ btn.disabled = false; btn.innerHTML = orig; });
+    })(this)"
+    style="padding:5px 7px;background:transparent;color:#374151;
+           border:1px solid #1f2937;border-radius:5px;cursor:pointer;
+           font-size:15px;line-height:1;transition:color .15s,border-color .15s"
+    onmouseover="this.style.color='#60a5fa';this.style.borderColor='#1d4ed8'"
+    onmouseout="this.style.color='#374151';this.style.borderColor='#1f2937'">&#127916;</button>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+</div>
+
+<!-- Session timeline bar — full-width, zones + real-time ET cursor only.
+     Populated by renderSessionBar(s) in app.js on each state poll. -->
+<div id="tg-session-bar" style="background:#070a0f;border-bottom:1px solid #0d1117;
+     position:sticky;top:0;z-index:100">
+  <div id="tg-stl-track" style="position:relative;height:22px;overflow:hidden">
+    <div id="tg-stl-zones"  style="position:absolute;inset:0"></div>
+    <div id="tg-stl-events" style="position:absolute;inset:0;pointer-events:none"></div>
+    <div id="tg-stl-cursor" style="position:absolute;top:0;bottom:0;left:0;width:2px;
+         background:rgba(255,255,255,0.7);box-shadow:0 0 6px rgba(255,255,255,0.5);
+         transform:translateX(-50%);pointer-events:none;transition:left .5s linear"></div>
+  </div>
 </div>
 
 <!-- v4.0.0-beta / v5.3.0 / v5.14.0 — tab switcher (Main / Val / Gene / Lifecycle).
@@ -157,12 +188,12 @@
     <section id="v10-day-status" class="v10-banner" style="padding:14px 18px;background:#0d1117;border:1px solid #1f2937;border-radius:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-family:'Satoshi',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
       <span style="font-weight:700;color:#7dd3fc;font-size:14px;letter-spacing:0.5px">v10 ORB</span>
       <span id="v10-mode-pill" class="v10-pill" style="padding:3px 10px;display:inline">…</span>
-      <span class="v10-divider" style="color:#374151">|</span>
-      <span style="color:#9ca3af;font-size:12px">VIX</span>
+      <span id="v10-vix-divider" class="v10-divider" style="color:#374151">|</span>
+      <span id="v10-vix-label" style="color:#9ca3af;font-size:12px">VIX</span>
       <span id="v10-vix" style="color:#e5e7eb;font-weight:600">—</span>
       <span id="v10-vix-pass" class="v10-pill v10-pass" style="display:inline">—</span>
-      <span class="v10-divider" style="color:#374151">|</span>
-      <span style="color:#9ca3af;font-size:12px">Day</span>
+      <span id="v10-day-divider" class="v10-divider" style="color:#374151">|</span>
+      <span id="v10-day-label" style="color:#9ca3af;font-size:12px">Day</span>
       <span id="v10-day-state" style="color:#e5e7eb;font-weight:600">—</span>
       <span id="v10-atr-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
       <span id="v10-atr-pill" class="v10-pill v10-pill-atr" title="ATR-based stop placement (v8.0.0+)">ATR×—</span>
@@ -178,6 +209,13 @@
       <span id="v10-chase-pill" class="v10-pill v10-pill-chase" title="Mega-cap chase-fence rejections this session (v9.0.0+)">chase 0</span>
       <span id="v10-cooldown-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
       <span id="v10-cooldown-pill" class="v10-pill v10-pill-cool" title="Active post-loss cooldowns (v9.1.26+)">cooldown 0</span>
+      <!-- v10.0.0 -- broad-universe scanner + sector-cluster gate -->
+      <span id="v10-universe-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-universe-pill" class="v10-pill v10-pill-universe" title="v10 dynamic-universe scanner status (compression top-K from S&P 500)">Univ —</span>
+      <span id="v10-cluster-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-cluster-pill" class="v10-pill v10-pill-cluster" title="Sector-cluster day-skip gate (v10.0.0). Skips the day when top-K picks share a sector at >= threshold concentration.">cluster —</span>
+      <span id="v10-picks-pill-divider" class="v10-divider" style="color:#374151;display:none">|</span>
+      <span id="v10-picks-pill" class="v10-pill v10-pill-picks" title="Today's scanner picks (hover for sector breakdown)">picks —</span>
     </section>
 
     <!-- v7.58.0 -- renamed from "v10 Projection" and collapsed to one

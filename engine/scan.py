@@ -1,11 +1,5 @@
 """v5.26.0 / v6.9.0 \u2014 engine.scan: per-minute scan loop (spec-strict).
 
-v6.9.0 note: backtest-mode callers may pre-warm indicator state using
-``backtest.indicator_cache.get_indicators`` (L2 cache) before driving
-the scan loop. The live code path is unchanged; ``get_indicators``
-is a pure-read call that returns cached Parquet data and does not
-affect process state.
-
 Stage 3 of the Tiger Sovereign v15.0 spec-strict cut deleted Volume
 Bucket / Volume-Baseline / Permit-state observability, regime-shield
 gating telemetry, and the V510/V5100/V561/V572 log-tag clusters. What
@@ -31,11 +25,9 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import v5_10_1_integration as eot_glue
 import volume_profile
 
 from engine.callbacks import EngineCallbacks
-from engine.extended_universe import effective_scan_tickers
 from engine.timing import minutes_since_et_midnight
 
 # v7.14.0: v10 ORB live-runtime shadow integration.
@@ -55,17 +47,85 @@ def _tg():
     return _sys.modules.get("trade_genius") or _sys.modules.get("__main__")
 
 
-def _v531_build_permit_state(tg, ticker: str) -> dict | None:
-    """v5.31.0 \u2014 assemble a per-minute permit_state blob for the
-    indicator snapshot stream. Captures boundary-hold (LONG + SHORT) and
-    the live trail-stop / stage of any open position so the lifecycle
-    overlay's per-minute trail-stop staircase has data.
+# v10.0.0 -- broad-universe scanner pre-warm. One-shot per session,
+# triggered from scan_loop's pre-open window at ~09:24 ET. Fires
+# in a daemon thread so it doesn't block the 60s scan cadence.
+_v10_prewarm_done_for: set = set()
+_v10_prewarm_lock = __import__("threading").RLock()
 
-    Failure-tolerant \u2014 returns None on any error so the caller can
-    pass it through cleanly. Boundary-hold reads use the same
-    ``eot_glue.evaluate_boundary_hold_gate`` call the gate stack uses;
-    trail-stop snapshots read off ``pos['trail_state']`` (the TrailState
-    dataclass attached lazily by ``_run_sentinel``).
+
+def _v10_prewarm_dynamic_universe(now_et) -> None:
+    """Fire the in-process premarket pull at ~09:24 ET so the
+    broad-universe scanner's data is ready when ensure_session_started
+    runs at the 09:30 ET RTH open. Idempotent: one fire per ET date.
+    Background thread; safe to call from inside scan_loop.
+
+    Skips when ORB_DYNAMIC_UNIVERSE=0 or when the bar archive directory
+    can't be resolved. On failure, the auto-rebuild path inside
+    orb.live_premarket_scanner.compute_universe is the safety net.
+    """
+    import os as _os
+    if _os.environ.get("ORB_DYNAMIC_UNIVERSE", "1") != "1":
+        return
+    # Only fire in the 09:20-09:29 ET window (one minute of slack
+    # before the cron-style 09:24 target so scan-cadence drift can't
+    # miss it; the inner once-per-date guard prevents double-fire).
+    if not (now_et.hour == 9 and 20 <= now_et.minute <= 29):
+        return
+    date_iso = now_et.strftime("%Y-%m-%d")
+    with _v10_prewarm_lock:
+        if date_iso in _v10_prewarm_done_for:
+            return
+        _v10_prewarm_done_for.add(date_iso)
+
+    def _worker():
+        try:
+            import json as _json
+            from datetime import date as _date
+            from pathlib import Path as _Path
+            from tools.pull_premarket_for_scanner import (
+                rebuild_premarket_bars_for_date,
+            )
+            from orb.live_premarket_scanner import default_bar_archive_root
+
+            uni_path = _Path("data/universe/sp500.json")
+            if not uni_path.is_file():
+                uni_path = _Path(
+                    _os.environ.get("TG_DATA_ROOT", "/data")
+                ) / "universe" / "sp500.json"
+            try:
+                uni_doc = _json.loads(uni_path.read_text())
+                tickers = list(uni_doc.get("tickers") or [])
+            except Exception:
+                tickers = []
+            if not tickers:
+                logger.warning("[V100-SCANNER-PREWARM] no universe; skip")
+                return
+            n = rebuild_premarket_bars_for_date(
+                target_date=_date.fromisoformat(date_iso),
+                out_root=default_bar_archive_root(),
+                universe_tickers=tickers,
+            )
+            logger.info(
+                "[V100-SCANNER-PREWARM] date=%s pulled %d bars across %d tickers",
+                date_iso, n, len(tickers),
+            )
+        except Exception:
+            logger.exception("[V100-SCANNER-PREWARM] worker failed")
+
+    import threading as _th
+    _th.Thread(
+        target=_worker, name="v10-scanner-prewarm", daemon=True,
+    ).start()
+
+
+def _v531_build_permit_state(tg, ticker: str) -> dict | None:
+    """v5.31.0 \u2014 per-minute permit_state blob for the indicator snapshot
+    stream.
+
+    v10.0.1: boundary-hold gate deleted along with the rest of the
+    eot_glue surface. The blob still emits trail-stop / stage data for
+    the lifecycle overlay's per-minute trail-stop staircase.
     """
     try:
         sym = (ticker or "").upper()
@@ -77,21 +137,7 @@ def _v531_build_permit_state(tg, ticker: str) -> dict | None:
         except Exception:
             pass
 
-        bh_long = None
-        bh_short = None
-        try:
-            if or_h is not None and or_l is not None:
-                _r_l = eot_glue.evaluate_boundary_hold_gate(sym, "LONG", or_h, or_l)
-                bh_long = bool(_r_l.get("hold")) if isinstance(_r_l, dict) else None
-                _r_s = eot_glue.evaluate_boundary_hold_gate(sym, "SHORT", or_h, or_l)
-                bh_short = bool(_r_s.get("hold")) if isinstance(_r_s, dict) else None
-        except Exception:
-            pass
-
         # Open-position trail-state snapshot for the lifecycle overlay.
-        # Captures the per-minute trail-stop ladder + stage transitions
-        # so a backtest can reconstruct the exact stop the engine would
-        # have proposed at any minute the position was alive.
         trail = None
         try:
             for _attr, _label in (("positions", "LONG"), ("short_positions", "SHORT")):
@@ -122,8 +168,8 @@ def _v531_build_permit_state(tg, ticker: str) -> dict | None:
             trail = None
 
         return {
-            "boundary_hold_long": bh_long,
-            "boundary_hold_short": bh_short,
+            "boundary_hold_long": None,
+            "boundary_hold_short": None,
             "or_high": or_h,
             "or_low": or_l,
             "trail": trail,
@@ -143,14 +189,8 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.exception("_refresh_market_mode failed (observation only)")
 
     # v6.14.4 \u2014 wire the volume_bucket baseline refresh into the live
-    # scan loop. The hook itself self-guards (no-op before 09:29 ET, and
-    # idempotent within a single session via _baseline_refreshed_for_date).
-    # Prior to this release the function was exported but never invoked,
-    # so the baseline stayed empty and the dashboard sat in COLDSTART.
-    try:
-        eot_glue.refresh_volume_baseline_if_needed(now_et)
-    except Exception:
-        logger.exception("refresh_volume_baseline_if_needed failed")
+    # v10.0.1 -- eot_glue.refresh_volume_baseline_if_needed call deleted
+    # along with the rest of the v5_10_1_integration surface.
 
     is_weekend = now_et.weekday() >= 5
     # v7.72.0 -- boundary moved from 09:35 to 09:30 ET. The 09:30-09:34
@@ -185,16 +225,24 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         # to archive QQQ + per-ticker premarket bars; the live pill
         # should reflect that.
         tg._last_scan_time = datetime.now(timezone.utc)
+        # v10.0.0 -- pre-warm the broad-universe scanner data at 09:24 ET
+        # in a background thread. Triggers the same in-process Alpaca pull
+        # that orb/live_premarket_scanner.compute_universe would otherwise
+        # run on-demand at ensure_session_started, but doing it ~6 min
+        # ahead means the 09:30 ET first-scan cycle finds data ready and
+        # doesn't pay the ~30s pull latency right at the RTH open.
+        # Fully self-healing: if it fails or skipped, the scanner's
+        # on-demand auto-rebuild still kicks in at session start.
+        try:
+            _v10_prewarm_dynamic_universe(now_et)
+        except Exception:
+            logger.debug("[V100-SCANNER-PREWARM] failed (non-fatal)", exc_info=True)
         try:
             tg._clear_cycle_bar_cache()
             _qqq_pre = callbacks.fetch_1min_bars(tg.V561_INDEX_TICKER)
             if _qqq_pre:
                 tg._v561_archive_qqq_bar(_qqq_pre)
-            # v7.1.0: pre-open warm-up uses the dynamic extended-hours universe
-            # so earnings reporters get bar archive seeded before the bell
-            # if the feature flag is on. RTH branch falls back to TRADE_TICKERS.
-            _pre_open_session = "extended"
-            _pre_open_tickers = effective_scan_tickers(_pre_open_session)
+            _pre_open_tickers = list(tg.TRADE_TICKERS)
             for _t_pre in _pre_open_tickers:
                 try:
                     _b_pre = callbacks.fetch_1min_bars(_t_pre)
@@ -374,14 +422,7 @@ def scan_loop(callbacks: EngineCallbacks) -> None:
         logger.info("SCAN CYCLE done in %.2fs (paused, manage only)", time.time() - cycle_start)
         return
 
-    # v7.1.0: session-aware ticker iteration. RTH unchanged (returns
-    # TRADE_TICKERS); extended hours optionally returns the prod core
-    # plus today's earnings reporters when the feature flag is on.
-    try:
-        _session = tg._market_session()
-    except Exception:
-        _session = "rth"
-    _scan_universe = effective_scan_tickers(_session)
+    _scan_universe = list(tg.TRADE_TICKERS)
 
     # v7.14.0: bootstrap + session-start the v10 ORB runtime in shadow
     # mode. Failure-tolerant: a runtime exception cannot break the
@@ -1253,17 +1294,9 @@ def _per_ticker_tick(callbacks: EngineCallbacks, ticker: str) -> None:
                         )
         except Exception as e:
             logger.warning("[bar] archive hook %s: %s", ticker, e)
-        # Spec Section II.2 (Boundary Hold) requires a rolling buffer of
-        # the most recent closed 1m closes. `record_latest_1m_close` walks
-        # back from [-2] to find the newest non-None close (Yahoo keeps a
-        # forming-bar None at [-2] for most of RTH); without this hook
-        # `_last_1m_closes` stays empty and `evaluate_boundary_hold_gate`
-        # returns insufficient_closes \u2192 polarity=None forever.
-        try:
-            if _bars_for_mtm:
-                eot_glue.record_latest_1m_close(ticker, _bars_for_mtm.get("closes") or [])
-        except Exception as _e:
-            logger.warning("[V5100-BOUNDARY] record_1m_close %s: %s", ticker, _e)
+        # v10.0.1 \u2014 Section II.2 Boundary Hold gate retired; the rolling
+        # closed-1m buffer (eot_glue.record_latest_1m_close) is no longer
+        # needed and the call is deleted.
         # v7.15.0: entry routing switch.
         #
         # When ORB_LIVE_MODE=1 (default), the v10 ORB runtime owns the

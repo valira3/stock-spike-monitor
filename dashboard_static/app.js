@@ -577,35 +577,46 @@
             + '<div class="pos-chart-mount" data-chart-mount="' + escapeHtml(p.ticker) + '"></div>'
             + '</td></tr>'
           : '';
+        /* Compact held: "67m" under 1h, "1h7m" at 1h+, no caption */
+        var _heldSec = Number(p.held_seconds) || 0;
+        var _heldMin = Math.round(_heldSec / 60);
+        var _heldShort = _heldMin < 60
+          ? _heldMin + 'm'
+          : Math.floor(_heldMin/60) + 'h' + (_heldMin%60 > 0 ? (_heldMin%60) + 'm' : '');
+        /* Morning vs EOD session badge */
+        var _sessionBadge = p.eod
+          ? '<span style="font-size:9px;color:#a78bfa;background:rgba(139,92,246,0.15);'
+            + 'padding:1px 5px;border-radius:3px;margin-left:4px;font-weight:600">EOD</span>'
+          : '<span style="font-size:9px;color:#6b7280;background:rgba(75,85,99,0.15);'
+            + 'padding:1px 5px;border-radius:3px;margin-left:4px">Morning</span>';
+
         return `<tr data-pos-ticker="${escapeHtml(p.ticker)}" tabindex="0" role="button" aria-expanded="${_expanded ? 'true' : 'false'}" style="cursor:pointer">
-          <td><span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>${phaseBadge}</td>
-          <td><span class="${sideCls}">${p.side}</span></td>
-          <td class="right">${p.shares}${_partialBadge}</td>
-          <td class="right">${fmtPx(p.entry)}</td>
-          <td class="right">${fmtPx(p.mark)}</td>
-          <td class="right" title="Notional at cost: shares × entry. Long = invested $; short = liability $. Feeds the 95%-of-equity total-exposure cap.">${_notionalTxt}</td>
-          <td class="right">${fmtPx(eff)}${trailBadge}</td>
-          <td class="right" title="Risk dollars at the effective stop. |entry − stop| × shares. Sums into the Concurrent Risk gauge.">${_riskTxt}</td>
-          <td class="right ${pnlCls}">${fmtUsd(p.unrealized)}</td>
-          <td class="right ${pnlCls}">${pctTxt}</td>
-          <td class="right" title="Time in position since entry (v8.3.18). Computed client-side from entry_ts_utc.">${fmtHeld(p.entry_ts_utc)}</td>
+          <td colspan="4">
+            <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+              <span class="ticker">${escapeHtml(p.ticker)} <span class="mark ${markCls}" title="${escapeHtml(dotTitle)}">●</span></span>
+              ${_sessionBadge}${phase !== 'A' ? phaseBadge : ''}
+              <span class="${pnlCls}" style="font-weight:600;margin-left:auto">${pctTxt}</span>
+              <span class="${pnlCls}">${fmtUsd(p.unrealized)}</span>
+              <span style="color:#6b7280;font-size:11px">${_heldShort}</span>
+            </div>
+          </td>
+          <td class="right" style="font-size:11px;color:#6b7280">${p.shares}${_partialBadge}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.entry)}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(p.mark)}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${_notionalTxt}</td>
+          <td class="right" style="font-size:11px;color:#6b7280">${fmtPx(eff)}${trailBadge}</td>
         </tr>${progressRow}${_chartRow}`;
       }).join("");
       // Only render the ORB table when there are actual ORB rows \u2014 an empty table
       // pushes the EOD section below an orphaned header, making positions appear
       // to "appear and disappear" on refresh. EOD table gets its own headers when standalone.
       var _posTableHeaders = '<thead><tr>' +
-        '<th title="Symbol \u00b7 colored dot shows side">Ticker</th>' +
-        '<th title="LONG = bought to open. SHORT = sold to open.">Side</th>' +
-        '<th class="right" title="Number of shares">Sh</th>' +
-        '<th class="right" title="Average fill price when the position opened">Entry</th>' +
-        '<th class="right" title="Latest mark price">Mark</th>' +
-        '<th class="right" title="Notional at cost: shares \u00d7 entry.">Notional</th>' +
+        '<th colspan="4">Ticker \u00b7 Session \u00b7 P&L \u00b7 Held</th>' +
+        '<th class="right" title="Shares">Sh</th>' +
+        '<th class="right" title="Entry price">Entry</th>' +
+        '<th class="right" title="Current mark">Mark</th>' +
+        '<th class="right" title="Notional at cost">Notional</th>' +
         '<th class="right" title="Effective stop">Stop</th>' +
-        '<th class="right" title="Risk dollars at the effective stop.">Risk</th>' +
-        '<th class="right" title="Unrealized profit/loss in dollars">Unreal.</th>' +
-        '<th class="right" title="Unrealized P&L as a percent of cost basis">%</th>' +
-        '<th class="right" title="Time in position since entry">Held</th>' +
         '</tr></thead>';
       if (positions.length > 0) {
         body.innerHTML = '<table>' + _posTableHeaders + '<tbody>' + rows + '</tbody></table>';
@@ -929,54 +940,26 @@
   // emits the full "OR-high" / "OR-low" strings (pinned by
   // tests/test_dashboard_state_v5_13_2.py); abbreviation is purely
   // client-side so the API surface is unchanged.
-  function _pmtxAbbrevBoundary(label) {
-    if (!label) return "";
-    const s = String(label);
-    if (s === "OR-high") return "ORH";
-    if (s === "OR-low")  return "ORL";
-    return s;
-  }
+  // ----------------------------------------------------------------
+  // v10.0.1 -- Permit Matrix / Tiger Sovereign / v5.10 + v5.13 panel
+  // renderers + helpers deleted. Their HTML containers were removed
+  // in v7.58.0 and the backend now hardcodes empty dicts for
+  // v510_block + tiger_sovereign on /api/state, so this whole helper
+  // graph was unreachable. Only the v10 intraday chart pair remains:
+  // _pmtxIntradayChartPanel + _pmtxHydrateIntradayCharts.
+  // ----------------------------------------------------------------
 
   // v5.19.2 \u2014 DI gate is side-aware. The server's entry1_di field is
   // already the side-correct reading (DI+ for LONG, DI\u2212 for SHORT,
   // see v5_13_2_snapshot._phase3_row). The header reads DI\u00b1; the
   // tooltip names the actual side and value when known.
-  function _pmtxDiTooltip(p3, longPermit, shortPermit) {
-    let sideLabel = "DI\u00b1";
-    if (longPermit && !shortPermit) sideLabel = "DI+";
-    else if (shortPermit && !longPermit) sideLabel = "DI\u2212";
-    let tip = sideLabel + " on 5m bars above 25";
-    if (p3 && typeof p3.entry1_di === "number") {
-      tip += " \u2014 last reading: " + _pmtxNum(p3.entry1_di, 1);
-    }
-    return tip;
-  }
 
-  function _pmtxGateCell(state, label) {
-    let cellCls = "pmtx-gate-pend";
-    let glyph = "\u2212"; // pending
-    if (state === true)  { cellCls = "pmtx-gate-pass"; glyph = "\u2713"; }
-    else if (state === false) { cellCls = "pmtx-gate-fail"; glyph = "\u2717"; }
-    else if (state === "warn") { cellCls = "pmtx-gate-warn"; glyph = "!"; }
-    const title = label ? ` title="${escapeHtml(label)}"` : "";
-    return `<span class="pmtx-gate ${cellCls}"${title}>${glyph}</span>`;
-  }
 
   // v5.20.8 \u2014 Authority column (formerly 5m DI\u00b1) now reflects
   // Section-I permit alignment to match the rewired Authority card. The
   // cell goes green (pass) when at least one of long_open / short_open
   // is true, red (fail) when both are explicitly false, pending when
   // the booleans are missing or section_i_permit is unavailable.
-  function _pmtxAuthorityCell(sip) {
-    if (!sip) return null;
-    const hasLong  = (typeof sip.long_open === "boolean");
-    const hasShort = (typeof sip.short_open === "boolean");
-    if (!hasLong && !hasShort) return null;
-    const lo = hasLong  ? sip.long_open  : false;
-    const so = hasShort ? sip.short_open : false;
-    if (lo || so) return true;
-    return false;
-  }
 
   // v5.31.5 \u2014 per-stock Weather column glyph. Lives at table position 2,
   // between Titan and Boundary. Shows `x` when neither side has any kind of
@@ -985,31 +968,6 @@
   // green down-arrow for short-aligned, or an em-dash while the data is
   // still warming up. The directional arrow + alignment is sourced from
   // the per-ticker weather block (per_ticker_v510[t].weather.direction).
-  function _pmtxWeatherCell(ptv, longPermit, shortPermit) {
-    const wx = (ptv && ptv.weather) || null;
-    const dir = (wx && typeof wx.direction === "string") ? wx.direction : "flat";
-    const div = !!(wx && wx.divergence);
-    const tooltipBase = div
-      ? "Local weather diverges from global QQQ direction. "
-      : "";
-    // v6.0.0 \u2014 small star marker overlaid on the glyph when local
-    // direction != global direction. Lets operators scan the matrix
-    // and spot contrarian-trending tickers without expanding cards.
-    const star = div
-      ? '<sup class="pmtx-wx-star" aria-hidden="true">*</sup>'
-      : "";
-    const divClass = div ? " pmtx-wx-div" : "";
-    if (!longPermit && !shortPermit && dir === "flat") {
-      return '<span class="pmtx-wx pmtx-wx-none' + divClass + '" title="' + escapeHtml(tooltipBase + "No permit: global QQQ closed both sides and the local override is not aligned") + '">x' + star + '</span>';
-    }
-    if (dir === "up") {
-      return '<span class="pmtx-wx pmtx-wx-up' + divClass + '" title="' + escapeHtml(tooltipBase + "Local weather is long-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2191' + star + '</span>';
-    }
-    if (dir === "down") {
-      return '<span class="pmtx-wx pmtx-wx-down' + divClass + '" title="' + escapeHtml(tooltipBase + "Local weather is short-aligned (5m close past EMA9 OR last past AVWAP, with 1m DI confirming)") + '">\u2193' + star + '</span>';
-    }
-    return '<span class="pmtx-wx pmtx-wx-flat' + divClass + '" title="' + escapeHtml((div ? tooltipBase : "") + "Local weather is flat or warming up \u2014 not enough structure or DI confirmation yet") + '">\u2014' + star + '</span>';
-  }
 
   // v6.0.0 \u2014 Mini-chart sparkline for the collapsed row's Trend
   // column. Renders an inline SVG polyline covering today's 1m closes
@@ -1018,64 +976,9 @@
   // Width 80px / height 24px keeps it scannable across the matrix
   // without disrupting row height. The tooltip surfaces hi/lo/last
   // and the open price so an operator can quickly read the day so far.
-  function _pmtxMiniChartCell(ptv) {
-    const mc = ptv && ptv.mini_chart;
-    if (!mc || !Array.isArray(mc.points) || mc.points.length < 2) {
-      return '<span class="pmtx-mini pmtx-mini-empty" title="No intraday closes yet">\u2014</span>';
-    }
-    const pts = mc.points;
-    const hi = (typeof mc.hi === "number") ? mc.hi : Math.max.apply(null, pts);
-    const lo = (typeof mc.lo === "number") ? mc.lo : Math.min.apply(null, pts);
-    const open = (typeof mc.open === "number") ? mc.open : pts[0];
-    const last = (typeof mc.last === "number") ? mc.last : pts[pts.length - 1];
-    const span = Math.max(hi - lo, 0.0001);
-    const W = 80, H = 24, padY = 2;
-    const stepX = (W - 2) / (pts.length - 1);
-    let d = "";
-    for (let i = 0; i < pts.length; i++) {
-      const x = 1 + i * stepX;
-      const y = padY + (1 - (pts[i] - lo) / span) * (H - padY * 2);
-      d += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
-    }
-    let cls = "pmtx-mini-flat";
-    if (last > open) cls = "pmtx-mini-up";
-    else if (last < open) cls = "pmtx-mini-down";
-    const tip = "Open " + open.toFixed(2)
-      + " \u00b7 Last " + last.toFixed(2)
-      + " \u00b7 Hi " + hi.toFixed(2)
-      + " \u00b7 Lo " + lo.toFixed(2)
-      + " (" + pts.length + " pts)";
-    return '<svg class="pmtx-mini ' + cls + '" viewBox="0 0 ' + W + ' ' + H
-      + '" width="' + W + '" height="' + H + '" preserveAspectRatio="none"'
-      + ' role="img" aria-label="' + escapeHtml(tip) + '">'
-      + '<title>' + escapeHtml(tip) + '</title>'
-      + '<path d="' + d.trim() + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"></path>'
-      + '</svg>';
-  }
 
-  function _pmtxAuthorityTooltip(sip) {
-    if (!sip) return "Authority: section_i_permit unavailable";
-    const lo = (typeof sip.long_open === "boolean") ? (sip.long_open ? "yes" : "no") : "?";
-    const so = (typeof sip.short_open === "boolean") ? (sip.short_open ? "yes" : "no") : "?";
-    const sa = (typeof sip.sovereign_anchor_open === "boolean")
-      ? (sip.sovereign_anchor_open ? "yes" : "no")
-      : "?";
-    return "Authority (Section-I permit alignment): long=" + lo
-      + " \u00b7 short=" + so + " \u00b7 sov.anchor=" + sa
-      + ". Cell is green when long or short permit is open.";
-  }
 
-  function _pmtxNum(v, digits) {
-    if (v === null || v === undefined || !isFinite(v)) return "\u2014";
-    return Number(v).toFixed(digits === undefined ? 2 : digits);
-  }
 
-  function _pmtxMoney(v) {
-    if (v === null || v === undefined || !isFinite(v)) return "\u2014";
-    const n = Number(v);
-    const sign = n >= 0 ? "+" : "\u2212";
-    return sign + "$" + Math.abs(n).toFixed(2);
-  }
 
   // v5.20.3 \u2014 expanded-row component card grid. Replaces the
   // verbatim v15.0 spec <dl> with a responsive 3\u20134-cards-per-row
@@ -1084,513 +987,11 @@
   // current state (status badge + numeric value). Operators reading
   // the row no longer need to mentally cross-reference live data with
   // the verbatim spec text \u2014 the card surfaces both inline.
-  function _pmtxComponentGrid(d) {
-    // Phase 1 \u00b7 Weather \u2014 the QQQ regime + AVWAP gate that controls
-    // long/short permits.
-    let p1State; let p1Val;
-    if (d.longPermit && d.shortPermit) { p1State = "pass"; p1Val = "long+short"; }
-    else if (d.longPermit)             { p1State = "pass"; p1Val = "long permit"; }
-    else if (d.shortPermit)            { p1State = "pass"; p1Val = "short permit"; }
-    else                                { p1State = "fail"; p1Val = "no permit"; }
-
-    // Phase 2 \u00b7 Boundary \u2014 two consecutive 1m closes through the OR.
-    // v6.1.1 \u2014 surface the v6.1.0 ATR-normalized OR-break state. When
-    // the gate is enabled the val text shows the active k-multiplier;
-    // when dormant (default in v6.1.0) it shows "OR only" to make the
-    // legacy entry path explicit. The card colour still reflects the raw
-    // ORB pass/fail state so existing semantics are preserved.
-    const _v610OrEnabled = !!(d.v610Flags && d.v610Flags.or_break_enabled);
-    const _v610OrK = (d.v610Flags && typeof d.v610Flags.or_break_k === "number") ? d.v610Flags.or_break_k : 0.0;
-    const _v610LateOr = !!(d.v610Flags && d.v610Flags.late_or_enabled);
-    let _orBreakSuffix = "";
-    if (_v610OrEnabled && _v610OrK > 0) {
-      _orBreakSuffix = " \u00b7 \u2265OR+" + _v610OrK.toFixed(2) + "\u00d7ATR";
-      if (_v610LateOr) _orBreakSuffix += " \u00b7 late-OR";
-    } else {
-      _orBreakSuffix = " \u00b7 OR only";
-    }
-    // v6.2.0 \u2014 fast-boundary suffix. When the time-conditional 1-bar
-    // hold is enabled, append "1-bar pre-CUTOFF" so operators can see the
-    // active relaxation. When disabled, render "2-bar hold" to make the
-    // legacy spec-strict path explicit.
-    const _v620FastBoundary = !!(d.v620Flags && d.v620Flags.fast_boundary_enabled);
-    const _v620FastBoundaryCutoff = (d.v620Flags && typeof d.v620Flags.fast_boundary_cutoff_et === "string")
-      ? d.v620Flags.fast_boundary_cutoff_et : "10:30";
-    const _fastBoundarySuffix = _v620FastBoundary
-      ? (" \u00b7 1-bar pre-" + _v620FastBoundaryCutoff)
-      : " \u00b7 2-bar hold";
-    let p2bState; let p2bVal;
-    if (d.orb === true)       { p2bState = "pass"; p2bVal = "two consec" + _orBreakSuffix + _fastBoundarySuffix; }
-    else if (d.orb === false) { p2bState = "fail"; p2bVal = "hold" + _orBreakSuffix + _fastBoundarySuffix; }
-    else                       { p2bState = "pend"; p2bVal = "\u2014" + _orBreakSuffix + _fastBoundarySuffix; }
-
-    // Phase 2 \u00b7 Volume \u2014 1m volume \u2265 100% of 55-bar avg.
-    let p2vState; let p2vVal;
-    const vs = String(d.volStatus || "").toUpperCase();
-    if (d.vol === true)        { p2vState = "pass"; p2vVal = vs || "PASS"; }
-    else if (d.vol === false)  { p2vState = "fail"; p2vVal = vs || "FAIL"; }
-    else if (d.vol === "warn") { p2vState = "warn"; p2vVal = vs || "COLD"; }
-    else                        { p2vState = "pend"; p2vVal = vs || "\u2014"; }
-
-    // Phase 3 \u00b7 Authority \u2014 Section-I permit alignment.
-    // v5.20.8: state and value now reflect the rewired card content
-    // (long_open / short_open from section_i_permit) rather than the
-    // legacy 5m DI\u00b1 gate. Card goes green (pass) when at least
-    // one side has its permit open; red (fail) when both sides are
-    // closed; pend when the booleans are missing. The val text
-    // mirrors the Weather card style: 'long+short' / 'long' /
-    // 'short' / 'none'.
-    let p3aState; let p3aVal;
-    const _sip = d.sectionIPermit || {};
-    const _hasLong  = (typeof _sip.long_open === "boolean");
-    const _hasShort = (typeof _sip.short_open === "boolean");
-    if (_hasLong || _hasShort) {
-      const _lo = _hasLong ? _sip.long_open : false;
-      const _so = _hasShort ? _sip.short_open : false;
-      if (_lo && _so)        { p3aState = "pass"; p3aVal = "long+short"; }
-      else if (_lo)          { p3aState = "pass"; p3aVal = "long"; }
-      else if (_so)          { p3aState = "pass"; p3aVal = "short"; }
-      else                   { p3aState = "fail"; p3aVal = "none"; }
-    } else {
-      p3aState = "pend"; p3aVal = "\u2014";
-    }
-    // v6.1.1 \u2014 EMA-confirm + lunch-suppression state surfaced as a
-    // suffix on the Phase 3 Authority card. Mirrors the OR-break suffix
-    // pattern on the Phase 2 Boundary card. Defaults make missing flags
-    // render as legacy single-bar / no-window behaviour.
-    const _v610EmaConfirm = !!(d.v610Flags && d.v610Flags.ema_confirm_enabled);
-    const _v610Lunch      = !!(d.v610Flags && d.v610Flags.lunch_suppression_enabled);
-    let _emaSuffix = "";
-    if (_v610EmaConfirm) {
-      _emaSuffix = " \u00b7 EMA 2-bar";
-      if (_v610Lunch) _emaSuffix += " \u00b7 lunch \u2713";
-    } else if (_v610Lunch) {
-      _emaSuffix = " \u00b7 lunch \u2713";
-    }
-    if (_emaSuffix) p3aVal = p3aVal + _emaSuffix;
-
-    // Phase 3 \u00b7 Momentum \u2014 5m ADX > 20 (proxied by entry1_fired).
-    // v6.2.0 \u2014 append the active Entry-1 DI threshold so operators can
-    // see the new looser hurdle (default 22 since v6.2.0; previously 25).
-    let p3mState; let p3mVal;
-    if (d.adx === true)       { p3mState = "pass"; p3mVal = "fired"; }
-    else if (d.adx === false) { p3mState = "fail"; p3mVal = "blocked"; }
-    else                       { p3mState = "pend"; p3mVal = "\u2014"; }
-    const _v620Di = (d.v620Flags && typeof d.v620Flags.entry1_di_threshold === "number")
-      ? d.v620Flags.entry1_di_threshold : null;
-    if (_v620Di !== null) {
-      p3mVal = p3mVal + " \u00b7 DI\u2265" + _v620Di.toFixed(0);
-    }
-
-    // Alarm A1 Loss (vAA-1 SENT-A_LOSS) \u00b7 Per-position $ stop. Only meaningful when in position.
-    const sen = (d.p4 && d.p4.sentinel) || {};
-    const _aLossObj = (sen.a_loss && typeof sen.a_loss === "object") ? sen.a_loss : null;
-    const a1 = _aLossObj ? ((typeof _aLossObj.pnl === "number") ? _aLossObj.pnl : null)
-                         : ((typeof sen.a1_pnl === "number") ? sen.a1_pnl : null);
-    const a1Th = _aLossObj ? ((typeof _aLossObj.threshold === "number") ? _aLossObj.threshold : -500)
-                           : ((typeof sen.a1_threshold === "number") ? sen.a1_threshold : -500);
-    let alAState; let alAVal;
-    if (!d.pos)               { alAState = "off"; alAVal = "no pos"; }
-    else if (a1 === null)      { alAState = "pend"; alAVal = "\u2014"; }
-    else if (a1 <= a1Th)       { alAState = "trip"; alAVal = _pmtxMoney(a1); }
-    else                        { alAState = "safe"; alAVal = _pmtxMoney(a1); }
-
-    // Alarm A2 Flash (vAA-1 SENT-A_FLASH) \u00b7 1-min adverse velocity.
-    // New key: a_flash.velocity_pct (ratio, e.g. -0.013 = -1.3% adverse).
-    // Legacy a2_velocity was a per-second rate \u2014 units differ, so only
-    // show the new key; fall back to pend when the new sub-dict is absent.
-    const _aFlashObj = (sen.a_flash && typeof sen.a_flash === "object") ? sen.a_flash : null;
-    const a2VelPct = _aFlashObj ? ((typeof _aFlashObj.velocity_pct === "number") ? _aFlashObj.velocity_pct : null) : null;
-    const a2ThPct  = _aFlashObj ? ((typeof _aFlashObj.threshold_pct === "number") ? _aFlashObj.threshold_pct : -0.01) : -0.01;
-    const a2Triggered = _aFlashObj ? !!_aFlashObj.triggered : false;
-    let alBState; let alBVal;
-    if (!d.pos)                 { alBState = "off";  alBVal = "no pos"; }
-    else if (a2VelPct === null) { alBState = "pend"; alBVal = "\u2014"; }
-    else if (a2Triggered)       { alBState = "trip"; alBVal = _pmtxNum(a2VelPct * 100, 2) + "%"; }
-    else                         { alBState = "safe"; alBVal = _pmtxNum(a2VelPct * 100, 2) + "%"; }
-
-    // Position \u00b7 Strike count (max 3 per ticker per day).
-    const su = d.strikesUsed || 0;
-    let posState; let posVal;
-    if (d.pos)            { posState = "inpos"; posVal = su + "/3 \u00b7 in pos"; }
-    else if (su >= 3)      { posState = "locked"; posVal = "3/3 \u00b7 locked"; }
-    else if (su > 0)       { posState = "used"; posVal = su + "/3 used"; }
-    else                    { posState = "idle"; posVal = "0/3 \u00b7 idle"; }
-
-    // v5.20.5 \u2014 helpers to format metric rows (key/value) beneath
-    // each card state. Null-safe: missing values render as a dim dash so
-    // the row layout remains stable while the data is still warming up.
-    function _fmtNum(v, digits) {
-      if (v === null || v === undefined || (typeof v === "number" && !isFinite(v))) return null;
-      const n = Number(v);
-      if (!isFinite(n)) return null;
-      return n.toFixed(typeof digits === "number" ? digits : 2);
-    }
-    function _fmtPct(v, digits) {
-      const s = _fmtNum(v, digits);
-      return s === null ? null : (s + "%");
-    }
-    function _fmtInt(v) {
-      if (v === null || v === undefined) return null;
-      const n = Number(v);
-      if (!isFinite(n)) return null;
-      return String(Math.trunc(n));
-    }
-    function _metricRow(label, value) {
-      const cls = (value === null || value === undefined || value === "")
-        ? "pmtx-comp-metric-row pmtx-comp-metric-empty"
-        : "pmtx-comp-metric-row";
-      const v = (value === null || value === undefined || value === "") ? "\u2014" : value;
-      return '<div class="' + cls + '">'
-        +     '<span class="pmtx-comp-metric-key">' + escapeHtml(label) + '</span>'
-        +     '<span class="pmtx-comp-metric-val">' + escapeHtml(String(v)) + '</span>'
-        +   '</div>';
-    }
-    function _metricsHtml(rows) {
-      if (!rows || !rows.length) return "";
-      const inner = rows.map((r) => _metricRow(r[0], r[1])).join("");
-      return '<div class="pmtx-comp-metrics">' + inner + '</div>';
-    }
-
-    // Source data for new card metric rows (v5.20.5).
-    const ptv = d.ptv510 || {};
-    const ppv = d.ppv510 || {};
-    const reg = d.regimeBlock || {};
-    const sip = d.sectionIPermit || {};
-    const di = ptv.di || {};
-    const vb = ptv.vol_bucket || {};
-    const bh = ptv.boundary_hold || {};
-    const sb = ppv.sovereign_brake || {};
-    const vf = ppv.velocity_fuse || {};
-    const stk = ppv.strikes || {};
-
-    // v5.20.6 — Weather card sources QQQ price/EMA9/AVWAP from
-    // section_i_permit (the only place the dashboard ships them).
-    // Earlier wiring read reg.qqq_* fields that don't exist on the
-    // top-level regime block, so every row rendered as a dim em dash.
-    const p1Metrics = _metricsHtml([
-      ["QQQ price",    _fmtNum(sip.qqq_current_price, 2)],
-      ["QQQ 5m close", _fmtNum(sip.qqq_5m_close, 2)],
-      ["QQQ 5m EMA9",  _fmtNum(sip.qqq_5m_ema9, 2)],
-      ["QQQ AVWAP",    _fmtNum(sip.qqq_avwap_0930, 2)],
-      ["Breadth",      reg.breadth || null],
-      ["RSI regime",   reg.rsi_regime || null],
-    ]);
-
-    // v5.31.5 \u2014 Per-stock Weather card. Mirrors the Phase-1 global
-    // Weather card but reads the ticker's own 5m EMA9 / AVWAP / DI.
-    // State: pass = local direction is decisively up or down; warn =
-    // local direction diverges from global QQQ; pend = flat / warming.
-    // The card surfaces the same numeric inputs the local-override
-    // gate uses, so the operator can reason about why an override
-    // fired (or didn't) without combing the logs.
-    const wx = (d.ptv510 && d.ptv510.weather) || {};
-    const _wxDir = (typeof wx.direction === "string") ? wx.direction : "flat";
-    const _wxDiv = !!wx.divergence;
-    const _wxGlobal = (typeof wx.global_direction === "string") ? wx.global_direction : null;
-    let pLwState; let pLwVal;
-    if (_wxDir === "up")        { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "long (diverges)" : "long"; }
-    else if (_wxDir === "down") { pLwState = _wxDiv ? "warn" : "pass"; pLwVal = _wxDiv ? "short (diverges)" : "short"; }
-    else                         { pLwState = "pend"; pLwVal = "flat"; }
-    // v6.2.0 — local OR-break leg suffix. When the divergence override
-    // path admits an OR-break leg (ticker has cleared OR by k×ATR even
-    // when QQQ permit closes), surface that as a card-text decoration so
-    // operators see why the override may fire on a divergence.
-    const _v620LocalOrBreak = !!(d.v620Flags && d.v620Flags.local_or_break_enabled);
-    const _v620LocalOrK = (d.v620Flags && typeof d.v620Flags.local_or_break_k === "number")
-      ? d.v620Flags.local_or_break_k : 0;
-    if (_v620LocalOrBreak && _v620LocalOrK > 0) {
-      pLwVal = pLwVal + " \u00b7 OR+" + _v620LocalOrK.toFixed(2) + "\u00d7ATR leg";
-    }
-    // v6.3.0 \u2014 noise-cross filter active suffix on the Local Weather
-    // card. The filter sits in front of the EMA-cross exit on Sentinel B
-    // (require adverse drawdown >= k\u00d7ATR before the cross can fire),
-    // so the operator-facing weather card is the right place to surface
-    // it alongside the existing OR-break leg suffix.
-    //
-    // v6.4.0 \u2014 when Alarm B is fully disabled (ALARM_B_ENABLED=false),
-    // the noise-cross suffix is misleading (it implies the cross can still
-    // fire). In that case suppress noise\u2265k\u00d7ATR and instead surface
-    // the active Chandelier multipliers (chand 1.5/0.7) which are the new
-    // primary trail-out signal once B no longer evaluates.
-    const _v630NoiseCross = !!(d.v630Flags && d.v630Flags.noise_cross_filter_enabled);
-    const _v630NoiseK = (d.v630Flags && typeof d.v630Flags.noise_cross_atr_k === "number")
-      ? d.v630Flags.noise_cross_atr_k : 0;
-    const _v640AlarmB = !!(d.v640Flags && d.v640Flags.alarm_b_enabled);
-    const _v640ChandWide = (d.v640Flags && typeof d.v640Flags.chandelier_wide_mult === "number")
-      ? d.v640Flags.chandelier_wide_mult : 0;
-    const _v640ChandTight = (d.v640Flags && typeof d.v640Flags.chandelier_tight_mult === "number")
-      ? d.v640Flags.chandelier_tight_mult : 0;
-    if (_v640AlarmB && _v630NoiseCross && _v630NoiseK > 0) {
-      pLwVal = pLwVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
-    } else if (!_v640AlarmB && _v640ChandWide > 0 && _v640ChandTight > 0) {
-      pLwVal = pLwVal + " \u00b7 chand " + _v640ChandWide.toFixed(1) +
-               "/" + _v640ChandTight.toFixed(1);
-    } else if (_v630NoiseCross && _v630NoiseK > 0) {
-      // Defensive fallback: pre-v6.4.0 deploys (no v640Flags block).
-      pLwVal = pLwVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
-    }
-    const pLwMetrics = _metricsHtml([
-      ["Local 5m close", _fmtNum(wx.last_close_5m, 2)],
-      ["Local 5m EMA9",  _fmtNum(wx.ema9_5m, 2)],
-      ["Local last",     _fmtNum(wx.last, 2)],
-      ["Local AVWAP",    _fmtNum(wx.avwap, 2)],
-      ["DI+ 1m",          _fmtNum(di.di_plus_1m, 2)],
-      ["DI\u2212 1m",     _fmtNum(di.di_minus_1m, 2)],
-      ["Global QQQ",      _wxGlobal || null],
-      ["Divergence",      _wxDiv ? "yes" : (_wxGlobal ? "no" : null)],
-    ]);
-    const _bhSide = (bh.side || "").toString().toUpperCase();
-    const _bhConsec = (_bhSide === "LONG")
-      ? bh.long_consecutive_outside
-      : (_bhSide === "SHORT" ? bh.short_consecutive_outside : null);
-    const p2bMetrics = _metricsHtml([
-      ["Side",            _bhSide || null],
-      ["OR high",         _fmtNum(bh.or_high, 2)],
-      ["OR low",          _fmtNum(bh.or_low, 2)],
-      ["Last two closes", Array.isArray(bh.last_two_closes)
-        ? bh.last_two_closes.map((x) => _fmtNum(x, 2) || "\u2014").join(" / ")
-        : null],
-      ["Consec outside",  _fmtInt(_bhConsec)],
-    ]);
-    // v5.20.6 — when the volume gate is bypassed (VOLUME_GATE_ENABLED=false
-    // → vol_gate_status="OFF"), the baseline / ratio rows are meaningless
-    // until the 55-day history warms up. Render a single explanatory row
-    // instead of four em-dashes.
-    const p2vMetrics = (String(d.volStatus || "").toUpperCase() === "OFF")
-      ? _metricsHtml([["Volume gate", "bypassed (warming)"]])
-      : _metricsHtml([
-          ["Current vol",  _fmtInt(vb.current_1m_vol)],
-          ["Baseline 55d", _fmtNum(vb.baseline_at_minute, 0)],
-          ["Ratio 55-bar", _fmtNum(vb.ratio_to_55bar_avg, 2)],
-          ["Days avail",   (vb.days_available !== undefined && vb.days_available !== null)
-            ? (_fmtInt(vb.days_available) + "/55")
-            : null],
-        ]);
-    // v5.20.7 \u2014 Authority card sources Section-I permit alignment
-    // (long_open / short_open / sovereign_anchor_open) and QQQ price
-    // vs EMA9 / vs AVWAP from section_i_permit. Earlier wiring read
-    // sip.open / sip.qqq_aligned / sip.index_aligned, none of which
-    // are emitted by /api/state, so every row rendered as a dim em
-    // dash. The rewired card surfaces the actual gating signals.
-    //
-    // v5.22.0 \u2014 side relevance: when an open position exists,
-    // hide the irrelevant permit row. A LONG position cares about
-    // long_open (and QQQ vs EMA9 / AVWAP, which are the long
-    // alignment checks); a SHORT position cares about short_open.
-    // Sov. anchor stays visible either way (it's bilaterally
-    // relevant). When flat, both sides show as before.
-    const _posSide = (d.pos && typeof d.pos.side === "string")
-      ? d.pos.side.toUpperCase()
-      : null;
-    const _showLongAuth  = (_posSide === null) || (_posSide === "LONG");
-    const _showShortAuth = (_posSide === null) || (_posSide === "SHORT");
-    const _p3aRows = [];
-    if (_showLongAuth) {
-      _p3aRows.push(["Long permit", (sip && typeof sip.long_open === "boolean")
-        ? (sip.long_open ? "yes" : "no")
-        : null]);
-    }
-    if (_showShortAuth) {
-      _p3aRows.push(["Short permit", (sip && typeof sip.short_open === "boolean")
-        ? (sip.short_open ? "yes" : "no")
-        : null]);
-    }
-    _p3aRows.push(["Sov. anchor", (sip && typeof sip.sovereign_anchor_open === "boolean")
-      ? (sip.sovereign_anchor_open ? "yes" : "no")
-      : null]);
-    // QQQ alignment rows: when LONG show "above" check (long alignment);
-    // when SHORT show "below" check (short alignment); when flat, show
-    // the raw above/below comparison for both as before.
-    if (_posSide === "LONG") {
-      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
-        ? (sip.qqq_5m_close > sip.qqq_5m_ema9 ? "above (ok)" : "below (fail)")
-        : null]);
-      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
-        ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above (ok)" : "below (fail)")
-        : null]);
-    } else if (_posSide === "SHORT") {
-      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
-        ? (sip.qqq_5m_close < sip.qqq_5m_ema9 ? "below (ok)" : "above (fail)")
-        : null]);
-      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
-        ? (sip.qqq_current_price < sip.qqq_avwap_0930 ? "below (ok)" : "above (fail)")
-        : null]);
-    } else {
-      _p3aRows.push(["QQQ vs EMA9", (sip && typeof sip.qqq_5m_close === "number" && typeof sip.qqq_5m_ema9 === "number")
-        ? (sip.qqq_5m_close > sip.qqq_5m_ema9 ? "above" : "below")
-        : null]);
-      _p3aRows.push(["QQQ vs AVWAP", (sip && typeof sip.qqq_current_price === "number" && typeof sip.qqq_avwap_0930 === "number")
-        ? (sip.qqq_current_price > sip.qqq_avwap_0930 ? "above" : "below")
-        : null]);
-    }
-    // v6.11.0 -- C25 SPY regime rows (defensive: degrade to null if backend older).
-    const spyReg = (d && d.spy_regime_today) ? d.spy_regime_today : {};
-    _p3aRows.push(["SPY 9:30",    _fmtNum(spyReg.spy_open_930, 2)]);
-    _p3aRows.push(["SPY 10:00",   _fmtNum(spyReg.spy_close_1000, 2)]);
-    _p3aRows.push(["SPY 30m %",   (spyReg.ret_pct != null) ? (spyReg.ret_pct >= 0 ? "+" : "") + spyReg.ret_pct.toFixed(2) + "%" : null]);
-    _p3aRows.push(["SPY regime",  spyReg.regime || null]);
-    _p3aRows.push(["C25 amp",     (d && d.v611_regime_b_active) ? "ACTIVE (1.5x short)" : "idle"]);
-    const p3aMetrics = _metricsHtml(_p3aRows);
-
-    // v5.22.0 \u2014 Momentum card: when in position, only show the
-    // side that matters. LONG cares about DI+ (long-side momentum);
-    // SHORT cares about DI- (short-side momentum). Threshold and seed
-    // are always shown.
-    const _p3mRows = [];
-    if (_posSide === "LONG") {
-      _p3mRows.push(["DI+ 1m", _fmtNum(di.di_plus_1m, 2)]);
-      _p3mRows.push(["DI+ 5m", _fmtNum(di.di_plus_5m, 2)]);
-    } else if (_posSide === "SHORT") {
-      _p3mRows.push(["DI- 1m", _fmtNum(di.di_minus_1m, 2)]);
-      _p3mRows.push(["DI- 5m", _fmtNum(di.di_minus_5m, 2)]);
-    } else {
-      _p3mRows.push(["DI+ 1m", _fmtNum(di.di_plus_1m, 2)]);
-      _p3mRows.push(["DI- 1m", _fmtNum(di.di_minus_1m, 2)]);
-      _p3mRows.push(["DI+ 5m", _fmtNum(di.di_plus_5m, 2)]);
-      _p3mRows.push(["DI- 5m", _fmtNum(di.di_minus_5m, 2)]);
-    }
-    _p3mRows.push(["Threshold", _fmtNum(di.threshold, 2)]);
-    _p3mRows.push(["Seed bars", (di.seed_bars !== undefined && di.seed_bars !== null)
-      ? (_fmtInt(di.seed_bars)
-          + (typeof di.sufficient === "boolean" ? (di.sufficient ? " (ok)" : " (low)") : ""))
-      : null]);
-    // v6.0.0 \u2014 distance-to-next-trigger insights. Surfaces how far
-    // each Phase 3 gate is from flipping so an operator can scan for
-    // "about to fire" tickers without reading raw indicator feeds.
-    // ADX 5m gap: positive = below the 20 trigger; <=0 = passing.
-    // DI long/short gap: threshold \u2212 DI; positive = below threshold.
-    // DI cross: DI+ \u2212 DI-; positive = long-leaning. VWAP/EMA9 gaps
-    // are signed % deltas of last vs the level. Side-aware in-position.
-    const md = (d.ptv510 && d.ptv510.momentum_distances) || {};
-    function _fmtGap(v, digits, suffix) {
-      const s = _fmtNum(v, digits);
-      if (s === null) return null;
-      const n = Number(v);
-      const sign = (isFinite(n) && n > 0) ? "+" : "";
-      return sign + s + (suffix || "");
-    }
-    if (typeof md.adx_5m === "number" || typeof md.adx_5m_gap === "number") {
-      const adxLabel = (typeof md.adx_5m === "number")
-        ? _fmtNum(md.adx_5m, 2) + " (gap " + _fmtGap(md.adx_5m_gap, 2) + ")"
-        : ("gap " + _fmtGap(md.adx_5m_gap, 2));
-      _p3mRows.push(["ADX 5m", adxLabel]);
-    }
-    if (_posSide === "LONG") {
-      _p3mRows.push(["DI+ gap", _fmtGap(md.di_long_gap, 2)]);
-    } else if (_posSide === "SHORT") {
-      _p3mRows.push(["DI- gap", _fmtGap(md.di_short_gap, 2)]);
-    } else {
-      _p3mRows.push(["DI+ gap", _fmtGap(md.di_long_gap, 2)]);
-      _p3mRows.push(["DI- gap", _fmtGap(md.di_short_gap, 2)]);
-    }
-    _p3mRows.push(["DI cross", _fmtGap(md.di_cross_gap, 2)]);
-    _p3mRows.push(["vs AVWAP",  _fmtGap(md.vwap_gap_pct, 3, "%")]);
-    _p3mRows.push(["vs EMA9 5m", _fmtGap(md.ema9_gap_pct, 3, "%")]);
-    const p3mMetrics = _metricsHtml(_p3mRows);
-    // v5.20.7 \u2014 the per-position cards (Sovereign brake / Velocity
-    // fuse / Strikes) are only meaningful while a position is open. With
-    // no open position the upstream wiring delivers ppv510=null, which
-    // becomes ppv={} here and every row renders as a dim em dash. When
-    // that happens, surface a single explanatory row (same UX as the
-    // volume-bypass treatment in v5.20.6).
-    const _hasOpenPos = !!(ppv && Object.keys(ppv).length > 0);
-    const alAMetrics = _hasOpenPos
-      ? _metricsHtml([
-          ["Unrealized",       _fmtPct(sb.unrealized_pct, 2)],
-          ["Loss threshold",   _fmtPct(sb.brake_threshold_pct, 2)],
-          ["Time in pos",      (sb.time_in_position_min !== undefined && sb.time_in_position_min !== null)
-            ? (_fmtNum(sb.time_in_position_min, 1) + " min")
-            : null],
-        ])
-      : _metricsHtml([["Status", "(no open position)"]]);
-    const alBMetrics = _hasOpenPos
-      ? _metricsHtml([
-          ["1-min velocity",   _fmtPct(vf.last_5m_move_pct, 3)],
-          ["Flash threshold",  _fmtPct(vf.fuse_threshold_pct, 2)],
-        ])
-      : _metricsHtml([["Status", "(no open position)"]]);
-    const stkHistory = Array.isArray(stk.strike_history) ? stk.strike_history : [];
-    const _stkLast5 = stkHistory.slice(-5).map((e) => {
-      if (!e) return "\u2014";
-      if (typeof e === "string") return e;
-      const t = e.ts || e.time || "";
-      const k = e.kind || e.event || "";
-      return (t + (k ? (" " + k) : "")).trim() || "\u2014";
-    });
-    const posMetrics = _hasOpenPos
-      ? _metricsHtml([
-          ["Strikes used",  (stk.strikes_count !== undefined && stk.strikes_count !== null)
-            ? (_fmtInt(stk.strikes_count) + "/3")
-            : null],
-          ["History",       _stkLast5.length ? _stkLast5.join(" \u00b7 ") : null],
-        ])
-      : _metricsHtml([["Status", "(no open position)"]]);
-
-    function card(chip, name, desc, state, val, metrics) {
-      return '<div class="pmtx-comp-card pmtx-comp-' + state + '">'
-        +   '<div class="pmtx-comp-head">'
-        +     '<span class="pmtx-comp-chip">' + esc(chip) + '</span>'
-        +     '<span class="pmtx-comp-name">' + escapeHtml(name) + '</span>'
-        +   '</div>'
-        +   '<div class="pmtx-comp-desc">' + escapeHtml(desc) + '</div>'
-        +   '<div class="pmtx-comp-state">'
-        +     '<span class="pmtx-comp-badge">' + escapeHtml(state.toUpperCase()) + '</span>'
-        +     '<span class="pmtx-comp-val">' + escapeHtml(val) + '</span>'
-        +   '</div>'
-        +   (metrics || "")
-        + '</div>';
-    }
-
-    // v5.29.0 — Volume card hidden when feature flag bypasses the gate.
-    // The Volume column in the matrix table hides at the same time so the
-    // expanded view stays consistent with the row above. When d.showVolume
-    // is undefined (legacy callers), the card renders — preserves prior
-    // behaviour for any embedder that hasn't been updated yet.
-    const _showVolume = (d.showVolume !== false);
-    return '<div class="pmtx-comp-grid" data-pmtx-comp-grid="v5.23.0">'
-      +   '<div class="pmtx-comp-head-line">Pipeline components \u00b7 live state</div>'
-      +   '<div class="pmtx-comp-cards">'
-      +     card("P1", "Weather",     "QQQ regime + AVWAP",        p1State,  p1Val,  p1Metrics)
-      +     card("P1", "Local Weather", "Per-stock EMA9 + AVWAP + DI", pLwState, pLwVal, pLwMetrics)
-      +     card("P2", "Boundary",    "Two consec 1m closes thru OR", p2bState, p2bVal, p2bMetrics)
-      +     (_showVolume ? card("P2", "Volume", "1m vol \u2265 100% of 55-bar avg", p2vState, p2vVal, p2vMetrics) : '')
-      +     card("P3", "Authority",   "Permit & QQQ alignment",    p3aState, p3aVal, p3aMetrics)
-      +     card("P3", "Momentum",    "5m ADX > 20",                  p3mState, p3mVal, p3mMetrics)
-      +     card("AL", "A1 Loss",     "Per-position $ stop",          alAState, alAVal, alAMetrics)
-      +     card("AL", "A2 Flash",    "1-min adverse velocity %",    alBState, alBVal, alBMetrics)
-      +     card("POS", "Strikes",    "Strikes used today (cap 3)",   posState, posVal, posMetrics)
-      +   '</div>'
-      + '</div>';
-  }
 
   // Build per-ticker index lookups so the matrix renders in O(N).
   // phase3 + phase4 can have BOTH long and short rows for the same
   // ticker, so we key the primary lookup by "TICKER:SIDE" and also
   // keep a fallback by bare ticker (whichever side appears first).
-  function _pmtxIndex(ts) {
-    const idx = { p2: {}, p3: {}, p4: {} };
-    if (ts && Array.isArray(ts.phase2)) {
-      ts.phase2.forEach((r) => { if (r && r.ticker) idx.p2[r.ticker] = r; });
-    }
-    if (ts && Array.isArray(ts.phase3)) {
-      ts.phase3.forEach((r) => {
-        if (!r || !r.ticker) return;
-        const k = r.ticker + ":" + (r.side || "LONG");
-        idx.p3[k] = r;
-        if (!idx.p3[r.ticker]) idx.p3[r.ticker] = r;
-      });
-    }
-    if (ts && Array.isArray(ts.phase4)) {
-      ts.phase4.forEach((r) => {
-        if (!r || !r.ticker) return;
-        const k = r.ticker + ":" + (r.side || "LONG");
-        idx.p4[k] = r;
-        if (!idx.p4[r.ticker]) idx.p4[r.ticker] = r;
-      });
-    }
-    return idx;
-  }
 
   // v5.18.1 \u2014 dual-scope element lookup so renderWeatherCheck and
   // renderPermitMatrix can render into either Main's id-bearing DOM or
@@ -1599,10 +1000,6 @@
   // getElementById; otherwise we look up by data-f attribute within the
   // panel root. Same key string is used in both branches \u2014 callers
   // just pass the bare key (e.g. "pmtx-weather").
-  function _pmtxEl(panel, key) {
-    if (panel) return panel.querySelector('[data-f="' + key + '"]');
-    return $(key);
-  }
 
   // \u2500\u2500\u2500 Weather Check banner (Phase 1 verdict) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Reads tiger_sovereign.phase1.{long,short}.{permit,qqq_5m_close,
@@ -1641,6 +1038,14 @@
   // a freshly-printed bar shows up within a minute.
   const _intradayCache = {};
   const _INTRADAY_TTL_MS = 60 * 1000;
+  // Exposed for replay mode: scrubber navigation needs to invalidate the
+  // intraday cache so charts reflect the new scenario time. Production
+  // doesn't call this (the 60s TTL keeps it self-healing in live trading).
+  if (typeof window !== "undefined") {
+    window.__tgFlushIntradayCache = function () {
+      Object.keys(_intradayCache).forEach(function (k) { delete _intradayCache[k]; });
+    };
+  }
 
   // v6.0.0 \u2014 per-canvas chart-view state for zoom/pan/hover. The
   // canvas DOM node is the key; we attach a state object so wheel/drag
@@ -2468,485 +1873,13 @@
   // Handles null sma_stack defensively — renders a placeholder instead
   // of crashing. None-safe per window: if smas[window] is null, renders
   // a dash in the swatch column with no gate chip and no delta.
-  function _pmtxSmaStackPanel(smaStack) {
-    if (!smaStack) {
-      return '<div class="pmtx-sma-section pmtx-sma-unavailable">'
-        + 'Daily SMA stack \u2014 data not available'
-        + '</div>';
-    }
-
-    var dc = smaStack.daily_close;
-    var smas = smaStack.smas || {};
-    var deltasAbs = smaStack.deltas_abs || {};
-    var deltasPct = smaStack.deltas_pct || {};
-    var above = smaStack.above || {};
-    var cls = smaStack.stack_classification || 'mixed';
-    var substate = smaStack.stack_substate || 'scrambled';
-    var orderChips = smaStack.order_chips || [];
-    var orderRelations = smaStack.order_relations || [];
-
-    // --- headline stack pill -------------------------------------------
-    var pillLabel;
-    var pillCls;
-    if (cls === 'bullish') {
-      pillLabel = 'Bullish stack';
-      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-bullish';
-    } else if (cls === 'bearish') {
-      pillLabel = 'Bearish stack';
-      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-bearish';
-    } else {
-      // mixed: map substate
-      var substateMap = {
-        all_above: 'Above all SMAs',
-        all_below: 'Below all SMAs',
-        above_short_below_long: 'Above short-term \u00b7 below long-term',
-        below_short_above_long: 'Below short-term \u00b7 above long-term',
-        scrambled: 'Scrambled'
-      };
-      pillLabel = substateMap[substate] || 'Scrambled';
-      pillCls = 'pmtx-sma-stack-pill pmtx-sma-pill-mixed';
-    }
-
-    var pillHtml = '<span class="' + pillCls + '">'
-      + '<span class="pmtx-sma-pill-dot"></span>'
-      + escapeHtml(pillLabel)
-      + '</span>';
-
-    // --- section heading -----------------------------------------------
-    var headHtml = '<div class="pmtx-sma-section-head">'
-      + '<span>Daily SMA stack</span>'
-      + '<span class="pmtx-sma-kbd">new</span>'
-      + '<span class="pmtx-sma-help">daily close vs. 12\u00a0/\u00a022\u00a0/\u00a055\u00a0/\u00a0100\u00a0/\u00a0200-day SMA \u00b7 &ldquo;bullish stack&rdquo; when 12&gt;22&gt;55</span>'
-      + pillHtml
-      + '</div>';
-
-    // --- table header --------------------------------------------------
-    var WINDOWS = [12, 22, 55, 100, 200];
-    var theadHtml = '<thead><tr>'
-      + '<th class="pmtx-sma-label-col">Daily close</th>';
-    WINDOWS.forEach(function(w) {
-      theadHtml += '<th><span class="pmtx-sma-swatch pmtx-sma-sw-' + w + '"></span>SMA\u00a0' + w + '</th>';
-    });
-    theadHtml += '</tr></thead>';
-
-    // --- table body row ------------------------------------------------
-    var dcStr = (dc !== null && dc !== undefined) ? ('$' + dc.toFixed(2)) : '\u2014';
-    var tbodyHtml = '<tbody><tr>'
-      + '<td class="pmtx-sma-label-col pmtx-sma-close-cell">' + escapeHtml(dcStr) + '</td>';
-
-    WINDOWS.forEach(function(w) {
-      var smaVal = (smas[w] !== undefined && smas[w] !== null) ? smas[w] : null;
-      if (smaVal === null) {
-        tbodyHtml += '<td><span class="pmtx-sma-none">\u2014</span></td>';
-        return;
-      }
-      var isAbove = above[w];
-      var gateClass = isAbove ? 'pmtx-sma-gate pmtx-sma-gate-pass' : 'pmtx-sma-gate pmtx-sma-gate-fail';
-      var gateMark = isAbove ? '\u2713' : '\u2717';
-
-      var dAbs = (deltasAbs[w] !== null && deltasAbs[w] !== undefined) ? deltasAbs[w] : null;
-      var dPct = (deltasPct[w] !== null && deltasPct[w] !== undefined) ? deltasPct[w] : null;
-      var deltaHtml = '';
-      if (dAbs !== null && dPct !== null) {
-        var sign = dAbs >= 0 ? '+' : '';
-        var pctSign = dPct >= 0 ? '+' : '';
-        var deltaClass = dAbs >= 0 ? 'pmtx-sma-delta pmtx-sma-delta-pos' : 'pmtx-sma-delta pmtx-sma-delta-neg';
-        var absStr = sign + '$' + Math.abs(dAbs).toFixed(2);
-        var pctStr = pctSign + (dPct * 100).toFixed(1) + '%';
-        deltaHtml = '<span class="' + deltaClass + '">' + escapeHtml(absStr + ' \u00b7 ' + pctStr) + '</span>';
-      }
-
-      tbodyHtml += '<td>'
-        + '<span class="' + gateClass + '">' + gateMark + '</span>'
-        + deltaHtml
-        + '</td>';
-    });
-    tbodyHtml += '</tr></tbody>';
-
-    // --- footer order-line --------------------------------------------
-    // Consume order_chips and order_relations to render SMA 12 op SMA 22 op SMA 55
-    var opMap = { gt: '>', lt: '<', eq: '=', unknown: '?' };
-    var opCssMap = { gt: 'pmtx-sma-order-op-ok', lt: 'pmtx-sma-order-op-bad', eq: 'pmtx-sma-order-op-neut', unknown: 'pmtx-sma-order-op-neut' };
-
-    var footerInner = '<div class="pmtx-sma-order-line">'
-      + '<span class="pmtx-sma-order-lbl">Order</span>';
-
-    for (var i = 0; i < orderChips.length; i++) {
-      var chip = orderChips[i];
-      var chipW = chip.window;
-      var chipVal = (chip.value !== null && chip.value !== undefined) ? chip.value.toFixed(2) : '\u2014';
-      footerInner += '<span class="pmtx-sma-order-chip">'
-        + '<span class="pmtx-sma-swatch pmtx-sma-sw-' + chipW + '"></span>'
-        + 'SMA\u00a0' + chipW + '\u00a0\u00b7\u00a0' + escapeHtml(chipVal)
-        + '</span>';
-      if (i < orderRelations.length) {
-        var rel = orderRelations[i];
-        var opSym = opMap[rel] || '?';
-        var opCls = 'pmtx-sma-order-op ' + (opCssMap[rel] || 'pmtx-sma-order-op-neut');
-        footerInner += '<span class="' + opCls + '">' + escapeHtml(opSym) + '</span>';
-      }
-    }
-
-    // Headline verdict tag (right-aligned)
-    if (cls === 'bullish') {
-      footerInner += '<span class="pmtx-sma-order-verdict pmtx-sma-order-verdict-bullish">12 &gt; 22 &gt; 55 \u2713</span>';
-    } else if (cls === 'bearish') {
-      footerInner += '<span class="pmtx-sma-order-verdict pmtx-sma-order-verdict-bearish">12 &lt; 22 &lt; 55 \u2717</span>';
-    }
-
-    footerInner += '</div>';
-
-    var tfootHtml = '<tfoot><tr><td colspan="6">' + footerInner + '</td></tr></tfoot>';
-
-    // --- assemble ---------------------------------------------------
-    return '<div class="pmtx-sma-section">'
-      + headHtml
-      + '<div class="pmtx-sma-wrap">'
-      + '<table class="pmtx-sma-table">'
-      + theadHtml
-      + tbodyHtml
-      + tfootHtml
-      + '</table>'
-      + '</div>'
-      + '</div>';
-  }
 
 
-  function _pmtxBuildRow(
-    tkr, idx, positionsByTicker, tradesByTicker, proximityByTicker,
-    longPermit, shortPermit,
-    perTickerV510, perPositionV510, regimeBlock, sectionIPermit,
-    visibilityOpts
-  ) {
-    perTickerV510 = perTickerV510 || {};
-    perPositionV510 = perPositionV510 || {};
-    regimeBlock = regimeBlock || {};
-    // v5.29.0 — visibility options drive flag-driven hiding of bypassed
-    // components. Defaults preserve legacy behaviour (everything visible)
-    // for callers that don't pass an opts object.
-    visibilityOpts = visibilityOpts || {};
-    const showVolume  = visibilityOpts.showVolume  !== false;
-    const showAlarmC  = visibilityOpts.showAlarmC  !== false;
-    const showAlarmD  = visibilityOpts.showAlarmD  !== false;
-    const showAlarmE  = visibilityOpts.showAlarmE  !== false;
-    const showAlarmF  = visibilityOpts.showAlarmF  !== false;
-    // v6.1.1 \u2014 v6.1.0 strategy flag block.
-    const v610Flags   = visibilityOpts.v610Flags || {};
-    // v6.2.0 \u2014 entry-loosening flag block.
-    const v620Flags   = visibilityOpts.v620Flags || {};
-    // v6.3.0 \u2014 Sentinel B noise-cross filter flag block.
-    const v630Flags   = visibilityOpts.v630Flags || {};
-    // v6.4.0 \u2014 Alarm B disable + Chandelier multiplier flag block.
-    const v640Flags   = visibilityOpts.v640Flags || {};
-    const p2 = idx.p2[tkr] || null;
-    // v5.21.0 — sma_stack is nested in the phase2 row dict.
-    const smaStack = (p2 && p2.sma_stack) ? p2.sma_stack : null;
-    // Pick the side that has a permit; if both, prefer LONG.
-    const preferSide = longPermit ? "LONG" : (shortPermit ? "SHORT" : "LONG");
-    const p3 = idx.p3[tkr + ":" + preferSide] || idx.p3[tkr] || null;
-    const p4 = idx.p4[tkr + ":" + preferSide] || idx.p4[tkr] || null;
-    const pos = positionsByTicker[tkr] || null;
-    const fills = tradesByTicker[tkr] || [];
-    const prox = proximityByTicker[tkr] || null;
-
-    // 5m ORB — Phase 2 boundary hold (2 consec above OR_high or below OR_low).
-    let orb = null;
-    if (p2) {
-      orb = !!(p2.two_consec_above || p2.two_consec_below);
-    }
-    // ADX>20 — not directly exposed; treat as PASS once Phase 3 fires
-    // Entry 1 (DI+ > 25 on 5m empirically requires ADX>20). Else pending.
-    const adx = (p3 && p3.entry1_fired) ? true : null;
-    let di5 = null;
-    if (p3 && typeof p3.entry1_di === "number") {
-      di5 = (p3.entry1_di > 25);
-    }
-    // Vol confirm — Phase 2 vol_gate_status.
-    let vol = null;
-    let volLabel = "";
-    if (p2 && p2.vol_gate_status) {
-      const vs = String(p2.vol_gate_status).toUpperCase();
-      volLabel = "Volume gate: " + vs;
-      if (vs === "PASS") vol = true;
-      else if (vs === "FAIL") vol = false;
-      else if (vs === "COLD") vol = "warn";
-      else if (vs === "OFF") vol = null; // gate disabled \u2014 pending dash
-    }
-
-    // Strike Cap (count of opens today, max 3).
-    let strikesUsed = 0;
-    fills.forEach((f) => {
-      const a = String((f && (f.action || f.act)) || "").toUpperCase();
-      if (a.indexOf("BUY") === 0 || a.indexOf("SELL_SHORT") === 0 || a === "OPEN" || a.indexOf("OPEN_") === 0) {
-        strikesUsed += 1;
-      }
-    });
-    if (strikesUsed > 3) strikesUsed = 3;
-    const strikeDots = [];
-    for (let i = 0; i < 3; i++) {
-      const used = i < strikesUsed;
-      const lockClass = (strikesUsed === 3 && !pos) ? "pmtx-strike-locked" : "pmtx-strike-used";
-      strikeDots.push('<span class="pmtx-strike-dot' + (used ? (" " + lockClass) : "") + '"></span>');
-    }
-    const strikeHtml = '<span class="pmtx-strike-cap" title="' + strikesUsed + ' of 3 entries used today">' + strikeDots.join("") + '</span>';
-
-    // State pill.
-    let stateCls = "pmtx-state-idle";
-    let stateTxt = "IDLE";
-    if (pos) {
-      stateCls = "pmtx-state-inpos";
-      stateTxt = "IN POS";
-    } else if (strikesUsed >= 3) {
-      stateCls = "pmtx-state-locked";
-      stateTxt = "LOCKED";
-    } else if (orb === true && (longPermit || shortPermit)) {
-      stateCls = "pmtx-state-armed";
-      stateTxt = "ARMED";
-    }
-    const stateHtml = '<span class="pmtx-state-pill ' + stateCls + '">' + escapeHtml(stateTxt) + '</span>';
-
-    // Last trade (rendered inside the expand-detail panel only).
-    const lastFill = fills.length ? fills[fills.length - 1] : null;
-    let lastHtml = '<span class="pmtx-last">\u2014</span>';
-    if (lastFill) {
-      const px = (typeof lastFill.price === "number") ? fmtPx(lastFill.price) : "\u2014";
-      const act = String(lastFill.action || lastFill.act || "").toUpperCase();
-      let pnlCls = "";
-      if (typeof lastFill.realized_pnl === "number" && lastFill.realized_pnl !== 0) {
-        pnlCls = lastFill.realized_pnl > 0 ? " pmtx-pnl-up" : " pmtx-pnl-down";
-      }
-      lastHtml = '<span class="pmtx-last' + pnlCls + '" title="Most recent fill today">' + escapeHtml(act) + ' @ ' + escapeHtml(px) + '</span>';
-    }
-
-    // Titan name only — v5.18.0 dropped the second-line meta string
-    // ("long side"/"awaiting permit"/"short side"/"LONG 50sh") because
-    // the row tint, State pill, and Price·Distance column already
-    // convey the same information and the meta line was eating ~12px
-    // of vertical space per Titan.
-    const titanHtml = ''
-      + '<div class="pmtx-titan">'
-      +   '<span class="pmtx-titan-name">' + escapeHtml(tkr) + '</span>'
-      + '</div>';
-
-    // v5.18.0 — Price · Distance cell. Replaces the standalone
-    // Proximity card. Shows live last + a thin bar that fills as price
-    // approaches the nearest OR boundary (0% distance → 100% bar,
-    // 2% distance → 0% bar). Bar tints amber inside 0.5%.
-    const proxHtml = _pmtxProxCell(prox);
-
-    // Row tint follows Phase 1 permit (matches mockup .permit-go /
-    // .permit-block tints).
-    let rowTint = "";
-    if (longPermit || shortPermit) rowTint = " pmtx-row-permit-go";
-    if (strikesUsed >= 3 && !pos)  rowTint = " pmtx-row-permit-block";
-
-    // v5.18.0 — single ~38px row per Titan (mockup spec). The row is
-    // clickable when there's something interesting to expand (open
-    // position OR a recorded fill today). Detail row is rendered next
-    // to it but hidden by default (.pmtx-detail-open toggles via JS).
-    // v5.19.3 — a row is also expandable when proximity carries any
-    // useful payload (live price, nearest-boundary label, OR_high/OR_low).
-    // Pre-market and quiet RTH sessions have no positions or fills yet,
-    // so before this fix the matrix had nothing clickable for hours —
-    // even though the detail panel surfaces price + boundary info that
-    // does exist. Click stays open until the user clicks the same row
-    // again (the toggle handler at body level was always doing this;
-    // the regression was that hasDetail was false everywhere pre-market
-    // so no .pmtx-detail-row was ever rendered).
-    // v5.28.1 \u2014 sentinel strip always renders on expanded titan cards.
-    // When there is no open position, every alarm cell shows in the idle
-    // state with an em-dash placeholder so the user always sees the alarm
-    // panel layout (rather than the panel collapsing entirely between
-    // sessions). The strip's leading banner indicates "no open position".
-    const sentinelStripHtml = _pmtxSentinelStrip(p4, !!pos, {
-      showAlarmC: showAlarmC,
-      showAlarmD: showAlarmD,
-      showAlarmE: showAlarmE,
-      showAlarmF: showAlarmF,
-      // v6.3.0 \u2014 forward the noise-cross filter block so the
-      // B Trend Death cell can append a "\u00b7 noise\u22650.10\u00d7ATR" suffix
-      // when the v630 filter is active.
-      v630Flags: v630Flags,
-      // v6.4.0 \u2014 forward Alarm B / Chandelier flag block so the
-      // B Trend Death cell renders the DISABLED state when B is off.
-      v640Flags: v640Flags,
-    });
-    const proxHasDetail = !!(prox && (
-      typeof prox.price === "number"
-      || prox.nearest_label
-      || typeof prox.or_high === "number"
-      || typeof prox.or_low === "number"
-    ));
-    // v5.28.2 — a Titan with an open Phase-1 permit (long or short) is also
-    // expandable even before any proximity data has flowed. Without this, a
-    // row with .pmtx-row-permit-go tint had hasDetail=false during quiet
-    // pre-market windows, so the detail row — which carries the alarm strip
-    // surfaced by v5.28.1 — never rendered. The user's complaint that the
-    // alarm panel was missing on expanded permit cards traced to exactly
-    // this gate, not to the strip function itself.
-    const hasDetail = !!(pos || lastFill || proxHasDetail || longPermit || shortPermit);
-    const expandIcon = hasDetail
-      ? '<span class="pmtx-expand-chev" aria-hidden="true">\u203a</span>'
-      : '<span class="pmtx-expand-chev pmtx-expand-empty" aria-hidden="true"></span>';
-    const rowAttrs = ' data-pmtx-tkr="' + escapeHtml(tkr) + '"' + (hasDetail ? '' : ' data-pmtx-no-detail="1"');
-    // v5.31.5 \u2014 per-stock Weather cell. Lives at position 2, between
-    // Titan and Boundary. Glyph maps:
-    //   x        \u2014 no permit (long_open=false AND short_open=false AND
-    //              the local override would not open either side either)
-    //   green up  \u2014 long-aligned local weather (direction=='up')
-    //   green dn  \u2014 short-aligned local weather (direction=='down')
-    //   em-dash   \u2014 data still warming up / classifier returned 'flat'
-    const _wxHtml = _pmtxWeatherCell(
-      perTickerV510[tkr] || null,
-      !!longPermit,
-      !!shortPermit,
-    );
-
-    const mainTr = '<tr class="pmtx-row' + rowTint + (hasDetail ? '' : ' pmtx-row-static') + '"' + rowAttrs + '>'
-      + '<td class="pmtx-col-titan">' + titanHtml + '</td>'
-      + '<td class="pmtx-col-weather">' + _wxHtml + '</td>'
-      // v5.20.8 \u2014 column headers renamed to match the gate-card
-      // names (Boundary / Momentum / Authority / Volume). The Authority
-      // cell (still uses the legacy .pmtx-col-diplus class for layout
-      // continuity) now reflects Section-I permit alignment instead of
-      // the per-ticker 5m DI\u00b1 gate; per-ticker DI\u00b1 detail
-      // lives in the Momentum card metric stack inside the expanded
-      // row. The cell is green when at least one side has its permit
-      // open, red when both are closed, pending when section_i_permit
-      // is unavailable.
-      + '<td class="pmtx-col-orb">' + _pmtxGateCell(orb, "Boundary: two consecutive 1m closes through ORH (long) / ORL (short)") + '</td>'
-      + (showVolume ? '<td class="pmtx-col-vol">' + _pmtxGateCell(vol, volLabel || "Volume gate (1m vol \u2265 100% of 55-bar avg)") + '</td>' : '')
-      + '<td class="pmtx-col-diplus">' + _pmtxGateCell(_pmtxAuthorityCell(sectionIPermit), _pmtxAuthorityTooltip(sectionIPermit)) + '</td>'
-      + '<td class="pmtx-col-adx">' + _pmtxGateCell(adx, "Momentum: 5m ADX > 20 (proxied by Phase 3 Entry-1 firing)") + '</td>'
-      + '<td class="pmtx-col-strike">' + strikeHtml + '</td>'
-      + '<td class="pmtx-col-state">' + stateHtml + '</td>'
-      + '<td class="pmtx-col-prox">' + proxHtml + '</td>'
-      + '<td class="pmtx-col-mini">' + _pmtxMiniChartCell(perTickerV510[tkr] || null) + '</td>'
-      + '<td class="pmtx-col-expand">' + expandIcon + '</td>'
-      + '</tr>';
-    let tableRows = mainTr;
-    if (hasDetail) {
-      const detailInner = ''
-        + '<div class="pmtx-detail-grid">'
-        +   '<div class="pmtx-detail-stat"><div class="l">Last trade today</div><div class="v">' + lastHtml + '</div></div>'
-        +   (prox && typeof prox.price === "number"
-              ? '<div class="pmtx-detail-stat"><div class="l">Last price</div><div class="v">' + escapeHtml(fmtPx(prox.price)) + '</div></div>'
-              : '')
-        +   (prox && prox.nearest_label
-              ? '<div class="pmtx-detail-stat"><div class="l">Nearest boundary</div><div class="v" title="' + escapeHtml(prox.nearest_label) + '">' + escapeHtml(_pmtxAbbrevBoundary(prox.nearest_label)) + '</div></div>'
-              : '')
-        +   (prox && (typeof prox.or_high === "number" || typeof prox.or_low === "number")
-              ? '<div class="pmtx-detail-stat"><div class="l">OR range</div><div class="v">'
-                + escapeHtml(typeof prox.or_low === "number" ? fmtPx(prox.or_low) : "\u2014")
-                + ' \u2013 '
-                + escapeHtml(typeof prox.or_high === "number" ? fmtPx(prox.or_high) : "\u2014")
-                + '</div></div>'
-              : '')
-        + '</div>'
-        // v5.20.3 \u2014 component-state card grid. Replaces the
-        // verbose v15.0 spec-definitions <dl>; the spec rules live in
-        // tiger_sovereign-spec-v15-1.md and the operator no longer
-        // needs to read the entire spec inside every expanded row.
-        // Each card: phase chip + name + short description + status
-        // badge + numeric value. Phases 1/2/3, alarms (A/B), and the
-        // strike counter are surfaced directly from the live indices
-        // already computed above (orb, adx, di5, vol, longPermit,
-        // shortPermit, strikesUsed, p4 sentinel/titan_grip).
-        + _pmtxComponentGrid({
-            tkr: tkr,
-            longPermit: longPermit,
-            shortPermit: shortPermit,
-            orb: orb,
-            vol: vol,
-            volStatus: (p2 && p2.vol_gate_status) || null,
-            adx: adx,
-            di5: di5,
-            di5Val: (p3 && typeof p3.entry1_di === "number") ? p3.entry1_di : null,
-            strikesUsed: strikesUsed,
-            pos: pos,
-            p4: p4,
-            // v5.29.0 — component grid honors the same volume-gate flag.
-            showVolume: showVolume,
-            // v5.20.5 \u2014 numeric metric rows surfaced beneath each card state.
-            ptv510: perTickerV510[tkr] || null,
-            ppv510: pos
-              ? (perPositionV510[tkr + ":" + (pos.side || preferSide).toUpperCase()] || null)
-              : null,
-            regimeBlock: regimeBlock,
-            sectionIPermit: sectionIPermit,
-            // v6.1.1 \u2014 strategy flags decorate Phase 2 Boundary + Phase 3
-            // Authority cards with active OR-break / EMA-confirm state.
-            v610Flags: v610Flags,
-            // v6.2.0 \u2014 entry-loosening flags decorate Local Weather,
-            // Boundary, and Momentum cards.
-            v620Flags: v620Flags,
-            // v6.3.0 \u2014 Sentinel B noise-cross filter flags decorate
-            // the Local Weather card and the B Trend Death sentinel cell.
-            v630Flags: v630Flags,
-            // v6.4.0 \u2014 Alarm B disable + Chandelier multiplier flags.
-            // The component grid surfaces an ALARM_B_ENABLED line on the
-            // Strategy panel and tints the B Trend Death card DISABLED.
-            v640Flags: v640Flags,
-          })
-        // v5.23.2 \u2014 expanded-row scan order: component-state cards
-        // (process state at-a-glance) \u2192 sentinel alarm strip (live
-        // alarm status for the open position) \u2192 SMA stack (daily
-        // structural context) \u2192 intraday chart (today's price action
-        // with OR/AVWAP/EMA9 overlays). The chart sits at the bottom
-        // because it's the most visually heavy element and operators
-        // typically only need it after they've already triaged the
-        // alarm/SMA context above. The chart placeholder is hydrated
-        // post-render by _pmtxHydrateIntradayCharts() which fetches
-        // /api/intraday/{tkr} and paints to a Canvas.
-        + (sentinelStripHtml || "")
-        + _pmtxSmaStackPanel(smaStack)
-        + _pmtxIntradayChartPanel(tkr);
-      // v5.29.0 — detail row colspan tracks the visible column count so
-      // hiding the Volume column doesn't leave a gap above the detail.
-      // v5.31.5 — bumped by one to account for the per-stock Weather
-      // column inserted at position 2 in the header above.
-      // v6.0.0 — bumped again for the new Trend mini-chart column.
-      const _detailColspan = showVolume ? 11 : 10;
-      tableRows += '<tr class="pmtx-detail-row" data-pmtx-tkr="' + escapeHtml(tkr) + '">'
-        + '<td colspan="' + _detailColspan + '">' + detailInner + '</td></tr>';
-    }
-
-    // v5.18.1 \u2014 mobile cards path retired. The same compact table
-    // is used at every viewport (CSS hides ADX / DI+5m / Vol-confirm
-    // columns on \u2264720px). The `card` field is kept in the return
-    // signature for any embedders still calling _pmtxBuildRow directly.
-    return { tableRows: tableRows, card: "" };
-  }
 
   // v5.18.0 — single Price · Distance cell, used in the table
   // and inside the mobile card. Folds the retired Proximity card into
   // a one-line representation: live last + a thin proximity bar +
   // % distance to the nearest OR boundary.
-  function _pmtxProxCell(prox) {
-    if (!prox) return '<span class="pmtx-prox-empty" title="No proximity data yet">\u2014</span>';
-    const pct = (prox.nearest_pct !== null && prox.nearest_pct !== undefined && isFinite(prox.nearest_pct))
-      ? prox.nearest_pct : null;
-    let fill = 0;
-    if (pct !== null) {
-      // 0% distance → 100% fill, 2% distance → 0% fill.
-      fill = Math.max(0, Math.min(100, Math.round((1 - Math.min(pct, 0.02) / 0.02) * 100)));
-    }
-    const warn = pct !== null && pct < 0.005;
-    const px = (typeof prox.price === "number") ? fmtPx(prox.price) : "\u2014";
-    const fullLbl = prox.nearest_label || "\u2014";
-    const lbl = _pmtxAbbrevBoundary(fullLbl) || "\u2014";
-    const pctText = pct !== null ? (pct * 100).toFixed(2) + "% \u00b7 " + escapeHtml(lbl) : escapeHtml(lbl);
-    // Tooltip keeps the full "OR-high" / "OR-low" label so the operator
-    // sees the unambiguous boundary name on hover.
-    const titleText = pct !== null
-      ? "Last " + px + " \u2014 " + (pct * 100).toFixed(3) + "% from " + fullLbl
-      : "Last " + px;
-    return '<div class="pmtx-prox" title="' + escapeHtml(titleText) + '">'
-      +    '<span class="pmtx-prox-price">' + escapeHtml(px) + '</span>'
-      +    '<div class="pmtx-prox-bar"><div class="pmtx-prox-fill ' + (warn ? "warn" : "ok") + '" style="width:' + fill + '%"></div></div>'
-      +    '<span class="pmtx-prox-pct' + (warn ? " pmtx-prox-warn" : "") + '">' + pctText + '</span>'
-      +  '</div>';
-  }
 
   // v5.21.0 — Helper: pick new vAA-1 alarm sub-dict from sentinel object,
   // with graceful fall-back to legacy flat keys when new key is absent.
@@ -2955,18 +1888,6 @@
   //            maps sub-dict field names to the legacy flat key names.
   // Returns the resolved sub-dict (may have null values if all legacy
   // lookups also miss).
-  function _pmtxPickAlarm(sen, newKey, legacyMap) {
-    // Prefer the vAA-1 sub-dict when it is a real object.
-    const newVal = sen[newKey];
-    if (newVal && typeof newVal === "object") return newVal;
-    // Fall back: build a minimal object from legacy flat keys.
-    const out = {};
-    for (const [field, legKey] of Object.entries(legacyMap || {})) {
-      const v = sen[legKey];
-      out[field] = (v !== undefined) ? v : null;
-    }
-    return out;
-  }
 
   // v5.21.0 — Helper: derive a state class from a resolved alarm
   // sub-dict.
@@ -2989,66 +1910,6 @@
   //                      warn when ratio between threshold and
   //                      threshold/0.75*0.85 (i.e. ratio in [0.75, 0.85])
   //   E Divergence Trap: armed-not-triggered = warn (divergence forming)
-  function _pmtxAlarmStateClass(alarm, kind) {
-    if (!alarm || typeof alarm !== "object") return "idle";
-    if (alarm.triggered) return "trip";
-    if (!alarm.armed) return "idle";
-    // Armed-but-not-triggered: distinguish safe (green) from warn (yellow).
-    const WARN_FRACTION = 0.75; // within 25% of threshold = yellow
-    switch (kind) {
-      case "a_loss": {
-        const pnl = (typeof alarm.pnl === "number") ? alarm.pnl : null;
-        const th = (typeof alarm.threshold === "number") ? alarm.threshold : -500;
-        if (pnl === null) return "safe";
-        // Both pnl and threshold are negative; alarm fires when pnl <= th.
-        // Yellow when pnl <= 0.75 * th (e.g. <= -$375 for th=-$500).
-        return (pnl <= WARN_FRACTION * th) ? "warn" : "safe";
-      }
-      case "a_flash": {
-        const v = (typeof alarm.velocity_pct === "number") ? alarm.velocity_pct : null;
-        const th = (typeof alarm.threshold_pct === "number") ? alarm.threshold_pct : -0.01;
-        if (v === null) return "safe";
-        return (v <= WARN_FRACTION * th) ? "warn" : "safe";
-      }
-      case "b_trend_death": {
-        const close = (typeof alarm.close === "number") ? alarm.close : null;
-        const ema9 = (typeof alarm.ema9 === "number") ? alarm.ema9 : null;
-        const delta = (typeof alarm.delta === "number") ? alarm.delta
-          : (close !== null && ema9 !== null) ? (close - ema9) : null;
-        if (close === null || delta === null || close === 0) return "safe";
-        // Warn when |delta| relative to close is within 0.25% (close to crossing).
-        return (Math.abs(delta) / Math.abs(close) <= 0.0025) ? "warn" : "safe";
-      }
-      case "c_velocity_ratchet": {
-        const win = Array.isArray(alarm.adx_window) ? alarm.adx_window : [];
-        // Warn when 2-of-3 consecutive declines exist (last decline pending).
-        if (win.length >= 3) {
-          const a = win[0], b = win[1], c = win[2];
-          if (typeof a === "number" && typeof b === "number" && typeof c === "number") {
-            const declines = (a > b ? 1 : 0) + (b > c ? 1 : 0);
-            if (declines >= 1 && !alarm.monotone_decreasing) return "warn";
-          }
-        }
-        return "safe";
-      }
-      case "d_hvp_lock": {
-        const ratio = (typeof alarm.ratio === "number") ? alarm.ratio : null;
-        const th = (typeof alarm.threshold_ratio === "number") ? alarm.threshold_ratio : 0.75;
-        if (ratio === null) return "safe";
-        // Triggered when ratio < th. Warn when ratio is between th and
-        // th/WARN_FRACTION (i.e. within 25% above the trigger band).
-        const warnHi = th / WARN_FRACTION; // e.g. 0.75 / 0.75 = 1.0; cap below.
-        return (ratio >= th && ratio <= Math.min(warnHi, th + 0.10)) ? "warn" : "safe";
-      }
-      case "e_divergence_trap": {
-        // Spec: armed-not-triggered means divergence is forming.
-        // Treat that as warn so operators see it brewing.
-        return "warn";
-      }
-      default:
-        return "safe";
-    }
-  }
 
   // v5.21.0 — Inline 5-cell sentinel strip rendered under any open-position
   // row. Labels and data sources follow vAA-1 spec (tiger_sovereign_spec_vAA-1
@@ -3057,255 +1918,6 @@
   //
   // Alarm exit classification per spec Section 5 architectural rule:
   //   A1/A2/B/D -> MARKET EXIT   |   C/E -> STOP MARKET ratchets
-  function _pmtxSentinelStrip(p4, hasPos, opts) {
-    // v5.28.1 \u2014 hasPos: when false, every cell is forced to the idle
-    // state with an em-dash value, and a small banner labels the strip
-    // as "no open position". The cell layout is kept identical so users
-    // see the same six alarms in the same order regardless of session
-    // state. When true, behaves exactly as before: cells reflect live
-    // sentinel data from p4.sentinel.
-    // v5.29.0 \u2014 opts.showAlarm{C,D,E} hide the corresponding cells when
-    // the matching ALARM_*_ENABLED flag is false (production default for
-    // C / D / E since v5.28.0). Defaults preserve legacy behaviour
-    // (everything visible) for callers that don't pass opts.
-    // v5.30.0 \u2014 opts.showAlarmF surfaces the chandelier trail cell
-    // (canonical position: between B and C, i.e. spec ordering A1/A2/B/F/C/D/E).
-    // Reads p4.sentinel.f_chandelier (stage / peak_close / proposed_stop)
-    // emitted by v5_13_2_snapshot.py. Default visible.
-    if (hasPos === undefined) hasPos = true;
-    opts = opts || {};
-    const showAlarmC = (opts.showAlarmC !== false);
-    const showAlarmD = (opts.showAlarmD !== false);
-    const showAlarmE = (opts.showAlarmE !== false);
-    const showAlarmF = (opts.showAlarmF !== false);
-    // v6.3.0 \u2014 noise-cross filter flag block. When enabled and atr_k > 0,
-    // append a "\u00b7 noise\u22650.10\u00d7ATR" suffix to the B Trend Death cell
-    // value so the operator can see the active threshold without diving
-    // into /api/state. Defaults to off when block is missing (older deploys).
-    const _v630Flags = opts.v630Flags || {};
-    const _v630NoiseCross = !!_v630Flags.noise_cross_filter_enabled;
-    const _v630NoiseK = (typeof _v630Flags.noise_cross_atr_k === "number")
-      ? _v630Flags.noise_cross_atr_k : 0;
-    // v6.4.0 \u2014 Alarm B disable flag. When alarm_b_enabled=false, render
-    // the B Trend Death cell in a DISABLED state regardless of live close /
-    // EMA9 values: the alarm function is not called server-side so the
-    // armed/triggered booleans are stale. Pre-v6.4.0 deploys default to
-    // True for safety (preserves legacy rendering).
-    const _v640Flags = opts.v640Flags || {};
-    const _v640AlarmBEnabled = (typeof _v640Flags.alarm_b_enabled === "boolean")
-      ? _v640Flags.alarm_b_enabled : true;
-    const sen = (p4 && p4.sentinel) || {};
-
-    // --- Cell A1: Loss ---
-    // vAA-1 SENT-A_LOSS: unrealized PnL <= -$500 -> MARKET EXIT.
-    const aLoss = _pmtxPickAlarm(sen, "a_loss", {
-      pnl: "a1_pnl",
-      threshold: "a1_threshold"
-    });
-    const aLossPnl = (typeof aLoss.pnl === "number") ? aLoss.pnl : null;
-    const aLossTh  = (typeof aLoss.threshold === "number") ? aLoss.threshold : -500;
-    // Ensure armed/triggered are coherent when falling back to legacy.
-    if (aLoss.armed === null || aLoss.armed === undefined) {
-      aLoss.armed     = (aLossPnl !== null);
-      aLoss.triggered = (aLossPnl !== null && aLossPnl <= aLossTh);
-    }
-    const a1State  = _pmtxAlarmStateClass(aLoss, "a_loss");
-    const a1Val    = _pmtxMoney(aLossPnl) + " / " + _pmtxMoney(aLossTh);
-
-    // --- Cell A2: Flash ---
-    // vAA-1 SENT-A_FLASH: 60-second PnL velocity <= -1.0% of position value.
-    // The new key stores velocity_pct (a plain ratio, e.g. -0.013 = -1.3%).
-    // Legacy key a2_velocity was a per-second rate (units: pnl/s, NOT a %);
-    // reconciling units is unsafe, so we default to "—" when only the legacy
-    // key is present and the new sub-dict is absent.
-    // TODO(v5.21.0): remove legacy fallback once deploy window closes.
-    const aFlash = _pmtxPickAlarm(sen, "a_flash", {
-      // Intentionally no legacy map here — unit mismatch makes the legacy
-      // a2_velocity value misleading as a percent. Prefer safe "—".
-      velocity_pct: null,
-      threshold_pct: null
-    });
-    const a2VelPct = (typeof aFlash.velocity_pct === "number") ? aFlash.velocity_pct : null;
-    const a2ThPct  = (typeof aFlash.threshold_pct === "number") ? aFlash.threshold_pct : -0.01;
-    if (aFlash.armed === null || aFlash.armed === undefined) {
-      aFlash.armed     = (a2VelPct !== null);
-      aFlash.triggered = (a2VelPct !== null && a2VelPct <= a2ThPct);
-    }
-    const a2State = _pmtxAlarmStateClass(aFlash, "a_flash");
-    const a2Val   = (a2VelPct !== null)
-      ? (_pmtxNum(a2VelPct * 100, 2) + "% / " + _pmtxNum(a2ThPct * 100, 2) + "%")
-      : "\u2014";
-
-    // --- Cell B: Trend Death ---
-    // vAA-1 SENT-B: 5m QQQ close crosses 9-EMA in the adverse direction.
-    const bTrend = _pmtxPickAlarm(sen, "b_trend_death", {
-      close: "b_close",
-      ema9:  "b_ema9",
-      delta: "b_delta"
-    });
-    const bClose = (typeof bTrend.close === "number") ? bTrend.close : null;
-    const bEma9  = (typeof bTrend.ema9  === "number") ? bTrend.ema9  : null;
-    const bDelta = (typeof bTrend.delta === "number") ? bTrend.delta : null;
-    if (bTrend.armed === null || bTrend.armed === undefined) {
-      bTrend.armed     = (bClose !== null && bEma9 !== null);
-      bTrend.triggered = false; // legacy sentinel does not record a triggered flag
-    }
-    let bState = _pmtxAlarmStateClass(bTrend, "b_trend_death");
-    let bVal   = (bClose !== null && bEma9 !== null)
-      ? ("close=" + _pmtxNum(bClose) + " / ema=" + _pmtxNum(bEma9) +
-         (bDelta !== null ? " / \u0394=" + _pmtxNum(bDelta) : ""))
-      : "\u2014";
-    // v6.4.0 \u2014 when ALARM_B_ENABLED=false the alarm is not evaluated;
-    // override the cell to a DISABLED state with a clear label and skip the
-    // v6.3.0 noise-cross suffix (which would imply the cross can still fire).
-    // The state class "disabled" maps to a dim grey pill in app.css and is
-    // already used by the C/D/E cells when those alarms are bypassed.
-    if (!_v640AlarmBEnabled) {
-      // v6.4.0 \u2014 reuse the existing "idle" cell theme (dim grey) plus an
-      // explicit textual marker so the operator can immediately see the
-      // alarm is not evaluating server-side. Avoid inventing a new CSS
-      // class so existing skins keep working without a stylesheet change.
-      bState = "idle";
-      bVal = "DISABLED \u00b7 ALARM_B_ENABLED=false";
-    } else if (_v630NoiseCross && _v630NoiseK > 0 && bVal !== "\u2014") {
-      // v6.3.0 \u2014 surface the active noise-cross threshold so the operator
-      // can see at a glance that an EMA cross will only fire after adverse
-      // drawdown clears k\u00d7ATR (1m). Filter sits in front of the cross
-      // and does NOT reset the counter when blocked.
-      bVal = bVal + " \u00b7 noise\u2265" + _v630NoiseK.toFixed(2) + "\u00d7ATR";
-    }
-
-    // --- Cell F: Chandelier Trail (v5.30.0) ---
-    // Alarm F (engine.alarm_f_trail) ratchets a stop on top of the live
-    // position. Stage 0 INACTIVE / 1 BREAKEVEN / 2 CHANDELIER_WIDE /
-    // 3 CHANDELIER_TIGHT. Armed at stage >= 1; the broker stop-cross
-    // realises the exit, so "triggered" is left False in the snapshot.
-    // Cell colours: idle when stage 0, warn when stages 1\u20133 (active
-    // trail in place but not yet hit), trip never (the close-bar exit
-    // path closes the position before the snapshot updates).
-    const fChand     = _pmtxPickAlarm(sen, "f_chandelier", {});
-    const fStage     = (typeof fChand.stage === "number") ? fChand.stage : 0;
-    const fStageName = (typeof fChand.stage_name === "string") ? fChand.stage_name : "INACTIVE";
-    const fPeak      = (typeof fChand.peak_close === "number") ? fChand.peak_close : null;
-    const fStop      = (typeof fChand.proposed_stop === "number") ? fChand.proposed_stop : null;
-    // v6.1.1 \u2014 ATR-trail width fields, surfaced when _V610_ATR_TRAIL_ENABLED.
-    const fAtrVal    = (typeof fChand.atr_value === "number" && fChand.atr_value > 0) ? fChand.atr_value : null;
-    const fAtrMult   = (typeof fChand.atr_mult  === "number" && fChand.atr_mult  > 0) ? fChand.atr_mult  : null;
-    if (fChand.armed === null || fChand.armed === undefined) {
-      fChand.armed     = fStage >= 1;
-      fChand.triggered = false;
-    }
-    const fState = _pmtxAlarmStateClass(fChand, "f_chandelier");
-    let fVal;
-    if (fStage <= 0) {
-      fVal = "\u2014";
-    } else {
-      const _stageLabel = { 1: "BE", 2: "WIDE", 3: "TIGHT" }[fStage] || fStageName;
-      const _stopStr = (fStop !== null) ? _pmtxMoney(fStop) : "\u2014";
-      const _peakStr = (fPeak !== null) ? _pmtxMoney(fPeak) : "\u2014";
-      // v6.1.1 \u2014 append the active ATR width when stage 2/3.
-      // Format: "WIDE \u00b7 stop $103.20 / peak $104.10 \u00b7 2.0x ATR ($0.45)".
-      // Falls back gracefully when the trail predates v6.1.1 deploy.
-      let _atrSuffix = "";
-      if (fAtrMult !== null && fAtrVal !== null) {
-        _atrSuffix = " \u00b7 " + _pmtxNum(fAtrMult, 1) + "x ATR (" + _pmtxMoney(fAtrVal) + ")";
-      }
-      fVal = _stageLabel + " \u00b7 stop " + _stopStr + " / peak " + _peakStr + _atrSuffix;
-    }
-
-    // --- Cell C: Velocity Ratchet ---
-    // vAA-1 SENT-C: three strictly-decreasing 1m ADX values -> STOP MARKET.
-    const cRatchet = _pmtxPickAlarm(sen, "c_velocity_ratchet", {});
-    const cWindow  = Array.isArray(cRatchet.adx_window) ? cRatchet.adx_window : [null, null, null];
-    const cStop    = (typeof cRatchet.stop_price === "number") ? cRatchet.stop_price : null;
-    const cState   = _pmtxAlarmStateClass(cRatchet, "c_velocity_ratchet");
-    let cAdxStr = cWindow.map(v => (v !== null && v !== undefined) ? _pmtxNum(v, 1) : "\u2014").join("\u2192");
-    let cVal    = "adx [" + cAdxStr + "]";
-    if (cRatchet.triggered && cStop !== null) cVal += " \u2192 stop " + _pmtxMoney(cStop);
-
-    // --- Cell D: HVP Lock ---
-    // vAA-1 SENT-D: current 5m ADX < 75% of Trade_HVP -> MARKET EXIT.
-    // Real data now flows from backend (d_hvp_lock sub-dict).
-    const dHvp       = _pmtxPickAlarm(sen, "d_hvp_lock", {});
-    const dCur5m     = (typeof dHvp.current_5m_adx === "number") ? dHvp.current_5m_adx : null;
-    const dTradeHvp  = (typeof dHvp.trade_hvp      === "number") ? dHvp.trade_hvp      : null;
-    const dRatio     = (typeof dHvp.ratio           === "number") ? dHvp.ratio          : null;
-    const dState     = _pmtxAlarmStateClass(dHvp, "d_hvp_lock");
-    const dVal       = (dCur5m !== null && dTradeHvp !== null && dRatio !== null)
-      ? ("ADX " + _pmtxNum(dCur5m, 1) + " / peak " + _pmtxNum(dTradeHvp, 1) +
-         " (" + _pmtxNum(dRatio * 100, 0) + "%)")
-      : "\u2014";
-
-    // --- Cell E: Divergence Trap ---
-    // vAA-1 SENT-E: price extreme + RSI divergence -> blocks S2/S3 or ratchets stop.
-    // Real data now flows from backend (e_divergence_trap sub-dict).
-    const eTrap    = _pmtxPickAlarm(sen, "e_divergence_trap", {});
-    const eState   = _pmtxAlarmStateClass(eTrap, "e_divergence_trap");
-    let eVal;
-    if (eTrap.triggered) {
-      if (eTrap.pre_blocked_for_strike !== null && eTrap.pre_blocked_for_strike !== undefined) {
-        eVal = "blocks S" + eTrap.pre_blocked_for_strike;
-      } else if (eTrap.post_ratchet_stop !== null && eTrap.post_ratchet_stop !== undefined) {
-        eVal = "stop " + _pmtxMoney(eTrap.post_ratchet_stop);
-      } else {
-        eVal = "triggered";
-      }
-    } else if (eTrap.armed) {
-      const eCurRsi  = (typeof eTrap.current_rsi_15   === "number") ? eTrap.current_rsi_15   : null;
-      const ePeakRsi = (typeof eTrap.stored_peak_rsi  === "number") ? eTrap.stored_peak_rsi  : null;
-      eVal = (eCurRsi !== null && ePeakRsi !== null)
-        ? ("RSI " + _pmtxNum(eCurRsi, 1) + " / peak " + _pmtxNum(ePeakRsi, 1))
-        : "\u2014";
-    } else {
-      eVal = "\u2014";
-    }
-
-    function cell(label, subtitle, val, state) {
-      return '<div class="pmtx-sentinel-cell pmtx-sen-' + state + '">'
-        +   '<span class="pmtx-sen-letter">' + escapeHtml(label) + '</span>'
-        +   '<span class="pmtx-sen-name">' + escapeHtml(subtitle) + '</span>'
-        +   '<span class="pmtx-sen-val">' + escapeHtml(val) + '</span>'
-        + '</div>';
-    }
-
-    // v5.28.1 \u2014 when no open position, force every cell to idle state
-    // with an em-dash value. Layout stays identical so the panel never
-    // appears "missing". When in position, the per-cell live values and
-    // states computed above are used.
-    let _a1State = a1State, _a1Val = a1Val;
-    let _a2State = a2State, _a2Val = a2Val;
-    let _bState  = bState,  _bVal  = bVal;
-    let _fState  = fState,  _fVal  = fVal;
-    let _cState  = cState,  _cVal  = cVal;
-    let _dState  = dState,  _dVal  = dVal;
-    let _eState  = eState,  _eVal  = eVal;
-    if (!hasPos) {
-      _a1State = _a2State = _bState = _fState = _cState = _dState = _eState = "idle";
-      _a1Val   = _a2Val   = _bVal   = _fVal   = _cVal   = _dVal   = _eVal   = "\u2014";
-    }
-
-    const banner = hasPos
-      ? ""
-      : '<div class="pmtx-sentinel-banner"'
-        + ' title="No open position \u2014 alarms idle. Will arm when the bot enters.">'
-        +   'no open position \u00b7 alarms idle'
-        + '</div>';
-
-    return '<div class="pmtx-sentinel-strip-wrap">'
-      + banner
-      + '<div class="pmtx-sentinel-strip"'
-      +   ' title="Sentinel Loop \u2014 all 6 alarms evaluated in parallel.'
-      +   ' A1/A2/B/D trigger MARKET EXIT; C/E trigger STOP MARKET ratchets.">'
-      +   cell("A1 Loss",       "Per-position $ stop",    _a1Val, _a1State)
-      +   cell("A2 Flash",      "1-min adverse %",        _a2Val, _a2State)
-      +   cell("B Trend Death", "5m close vs 9-EMA",      _bVal,  _bState)
-      +   (showAlarmF ? cell("F Chandelier",  "BE/wide/tight trail",     _fVal,  _fState) : '')
-      +   (showAlarmC ? cell("C Vel. Ratchet","3 declining 1m ADX",     _cVal,  _cState) : '')
-      +   (showAlarmD ? cell("D HVP Lock",    "5m ADX < 75% peak",      _dVal,  _dState) : '')
-      +   (showAlarmE ? cell("E Div. Trap",   "Price extreme + RSI div", _eVal, _eState) : '')
-      + '</div>'
-      + '</div>';
-  }
 
   // v5.17.0 — next-scan countdown shim. The legacy renderGates body
   // (per-ticker gate panel) was retired with the move to the Permit
@@ -3580,6 +2192,73 @@
     } catch (e) { /* parse / storage failure: render whatever came in */ }
   }
 
+  /* Session timeline bar — shows zone bands + real-time ET cursor.
+     Renders into #tg-stl-zones / #tg-stl-cursor / #tg-stl-events.
+     Called on every state poll; cursor moves to current ET time. */
+  function renderSessionBar(s) {
+    var track  = document.getElementById("tg-stl-track");
+    var zones  = document.getElementById("tg-stl-zones");
+    var events = document.getElementById("tg-stl-events");
+    var cursor = document.getElementById("tg-stl-cursor");
+    if (!track || !zones) return;
+
+    var START = 570, SPAN = 390; /* 9:30=570 .. 16:00=960 */
+    function pct(etMin) { return Math.max(0, Math.min(100, (etMin - START) / SPAN * 100)); }
+
+    /* Draw zones once (idempotent via innerHTML guard) */
+    if (!zones.__drawn) {
+      zones.__drawn = true;
+      var ZONE_DEF = [
+        [570, 600, "rgba(120,53,15,0.65)",  "OR"],
+        [600, 660, "rgba(6,78,59,0.65)",    "ACTIVE"],
+        [660, 900, "rgba(15,23,42,0.4)",    ""],
+        [900, 960, "rgba(76,29,149,0.65)",  "EOD"],
+      ];
+      var zh = "";
+      ZONE_DEF.forEach(function(z) {
+        var l = pct(z[0]), w = pct(z[1]) - l;
+        zh += '<div style="position:absolute;top:0;bottom:0;left:' + l.toFixed(1) + '%;width:' + w.toFixed(1) + '%;'
+            + 'background:' + z[2] + ';pointer-events:none;display:flex;align-items:center;'
+            + 'justify-content:flex-end;padding-right:4px">'
+            + (z[3] ? '<span style="font-size:7px;font-weight:700;color:rgba(255,255,255,0.4);'
+              + 'letter-spacing:.5px">' + z[3] + '</span>' : '')
+            + '</div>';
+      });
+      /* Boundary ticks */
+      [600, 660, 900].forEach(function(m) {
+        zh += '<div style="position:absolute;top:0;bottom:0;left:' + pct(m).toFixed(1) + '%;'
+            + 'width:1px;background:rgba(255,255,255,0.08);pointer-events:none"></div>';
+      });
+      zones.innerHTML = zh;
+    }
+
+    /* Move cursor to current ET time derived from server_time_label */
+    if (cursor) {
+      var nowMin = null;
+      /* Try server_time_label: "Fri May 16 | 10:26:00 ET" */
+      var stl = (s && s.server_time_label) || "";
+      var tm = stl.match(/([0-9]{2}):([0-9]{2}):[0-9]{2}/);
+      if (tm) nowMin = parseInt(tm[1], 10) * 60 + parseInt(tm[2], 10);
+      /* Fallback: real wall clock */
+      if (nowMin === null) {
+        try {
+          var now = new Date();
+          var etParts = new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/New_York", hour12: false,
+            hour: "2-digit", minute: "2-digit"
+          }).formatToParts(now);
+          var hh = 0, mm2 = 0;
+          etParts.forEach(function(p) {
+            if (p.type === "hour")   hh  = parseInt(p.value, 10);
+            if (p.type === "minute") mm2 = parseInt(p.value, 10);
+          });
+          nowMin = hh * 60 + mm2;
+        } catch (_e) { nowMin = 630; }
+      }
+      cursor.style.left = pct(nowMin).toFixed(1) + "%";
+    }
+  }
+
   function renderAll(s) {
     if (!s || !s.ok) return;
     lastSnapshot = s;
@@ -3594,6 +2273,7 @@
     } catch (e) {}
     const sl = paperSlice(s);
     renderHeader(s);
+    renderSessionBar(s);
     renderKPIs(s, sl);
     renderPositions(s, sl);
     renderTrades(s, sl);
@@ -4041,12 +2721,11 @@
       const sign = up ? "+" : "";
       const chg = (r.change === null || r.change === undefined) ? "—" : sign + fmtNum(r.change, 2);
       const pct = (r.change_pct === null || r.change_pct === undefined) ? "—" : sign + fmtNum(r.change_pct, 2) + "%";
-      // v4.12.0 — after-hours layer. Backend tags r.ah=true outside RTH
-      // when the latest trade differs from the relevant base close. We
-      // append a small `AH` badge plus the AH delta so the user can
-      // tell at a glance how much the index has moved since the close.
+      // AH badge: only shown outside RTH. During RTH the cash market is live
+      // so pre/after-hours deltas are redundant and add visual noise.
       let ahHtml = "";
-      if (r.ah && r.ah_change !== null && r.ah_change !== undefined) {
+      const isRth = session === "rth";
+      if (!isRth && r.ah && r.ah_change !== null && r.ah_change !== undefined) {
         const ahUp = r.ah_change >= 0;
         const ahColor = ahUp ? "#34d399" : "#f87171";
         const ahSign = ahUp ? "+" : "";
@@ -4056,11 +2735,10 @@
         const sessLabel = session === "pre" ? "PRE" : "AH";
         ahHtml = ` <span class="idx-ah" title="After-hours move vs close">${sessLabel} <span style="color:${ahColor};font-weight:500">${ahChg}${ahPct}</span></span>`;
       }
-      // v4.13.0 — inline futures badge for cash indices. Reuses the
-      // .idx-ah class for consistent styling, painted in the future's own
-      // direction color so green/red read independently of the cash row.
+      // Futures badge: only shown outside RTH. When the cash market is open
+      // the live cash price already reflects futures; the badge is redundant.
       let futHtml = "";
-      if (r.future && r.future.change_pct !== null && r.future.change_pct !== undefined) {
+      if (!isRth && r.future && r.future.change_pct !== null && r.future.change_pct !== undefined) {
         const fUp = r.future.change_pct >= 0;
         const fColor = fUp ? "#34d399" : "#f87171";
         const fSign = fUp ? "+" : "";
@@ -4502,7 +3180,92 @@
         ? '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">Session:</span>' + v9chips.join('') + '</div>'
         : '';
 
-      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml;
+      // v10.0.0 -- broad-universe scanner + sector-cluster gate chips.
+      // Same state as the Main tab pills (renderV10DayStatus). The
+      // scanner runs once per session globally; each per-portfolio panel
+      // shows the same picks + cluster decision so the operator sees
+      // identical context on every tab. Each tab remains independently
+      // gated by its own RiskBook / FSM / kill-switch (those stay
+      // per-portfolio).
+      var sc10 = (v10 && v10.scanner) || {};
+      var v10chips = [];
+      // Universe pill
+      var uniBg, uniFg, uniTxt, uniTitle;
+      if (sc10.dynamic_universe_enabled === false) {
+        uniBg = "rgba(55,65,81,0.30)"; uniFg = "#9ca3af";
+        uniTxt = "Univ static12";
+        uniTitle = "Dynamic-universe scanner DISABLED.";
+      } else if (sc10.dynamic_universe_active) {
+        var nP10 = (sc10.picks || []).length;
+        uniBg = "rgba(8,145,178,0.20)"; uniFg = "#67e8f9";
+        uniTxt = "Univ dyn " + nP10;
+        uniTitle = "v10 scanner ACTIVE -- " + nP10
+          + " S&P 500 picks for " + (sc10.date || "today")
+          + ". Fallback: " + (sc10.fallback_reason || "—");
+      } else {
+        uniBg = "rgba(161,98,7,0.20)"; uniFg = "#fcd34d";
+        uniTxt = "Univ fallback";
+        uniTitle = "v10 fell back to static 12 -- reason: "
+          + (sc10.fallback_reason || "unknown");
+      }
+      v10chips.push(
+        '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+        + 'font-weight:600;background:' + uniBg + ';color:' + uniFg
+        + '" title="' + uniTitle.replace(/"/g, '&quot;') + '">'
+        + uniTxt + '</span>'
+      );
+      // Cluster gate pill
+      if (sc10.cluster_gate_active) {
+        var clusBg, clusFg, clusTxt, clusTitle;
+        if (sc10.cluster_gate_skipped_day) {
+          clusBg = "rgba(220,38,38,0.30)"; clusFg = "#fca5a5";
+          clusTxt = "DAY SKIPPED " + (sc10.cluster_top_sector || "?")
+            + " " + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "%";
+          clusTitle = "Sector-cluster day-skip gate FIRED. "
+            + (sc10.cluster_max_sector_pct || 0).toFixed(0)
+            + "% of top-K picks are in "
+            + (sc10.cluster_top_sector || "?")
+            + ". Entries blocked across ALL portfolios.";
+        } else {
+          clusBg = "rgba(22,163,74,0.18)"; clusFg = "#86efac";
+          clusTxt = "cluster " + (sc10.cluster_top_sector || "—")
+            + " " + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "%";
+          clusTitle = "Sector-cluster gate active but not triggered. "
+            + "Top sector: " + (sc10.cluster_top_sector || "—") + " ("
+            + (sc10.cluster_max_sector_pct || 0).toFixed(0) + "% of K).";
+        }
+        v10chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+          + 'font-weight:600;background:' + clusBg + ';color:' + clusFg
+          + '" title="' + clusTitle.replace(/"/g, '&quot;') + '">'
+          + clusTxt + '</span>'
+        );
+      }
+      // Picks chip (compact -- shows comma-separated tickers)
+      var picks10 = sc10.picks || [];
+      if (picks10.length) {
+        var t10 = picks10.map(function (p) { return p.ticker; }).join(",");
+        var secs10 = {};
+        picks10.forEach(function (p) {
+          var s = p.sector || "?";
+          secs10[s] = (secs10[s] || 0) + 1;
+        });
+        var sBd = Object.keys(secs10).sort(function (a, b) {
+          return secs10[b] - secs10[a];
+        }).map(function (s) { return s + " ×" + secs10[s]; }).join(" · ");
+        v10chips.push(
+          '<span style="padding:3px 8px;border-radius:999px;font-size:11px;'
+          + 'font-weight:600;background:rgba(31,41,55,0.50);color:#e5e7eb;'
+          + 'font-family:JetBrains Mono,monospace" title="Today’s scanner picks ('
+          + picks10.length + '): ' + t10 + '. Sectors: '
+          + sBd.replace(/"/g, '&quot;') + '">picks ' + t10 + '</span>'
+        );
+      }
+      var v10chipsHtml = v10chips.length
+        ? '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:#9ca3af;font-size:11px">v10:</span>' + v10chips.join('') + '</div>'
+        : '';
+
+      body.innerHTML = '<div class="v10-gauges-row">' + html + '</div>' + v9chipsHtml + v10chipsHtml;
     }
 
     // v8.3.16 -- suppress same-tick opposite_side rejects from the
@@ -5807,6 +4570,12 @@
         detail: "v10 daily-loss kill triggered. New entries blocked; " +
                 "existing positions still managed to exit. ",
         pid_chips: killed_pids.map(function (k) {
+          // When P&L has recovered to positive after the kill, show "+$X recovered"
+          // instead of "$X / $-threshold" (which implies an ongoing loss).
+          if (k.realized >= 0) {
+            return k.pid.toUpperCase() + " +" +
+                   "$" + Math.round(k.realized).toLocaleString() + " recovered";
+          }
           return k.pid.toUpperCase() + " $" +
                  Math.round(k.realized).toLocaleString() +
                  " / $" + Math.round(-k.threshold).toLocaleString();
@@ -5816,52 +4585,78 @@
 
     if (conditions.length === 0) {
       banner.classList.add("hide");
-      banner.classList.remove("killswitch-banner--info");
+      banner.classList.remove("killswitch-banner--info", "killswitch-banner--soft");
       banner.innerHTML = "";
       return;
     }
     banner.classList.remove("hide");
-    // v7.50.0 -- soften the red styling when the ONLY active condition
-    // is "outside market hours" (just informational, not a kill state).
-    // Any of the actual alarm conditions (operator-pause, day-block,
-    // daily-kill, v10 disabled, legacy halt) brings the red back.
+
     var informationalOnly = (conditions.length === 1
                               && conditions[0].title === "OUTSIDE MARKET HOURS");
+    // "Soft" state: only scan-paused + daily-kill active (expected mid-day — not critical).
+    // The kill already fired, positions are still managed. This is NOT an emergency;
+    // the operator doesn't need a bright red alarm for the rest of the afternoon.
+    var SOFT_TITLES = {"SCAN PAUSED": true, "DAILY-LOSS KILL ACTIVE": true};
+    var softPause = !informationalOnly && conditions.length >= 1
+      && conditions.every(function(c) { return !!SOFT_TITLES[c.title]; });
+
     if (informationalOnly) {
       banner.classList.add("killswitch-banner--info");
-    } else {
+      banner.classList.remove("killswitch-banner--soft");
+    } else if (softPause) {
+      banner.classList.add("killswitch-banner--soft");
       banner.classList.remove("killswitch-banner--info");
+    } else {
+      banner.classList.remove("killswitch-banner--info", "killswitch-banner--soft");
     }
-    // Pick the icon: ℹ for the calm informational state, ⚠ otherwise.
+
+    if (softPause) {
+      // Condensed one-liner: no alarm icon, no heading, no button.
+      var killCond = null;
+      conditions.forEach(function(c) {
+        if (c.title === "DAILY-LOSS KILL ACTIVE") killCond = c;
+      });
+      var chipHtml = '';
+      if (killCond && killCond.pid_chips && killCond.pid_chips.length) {
+        killCond.pid_chips.forEach(function(chip) {
+          chipHtml += '<span class="ks-portfolio-chip">' + esc(chip) + '</span>';
+        });
+      }
+      // When kill fired but P&L has since recovered to positive, "daily-loss limit
+      // reached" is misleading — the loss that triggered the kill was temporary.
+      var _killLabel = '';
+      if (killCond) {
+        var _pnlPositive = realized_total > 0;
+        _killLabel = ' &mdash; '
+          + (_pnlPositive ? 'morning session ended' : 'daily-loss limit reached')
+          + (chipHtml ? ' ' + chipHtml : '');
+      }
+      banner.innerHTML = '<span class="ks-icon" aria-hidden="true">&#9646;</span>'
+        + '<div class="ks-text"><div class="ks-detail">Scanner paused'
+        + _killLabel
+        + ' &middot; existing positions still managed</div></div>';
+      return;
+    }
+
     var icon = informationalOnly ? 'ℹ' : '⚠';
     var html = '<span class="ks-icon" aria-hidden="true">' + icon + '</span>'
              + '<div class="ks-text">';
     conditions.forEach(function (c, i) {
-      var sep = (i > 0) ? ' · ' : '';
-      html += (i === 0
-                ? '<div class="ks-title">' + esc(c.title) + '</div>'
-                : '');
-      if (i === 0) {
-        html += '<div class="ks-detail">';
-      }
-      if (i > 0) {
-        html += sep + '<b>' + esc(c.title) + ':</b> ';
-      }
+      html += (i === 0 ? '<div class="ks-title">' + esc(c.title) + '</div>' : '');
+      if (i === 0) html += '<div class="ks-detail">';
+      if (i > 0)  html += ' · <b>' + esc(c.title) + ':</b> ';
       html += esc(c.detail);
       if (c.pid_chips && c.pid_chips.length) {
         html += ' ';
-        c.pid_chips.forEach(function (chip) {
-          html += '<span class="ks-portfolio-chip">'
-               + esc(chip) + '</span>';
+        c.pid_chips.forEach(function(chip) {
+          html += '<span class="ks-portfolio-chip">' + esc(chip) + '</span>';
         });
       }
     });
     html += '</div></div>';
-    html += '<div class="ks-actions">'
-         + '<button type="button" class="ks-btn" '
+    html += '<div class="ks-actions"><button type="button" class="ks-btn" '
          + 'onclick="window.scrollTo({top:document.body.scrollHeight,behavior:\'smooth\'})">'
-         + 'View activity</button>'
-         + '</div>';
+         + 'View activity</button></div>';
     banner.innerHTML = html;
   }
 
@@ -5892,14 +4687,22 @@
     var statusEl = document.getElementById("v10-eod-status");
     var fireEl = document.getElementById("v10-eod-fire-pill");
     if (!section || !body) return;
+    var orbSection = document.getElementById("v10-day-status");
     if (!eod || !eod.enabled) {
       section.style.display = "none";
+      /* Restore full rounding on ORB card when EOD is hidden */
+      if (orbSection) { orbSection.style.borderRadius = "10px"; orbSection.style.borderBottom = ""; }
       return;
     }
-    // v9.1.32 -- always show the EOD card when enabled so the operator
-    // can verify config before 15:00 ET. Previously hidden until activity
-    // started, leaving no indication the engine was armed.
+    // v9.1.32 -- always show the EOD card when enabled.
     section.style.display = "";
+    /* Fuse ORB + EOD into one visual block: share borders, no gap between them */
+    if (orbSection) {
+      orbSection.style.borderRadius = "10px 10px 0 0";
+      orbSection.style.borderBottom = "1px solid #374151";
+    }
+    section.style.borderRadius = "0 0 10px 10px";
+    section.style.borderTop = "none";
     _v10EodFillBody(eod, "main", body, statusEl, fireEl, s);
   }
 
@@ -6057,7 +4860,8 @@
     var _showGatePills = _sessionActive || _isMarketHours;
     // Hide the full gate section (VIX | Day rows) when off-hours and
     // session not yet started. IDs are the v10-day-status pill spans.
-    ["v10-vix", "v10-vix-pass", "v10-day-state",
+    ["v10-vix-divider", "v10-vix-label", "v10-vix", "v10-vix-pass",
+     "v10-day-divider", "v10-day-label", "v10-day-state",
      "v10-atr-pill", "v10-atr-pill-divider",
      "v10-partial-pill", "v10-partial-pill-divider",
      "v10-wash-pill", "v10-wash-pill-divider",
@@ -6065,6 +4869,9 @@
      "v10-mbr-pill", "v10-mbr-pill-divider",
      "v10-chase-pill", "v10-chase-pill-divider",
      "v10-cooldown-pill", "v10-cooldown-pill-divider",
+     "v10-universe-pill", "v10-universe-pill-divider",
+     "v10-cluster-pill", "v10-cluster-pill-divider",
+     "v10-picks-pill", "v10-picks-pill-divider",
     ].forEach(function (id) {
       var _el = document.getElementById(id);
       if (!_el) return;
@@ -6264,6 +5071,103 @@
       } else {
         chasePill.style.display = "none";
         chaseDiv.style.display = "none";
+      }
+    }
+
+    // v10.0.0 -- broad-universe scanner + sector-cluster gate.
+    // Same three pills render on Val/Gene tabs via renderV10PerPortfolio.
+    var sc = (v10 && v10.scanner) || {};
+    var uniPill = document.getElementById("v10-universe-pill");
+    var uniDiv  = document.getElementById("v10-universe-pill-divider");
+    var clusPill = document.getElementById("v10-cluster-pill");
+    var clusDiv  = document.getElementById("v10-cluster-pill-divider");
+    var picksPill = document.getElementById("v10-picks-pill");
+    var picksDiv  = document.getElementById("v10-picks-pill-divider");
+    if (uniPill && uniDiv) {
+      if (sc.dynamic_universe_enabled === false) {
+        uniPill.textContent = "Univ static12";
+        uniPill.style.background = "#374151";
+        uniPill.style.color = "#9ca3af";
+        uniPill.title = "Dynamic-universe scanner DISABLED. Engine uses static 12-ticker universe. Set ORB_DYNAMIC_UNIVERSE=1 in Railway env to enable.";
+      } else if (sc.dynamic_universe_active) {
+        var nP = (sc.picks || []).length;
+        uniPill.textContent = "Univ dyn " + nP;
+        uniPill.style.background = "#0891b2"; // cyan-700
+        uniPill.style.color = "#cffafe";       // cyan-100
+        uniPill.title = "v10 dynamic-universe scanner ACTIVE. " + nP
+          + " picks selected from S&P 500 via compression signal at "
+          + (sc.date || "today") + ". Fallback reason if any: "
+          + (sc.fallback_reason || "—");
+      } else {
+        uniPill.textContent = "Univ fallback";
+        uniPill.style.background = "#a16207"; // amber-700
+        uniPill.style.color = "#fef3c7";       // amber-100
+        uniPill.title = "v10 dynamic-universe enabled but fell back to "
+          + "static 12 -- reason: " + (sc.fallback_reason || "unknown")
+          + ". Check premarket bar coverage at "
+          + "/data/bars/<DATE>/<TICKER>.jsonl.";
+      }
+      uniPill.style.display = "";
+      uniDiv.style.display = "";
+    }
+    if (clusPill && clusDiv) {
+      if (!sc.cluster_gate_active) {
+        clusPill.textContent = "cluster off";
+        clusPill.style.background = "#374151";
+        clusPill.style.color = "#9ca3af";
+        clusPill.title = "Sector-cluster day-skip gate disabled "
+          + "(ORB_CLUSTER_MAX_SECTOR_PCT=0). v10 default is 60%.";
+      } else if (sc.cluster_gate_skipped_day) {
+        clusPill.textContent = "DAY SKIPPED "
+          + (sc.cluster_top_sector || "?")
+          + " " + (sc.cluster_max_sector_pct || 0).toFixed(0) + "%";
+        clusPill.style.background = "#dc2626"; // red-600
+        clusPill.style.color = "#fff";
+        clusPill.title = "Day skipped by sector-cluster gate: "
+          + (sc.cluster_max_sector_pct || 0).toFixed(0) + "% of top-K picks "
+          + "are in sector " + (sc.cluster_top_sector || "?") + ", "
+          + "exceeding the threshold. All new entries blocked across all "
+          + "portfolios until the next session.";
+      } else {
+        clusPill.textContent = "cluster "
+          + (sc.cluster_top_sector || "—") + " "
+          + (sc.cluster_max_sector_pct || 0).toFixed(0) + "%";
+        clusPill.style.background = "#166534"; // green-700
+        clusPill.style.color = "#dcfce7";       // green-100
+        clusPill.title = "Sector-cluster gate ACTIVE and not triggered. "
+          + "Top sector among picks: " + (sc.cluster_top_sector || "—")
+          + " (" + (sc.cluster_max_sector_pct || 0).toFixed(0)
+          + "% of K). Threshold from ORB_CLUSTER_MAX_SECTOR_PCT.";
+      }
+      clusPill.style.display = "";
+      clusDiv.style.display = "";
+    }
+    if (picksPill && picksDiv) {
+      var picksArr = sc.picks || [];
+      if (!picksArr.length) {
+        picksPill.style.display = "none";
+        picksDiv.style.display = "none";
+      } else {
+        var tickers = picksArr.map(function (p) { return p.ticker; });
+        var sectorCounts = {};
+        picksArr.forEach(function (p) {
+          var s = p.sector || "?";
+          sectorCounts[s] = (sectorCounts[s] || 0) + 1;
+        });
+        var sectorSummary = Object.keys(sectorCounts).sort(function (a, b) {
+          return sectorCounts[b] - sectorCounts[a];
+        }).map(function (s) {
+          return s + " ×" + sectorCounts[s];
+        }).join(" · ");
+        picksPill.textContent = "picks " + tickers.join(",");
+        picksPill.style.background = "#1f2937";
+        picksPill.style.color = "#e5e7eb";
+        picksPill.style.fontFamily = "JetBrains Mono,monospace";
+        picksPill.title = "Today's premarket scanner picks (" + tickers.length
+          + " names from S&P 500): " + tickers.join(", ")
+          + "\nSector breakdown: " + sectorSummary;
+        picksPill.style.display = "";
+        picksDiv.style.display = "";
       }
     }
 

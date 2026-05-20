@@ -43,9 +43,6 @@ logger = logging.getLogger(__name__)
 _TG_DATA_ROOT_DEFAULT = os.environ.get("TG_DATA_ROOT", "/data")
 STATE_DB_PATH = os.getenv("STATE_DB_PATH", _TG_DATA_ROOT_DEFAULT + "/state.db")
 
-_LONG_PREFIX = "long:"
-_SHORT_PREFIX = "short:"
-
 # Connections are not threadsafe across threads in stdlib sqlite3 by
 # default. We hand out per-thread connections via thread-local storage
 # and protect schema init / migration with a module-level lock.
@@ -118,15 +115,10 @@ def init_db(path: Optional[str] = None) -> None:
                 )
                 """
             )
-            bootstrap.execute(
-                """
-                CREATE TABLE IF NOT EXISTS v5_long_tracks (
-                    ticker TEXT PRIMARY KEY,
-                    state_json TEXT NOT NULL,
-                    updated_at_utc TEXT NOT NULL
-                )
-                """
-            )
+            # v10.0.1 -- v5_long_tracks SQLite table retired with the
+            # tiger_buffalo_v5 state machine. CREATE TABLE statement
+            # removed; existing rows on disk are orphan data, harmless
+            # because nothing reads from them.
             # Idempotent cleanup of the deleted shadow_positions table
             # and its indexes. Kept so a fresh boot on a stale DB volume
             # doesn't trip on orphaned schema objects.
@@ -246,140 +238,12 @@ def prune_fired(keep_prefix: str) -> int:
 
 
 # ----------------------------------------------------------------------
-# v5_long_tracks helpers
-#
-# The table is direction-agnostic; callers pass direction="long" or
-# "short" so a single table satisfies the spec while still letting the
-# scanner keep two distinct buckets in memory.
+# v10.0.1 -- v5_long_tracks helpers retired (save_track / load_track /
+# delete_track / load_all_tracks / replace_all_tracks deleted along
+# with the tiger_buffalo_v5 state machine they served).
 # ----------------------------------------------------------------------
-def _row_key(direction: str, ticker: str) -> str:
-    if direction == "long":
-        return _LONG_PREFIX + ticker
-    if direction == "short":
-        return _SHORT_PREFIX + ticker
-    raise ValueError("direction must be 'long' or 'short'")
 
 
-def save_track(ticker: str, state_dict: dict, direction: str = "long") -> None:
-    payload = json.dumps(state_dict, default=str, separators=(",", ":"))
-    key = _row_key(direction, ticker)
-    c = _conn()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        c.execute(
-            "INSERT INTO v5_long_tracks (ticker, state_json, updated_at_utc) "
-            "VALUES (?, ?, ?) "
-            "ON CONFLICT(ticker) DO UPDATE SET "
-            "  state_json = excluded.state_json, "
-            "  updated_at_utc = excluded.updated_at_utc",
-            (key, payload, _utc_now_iso()),
-        )
-        c.execute("COMMIT")
-    except Exception:
-        try:
-            c.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-
-
-def load_track(ticker: str, direction: str = "long") -> Optional[dict]:
-    key = _row_key(direction, ticker)
-    c = _conn()
-    cur = c.execute(
-        "SELECT state_json FROM v5_long_tracks WHERE ticker = ? LIMIT 1",
-        (key,),
-    )
-    row = cur.fetchone()
-    if row is None:
-        return None
-    try:
-        return json.loads(row[0])
-    except Exception as e:
-        logger.warning("load_track: bad JSON for %s: %s", key, e)
-        return None
-
-
-def delete_track(ticker: str, direction: str = "long") -> None:
-    key = _row_key(direction, ticker)
-    c = _conn()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        c.execute("DELETE FROM v5_long_tracks WHERE ticker = ?", (key,))
-        c.execute("COMMIT")
-    except Exception:
-        try:
-            c.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-
-
-def load_all_tracks(direction: str = "long") -> dict[str, dict]:
-    """Return {ticker: state_dict} for every row matching direction."""
-    if direction not in ("long", "short"):
-        raise ValueError("direction must be 'long' or 'short'")
-    prefix = _LONG_PREFIX if direction == "long" else _SHORT_PREFIX
-    c = _conn()
-    cur = c.execute(
-        "SELECT ticker, state_json FROM v5_long_tracks WHERE ticker LIKE ?",
-        (prefix + "%",),
-    )
-    out: dict[str, dict] = {}
-    for key, payload in cur.fetchall():
-        ticker = key[len(prefix) :]
-        try:
-            out[ticker] = json.loads(payload)
-        except Exception as e:
-            logger.warning("load_all_tracks: bad JSON for %s: %s", key, e)
-    return out
-
-
-def replace_all_tracks(
-    long_tracks: dict[str, dict],
-    short_tracks: Optional[dict[str, dict]] = None,
-) -> None:
-    """Atomically wipe and rewrite every track row.
-
-    Called from save_paper_state to keep the SQLite copy in sync with
-    the in-memory dict (handles deletions that save_track alone would
-    miss). Both buckets in one transaction so a crash mid-rewrite
-    rolls back to the previous consistent snapshot.
-    """
-    short_tracks = short_tracks or {}
-    c = _conn()
-    try:
-        c.execute("BEGIN IMMEDIATE")
-        c.execute("DELETE FROM v5_long_tracks")
-        now = _utc_now_iso()
-        for ticker, st in long_tracks.items():
-            c.execute(
-                "INSERT INTO v5_long_tracks (ticker, state_json, updated_at_utc) VALUES (?, ?, ?)",
-                (
-                    _LONG_PREFIX + ticker,
-                    json.dumps(st, default=str, separators=(",", ":")),
-                    now,
-                ),
-            )
-        for ticker, st in short_tracks.items():
-            c.execute(
-                "INSERT INTO v5_long_tracks (ticker, state_json, updated_at_utc) VALUES (?, ?, ?)",
-                (
-                    _SHORT_PREFIX + ticker,
-                    json.dumps(st, default=str, separators=(",", ":")),
-                    now,
-                ),
-            )
-        c.execute("COMMIT")
-    except Exception:
-        try:
-            c.execute("ROLLBACK")
-        except Exception:
-            pass
-        raise
-
-
-# ----------------------------------------------------------------------
 # v5.5.10 \u2014 executor_positions helpers
 #
 # Per-bot, per-mode mirror of TradeGeniusBase.self.positions. Lets

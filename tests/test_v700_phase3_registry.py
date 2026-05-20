@@ -35,9 +35,8 @@ def _make_tg_stub():
     mod.paper_all_trades = []
     mod.trade_history = []
     mod.short_trade_history = []
-    mod.v5_long_tracks = {}
-    mod.v5_short_tracks = {}
-    mod.v5_active_direction = {}
+    # v10.0.1: v5_long_tracks / v5_short_tracks / v5_active_direction
+    # attrs retired with the tiger_buffalo_v5 state machine.
     mod.paper_cash = 100_000.0
     mod._trading_halted = False
     mod._trading_halted_reason = ""
@@ -139,17 +138,8 @@ class TestBookIsolation:
         gene = pb.PORTFOLIOS.get("gene")
         assert main.positions is not gene.positions
 
-    def test_val_v5_long_tracks_separate_from_main(self):
-        pb = _import_pb()
-        main = pb.PORTFOLIOS.get("main")
-        val = pb.PORTFOLIOS.get("val")
-        assert main.v5_long_tracks is not val.v5_long_tracks
-
-    def test_val_v5_short_tracks_separate_from_main(self):
-        pb = _import_pb()
-        main = pb.PORTFOLIOS.get("main")
-        val = pb.PORTFOLIOS.get("val")
-        assert main.v5_short_tracks is not val.v5_short_tracks
+    # v10.0.1: v5_long_tracks / v5_short_tracks isolation tests retired
+    # with the tiger_buffalo_v5 state machine they covered.
 
     def test_mutation_does_not_cross_books(self):
         """Writing to val.positions must not appear in main.positions."""

@@ -132,9 +132,7 @@ def _compute_et_bucket(ts) -> Optional[str]:
 
     Accepts a datetime or an ISO 8601 string. Returns None for any value
     outside the Alpaca extended-hours window (04:00:00 ET through
-    19:59:59 ET) or for any input we cannot parse. The caller writes the
-    field as null in those cases, which volume_bucket.py treats as 'skip
-    this bar for the baseline'.
+    19:59:59 ET) or for any input we cannot parse.
 
     v6.14.0 fix: prior to v6.14.0 the SIP ingest left et_bucket = None on
     every bar, which silently dropped 83% of today's bars from the volume

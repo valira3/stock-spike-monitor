@@ -116,8 +116,8 @@ Rules:
 
 ### 4.2 Backup Mechanisms
 
-**State snapshot branch (already live):**  
-`.github/workflows/state-snapshot.yml` commits `/api/state` + `/api/executor/val` + `/api/executor/gene` to `snapshots-live` branch every 10 min during RTH. Provides a rolling record of positions, mode, and equity — enough to manually reconstruct state after a volume wipe.
+**State snapshot (operator-triggered, v10.0.1+):**  
+`tools/state_snapshot.py` dumps `/api/state` + `/api/executor/val` + `/api/executor/gene` to a local JSON file when invoked from the operator's box. The prior `.github/workflows/state-snapshot.yml` cron was retired in v10.0.1 along with the other GHA crons (GHAs are unstable; we run scheduled production tasks via local cron now). For a rolling backup, schedule `tools/state_snapshot.py` from cron locally.
 
 **Nightly backup workflow (to implement):**  
 Add `.github/workflows/backup-data.yml`:

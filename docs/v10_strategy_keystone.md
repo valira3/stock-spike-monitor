@@ -139,11 +139,11 @@ Verified by Phase 11 audit subagent (PR #459) and Phase 13 audit subagent (PR #4
 
 ## Required infrastructure
 
-### Data feeds (auto-refreshed via GHA)
+### Data feeds (operator-refreshed; GHA crons retired v10.0.1)
 
 - **VIX daily history**: `data/external/vix-daily.csv` from datahub.io GitHub mirror
-- **Earnings calendar**: `tools/orb_earnings_calendar.py` from yfinance
-- Both refreshed daily at **07:00 ET** by `.github/workflows/refresh-data-feeds.yml`
+- **Earnings calendar**: `tools/orb_earnings_calendar.py` from yfinance (live also refreshed in-process every Sunday via `orb.earnings_refresh.fire_refresh()` from the bot scheduler)
+- Manual refresh: `python tools/orb_earnings_fetcher.py` + commit. Schedule from local cron if you want a regular cadence. GHA workflows are unstable so cron-style refreshes moved out of GHA in v10.0.1.
 
 ### Backtest tooling
 
@@ -165,7 +165,7 @@ Verified by Phase 11 audit subagent (PR #459) and Phase 13 audit subagent (PR #4
 1. Set the env vars above on the live trading instance
 2. Confirm `data/external/vix-daily.csv` is fresh (within 24h)
 3. Confirm `tools/orb_earnings_calendar.py` is fresh (within 1 quarter)
-4. Confirm `refresh-data-feeds` workflow is enabled
+4. Confirm the in-process earnings refresh fires (`orb.earnings_refresh.fire_refresh()` Sunday 13:00 ET; check forensic `[V10-EARN-REFRESH]` line)
 5. **Paper-trade 5 days** to verify fills match expected entries
 6. Monitor: if `tickers_failed > 0` in any sweep summary, investigate
 7. Re-baseline quarterly (META/MSFT block list, VIX threshold, range_min)

@@ -1,11 +1,10 @@
-"""v5.26.0 \u2014 engine package (spec-strict).
+"""engine package (post-v10.0.1).
 
-Per-tick decision pipeline. Stage 1 + Stage 3 spec-strict cuts of
-v5.26.0 deleted daily_bars, feature_flags, volume_baseline, sma_stack,
-phase_machine modules + the non-spec seeder helpers (DI seed, QQQ
-regime seed/tick, archive/Alpaca prior-session fallbacks). What
-remains: bars (5m OHLC + EMA9), seeders (OR freeze only), callbacks,
-scan, sentinel.
+Per-tick decision pipeline. The Tiger Sentinel A/B/C chain
+(engine.sentinel + engine.momentum_state + engine.velocity_ratchet)
+was deleted in v10.0.1 when v10 ORB took over all exits.
+engine.alarm_f_trail is reduced to just the TrailState dataclass
+(used by engine.portfolio_book.record_entry on every new position).
 """
 
 from __future__ import annotations
@@ -17,15 +16,8 @@ from engine.seeders import (
     seed_opening_range,
     seed_opening_range_all,
 )
-from engine.sentinel import (
-    SentinelAction,
-    SentinelResult,
-    check_alarm_a,
-    check_alarm_b,
-    evaluate_sentinel,
-)
 
-LOADED_MODULES = ("bars", "seeders", "callbacks", "scan", "sentinel")
+LOADED_MODULES = ("bars", "seeders", "callbacks", "scan")
 
 __all__ = [
     "compute_5m_ohlc_and_ema9",
@@ -33,10 +25,5 @@ __all__ = [
     "scan_loop",
     "seed_opening_range",
     "seed_opening_range_all",
-    "SentinelAction",
-    "SentinelResult",
-    "check_alarm_a",
-    "check_alarm_b",
-    "evaluate_sentinel",
     "LOADED_MODULES",
 ]

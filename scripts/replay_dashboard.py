@@ -57,7 +57,23 @@ _HEAD_PATCH = """\
 (function(){
   var _orig = window.fetch.bind(window);
 
+  var _ttVersion = 0;  /* increments each call to force renderAll to re-run */
+
+  /* Override Date.now() so HELD times, clocks, and other time-relative
+     UI elements use the SCENARIO time, not the real wall clock. */
+  (function() {
+    var _origNow = Date.now.bind(Date);
+    Date.now = function() {
+      var d = (window.__TT_DIFFS || [])[window.__TT_IDX || 0];
+      if (d && d.server_time) {
+        try { var t = new Date(d.server_time).getTime(); if (t > 0) return t; } catch(e) {}
+      }
+      return _origNow();
+    };
+  })();
+
   function currentState() {
+    _ttVersion++;
     var base  = window.__TT_BASE  || {};
     var diffs = window.__TT_DIFFS || [];
     var diff  = diffs[window.__TT_IDX || 0] || {};
@@ -67,18 +83,324 @@ _HEAD_PATCH = """\
     if ('server_time'       in diff) s.server_time       = diff.server_time;
     if ('server_time_label' in diff) s.server_time_label = diff.server_time_label;
     if ('eod'               in diff) s.eod               = diff.eod;
+    /* Per-portfolio merge: stitch each pid's slim diff over the base
+       portfolios entry so Val/Gene panels update every scrubber step. */
+    if (diff.portfolios && s.portfolios) {
+      s.portfolios = Object.assign({}, s.portfolios);
+      Object.keys(diff.portfolios).forEach(function (pid) {
+        var basePid = s.portfolios[pid] || {};
+        s.portfolios[pid] = Object.assign({}, basePid, diff.portfolios[pid]);
+      });
+    }
+    /* Time-varying fields: P&L, session mode, activity feed, scan state */
+    if ('portfolio'         in diff) s.portfolio         = diff.portfolio;
+    /* Critical: the dashboard's Main-tab DAY P&L / EQUITY KPI reads from
+       state.portfolio (singular legacy field) via paperSlice -> sl.portfolio,
+       NOT from state.portfolios.main. Without this, the KPI stays at $0
+       throughout the day even when day_pnl is properly updated in
+       state.portfolios.main. Mirror main's values into the singular field
+       so the KPI reflects intraday realized + unrealized swings. */
+    if (s.portfolios && s.portfolios.main) {
+      var pm = s.portfolios.main;
+      s.portfolio = Object.assign({}, s.portfolio || {}, {
+        equity:   (pm.equity   != null) ? pm.equity   : (s.portfolio||{}).equity,
+        day_pnl:  (pm.day_pnl  != null) ? pm.day_pnl  : (s.portfolio||{}).day_pnl,
+        start:    ((s.portfolio||{}).start != null) ? (s.portfolio||{}).start : 100000,
+        vs_start: (pm.day_pnl  != null) ? pm.day_pnl  : (s.portfolio||{}).vs_start,
+      });
+    }
+    if ('regime'            in diff) s.regime            = diff.regime;
+    if ('v10_activity'      in diff && s.v10) {
+      s.v10 = Object.assign({}, s.v10);
+      s.v10.activity = diff.v10_activity;
+    }
+    /* Override ALL gates flags so no base-state leakage into replay.
+       scan_paused_user / trading_halted / scan_idle_hours from the midday
+       production fetch can bleed into early snapshots and show the kill
+       banner when no kill has actually occurred in the scenario. */
+    if (s.gates) {
+      var _scanPaused = (diff.gates_scan_paused != null) ? !!diff.gates_scan_paused : false;
+      s.gates = Object.assign({}, s.gates, {
+        scan_paused:       _scanPaused,
+        scan_paused_user:  _scanPaused,   /* mirrors scan state in scenario */
+        scan_idle_hours:   false,          /* always a live trading day */
+        trading_halted:    false,          /* legacy flag, not used in v10 */
+      });
+    }
+    /* Override v10.day_states so TRADES TODAY / top-ticker counts are correct
+       for each scenario time point (the gauge reads day_states, not risk_books). */
+    if ('v10_day_states' in diff && s.v10) {
+      s.v10 = Object.assign({}, s.v10);
+      s.v10.day_states = diff.v10_day_states;
+    }
+    /* Override risk book fields so the kill banner, P&L gauges, and
+       TRADES TODAY admit/reject counts reflect the correct scenario state. */
+    if (('v10_kill_triggered' in diff || 'v10_realized_pnl' in diff ||
+         'v10_admit_count' in diff || 'v10_reject_count' in diff) && s.v10 && s.v10.risk_books) {
+      s.v10 = Object.assign({}, s.v10);
+      s.v10.risk_books = Object.assign({}, s.v10.risk_books);
+      var _kill        = diff.v10_kill_triggered != null ? !!diff.v10_kill_triggered : null;
+      var _realPnl     = diff.v10_realized_pnl   != null ? diff.v10_realized_pnl    : null;
+      var _admitCount  = diff.v10_admit_count     != null ? diff.v10_admit_count     : null;
+      var _rejectCount = diff.v10_reject_count    != null ? diff.v10_reject_count    : null;
+      /* Val has its own separate account ($30,185.24). Its realized P&L is scaled
+         proportionally (~30%) and its kill threshold is 2% of $30k = ~$604, so
+         the morning scenario never triggers Val's kill (worst Val P&L = -$14). */
+      var _VAL_BASE_EQ = 30185.24;
+      var _VAL_RATIO   = _VAL_BASE_EQ / 100000;
+      var _valRealPnl  = _realPnl !== null ? Math.round(_realPnl * _VAL_RATIO * 100) / 100 : null;
+      var _valKillThresh = Math.round(_VAL_BASE_EQ * 0.02 * 10) / 10; /* ~$603.70 */
+      Object.keys(s.v10.risk_books).forEach(function(pid) {
+        s.v10.risk_books[pid] = Object.assign({}, s.v10.risk_books[pid]);
+        if (pid === 'main') {
+          if (_kill        !== null) s.v10.risk_books[pid].daily_kill_triggered = _kill;
+          if (_realPnl     !== null) s.v10.risk_books[pid].realized_pnl_today   = _realPnl;
+          if (_admitCount  !== null) s.v10.risk_books[pid].admit_count           = _admitCount;
+          if (_rejectCount !== null) s.v10.risk_books[pid].reject_count          = _rejectCount;
+        } else if (pid === 'val') {
+          /* Val: scale P&L to account size, never trigger kill in this scenario */
+          if (_valRealPnl  !== null) s.v10.risk_books[pid].realized_pnl_today   = _valRealPnl;
+          s.v10.risk_books[pid].daily_kill_triggered = false;
+          s.v10.risk_books[pid].daily_kill_threshold = _valKillThresh;
+          s.v10.risk_books[pid].max_risk_dollars     = _valKillThresh;
+          s.v10.risk_books[pid].equity = Math.round((_VAL_BASE_EQ + (_valRealPnl||0)) * 100) / 100;
+        }
+        /* gene: leave unchanged (no active positions in this scenario) */
+      });
+    }
+    /* Inject a unique last_scan_at so app.js's SSE optimization
+       (_scanAt !== _lastRenderedScanAt) always triggers renderAll(). */
+    if (s.gates) {
+      s.gates = Object.assign({}, s.gates);
+      s.gates.last_scan_at = 'tt-' + (window.__TT_IDX || 0) + '-' + _ttVersion;
+    }
     return s;
+  }
+
+  /* Override __tgNowEtMinutes so the EOD time-bar uses scenario time instead of
+     real wall clock. app.js defines this with new Date() which ignores our Date.now
+     patch. We override it here, after currentState() is defined, so it can read
+     the scenario server_time_label for the current scrubber position. */
+  window.__tgNowEtMinutes = function() {
+    var s = currentState();
+    var tMatch = (s.server_time_label || '').match(/([0-9]{2}):([0-9]{2}):[0-9]{2}/);
+    if (tMatch) return parseInt(tMatch[1],10)*60 + parseInt(tMatch[2],10);
+    /* Fallback: parse server_time UTC and subtract 4h for ET */
+    var stMatch = (s.server_time || '').match(/T([0-9]{2}):([0-9]{2}):/);
+    if (stMatch) return ((parseInt(stMatch[1],10) - 4 + 24) % 24) * 60 + parseInt(stMatch[2],10);
+    return 0;
+  };
+
+  /* Generate realistic fake 1m OHLC bars from OR levels.
+     Uses a seeded PRNG so the same ticker always produces the same bars. */
+  /* chartStartMin: first bar to INCLUDE in output. PRNG always advances from 570
+     so price continuity is maintained even when zooming to 14:00 for EOD-only tickers. */
+  function _fakeBars(ticker, orHigh, orLow, endEtMin, date, chartStartMin) {
+    var barDate = date || '2026-05-15';
+    var chartStart = (chartStartMin != null) ? chartStartMin : 570;
+    var seed = 0;
+    for (var i = 0; i < ticker.length; i++) seed = (seed * 31 + ticker.charCodeAt(i)) | 0;
+    function rand() {
+      seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+      return ((seed >>> 0) / 4294967296);
+    }
+    var vol = (orHigh - orLow) / 40;
+    var price = orLow + (orHigh - orLow) * 0.25;
+    var bars = [];
+    var end = endEtMin || 615;
+    for (var m = 570; m <= end; m++) {
+      var open = price;
+      var drift = (m < 600) ? vol * 0.15 : vol * 0.02;
+      var chg = (rand() - 0.47) * vol * 2 + drift;
+      var close = open + chg;
+      var hi = Math.max(open, close) + rand() * vol * 0.8;
+      var lo = Math.min(open, close) - rand() * vol * 0.8;
+      if (m >= chartStart) {
+        var hh = Math.floor(m / 60), mm = m % 60;
+        var ts = barDate + 'T' + (hh<10?'0':'') + hh + ':' + (mm<10?'0':'') + mm + ':00-04:00';
+        bars.push({
+          ts:ts, et_min:m,
+          o:+open.toFixed(2), h:+hi.toFixed(2), l:+lo.toFixed(2), c:+close.toFixed(2),
+          v: Math.floor(rand()*80000+15000),
+          avwap:null, avwap_hi:null, avwap_lo:null, pm_avwap:null, ema9_5m:null
+        });
+      }
+      price = close;
+    }
+    return bars;
+  }
+
+  function _intradayReply(u) {
+    var parts = u.split('/api/intraday/');
+    if (parts.length < 2) return {};
+    var ticker = parts[1].split('?')[0].toUpperCase();
+    var s = currentState();
+    /* Find OR levels -- try proximity list first, fall back to v10.or_windows dict */
+    var prox = (s.proximity || []).filter(function(p){ return p.ticker === ticker; })[0] || {};
+    var orHigh = prox.or_high || null;
+    var orLow  = prox.or_low  || null;
+    if (!orHigh || !orLow) {
+      var _orWin = (s.v10 && s.v10.or_windows && s.v10.or_windows[ticker]) || {};
+      orHigh = _orWin.or_high || null;
+      orLow  = _orWin.or_low  || null;
+    }
+    /* Derive end ET minute from server_time_label (e.g. "Fri May 16 | 10:15:00 ET") */
+    var endMin = 615; /* default 10:15 */
+    var tMatch = (s.server_time_label || '').match(/([0-9]{2}):([0-9]{2}):[0-9]{2}/);
+    if (tMatch) endMin = parseInt(tMatch[1],10)*60 + parseInt(tMatch[2],10);
+    /* Extend bars 15 min past scenario time; always cover through 16:05 (EOD close) */
+    endMin = Math.max(endMin + 15, Math.min(endMin + 15, 965));
+    /* Derive date before the empty-bar guard so error return uses correct date */
+    var sceneDate = '2026-05-15';
+    var dtMatch = (s.server_time || '').match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dtMatch) sceneDate = dtMatch[1];
+    if (!orHigh || !orLow) return {ok:true,ticker:ticker,date:sceneDate,bars:[],or_high:null,or_low:null,or_fresh:false,pdc:null,trades:[],sentinel_events:[],lifecycle:{},bar_count:0};
+
+    /* Build lifecycle overlay data from trades.
+       IMPORTANT: do NOT put entry_ts/exit_ts in payload.trades.
+       app.js calls utcIsoToEtMin() (declared as `const` at line 2005) from the
+       trades overlay loop at line 1962 -- temporal dead zone ReferenceError silently
+       kills _drawIntradayChart before entry/exit triangles ever render.
+       Fix: use lifecycle.entries/exits/open (et_min numbers, no TDZ risk) and
+       draw stop/1R/target lines ourselves via _stop_refs in _autoExpandCharts. */
+    var _rawEntries = [], _rawExits = [];
+    (s.trades_today || []).forEach(function(t) {
+      if ((t.ticker||'').toUpperCase() !== ticker) return;
+      var action = (t.action||'').toUpperCase();
+      var tm2 = (t.time||'').replace(' ET','').replace('ET','').match(/([0-9]+):([0-9]+)/);
+      if (!tm2) return;
+      var etMin = parseInt(tm2[1],10)*60 + parseInt(tm2[2],10);
+      if (action === 'BUY' || action === 'SHORT') {
+        _rawEntries.push({etMin:etMin, price:t.price, side:(t.side||'LONG').toLowerCase(), shares:t.shares||0});
+      } else if (action === 'SELL' || action === 'COVER') {
+        _rawExits.push({etMin:etMin, price:t.price});
+      }
+    });
+
+    /* EOD zoom: if ticker has ANY morning entries (before 14:00 = 840 ET min),
+       show the full day so morning + EOD context is both visible (e.g. ORCL).
+       Pure EOD-only tickers (AVGO, MSFT) zoom chart to 14:00-16:00 so the
+       29-min trade window isn't squashed into the rightmost 7% of the axis. */
+    var _hasMorningActivity = _rawEntries.some(function(e){ return e.etMin < 840; });
+    var _chartStartMin = _hasMorningActivity ? 570 : 840;
+
+    var bars = _fakeBars(ticker, orHigh, orLow, endMin, sceneDate, _chartStartMin);
+
+    /* Find open position for this ticker -- gives us actual stop/mark prices */
+    var openPos = null;
+    (s.positions || []).forEach(function(p) {
+      if ((p.ticker||'').toUpperCase() === ticker && !openPos) openPos = p;
+    });
+    /* Pair entries with exits; build lifecycle + stop/target refs */
+    var lcEntries=[], lcExits=[], lcOpen=[], stopRefs=[], usedExits=[];
+    _rawEntries.forEach(function(en) {
+      var ex = null;
+      for (var xi = 0; xi < _rawExits.length; xi++) {
+        if (usedExits.indexOf(xi) < 0 && _rawExits[xi].etMin > en.etMin) {
+          ex = _rawExits[xi]; usedExits.push(xi); break;
+        }
+      }
+      lcEntries.push({et_min:en.etMin, price:en.price, side:en.side, shares:en.shares});
+      if (ex) {
+        lcExits.push({et_min:ex.etMin, entry_et_min:en.etMin, price:ex.price, entry_price:en.price, side:en.side});
+      } else {
+        lcOpen.push({et_min:en.etMin, entry_price:en.price, side:en.side});
+      }
+      /* Chart overlay style: use entry time not openPos.eod so ORCL morning trades
+         get ORB-style overlays even when an EOD ORCL position is also open.
+         EOD entries are those placed at or after 15:00 ET (900 min). */
+      var isEodEntry = en.etMin >= 900;
+      var isLong = en.side !== 'short';
+      var markPx = (openPos && openPos.mark != null && !ex) ? openPos.mark : null;
+      var origStopPx = null, currStopPx = null, bePx = null, targPx = null;
+      if (!isEodEntry) {
+        /* Morning ORB: use actual position stop → 1R → 2.5R */
+        origStopPx = (openPos && openPos.entry_stop != null) ? openPos.entry_stop
+                     : (orHigh && orLow ? (isLong ? orLow : orHigh) : null);
+        currStopPx = (openPos && openPos.stop != null && !ex) ? openPos.stop : origStopPx;
+        var risk = origStopPx != null ? Math.abs(en.price - origStopPx) : 0;
+        bePx   = risk > 0 ? en.price + (isLong ? 1 : -1) * risk       : null;
+        targPx = risk > 0 ? en.price + (isLong ? 1 : -1) * 2.5*risk  : null;
+      }
+      stopRefs.push({
+        entry_et_min:  en.etMin, exit_et_min: ex ? ex.etMin : null,
+        entry_price:   en.price,
+        stop_price:    currStopPx,  /* null for EOD entries */
+        be_price:      bePx,        /* null for EOD entries */
+        target_price:  targPx,      /* null for EOD entries */
+        mark_price:    markPx,
+        is_eod:        isEodEntry
+      });
+    });
+
+    return {
+      ok:true, ticker:ticker, date:sceneDate,
+      bars:bars, or_high:orHigh, or_low:orLow, or_fresh:true,
+      pdc: +(orLow*0.994).toFixed(2),
+      sess_hod: +Math.max.apply(null,bars.map(function(b){return b.h;})).toFixed(2),
+      sess_lod: +Math.min.apply(null,bars.map(function(b){return b.l;})).toFixed(2),
+      trades: [],  /* empty: non-empty triggers TDZ bug in app.js ~line 1962 */
+      lifecycle: {entries:lcEntries, exits:lcExits, open:lcOpen},
+      _stop_refs: stopRefs,
+      sentinel_events:[], bar_count:bars.length
+    };
   }
 
   function reply(u) {
     var s = currentState();
     if (u.indexOf('/api/state')         >= 0) return s;
-    if (u.indexOf('/api/executor/val')  >= 0) return {ok:true,positions:[],trades:[]};
-    if (u.indexOf('/api/executor/gene') >= 0) return {ok:true,positions:[],trades:[]};
+    /* Val is an INDEPENDENT portfolio (own admissions, cooldowns, equity).
+       Read its state from state.portfolios.val directly -- do NOT scale
+       Main's positions by some ratio. Pre-v9.1.134 this shim derived Val
+       from Main * 0.30, which was wrong: Val's orb_replay_day can admit
+       different tickers, get rejected on different gates, and carry
+       different share counts than Main. Now it reads the per-portfolio
+       slim block we ship in every snapshot's diff. */
+    if (u.indexOf('/api/executor/val')  >= 0) {
+      var valPort = (s.portfolios && s.portfolios.val) || {};
+      var _valEq     = valPort.equity != null ? valPort.equity : 30185.24;
+      var _valDayPnl = valPort.day_pnl != null ? valPort.day_pnl : 0;
+      /* Translate per-portfolio positions to the executor renderer's field
+         names (symbol/avg_entry/current_price/unrealized_pnl). */
+      var _valPos = (valPort.positions || []).map(function (p) {
+        var _sh  = p.shares || 0;
+        var _unr = (p.unrealized != null) ? p.unrealized
+                                          : (p.unrealized_pnl || 0);
+        var _pct = (p.entry && _sh) ? _unr / (p.entry * _sh) * 100 : 0;
+        var _pctRounded = Math.round(_pct * 100) / 100;
+        var _isEod = (p.leg === 'eod') || !!p.eod;
+        return {
+          symbol: p.ticker, ticker: p.ticker,
+          side: (p.side||'LONG').toUpperCase(),
+          entry_price: p.entry, avg_entry: p.entry,
+          current_price: p.mark, limit_price: p.entry,
+          unrealized_pnl: _unr,
+          unrealized_pct: _pctRounded, unrealized_pnl_pct: _pctRounded,
+          shares: _sh, qty: _sh,
+          stop_price: p.stop, held_seconds: p.held_seconds || 0,
+          entry_ts_utc: p.entry_ts_utc,
+          phase: p.phase || 'A', entry_num: p.entry_num || 1,
+          portfolio: _isEod ? 'val-eod' : 'val',
+          cost: Math.round((p.entry || 0) * _sh * 100) / 100,
+          eod: _isEod
+        };
+      });
+      var _eodPosDict = {};
+      _valPos.forEach(function(vp){ if (vp.eod) _eodPosDict[vp.symbol] = {eod:true, entry_price:vp.avg_entry}; });
+      var _valTrades = (valPort.trades_today || []).map(function (t) {
+        var _isEod = (t.leg === 'eod') || !!t.eod;
+        return Object.assign({}, t, { portfolio: _isEod ? 'val-eod' : 'val' });
+      });
+      return {ok:true, positions:_valPos, eod_positions:_eodPosDict,
+              todays_trades:_valTrades, trades_today:_valTrades,
+              account:{equity:_valEq, cash:_valEq, portfolio_value:_valEq,
+                       day_pnl:_valDayPnl, status:'ACTIVE'}};
+    }
+    if (u.indexOf('/api/executor/gene') >= 0) return {ok:true,positions:[],trades_today:[],trades:[]};
     if (u.indexOf('/api/trade_log')     >= 0) return {ok:true,count:(s.trades_today||[]).length,rows:[]};
-    if (u.indexOf('/api/indices')       >= 0) return {};
+    if (u.indexOf('/api/indices')       >= 0) return (window.__TT_BASE||{})._indices || {};
     if (u.indexOf('/api/version')       >= 0) return {version:s.version||'?'};
-    if (u.indexOf('/api/intraday')      >= 0) return {};
+    if (u.indexOf('/api/intraday/')     >= 0) return _intradayReply(u);
     if (u.indexOf('/api/v10')           >= 0) return {};
     if (u.indexOf('/api/errors')        >= 0) return {errors:[]};
     return null;
@@ -93,72 +415,506 @@ _HEAD_PATCH = """\
     return _orig(url, opts);
   };
 
-  /* Fake EventSource -- stays OPEN (readyState=1) so the app never shows
-     the "Disconnected" reconnect banner. */
-  function FakeES()  { this.readyState=1; this.onopen=this.onmessage=this.onerror=null; }
-  FakeES.prototype.close = function(){ this.readyState=2; };
-  FakeES.prototype.addEventListener = function(){};
-  FakeES.prototype.removeEventListener = function(){};
-  FakeES.CONNECTING=0; FakeES.OPEN=1; FakeES.CLOSED=2;
+  /* Fake EventSource -- stays OPEN (readyState=1) to suppress the
+     "Disconnected" banner, AND fires a real "state" SSE event so that
+     app.js's streamConn.addEventListener("state", ...) triggers renderAll().
+     Without this, renderAll() is never called and the page stays empty. */
+  var _fakeESInstances = [];
+
+  function FakeES() {
+    this.readyState = 1;
+    this.onopen = this.onmessage = this.onerror = null;
+    this._handlers = {};
+    _fakeESInstances.push(this);
+    /* Fire initial state event after app.js has wired its listeners */
+    var self = this;
+    setTimeout(function() { _fireSSE(self); }, 120);
+  }
+  FakeES.prototype.close = function() { this.readyState = 2; };
+  FakeES.prototype.addEventListener = function(type, fn) {
+    if (!this._handlers[type]) this._handlers[type] = [];
+    this._handlers[type].push(fn);
+  };
+  FakeES.prototype.removeEventListener = function(type, fn) {
+    if (!this._handlers[type]) return;
+    this._handlers[type] = this._handlers[type].filter(function(h){ return h !== fn; });
+  };
+  FakeES.CONNECTING = 0; FakeES.OPEN = 1; FakeES.CLOSED = 2;
   window.EventSource = FakeES;
+
+  /* Fire the SSE "state" event on all live instances with current snapshot */
+  function _fireSSE(instance) {
+    var es = instance || (_fakeESInstances[_fakeESInstances.length - 1]);
+    if (!es || es.readyState === 2) return;
+    var s = currentState();
+    /* app.js parses ev.data as JSON({data: <state>}) (line ~3714) */
+    var payload = JSON.stringify({data: s});
+    var evt = {data: payload, type: 'state'};
+    (es._handlers['state'] || []).forEach(function(h){ try { h(evt); } catch(e){} });
+  }
+  /* Exported so _NAV_SCRIPT can re-fire on each navigation */
+  window.__ttFireSSE = _fireSSE;
 })();
 </script>
 """
 
-# Navigation script -- injected after app.js.
+# Scrubber + playback script -- injected after app.js.
 _NAV_SCRIPT = """\
 <script id="__tt_nav">
 (function(){
-  var DIFFS = window.__TT_DIFFS || [];
-
-  function dotCol(kind) {
-    if (kind==='entry')    return '#f59e0b';
-    if (kind==='exit_win') return '#4ade80';
-    if (kind==='exit_loss')return '#f87171';
-    return '#60a5fa';
-  }
+  var DIFFS  = window.__TT_DIFFS || [];
+  var idx    = window.__TT_IDX   || 0;
+  var timer  = null;
+  /* ms per snapshot: index maps to 1x/2x/3x */
+  var SPEEDS = [1000, 400, 150];
+  var speedI = 2; /* default 3x */
 
   function refresh() {
-    window.fetch('/api/state',{credentials:'same-origin'})
-      .then(function(r){return r.json();})
-      .then(function(d){
-        window.__tgLastState = d;
-        if (typeof window.__tgOnState==='function') window.__tgOnState(d);
-      }).catch(function(){});
+    if (typeof window.__ttFireSSE === 'function') window.__ttFireSSE();
   }
 
-  function navigate(n) {
-    var newIdx = Math.max(0, Math.min(DIFFS.length-1, n));
-    window.__TT_IDX = newIdx;
-    var d = DIFFS[newIdx] || {};
-    var tsEl  = document.getElementById('__tt_ts');
-    var cntEl = document.getElementById('__tt_cnt');
-    if (tsEl)  tsEl.textContent = d.ts_et || '';
-    if (cntEl) cntEl.textContent = (newIdx+1)+' / '+DIFFS.length;
-    DIFFS.forEach(function(s,i){
-      var el = document.getElementById('__tt_d'+i);
-      if (!el) return;
-      var col = dotCol(s.kind||'');
-      var active = (i===newIdx);
-      el.style.background = active ? col : '#374151';
-      el.style.border = '2px solid '+(active ? col : '#374151');
-      el.style.width  = active ? '10px' : '7px';
-      el.style.height = active ? '10px' : '7px';
+  /* Auto-expand inline charts for every open position row.
+     Inserts the chart row AFTER the progress-bar row so the bar
+     appears above the chart (user expectation).
+     v9.1.118: selector also matches Val/Gene panels which mount
+     [data-f="pos-body"] (the IIFE-2 renderer) rather than #pos-body. */
+  function _autoExpandCharts() {
+    if (typeof window.__tgRenderTickerChart !== 'function') return;
+    var rows = document.querySelectorAll(
+      '#pos-body tr[data-pos-ticker]:not(.pos-progress-row):not(.pos-chart-row), ' +
+      '[data-f="pos-body"] tr[data-pos-ticker]:not(.pos-progress-row):not(.pos-chart-row)');
+    rows.forEach(function(row) {
+      var ticker = row.getAttribute('data-pos-ticker');
+      if (!ticker) return;
+      /* Walk past the progress-bar row to find the right insertion point */
+      var insertAfter = row;
+      var sib = row.nextElementSibling;
+      if (sib && sib.classList.contains('pos-progress-row')) {
+        insertAfter = sib;
+        sib = sib.nextElementSibling;
+      }
+      /* Skip if chart row already exists at the insertion point */
+      if (sib && sib.classList.contains('pos-chart-row')) return;
+      /* Insert chart row after progress bar */
+      var chartRow = document.createElement('tr');
+      chartRow.className = 'pos-chart-row';
+      chartRow.setAttribute('data-pos-chart', ticker);
+      var td = document.createElement('td');
+      td.setAttribute('colspan', '11');
+      td.className = 'pos-chart-cell';
+      var mount = document.createElement('div');
+      mount.className = 'pos-chart-mount';
+      mount.setAttribute('data-chart-mount', ticker);
+      td.appendChild(mount);
+      chartRow.appendChild(td);
+      if (insertAfter.parentNode) insertAfter.parentNode.insertBefore(chartRow, insertAfter.nextSibling);
+      window.__tgRenderTickerChart(ticker, mount);
+      /* After chart renders: draw entry/stop/mark/1R/target lines.
+         The app.js code path for these is dead (TDZ bug at line 1962) -- we draw here.
+         Uses distinct colors per level so each line is immediately identifiable. */
+      (function(m) {
+        setTimeout(function() {
+          var canvas = m.querySelector('[data-intraday-canvas]');
+          if (!canvas || !canvas._lastPayload) return;
+          var pl = canvas._lastPayload;
+          if (!Array.isArray(pl._stop_refs) || !pl._stop_refs.length) return;
+          var ctx = canvas.getContext('2d');
+          var cssW = canvas.clientWidth  || 390;
+          var cssH = canvas.clientHeight || 280;
+          var X_MIN=570, X_MAX=960, PAD_L=56, PAD_R=12, PAD_T=14, PAD_B=22;
+          var plotW = cssW - PAD_L - PAD_R;
+          var plotH = cssH - PAD_T - PAD_B;
+          var priceH = Math.max(40, plotH * 0.85 - 4);
+          var bars = pl.bars || [];
+          /* Expand Y-range to include ALL reference prices (stop, entry, 1R, target, mark) */
+          var yMin=Infinity, yMax=-Infinity;
+          bars.forEach(function(b) {
+            if (typeof b.et_min!=='number'||b.et_min<X_MIN||b.et_min>X_MAX) return;
+            if (typeof b.l==='number') yMin=Math.min(yMin,b.l);
+            if (typeof b.h==='number') yMax=Math.max(yMax,b.h);
+          });
+          if (pl.or_high){yMin=Math.min(yMin,pl.or_high);yMax=Math.max(yMax,pl.or_high);}
+          if (pl.or_low) {yMin=Math.min(yMin,pl.or_low); yMax=Math.max(yMax,pl.or_low);}
+          pl._stop_refs.forEach(function(r){
+            [r.stop_price,r.entry_price,r.be_price,r.target_price,r.mark_price].forEach(function(p){
+              if(typeof p==='number'){yMin=Math.min(yMin,p);yMax=Math.max(yMax,p);}
+            });
+          });
+          if (!isFinite(yMin)||!isFinite(yMax)) return;
+          var yPad=(yMax-yMin)*0.1||0.5; yMin-=yPad; yMax+=yPad;
+          var xOf=function(m){return PAD_L+(m-X_MIN)/(X_MAX-X_MIN)*plotW;};
+          var yOf=function(p){return PAD_T+(1-(p-yMin)/(yMax-yMin))*priceH;};
+
+          pl._stop_refs.forEach(function(ref) {
+            var x1=xOf(Math.max(X_MIN,ref.entry_et_min));
+            var x2=(ref.exit_et_min!=null)?xOf(Math.min(X_MAX,ref.exit_et_min)):PAD_L+plotW;
+            function hline(price,color,dash,lbl,lw){
+              if(price==null||typeof price!=='number') return;
+              ctx.save();
+              ctx.strokeStyle=color; ctx.lineWidth=lw||1.3;
+              ctx.setLineDash(dash||[]);
+              ctx.beginPath(); ctx.moveTo(x1,yOf(price)); ctx.lineTo(x2,yOf(price)); ctx.stroke();
+              ctx.setLineDash([]);
+              /* Label at right edge */
+              ctx.fillStyle=color; ctx.font='bold 9px system-ui,sans-serif'; ctx.textAlign='right';
+              ctx.fillText(lbl+'  $'+price.toFixed(2), PAD_L+plotW-2, yOf(price)-3);
+              ctx.restore();
+            }
+            if (ref.is_eod) {
+              /* EOD reversal: entry + "close 15:59" tick. No stop/1R/target. */
+              hline(ref.entry_price, '#94a3b8',[2,3],'entry');
+              var xClose = xOf(Math.min(959, X_MAX));
+              ctx.save();
+              ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+              ctx.beginPath(); ctx.moveTo(xClose,PAD_T); ctx.lineTo(xClose,PAD_T+priceH); ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.fillStyle='#a78bfa'; ctx.font='8px system-ui'; ctx.textAlign='center';
+              ctx.fillText('exit 15:59', xClose, PAD_T+priceH-3);
+              ctx.restore();
+            } else {
+              /* Morning ORB: stop / entry / 1R / +2.5R target */
+              hline(ref.stop_price,   '#ef4444',[5,3],'stop');
+              hline(ref.entry_price,  '#94a3b8',[2,3],'entry');
+              hline(ref.be_price,     '#fbbf24',[4,3],'1R');
+              hline(ref.target_price, '#22c55e',[5,3],'+2.5R');
+            }
+            /* mark -- sky-blue solid with circle + price badge */
+            if (ref.mark_price!=null) {
+              var mp=ref.mark_price, my=yOf(mp), mx=x2;
+              ctx.save();
+              ctx.strokeStyle='#38bdf8'; ctx.lineWidth=1.8; ctx.setLineDash([2,2]);
+              ctx.beginPath(); ctx.moveTo(x1,my); ctx.lineTo(mx,my); ctx.stroke();
+              ctx.setLineDash([]);
+              /* dot at current price on line */
+              ctx.fillStyle='#38bdf8';
+              ctx.beginPath(); ctx.arc(mx-6,my,5,0,Math.PI*2); ctx.fill();
+              /* pill badge */
+              var lbl2='$'+mp.toFixed(2);
+              ctx.font='bold 10px system-ui,sans-serif';
+              var tw=ctx.measureText(lbl2).width;
+              ctx.fillStyle='rgba(14,19,24,0.85)';
+              ctx.fillRect(x1+2, my-11, tw+8, 14);
+              ctx.fillStyle='#38bdf8';
+              ctx.textAlign='left'; ctx.fillText(lbl2,x1+6,my-1);
+              ctx.restore();
+            }
+          });
+        }, 280);
+      })(mount);
     });
-    var ad = document.getElementById('__tt_d'+newIdx);
-    if (ad) ad.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});
-    refresh();
   }
-  window.ttNav = navigate;
+
+  function navigate(n, skipRefresh) {
+    idx = Math.max(0, Math.min(DIFFS.length - 1, n));
+    window.__TT_IDX = idx;
+    /* Intraday chart payloads (bars, lifecycle, stop_refs, mark price) are all
+       derived from currentState().server_time_label, so the per-ticker cache
+       in app.js MUST be flushed on every scrubber move -- otherwise jumping
+       to EOD shows different bars than scrolling through to EOD (the cache
+       serves the first snapshot's payload for 60s wall-clock).
+
+       v9.1.125: the flush is retried with backoff because the user can
+       drag the scrubber BEFORE app.js has finished loading. Without the
+       retry, that first nav silently misses the flush and the cache
+       holds whatever bars app.js first fetched, even after later navs
+       (until the 60s TTL self-heals). Two-phase: try immediately, then
+       retry every 50ms for up to 500ms total. Once app.js loads and
+       defines __tgFlushIntradayCache, the next retry succeeds and the
+       cache is cleared so the next refresh() reads fresh bars. */
+    (function tryFlush(attempt) {
+      if (typeof window.__tgFlushIntradayCache === 'function') {
+        window.__tgFlushIntradayCache();
+      } else if (attempt < 10) {
+        setTimeout(function () { tryFlush(attempt + 1); }, 50);
+      }
+    })(0);
+    /* sync range input */
+    var rng = document.getElementById('__tt_range');
+    if (rng) rng.value = idx;
+    /* update timestamp label -- show "May 15 . HH:MM ET" */
+    var d   = DIFFS[idx] || {};
+    var raw = d.ts_et || '';
+    var tm  = raw.match(/T([0-9]{2}:[0-9]{2})/);
+    var timePart = tm ? tm[1] + ' ET' : raw;
+    /* Extract date for label */
+    var dateLabel = '';
+    var dm = raw.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})/);
+    if (dm) {
+      var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      dateLabel = MONTHS[parseInt(dm[2],10)-1] + ' ' + parseInt(dm[3],10) + ' · ';
+    }
+    var tsEl = document.getElementById('__tt_ts');
+    if (tsEl) {
+      tsEl.innerHTML = '<span style="color:#4b5563;font-size:11px;font-weight:400">' + dateLabel + '</span>' + timePart;
+    }
+    /* update counter */
+    var cntEl = document.getElementById('__tt_cnt');
+    if (cntEl) cntEl.textContent = (idx+1)+' / '+DIFFS.length;
+    /* move timeline cursor to the snapshot's actual ET time */
+    var cursor2 = document.getElementById('__tt_cursor');
+    if (cursor2) {
+      var _d2 = DIFFS[idx] || {};
+      var _raw2 = _d2.ts_et || '';
+      var _tm2  = _raw2.match(/T([0-9]{2}):([0-9]{2})/);
+      var _pct2 = idx / Math.max(1, DIFFS.length - 1) * 100; /* fallback */
+      if (_tm2) {
+        var _etMin2 = parseInt(_tm2[1],10)*60 + parseInt(_tm2[2],10);
+        _pct2 = Math.max(0, Math.min(100, (_etMin2 - 570) / 390 * 100));
+      }
+      cursor2.style.left = _pct2.toFixed(1) + '%';
+    }
+    if (!skipRefresh) refresh();
+    /* Simplify verbose scan-paused banner to a short one-liner.
+       v9.1.118: iterate so Val/Gene panels (mount [data-f="banner"])
+       get the same simplification as Main (#banner). */
+    setTimeout(function() {
+      var banners = document.querySelectorAll(
+        '#banner:not(.hide), [data-f="banner"]:not(.hide)');
+      banners.forEach(function(b) {
+        var inner = b.innerHTML || '';
+        if (inner.indexOf('SCAN PAUSED') < 0 && inner.indexOf('KILL') < 0 &&
+            inner.indexOf('scan_paused') < 0) return;
+        var kill = inner.indexOf('kill') >= 0 || inner.indexOf('KILL') >= 0;
+        b.innerHTML = '<div style="padding:6px 16px;font-size:11px;color:#64748b;display:flex;align-items:center;gap:8px">'
+          + '<span style="font-size:13px">&#9646;</span>'          /* pause glyph */
+          + (kill ? '<span>Scanner paused &mdash; daily-loss limit reached &middot; existing positions still managed</span>'
+                  : '<span>Scanner paused &mdash; outside trading window</span>')
+          + '</div>';
+      });
+    }, 750);
+    /* Auto-show charts for all open positions after render settles */
+    setTimeout(_autoExpandCharts, 600);
+    /* Inject mini sparklines into OR Proximity matrix rows */
+    setTimeout(_proximitySparklines, 900);
+    /* Inject day P&L sparkline below the DAY P&L KPI */
+    setTimeout(_pnlSparkline, 700);
+  }
+
+  function startPlay() {
+    if (timer) return;
+    var playBtn = document.getElementById('__tt_play');
+    if (playBtn) playBtn.textContent = '⏸'; /* pause icon */
+    timer = setInterval(function(){
+      if (idx >= DIFFS.length - 1) { stopPlay(); return; }
+      navigate(idx + 1);
+    }, SPEEDS[speedI]);
+  }
+
+  function stopPlay() {
+    clearInterval(timer);
+    timer = null;
+    var playBtn = document.getElementById('__tt_play');
+    if (playBtn) playBtn.textContent = '▶'; /* play icon */
+  }
+
+  function togglePlay() {
+    if (timer) stopPlay(); else startPlay();
+  }
+
+  function cycleSpeed() {
+    speedI = (speedI + 1) % SPEEDS.length;
+    var labels = ['1\xD7','2\xD7','3\xD7'];
+    var spdEl = document.getElementById('__tt_spd');
+    if (spdEl) spdEl.textContent = labels[speedI];
+  }
+
+  /* P&L sparkline: draws history up to current snapshot, dims future trajectory.
+     Re-draws on every navigation so the "filled" portion tracks the scrubber.
+     v9.1.118: iterates over every k-pnl mount so Val/Gene KPI panels
+     (which use [data-f="k-pnl"]) get the same sparkline as Main (#k-pnl). */
+  function _pnlSparkline() {
+    var diffs = window.__TT_DIFFS || [];
+    var allPoints = diffs.map(function(d) {
+      return (d.portfolio && d.portfolio.day_pnl != null) ? d.portfolio.day_pnl : null;
+    });
+    var validPoints = allPoints.filter(function(v){ return v !== null; });
+    if (validPoints.length < 2) return;
+    var curIdx = Math.min(window.__TT_IDX || 0, diffs.length - 1);
+    var lo = Math.min.apply(null, validPoints);
+    var hi = Math.max.apply(null, validPoints);
+    var rng = hi - lo || 1;
+
+    var mounts = document.querySelectorAll('#k-pnl, [data-f="k-pnl"]');
+    mounts.forEach(function(kpnl) {
+      var card = kpnl.closest('.card, [class*="kpi"], [class*="pnl"]') || kpnl.parentElement;
+      if (!card) return;
+
+      var cv = card.__pnlSparkCv;
+      if (!cv) {
+        cv = document.createElement('canvas');
+        cv.style.cssText = 'display:block;width:100%;height:28px;margin-top:4px;opacity:0.9;';
+        kpnl.parentElement.insertBefore(cv, kpnl.nextSibling);
+        card.__pnlSparkCv = cv;
+      }
+      cv.width = Math.min(card.clientWidth || 140, 140);
+      cv.height = 28;
+      var ctx2 = cv.getContext('2d');
+      var w = cv.width, h = cv.height, pad = 2;
+      var xOf3 = function(i){ return pad + i/(diffs.length-1)*(w-2*pad); };
+      var yOf3 = function(v){ return pad + (1-(v-lo)/rng)*(h-2*pad); };
+
+      ctx2.clearRect(0, 0, w, h);
+
+      /* Zero baseline */
+      if (lo < 0 && hi > 0) {
+        var y0 = yOf3(0);
+        ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 0.5;
+        ctx2.setLineDash([2,3]);
+        ctx2.beginPath(); ctx2.moveTo(pad,y0); ctx2.lineTo(w-pad,y0); ctx2.stroke();
+        ctx2.setLineDash([]);
+      }
+
+      /* Full-day ghost line (dim) -- context for the full trajectory */
+      ctx2.strokeStyle = 'rgba(255,255,255,0.08)'; ctx2.lineWidth = 1;
+      ctx2.beginPath();
+      var _started = false;
+      for (var k=0;k<diffs.length;k++) {
+        var v = allPoints[k]; if (v == null) continue;
+        if (!_started){ ctx2.moveTo(xOf3(k),yOf3(v)); _started=true; }
+        else ctx2.lineTo(xOf3(k),yOf3(v));
+      }
+      if (_started) ctx2.stroke();
+
+      /* History line up to curIdx (solid, colored) */
+      var pnlAtCur = allPoints[curIdx];
+      var lineColor = (pnlAtCur != null && pnlAtCur >= 0) ? '#3ec28f' : '#ef4444';
+      ctx2.strokeStyle = lineColor; ctx2.lineWidth = 1.5; ctx2.lineJoin = 'round';
+      ctx2.beginPath();
+      var _hStarted = false;
+      for (var m=0;m<=curIdx;m++) {
+        var hv = allPoints[m]; if (hv == null) continue;
+        if (!_hStarted){ ctx2.moveTo(xOf3(m),yOf3(hv)); _hStarted=true; }
+        else ctx2.lineTo(xOf3(m),yOf3(hv));
+      }
+      if (_hStarted) ctx2.stroke();
+
+      /* Current position dot */
+      if (pnlAtCur != null) {
+        ctx2.fillStyle = lineColor;
+        ctx2.beginPath(); ctx2.arc(xOf3(curIdx),yOf3(pnlAtCur),3,0,Math.PI*2); ctx2.fill();
+      }
+    });
+  }
+
+  /* Inject 60×24px sparklines into proximity matrix ticker rows */
+  function _proximitySparklines() {
+    var rows = document.querySelectorAll('tr[data-prox-ticker], [data-prox-ticker]');
+    if (!rows.length) {
+      /* Try common class names */
+      rows = document.querySelectorAll('.prox-row, .proximity-row');
+    }
+    rows.forEach(function(row) {
+      var ticker = row.getAttribute('data-prox-ticker') || row.getAttribute('data-ticker') || '';
+      if (!ticker) {
+        /* Try first cell text */
+        var fc = row.querySelector('td');
+        if (fc) ticker = fc.textContent.trim().split(' ')[0].toUpperCase();
+      }
+      if (!ticker || row.__sparkDone) return;
+      /* Find a cell to inject into -- prefer the last td */
+      var cells = row.querySelectorAll('td');
+      if (!cells.length) return;
+      var cell = cells[cells.length - 1];
+      /* Create mini canvas */
+      var cv = document.createElement('canvas');
+      cv.width = 64; cv.height = 22;
+      cv.style.cssText = 'display:block;margin:0 auto;opacity:0.85;';
+      cell.appendChild(cv);
+      row.__sparkDone = true;
+      /* Fetch intraday bars and draw mini close line */
+      fetch('/api/intraday/' + encodeURIComponent(ticker))
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(pl) {
+          if (!pl || !pl.ok || !pl.bars || !pl.bars.length) return;
+          var ctx2 = cv.getContext('2d');
+          var bars = pl.bars.filter(function(b){ return b.et_min>=570 && b.et_min<=960 && typeof b.c==='number'; });
+          if (bars.length < 2) return;
+          var closes = bars.map(function(b){ return b.c; });
+          var lo=Math.min.apply(null,closes), hi=Math.max.apply(null,closes);
+          var rng = hi - lo || 1;
+          var w=cv.width, h=cv.height, pad=2;
+          var xOf2=function(i){ return pad + i/(closes.length-1)*(w-2*pad); };
+          var yOf2=function(v){ return pad + (1-(v-lo)/rng)*(h-2*pad); };
+          /* Sparkline direction color */
+          var up = closes[closes.length-1] >= closes[0];
+          ctx2.strokeStyle = up ? '#3ec28f' : '#ef4444';
+          ctx2.lineWidth = 1.5; ctx2.lineJoin = 'round';
+          ctx2.beginPath();
+          ctx2.moveTo(xOf2(0), yOf2(closes[0]));
+          for (var i=1;i<closes.length;i++) ctx2.lineTo(xOf2(i), yOf2(closes[i]));
+          ctx2.stroke();
+          /* Dot at current price */
+          var last = closes.length-1;
+          ctx2.fillStyle = up ? '#3ec28f' : '#ef4444';
+          ctx2.beginPath(); ctx2.arc(xOf2(last), yOf2(closes[last]), 2.5, 0, Math.PI*2); ctx2.fill();
+        })
+        .catch(function(){});
+    });
+  }
+
+  /* Wire controls after DOM ready */
+  function wireControls() {
+    var playBtn = document.getElementById('__tt_play');
+    if (playBtn) playBtn.onclick = togglePlay;
+    var spdBtn = document.getElementById('__tt_spd');
+    if (spdBtn) spdBtn.onclick = cycleSpeed;
+    var rng = document.getElementById('__tt_range');
+    if (rng) {
+      rng.oninput = function(){ stopPlay(); navigate(parseInt(this.value,10), true); refresh(); };
+      rng.onchange = function(){ navigate(parseInt(this.value,10)); };
+    }
+  }
 
   document.addEventListener('keydown', function(e){
-    var cur = window.__TT_IDX||0;
-    if (e.key==='ArrowLeft')  navigate(cur-1);
-    if (e.key==='ArrowRight') navigate(cur+1);
+    if (e.key === 'ArrowLeft')  { stopPlay(); navigate(idx-1); }
+    if (e.key === 'ArrowRight') { stopPlay(); navigate(idx+1); }
+    if (e.key === ' ')          { e.preventDefault(); togglePlay(); }
   });
 
-  /* Initial render */
-  navigate(window.__TT_IDX||0);
+  /* Export for external callers (playwright, console) */
+  window.ttNav  = navigate;
+
+  /* Multi-day date switcher. Only wires up if __TT_DAYS is present (set by
+     build_html when --dates passes >1 date). Swaps __TT_BASE / __TT_DIFFS
+     to the selected date's bundle, resets the scrubber to bucket 0, and
+     re-fires the SSE so the dashboard re-renders against the new state. */
+  var dateSelEl = document.getElementById('__tt_date');
+  if (dateSelEl && window.__TT_DAYS) {
+    dateSelEl.addEventListener('change', function () {
+      var d = this.value;
+      var bundle = window.__TT_DAYS[d];
+      if (!bundle) return;
+      /* Stop playback (otherwise the timer races the swap). */
+      stopPlay();
+      /* Swap base + diffs in place. Keep refs that other JS already grabbed
+         consistent by mutating the same arrays/objects where possible. */
+      window.__TT_BASE = bundle.base;
+      window.__TT_DIFFS = bundle.diffs;
+      DIFFS = bundle.diffs;
+      window.__TT_IDX = 0;
+      idx = 0;
+      /* Update range input max bound to match new day's snapshot count. */
+      var rng = document.getElementById('__tt_range');
+      if (rng) {
+        rng.max = Math.max(0, DIFFS.length - 1);
+        rng.value = 0;
+      }
+      /* Flush the per-ticker intraday-bar cache so charts redraw with the
+         new day's bars instead of serving the old day's cached payload. */
+      if (typeof window.__tgFlushIntradayCache === 'function') {
+        window.__tgFlushIntradayCache();
+      }
+      navigate(0);
+    });
+  }
+  window.ttStop = stopPlay;
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ wireControls(); navigate(idx); });
+  } else {
+    wireControls();
+    navigate(idx);
+  }
 })();
 </script>
 """
@@ -348,61 +1104,216 @@ def build_day_snapshots(state: dict, date_et: str = "2026-05-15") -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _bar_html(diffs: list[dict], start_idx: int) -> str:
-    """Build the static time-travel bar HTML with all dots pre-rendered."""
+def _bar_html(
+    diffs: list[dict],
+    start_idx: int,
+    available_dates: list[str] | None = None,
+    default_date: str | None = None,
+) -> str:
+    """Build the replay bar: controls + rich session timeline with zones + events.
 
-    def dot_col(kind: str) -> str:
-        return {"entry": "#f59e0b", "exit_win": "#4ade80", "exit_loss": "#f87171"}.get(
-            kind, "#60a5fa"
+    When ``available_dates`` has >1 entry, a date dropdown is injected in the
+    controls row and a no-event placeholder is rendered for non-default days
+    (events get rebuilt client-side on date change in _NAV_SCRIPT).
+    """
+    import re as _re
+
+    START_MIN, END_MIN = 570, 960  # 9:30 ET .. 16:00 ET
+    SPAN = END_MIN - START_MIN
+
+    def _et_min(ts_et: str) -> int | None:
+        m = _re.search(r"T(\d{2}):(\d{2})(?::|$)", ts_et or "")
+        return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+    def _pct(ts_et: str) -> float:
+        m = _et_min(ts_et)
+        return 0.0 if m is None else max(0.0, min(100.0, (m - START_MIN) / SPAN * 100))
+
+    # ── Session zone bands ──────────────────────────────────────────────
+    # (start_min, end_min, bg, label, text_color)
+    ZONES = [
+        (570, 600, "rgba(120,53,15,0.7)",   "OR",     "#fbbf24"),   # 9:30-10:00
+        (600, 660, "rgba(6,78,59,0.7)",     "ACTIVE", "#34d399"),   # 10:00-11:00
+        (660, 900, "rgba(15,23,42,0.5)",    "QUIET",  "#4b5563"),   # 11:00-15:00
+        (900, 960, "rgba(76,29,149,0.7)",   "EOD",    "#a78bfa"),   # 15:00-16:00
+    ]
+    zones_html = ""
+    for zs, ze, zbg, zlbl, ztxt in ZONES:
+        zl = (zs - START_MIN) / SPAN * 100
+        zw = (ze - zs) / SPAN * 100
+        zones_html += (
+            f'<div style="position:absolute;top:0;bottom:0;left:{zl:.1f}%;width:{zw:.1f}%;'
+            f'background:{zbg};pointer-events:none;display:flex;align-items:flex-end;'
+            f'justify-content:flex-start;padding-bottom:2px;padding-left:4px">'
+            f'<span style="color:{ztxt};font-size:7px;font-weight:700;letter-spacing:.3px;'
+            f'opacity:0.85;text-shadow:0 1px 3px rgba(0,0,0,.9)">{zlbl}</span></div>'
         )
 
-    dots_html = ""
+    # Zone boundary dividers
+    for boundary_min in [600, 660, 900]:
+        p = (boundary_min - START_MIN) / SPAN * 100
+        zones_html += (
+            f'<div style="position:absolute;top:0;bottom:0;left:{p:.1f}%;width:1px;'
+            f'background:rgba(255,255,255,0.12);pointer-events:none"></div>'
+        )
+
+    # ── Event markers ──────────────────────────────────────────────────
+    # Detect kill transitions: snapshot where v10_kill_triggered flips True
+    events_html = ""
+    prev_kill = False
     for i, d in enumerate(diffs):
-        col = dot_col(d.get("kind", ""))
-        active = i == start_idx
-        bg = col if active else "#374151"
-        sz = "10px" if active else "7px"
-        title = d.get("ts_et", "") + (" \u2014 " + d.get("label", "") if d.get("label") else "")
-        if i > 0:
-            dots_html += (
-                '<div style="flex-shrink:0;width:12px;height:1px;background:#1f2937"></div>'
+        kind  = d.get("kind", "")
+        label = d.get("label", "")
+        ts    = d.get("ts_et", "")
+        p     = _pct(ts)
+        kill  = bool(d.get("v10_kill_triggered"))
+
+        # Kill event marker (fires when kill transitions True)
+        if kill and not prev_kill:
+            events_html += (
+                f'<div title="Kill triggered" onclick="if(window.ttNav)window.ttNav({i});" '
+                f'style="position:absolute;top:3px;left:{p:.1f}%;transform:translateX(-50%);'
+                f'width:8px;height:8px;border-radius:50%;background:#dc2626;cursor:pointer;'
+                f'z-index:12;border:1.5px solid #7f1d1d;box-shadow:0 0 8px rgba(220,38,38,.8)'
+                f'"></div>'
             )
-        dots_html += (
-            f'<button id="__tt_d{i}" onclick="ttNav({i})" title="{title}" '
-            f'style="flex-shrink:0;width:{sz};height:{sz};border-radius:50%;'
-            f"background:{bg};border:2px solid {bg};cursor:pointer;padding:0;"
-            f'transition:all .15s"></button>'
+        prev_kill = kill
+
+        # Entry/exit triangle markers
+        if kind == "entry":
+            col, icon = "#f59e0b", "▲"
+        elif kind == "exit_win":
+            col, icon = "#34d399", "▼"
+        elif kind == "exit_loss":
+            col, icon = "#f87171", "▼"
+        else:
+            continue
+
+        tip = (label or ts).replace('"', "'")
+        events_html += (
+            f'<div title="{tip}" onclick="if(window.ttNav)window.ttNav({i});" '
+            f'style="position:absolute;top:50%;left:{p:.1f}%;'
+            f'transform:translate(-50%,-50%);font-size:9px;line-height:1;'
+            f'color:{col};cursor:pointer;z-index:11;pointer-events:auto;'
+            f'text-shadow:0 0 5px rgba(0,0,0,.9);user-select:none">{icon}</div>'
         )
 
-    init_ts = diffs[start_idx]["ts_et"] if diffs else ""
-    init_cnt = f"{start_idx + 1} / {len(diffs)}"
-    total = len(diffs)
+    # ── Time labels ────────────────────────────────────────────────────
+    labels_html = ""
+    for h, m, lbl in [(9,30,"9:30"),(10,0,"10"),(11,0,"11"),(12,0,"12"),
+                       (13,0,"13"),(14,0,"14"),(15,0,"15"),(16,0,"16")]:
+        p = ((h * 60 + m) - START_MIN) / SPAN * 100
+        if 0 <= p <= 100:
+            labels_html += (
+                f'<span style="position:absolute;left:{p:.1f}%;transform:translateX(-50%);'
+                f'font-size:8px;color:#374151;white-space:nowrap">{lbl}</span>'
+            )
 
-    return (
-        '<div id="__tt_bar" style="position:fixed;top:0;left:0;right:0;height:44px;'
-        "background:#0a0c14;color:#d1d5db;display:flex;align-items:center;"
-        "z-index:2147483647;border-bottom:2px solid #f59e0b;"
-        "font:12px/1 &quot;JetBrains Mono&quot;,ui-monospace,monospace;"
-        'box-shadow:0 2px 12px rgba(0,0,0,.8)">'
-        '<span style="color:#f59e0b;font-weight:700;padding:0 10px;white-space:nowrap;'
-        'border-right:1px solid #1f2937">&#9194; TIME TRAVEL</span>'
-        '<button onclick="ttNav((window.__TT_IDX||0)-1)" '
-        'style="background:none;border:none;color:#9ca3af;font:inherit;cursor:pointer;'
-        'padding:0 10px;height:100%;font-size:18px;border-right:1px solid #1f2937">&#8249;</button>'
-        f'<span id="__tt_ts" style="color:#60a5fa;padding:0 10px;min-width:165px;'
-        f'text-align:center;border-right:1px solid #1f2937">{init_ts}</span>'
-        '<button onclick="ttNav((window.__TT_IDX||0)+1)" '
-        'style="background:none;border:none;color:#9ca3af;font:inherit;cursor:pointer;'
-        'padding:0 10px;height:100%;font-size:18px;border-left:1px solid #1f2937">&#8250;</button>'
-        f'<div id="__tt_strip" style="flex:1;overflow-x:auto;display:flex;align-items:center;'
-        f'height:100%;padding:0 8px">{dots_html}</div>'
-        f'<span id="__tt_cnt" style="color:#6b7280;padding:0 8px;font-size:11px;'
-        f'white-space:nowrap;border-left:1px solid #1f2937">{init_cnt}</span>'
-        "</div>"
-    )
+    n   = len(diffs)
+    d0  = diffs[start_idx] if diffs and start_idx < len(diffs) else {}
+    raw = d0.get("ts_et", "")
+    tm  = _re.search(r"T(\d{2}:\d{2})", raw)
+    init_ts   = (tm.group(1) + " ET") if tm else raw
+    init_cnt  = f"{start_idx + 1} / {n}"
+    init_pct  = _pct(d0.get("ts_et", ""))
+
+    btn = ("background:#111827;color:#d1d5db;border:1px solid #374151;"
+           "border-radius:5px;cursor:pointer;font:11px/1 inherit;padding:5px 11px;")
+
+    # Date dropdown -- only shown when multi-day mode is in play.
+    date_picker_html = ""
+    if available_dates and len(available_dates) > 1:
+        from datetime import date as _date
+        opts = []
+        for d in available_dates:
+            try:
+                dt = _date.fromisoformat(d)
+                lbl = dt.strftime("%a %b %-d")
+            except Exception:
+                lbl = d
+            sel = " selected" if d == (default_date or available_dates[-1]) else ""
+            opts.append(f'<option value="{d}"{sel}>{lbl}</option>')
+        opts_html = "".join(opts)
+        date_picker_html = (
+            '<div id="__tt_date_picker" style="display:flex;align-items:center;gap:6px;'
+            'background:rgba(56,189,248,0.18);border:1.5px solid #38bdf8;border-radius:5px;'
+            'padding:3px 6px 3px 9px;margin-right:6px">'
+            '<span style="color:#38bdf8;font-size:9px;font-weight:700;letter-spacing:1px">DATE</span>'
+            f'<select id="__tt_date" aria-label="Select replay date" style="background:transparent;'
+            'color:#e6edf3;border:0;padding:2px 18px 2px 2px;font:inherit;font-size:11px;'
+            'font-weight:700;cursor:pointer;appearance:none;-webkit-appearance:none;'
+            'background-image:url(&quot;data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' '
+            'width=\'10\' height=\'10\' viewBox=\'0 0 12 12\'><path d=\'M2 4l4 4 4-4\' stroke=\'%2338bdf8\' '
+            'stroke-width=\'2\' fill=\'none\'/></svg>&quot;);background-repeat:no-repeat;'
+            f'background-position:right 2px center">{opts_html}</select></div>'
+        )
+
+    return f"""<div id="__tt_bar" style="position:sticky;top:0;left:0;right:0;z-index:999;
+background:#070a0f;color:#d1d5db;
+font:11px/1 'JetBrains Mono',ui-monospace,monospace;
+border-bottom:1px solid #1a2535;box-shadow:0 2px 12px rgba(0,0,0,.8)">
+
+  <!-- Row 1: Controls + timestamp -->
+  <div style="display:flex;align-items:center;gap:8px;padding:5px 10px 4px">
+    <span style="color:#f59e0b;font-weight:700;white-space:nowrap;font-size:11px;letter-spacing:.5px">&#9194; REPLAY</span>
+    <button id="__tt_play" style="{btn}min-width:32px">&#9654;</button>
+    <button id="__tt_spd"  style="{btn}font-size:10px;padding:4px 7px;color:#9ca3af">3&times;</button>
+    {date_picker_html}
+    <span id="__tt_ts" style="color:#60a5fa;flex:1;text-align:center;font-size:14px;font-weight:700;letter-spacing:.5px">{init_ts}</span>
+    <span id="__tt_cnt" style="color:#374151;font-size:9px;white-space:nowrap">{init_cnt}</span>
+  </div>
+
+  <!-- Row 2: Session timeline -- zones + event markers + cursor + invisible range input -->
+  <div style="padding:0 10px 0">
+    <div style="position:relative;height:28px;border-radius:3px;overflow:hidden;
+                background:#0d1117;border:1px solid #1a2535">
+      <!-- Zone backgrounds -->
+      <div style="position:absolute;inset:0">{zones_html}</div>
+      <!-- Event markers + kill dots -->
+      <div style="position:absolute;inset:0;overflow:hidden">{events_html}
+        <!-- Cursor: thick white bar, easy to grab/drag via the range input -->
+        <div id="__tt_cursor" style="position:absolute;top:0;bottom:0;
+          left:{init_pct:.1f}%;width:4px;
+          background:rgba(255,255,255,0.95);
+          box-shadow:0 0 10px rgba(255,255,255,0.7),0 0 3px rgba(255,255,255,1);
+          border-radius:2px;
+          z-index:13;transform:translateX(-50%);pointer-events:none"></div>
+      </div>
+      <!-- Invisible range input overlaid for drag interaction -->
+      <input id="__tt_range" type="range" min="0" max="{n-1}" value="{start_idx}"
+        style="position:absolute;inset:0;width:100%;height:100%;margin:0;
+               z-index:14;cursor:pointer;opacity:0;
+               -webkit-appearance:none;appearance:none">
+    </div>
+    <!-- Time labels -->
+    <div style="position:relative;height:11px;margin-top:1px">{labels_html}</div>
+  </div>
+
+  <style>
+    #__tt_range::-webkit-slider-thumb{{-webkit-appearance:none;width:2px;height:28px;
+      background:transparent;margin-top:0;cursor:ew-resize}}
+    #__tt_range::-moz-range-thumb{{width:2px;height:28px;background:transparent;
+      border:none;cursor:ew-resize}}
+    #__tt_range::-webkit-slider-runnable-track{{background:transparent}}
+    #__tt_range::-moz-range-track{{background:transparent}}
+  </style>
+</div>"""
 
 
-def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
+def build_html(
+    diffs: list[dict],
+    base_state: dict,
+    start_idx: int = 0,
+    days_map: dict | None = None,
+    default_date: str | None = None,
+) -> str:
+    """Render the full replay HTML.
+
+    Single-day mode: ``diffs`` + ``base_state`` are baked in directly.
+    Multi-day mode: pass ``days_map = {date: {"diffs": [...], "base": {...}}}``
+    and ``default_date``. A date dropdown appears in the scrubber bar and
+    on change the JS swaps ``__TT_BASE`` / ``__TT_DIFFS`` and re-navigates.
+    """
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     app_css = (STATIC / "app.css").read_text(encoding="utf-8")
     html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -415,24 +1326,103 @@ def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
     # Remove app.js src (will inline it at end of body)
     html = re.sub(r'src="/static/app\.js[^"]*"', "", html)
 
-    # -- Build small per-snapshot diff list (strips full state, keeps only overrides)
+    # -- Build per-snapshot diff list. Includes all time-varying fields so
+    # currentState() in the HEAD_PATCH can apply them on navigation.
     slim_diffs = [
         {
-            "ts_et": d["ts_et"],
-            "captured_at_utc": d["captured_at_utc"],
-            "kind": d.get("kind", ""),
-            "label": d.get("label", ""),
-            "trades_today": d["diff"]["trades_today"],
-            "positions": d["diff"]["positions"],
-            "server_time": d["diff"]["server_time"],
+            "ts_et":             d["ts_et"],
+            "captured_at_utc":   d["captured_at_utc"],
+            "kind":              d.get("kind", ""),
+            "label":             d.get("label", ""),
+            # Core state fields (applied by currentState() in JS)
+            "trades_today":      d["diff"]["trades_today"],
+            "positions":         d["diff"]["positions"],
+            "portfolios":        d["diff"].get("portfolios", {}),
+            "server_time":       d["diff"]["server_time"],
             "server_time_label": d["diff"]["server_time_label"],
-            "eod": d["diff"]["eod"],
+            "eod":               d["diff"]["eod"],
+            # Time-varying display fields (applied by extended currentState())
+            "portfolio":          d["diff"].get("portfolio", {}),
+            "regime":             d["diff"].get("regime", {}),
+            "v10_activity":       d["diff"].get("v10_activity", []),
+            "gates_scan_paused":  d["diff"].get("gates_scan_paused", False),
+            "v10_kill_triggered": d["diff"].get("v10_kill_triggered", False),
+            "v10_realized_pnl":   d["diff"].get("v10_realized_pnl",   0.0),
+            "v10_admit_count":    d["diff"].get("v10_admit_count",    0),
+            "v10_reject_count":   d["diff"].get("v10_reject_count",   0),
+            "v10_day_states":     d["diff"].get("v10_day_states",     []),
         }
         for d in diffs
     ]
 
     # Suppress reconnect banner via CSS
-    replay_css = "<style id='__tt_css'>body{margin-top:48px!important}</style>\n"
+    replay_css = """<style id='__tt_css'>
+/* Replay bar is sticky in-page, no body top-margin needed */
+#tg-replay-btn{display:none!important}  /* hide Replay Day btn in replay mode */
+/* Hide static backtest baseline -- no live data in replay */
+#v10-baseline{display:none!important}
+/* Hide empty ||| gauge placeholders in v10 ORB header */
+#v10-day-status>.v10-gauge-head,
+#v10-day-status>*:empty,
+.v10-banner .v10-gauge:empty{display:none!important}
+/* Remove redundant "main" portfolio badge from trade/position rows on Main tab */
+.trade-row td[data-col="portfolio"] span,
+tr[data-pos-ticker] .pos-portfolio-badge{display:none!important}
+/* Scan-paused / kill banner: muted in replay -- expected mid-day, not a crisis.
+   Replace red with subtle slate so the operator eye isn't drawn to a false alarm. */
+#banner:not(.hide){
+  background:rgba(17,24,39,0.55)!important;
+  border:1px solid #1e293b!important;
+  box-shadow:none!important;
+}
+#banner:not(.hide) *{color:#64748b!important;}
+#banner:not(.hide) strong,
+#banner:not(.hide) b{color:#94a3b8!important;font-weight:600!important;}
+#banner:not(.hide) .banner-pill,
+#banner:not(.hide) [style*="#ef4444"],
+#banner:not(.hide) [style*="#dc2626"]{
+  background:#1e293b!important;color:#94a3b8!important;
+  border-color:#334155!important;}
+/* Remove error health pill -- not used */
+#tg-health-pill,#tg-health-pop{display:none!important}
+</style>\n"""
+
+    # Multi-day payload: bundle every date's base+slim_diffs into __TT_DAYS.
+    # Only emitted when days_map is provided; single-day callers get the
+    # legacy __TT_BASE / __TT_DIFFS only.
+    multi_payload = ""
+    if days_map and len(days_map) > 1:
+        # Slim each day's diffs the same way single-day does.
+        days_slim: dict[str, dict] = {}
+        for d, daydata in days_map.items():
+            d_diffs = daydata.get("diffs") or []
+            d_base = daydata.get("base") or {}
+            d_slim = [
+                {
+                    "ts_et":             dd["ts_et"],
+                    "captured_at_utc":   dd["captured_at_utc"],
+                    "kind":              dd.get("kind", ""),
+                    "label":             dd.get("label", ""),
+                    "trades_today":      dd["diff"]["trades_today"],
+                    "positions":         dd["diff"]["positions"],
+                    "portfolios":        dd["diff"].get("portfolios", {}),
+                    "server_time":       dd["diff"]["server_time"],
+                    "server_time_label": dd["diff"]["server_time_label"],
+                    "eod":               dd["diff"]["eod"],
+                    "portfolio":          dd["diff"].get("portfolio", {}),
+                    "regime":             dd["diff"].get("regime", {}),
+                    "v10_activity":       dd["diff"].get("v10_activity", []),
+                    "gates_scan_paused":  dd["diff"].get("gates_scan_paused", False),
+                    "v10_kill_triggered": dd["diff"].get("v10_kill_triggered", False),
+                    "v10_realized_pnl":   dd["diff"].get("v10_realized_pnl",   0.0),
+                    "v10_admit_count":    dd["diff"].get("v10_admit_count",    0),
+                    "v10_reject_count":   dd["diff"].get("v10_reject_count",   0),
+                    "v10_day_states":     dd["diff"].get("v10_day_states",     []),
+                }
+                for dd in d_diffs
+            ]
+            days_slim[d] = {"base": d_base, "diffs": d_slim}
+        multi_payload = f"window.__TT_DAYS={_js(days_slim)};\nwindow.__TT_DEFAULT_DATE={_js(default_date or '')};\n"
 
     # Data + patch script goes in <head> BEFORE anything else
     head_inject = (
@@ -440,12 +1430,14 @@ def build_html(diffs: list[dict], base_state: dict, start_idx: int = 0) -> str:
         f"window.__TT_BASE={_js(base_state)};\n"
         f"window.__TT_DIFFS={_js(slim_diffs)};\n"
         f"window.__TT_IDX={start_idx};\n"
+        f"{multi_payload}"
         f"</script>\n" + _HEAD_PATCH
     )
     html = html.replace("</head>", head_inject + "</head>", 1)
 
     # Static bar HTML at the very start of <body>
-    bar = _bar_html(diffs, start_idx)
+    available_dates = sorted(days_map.keys()) if days_map and len(days_map) > 1 else None
+    bar = _bar_html(diffs, start_idx, available_dates=available_dates, default_date=default_date)
     html = re.sub(r"(<body[^>]*>)", r"\1" + bar, html, count=1)
 
     # Inline app.js + nav script at end of body
@@ -616,7 +1608,15 @@ def _make_handler(snaps: list[dict], env: str):
 
 
 def _load_captured_snapshots(date_et: str) -> list[dict] | None:
-    """Return real captured snapshots from data/snapshots/YYYY-MM-DD.jsonl, or None."""
+    """Return real captured snapshots from data/snapshots/YYYY-MM-DD.jsonl, or None.
+
+    Two on-disk schemas are accepted:
+    1. ``{"dashboard": {"/api/state": {...}}, ...}`` -- legacy capture format
+       emitted by snapshot_state.py.
+    2. ``{"state": {...}, "ts_et": "...", "captured_at_utc": "..."}`` -- the
+       newer format on the snapshots-live branch (tools/state_snapshot.py).
+       Re-shaped on the fly so _jsonl_to_diffs can consume it uniformly.
+    """
     snap_file = REPO / "data" / "snapshots" / f"{date_et}.jsonl"
     if not snap_file.exists():
         return None
@@ -631,6 +1631,14 @@ def _load_captured_snapshots(date_et: str) -> list[dict] | None:
             continue
         if e.get("dashboard"):
             out.append(e)
+            continue
+        # snapshots-live schema: {"state": ..., "ts_et": ..., "captured_at_utc": ...}.
+        if e.get("state") and e.get("ts_et"):
+            out.append({
+                "ts_et": e["ts_et"],
+                "captured_at_utc": e.get("captured_at_utc", ""),
+                "dashboard": {"/api/state": e["state"]},
+            })
     return out if out else None
 
 
@@ -677,12 +1685,86 @@ def _jsonl_to_diffs(snaps: list[dict]) -> tuple[list[dict], dict]:
     return diffs, base_state
 
 
+def _gather_day(env: str, date_et: str) -> tuple[list[dict], dict]:
+    """Return (day_snaps, base_state) for a single date, identical to the
+    single-day branch of main() (real captured first, fall back to live)."""
+    captured = _load_captured_snapshots(date_et)
+    if captured:
+        print(f"  {date_et}: using {len(captured)} captured snapshots")
+        return _jsonl_to_diffs(captured)
+    base_url = (
+        "https://tradegenius.up.railway.app" if env == "prod"
+        else "https://tradegenius-staging.up.railway.app"
+    )
+    password = (
+        "3YhCoi5AIZYAFG7eDua8bD8Z" if env == "prod"
+        else os.environ.get("DASHBOARD_PASSWORD", "")
+    )
+    if not password:
+        raise RuntimeError("DASHBOARD_PASSWORD not set")
+    print(f"  {date_et}: no captured snapshots, fetching live from {base_url}")
+    opener = _login(base_url, password)
+    state = _fetch_state(opener, base_url)
+    day_snaps = build_day_snapshots(state, date_et)
+    base_state = dict(state)
+    base_state.pop("trades_today", None)
+    base_state.pop("positions", None)
+    return day_snaps, base_state
+
+
+def _run_multi_day_share(args) -> None:
+    """Bundle multiple dates into one HTML with a date dropdown."""
+    dates = [d.strip() for d in args.dates.split(",") if d.strip()]
+    if not dates:
+        print("--dates given but empty")
+        sys.exit(1)
+    default_date = dates[-1]  # most recent date is the initial view
+
+    print(f"Multi-day mode: {len(dates)} dates, default = {default_date}")
+    days_map: dict[str, dict] = {}
+    for d in dates:
+        try:
+            day_snaps, base_state = _gather_day(args.env, d)
+            days_map[d] = {"diffs": day_snaps, "base": base_state}
+        except Exception as e:
+            print(f"  [WARN] {d}: {e} -- skipping")
+    if not days_map:
+        print("No usable days found")
+        sys.exit(1)
+
+    # Use the default day's data as the legacy single-day fallback fields.
+    default_data = days_map.get(default_date) or next(iter(days_map.values()))
+    default_diffs = default_data["diffs"]
+    default_base = default_data["base"]
+
+    print(f"Generating HTML ({len(days_map)} days bundled) ...")
+    html = build_html(
+        default_diffs, default_base, start_idx=0,
+        days_map=days_map, default_date=default_date,
+    )
+    body = html.encode("utf-8")
+    print(f"  {len(body) // 1024} KB")
+
+    key = f"replay/week_{default_date}.html"
+    print(f"Uploading to R2 ({key}) ...")
+    upload_r2(body, key)
+    url = presigned(key, expires=3600 * 8)
+    print(f"\nShareable URL (8 hours):\n{url}\n")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--env", default="staging", choices=["staging", "prod"])
     p.add_argument("--date", default=None)
+    p.add_argument(
+        "--dates",
+        default=None,
+        help="Comma-separated dates for multi-day mode (e.g. "
+             "2026-05-11,2026-05-12,...). Adds a date dropdown to the "
+             "replay bar; default-selected = the last date in the list.",
+    )
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument(
         "--share",
@@ -693,6 +1775,10 @@ def main() -> None:
 
     _load_env()
     date_et = args.date or datetime.now(ET).strftime("%Y-%m-%d")
+
+    if args.share and args.dates:
+        _run_multi_day_share(args)
+        return
 
     if args.share:
         # Prefer real captured snapshots (from GHA state-snapshot workflow)

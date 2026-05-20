@@ -97,29 +97,11 @@ from telegram_ui.commands import (
 from telegram_ui.menu import _build_menu_keyboard, _menu_button  # v5.11.1 PR 3
 
 
-# v6.11.1 — pre-market check integration. Optional: if import fails,
-# cmd_test continues with the existing 15-check body only.
-_premarket_check_available = False
-try:
-    import sys as _sys
-    import os as _os
-    _tg_root = _os.path.dirname(_os.path.abspath(__file__))
-    if _tg_root not in _sys.path:
-        _sys.path.insert(0, _tg_root)
-    from scripts.premarket_check import format_for_telegram as _fmt_premarket
-    from scripts.premarket_check import run_all_checks as _run_premarket
-    _premarket_check_available = True
-except Exception as _pmc_import_err:
-    logger.debug("cmd_test: pre-market check import failed (non-fatal): %s", _pmc_import_err)
-
-
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /test command — v6.7.0 15-check system health test plus v6.11.1
-    pre-market readiness check (14 checks, appended after a separator).
+    """Handle /test command -- v6.7.0 15-check system health test.
 
     Single final edit pattern preserved from v5.1.5 to avoid Telegram
-    editMessageText rate-limit races. Both suites run in executor threads
-    (blocking I/O). Pre-market check failure never breaks the existing output.
+    editMessageText rate-limit races.
     """
     t0 = asyncio.get_event_loop().time()
     await update.message.reply_chat_action(ChatAction.TYPING)
@@ -129,22 +111,6 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     loop = asyncio.get_event_loop()
     body = await loop.run_in_executor(None, lambda: _run_system_test_sync_v2("manual"))
-
-    # v6.11.1 — append pre-market check results. write_artifact=False preserves
-    # the daily /data/preflight/<date>.json written by the 04:30 ET cron.
-    if _premarket_check_available:
-        try:
-            pmc_result = await loop.run_in_executor(
-                None,
-                lambda: _run_premarket(in_container=True, write_artifact=False),
-            )
-            pmc_body = _fmt_premarket(pmc_result)
-            body = body + "\n\n---\n\n" + pmc_body
-        except Exception as _pmc_err:
-            body = body + "\n\n---\n\n[ERR] Pre-market check raised: %s: %s" % (
-                type(_pmc_err).__name__, str(_pmc_err)[:120]
-            )
-            logger.warning("cmd_test: pre-market check raised: %s", _pmc_err)
 
     # Single final edit. TelegramBadRequest covers "message is not
     # modified" no-ops; any other failure falls back to reply_text.
@@ -201,6 +167,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /version     Release notes\n"
         "\n"
         "Admin\n"
+        "  /close TICK  Force close (all)\n"
         "  /reset       Reset portfolio\n"
         "  /ticker list       Show list\n"
         "  /ticker add SYM    Track\n"
@@ -1051,53 +1018,19 @@ async def cmd_proximity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the current Phase 1 (Section I) QQQ permit state.
-
-    v5.13.5: replaces the legacy SPY/QQQ-vs-PDC global gate diagnostic.
-    Reads from v5_10_6_snapshot._section_i_permit so this view agrees
-    with the dashboard.
+    """v10.0.1 -- /regime retired. The v5/v15 Phase 1 (Section I) QQQ
+    permit gate that this command reported was deleted in the same
+    release that aligned live trading to the Keystone backtest config.
+    The v10 strategy's regime check is the SPY-regime gate (skipped
+    when prior-session SPY return < ORB_SKIP_PRIOR_SPY_RET_LT_BPS) plus
+    the sector-cluster gate -- both surfaced on the v10 day-status
+    panel of the dashboard rather than as a Telegram command.
     """
-    SEP = "\u2500" * 26
-    long_open = False
-    short_open = False
-    qqq_close = qqq_ema9 = qqq_avwap = qqq_last = None
-    try:
-        import v5_10_6_snapshot as _v510
-        import trade_genius as _tg_mod
-
-        sip = _v510._section_i_permit(_tg_mod)
-        long_open = bool(sip.get("long_open"))
-        short_open = bool(sip.get("short_open"))
-        qqq_close = sip.get("qqq_5m_close")
-        qqq_ema9 = sip.get("qqq_5m_ema9")
-        qqq_avwap = sip.get("qqq_avwap_0930")
-        qqq_last = sip.get("qqq_current_price")
-    except Exception:
-        pass
-
-    def _fmt(v):
-        return ("$%.2f" % v) if isinstance(v, (int, float)) and v else "--"
-
-    long_icon = "\u2705" if long_open else "\u274c"
-    short_icon = "\u2705" if short_open else "\u274c"
-
-    text = (
-        f"\U0001f6e1 REGIME \u2014 Phase 1 (Section I)\n"
-        f"{SEP}\n"
-        f"QQQ last:   {_fmt(qqq_last)}\n"
-        f"QQQ 5m cl:  {_fmt(qqq_close)}\n"
-        f"QQQ 9 EMA:  {_fmt(qqq_ema9)}\n"
-        f"QQQ AVWAP:  {_fmt(qqq_avwap)} (09:30)\n"
-        f"{SEP}\n"
-        f"Long permit:  {long_icon}\n"
-        f"Short permit: {short_icon}\n"
-        f"{SEP}\n"
-        f"Long  = QQQ 5m close > 9 EMA\n"
-        f"        AND QQQ > 09:30 AVWAP\n"
-        f"Short = QQQ 5m close < 9 EMA\n"
-        f"        AND QQQ < 09:30 AVWAP"
+    await update.message.reply_text(
+        "/regime retired in v10.0.1 -- Phase 1 (Section I) gate is "
+        "deleted. Live regime data lives on the dashboard v10 panel.",
+        reply_markup=_menu_button(),
     )
-    await update.message.reply_text(text, reply_markup=_menu_button())
 
 
 async def cmd_orb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1461,40 +1394,3 @@ async def cmd_ticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(_TICKER_USAGE, reply_markup=_menu_button())
 
 
-# v6.18.0 \u2014 daily market-expectations brief
-async def cmd_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pre-open market brief: EW universe, macro snapshot, movers, catalysts.
-
-    Builder lives in market_brief.py so the same payload can be fired from
-    the daily 7:00 CT scheduler entry without going through the Telegram
-    command surface.
-    """
-    t0 = asyncio.get_event_loop().time()
-    await update.message.reply_chat_action(ChatAction.TYPING)
-    prog = await update.message.reply_text("\u23f3 Building brief...")
-    loop = asyncio.get_event_loop()
-    try:
-        from market_brief import build_market_brief
-
-        text = await loop.run_in_executor(
-            None, build_market_brief, BOT_VERSION, os.environ.get("FMP_API_KEY", "")
-        )
-    except Exception as exc:
-        logger.exception("cmd_brief: build failed")
-        try:
-            await prog.edit_text("\u26a0\ufe0f Brief failed: %s" % str(exc)[:120])
-        except Exception:
-            pass
-        return
-    try:
-        if len(text) > 3800:
-            await prog.delete()
-            await _reply_in_chunks(update.message, text, reply_markup=_menu_button())
-        else:
-            await prog.edit_text(text, reply_markup=_menu_button())
-    except Exception:
-        try:
-            await update.message.reply_text(text, reply_markup=_menu_button())
-        except Exception:
-            pass
-    logger.info("CMD brief completed in %.2fs", asyncio.get_event_loop().time() - t0)

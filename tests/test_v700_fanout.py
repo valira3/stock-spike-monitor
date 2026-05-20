@@ -12,8 +12,6 @@ Covers:
     baseline and calls record_entry (chandelier reset)
   - Per-book isolation: val.size_for() with different dollars_per_entry
     returns different qty than main
-  - Earnings watcher: main.config.earnings_watcher_enabled is True;
-    val and gene False
   - paper_shares_for() in broker/orders.py still returns the same value
     as before (regression: snapshot the old behavior)
 """
@@ -132,11 +130,6 @@ class TestPortfolioConfigDefaults:
     def test_portfolio_equity_floor_default(self, pb):
         cfg = pb.PortfolioConfig()
         assert cfg.portfolio_equity_floor == 100000.0
-
-    def test_earnings_watcher_default_false(self, pb):
-        """Default is False; only main gets True after registry setup."""
-        cfg = pb.PortfolioConfig()
-        assert cfg.earnings_watcher_enabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -346,25 +339,6 @@ class TestPerBookIsolation:
         val = pb.PORTFOLIOS.get("val")
         gene = pb.PORTFOLIOS.get("gene")
         assert val.config is not gene.config
-
-
-# ---------------------------------------------------------------------------
-# 7. Earnings watcher flag: main=True, val/gene=False
-# ---------------------------------------------------------------------------
-
-
-class TestEarningsWatcher:
-    def test_main_earnings_watcher_enabled(self, pb):
-        main = pb.PORTFOLIOS.get("main")
-        assert main.config.earnings_watcher_enabled is True
-
-    def test_val_earnings_watcher_disabled(self, pb):
-        val = pb.PORTFOLIOS.get("val")
-        assert val.config.earnings_watcher_enabled is False
-
-    def test_gene_earnings_watcher_disabled(self, pb):
-        gene = pb.PORTFOLIOS.get("gene")
-        assert gene.config.earnings_watcher_enabled is False
 
 
 # ---------------------------------------------------------------------------

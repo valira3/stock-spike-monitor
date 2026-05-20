@@ -51,9 +51,8 @@ BAR_SCHEMA_FIELDS = (
     "close",
     # v6.14.0 \u2014 SIP-aggregated total volume from the Alpaca bar feed.
     # Was missing from the schema in v6.5.0\u20136.13.x; ingest wrote
-    # iex_volume only and that field carried 0 on the SIP path. The new
-    # field is what volume_bucket.py reads first; iex_volume is retained
-    # so that legacy bars on disk still parse cleanly. See issue #354.
+    # iex_volume only and that field carried 0 on the SIP path.
+    # iex_volume is retained so legacy bars on disk still parse cleanly.
     "total_volume",
     "iex_volume",
     "iex_sip_ratio_used",
