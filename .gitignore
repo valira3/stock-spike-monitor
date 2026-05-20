@@ -53,6 +53,8 @@ orb_state_*.json
 data_pm_universe/
 data_broad/
 data_rth_expand/
+data_dedup/
+data_pm_universe_dedup/
 
 # OS noise picked up on the macOS dev machine
 .DS_Store
