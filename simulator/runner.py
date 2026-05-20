@@ -231,19 +231,28 @@ class SimulatorRunner:
         # cluster gate, and the simulator's universe all agree.
         _ensure_data_root_layout(os.environ["TG_DATA_ROOT"])
         # engine.scan._load_eod_prior_closes + tools.orb_spy_loader +
-        # spy_regime.backfill_from_bars all read prior-day RTH archives.
-        # In production they default to /data/bars; in sim we point them
-        # at the corpus via TG_DATA_ROOT/bars (symlinked to data_pm_universe).
-        _bars_path = os.path.join(os.environ["TG_DATA_ROOT"], "bars")
-        os.environ["BARS_BASE_DIR"] = _bars_path
-        # BAR_ARCHIVE_BASE is shared by READS (spy_regime backfill) AND
-        # WRITES (bar_archive.write_bar). If we point it at a scratch
-        # dir, the reads break; if we point it at the corpus, the writes
-        # corrupt the corpus. So we point it at the corpus AND
-        # monkeypatch the write functions to no-ops in _run_session_via_
-        # scan_loop (see _patch_writes_to_noop).
-        os.environ["BAR_ARCHIVE_BASE"] = _bars_path
-        os.environ["DAILY_BAR_DIR"] = os.path.join(_bars_path, "daily")
+        # spy_regime.backfill_from_bars + bar_archive.write_bar all
+        # default to /data/bars in production. In sim we point them
+        # DIRECTLY at the corpus via absolute path (no symlink).
+        #
+        # Why no symlink: a prior approach created
+        # <TG_DATA_ROOT>/bars -> data_pm_universe. That made
+        # `find /tmp/simulator_data -delete` (common after a kill)
+        # follow the symlink and wipe 258 of 343 corpus days. Twice.
+        # Pointing the env vars at the absolute corpus path eliminates
+        # the symlink entirely; the corpus can only be deleted by
+        # explicitly deleting `data_pm_universe/`.
+        #
+        # BAR_ARCHIVE_BASE is shared by READS (spy_regime backfill)
+        # AND WRITES (bar_archive.write_bar). The writes are
+        # monkeypatched to no-ops in _run_session_via_scan_loop so the
+        # corpus stays read-only.
+        _corpus_abs = os.path.abspath(
+            os.environ.get("SIMULATOR_PM_CORPUS_ROOT", "data_pm_universe")
+        )
+        os.environ["BARS_BASE_DIR"] = _corpus_abs
+        os.environ["BAR_ARCHIVE_BASE"] = _corpus_abs
+        os.environ["DAILY_BAR_DIR"] = os.path.join(_corpus_abs, "daily")
 
         # 2. Bar feeder.
         date = self.scenario["date"]
@@ -1226,23 +1235,19 @@ def _build_config(live_runtime):
 
 
 def _ensure_data_root_layout(tg_data_root: str) -> None:
-    """Set up <TG_DATA_ROOT>/bars/ -> data_pm_universe/ and the
-    universe/sectors JSON files via symlink so the bot's internal
-    scanner (called by ensure_session_started) finds the same bars."""
+    """Set up universe/sectors JSON files via symlink so the scanner
+    finds them.
+
+    History: this used to also create <TG_DATA_ROOT>/bars ->
+    data_pm_universe so the bot's bar-archive paths resolved. That
+    symlink got followed by `find -delete` on the simulator scratch
+    dir and wiped 258 of 343 corpus days TWICE. Bars now come straight
+    from the corpus via BARS_BASE_DIR / BAR_ARCHIVE_BASE pinned to an
+    absolute path in setup(); no bars symlink needed.
+    """
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pm_root = os.path.join(repo_root,
-                            os.environ.get("SIMULATOR_PM_CORPUS_ROOT",
-                                           "data_pm_universe"))
-    if not os.path.isdir(pm_root):
-        return
-    # bars/ symlink.
-    bars_link = os.path.join(tg_data_root, "bars")
-    if not os.path.exists(bars_link):
-        try:
-            os.symlink(pm_root, bars_link)
-        except FileExistsError:
-            pass
     # universe/ symlink for sp500.json + sp500_sectors.json.
+    # Read-only target; safe from corpus-wipe (it's not the bars dir).
     univ_link = os.path.join(tg_data_root, "universe")
     repo_univ = os.path.join(repo_root, "data", "universe")
     if not os.path.exists(univ_link) and os.path.isdir(repo_univ):
