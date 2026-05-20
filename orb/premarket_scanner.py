@@ -157,13 +157,14 @@ def _compression_score(bars: list[dict], pm_lookback_n: int,
     window_start_min = rth_open_min - pm_min_lookback_min
     in_window = []
     for b in bars:
-        bkt = b.get("et_bucket", "9999")
+        # `or "9999"` guards against null/missing et_bucket rows.
+        bkt = b.get("et_bucket") or "9999"
         if bkt == "9999":
             continue
         # bucket "HHMM" → minutes
         try:
             mins = int(bkt[:2]) * 60 + int(bkt[2:])
-        except ValueError:
+        except (ValueError, TypeError):
             continue
         if window_start_min <= mins < rth_open_min:
             in_window.append((mins, b))

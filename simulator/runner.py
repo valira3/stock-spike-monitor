@@ -706,6 +706,12 @@ class SimulatorRunner:
 
         scan_calls = 0
         scan_errs = 0
+        eod_flushed = False
+        # Production scheduler fires eod_close at 15:57 ET. SSM_SMOKE_TEST=1
+        # disables the scheduler, so the sim has to drive eod_close manually
+        # at the same wall-clock minute. Otherwise open positions accumulate
+        # and never produce trade_log records (no close_breakout call).
+        EOD_FLUSH_BUCKET = 15 * 60 + 57
         for bucket in range(PREMARKET_START, SESSION_END_PLUS):
             self._clock.set_et(hour=bucket // 60, minute=bucket % 60)
             try:
@@ -716,6 +722,16 @@ class SimulatorRunner:
                 if scan_errs <= 3:
                     rep.on_warning(
                         f"scan_loop@{_bucket_to_str(bucket)} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            if bucket == EOD_FLUSH_BUCKET and not eod_flushed:
+                try:
+                    from broker.lifecycle import eod_close as _eod_close
+                    _eod_close()
+                    eod_flushed = True
+                except Exception as exc:
+                    rep.on_warning(
+                        f"eod_close@15:57 raised: "
                         f"{type(exc).__name__}: {exc}"
                     )
 
