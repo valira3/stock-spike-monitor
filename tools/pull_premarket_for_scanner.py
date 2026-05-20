@@ -122,14 +122,33 @@ def rebuild_premarket_bars_for_date(
     """In-process rebuild used by the live runtime when the 09:24 ET GHA
     cron didn't deliver. Same logic as `main()` but importable; bubbles
     only the bar count (returns 0 on missing creds or import failure).
+
+    v10.0.1: explicit logging on the two early-return paths so an
+    operator who notices the live premarket scanner falling back to
+    the static-12 universe can find the root cause in the logs rather
+    than guessing. Pre-v10.0.1 both returned 0 silently.
     """
     key = os.environ.get("VAL_ALPACA_PAPER_KEY")
     sec = os.environ.get("VAL_ALPACA_PAPER_SECRET")
     if not key or not sec:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "[V100-SCANNER-REBUILD] skipping rebuild for %s -- "
+            "VAL_ALPACA_PAPER_KEY/_SECRET not set; scanner will "
+            "fail-open to static-12 universe.",
+            target_date.isoformat(),
+        )
         return 0
     try:
         from alpaca.data.historical import StockHistoricalDataClient
-    except ImportError:
+    except ImportError as _imp_err:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "[V100-SCANNER-REBUILD] skipping rebuild for %s -- "
+            "alpaca-py import failed (%s); scanner will fail-open "
+            "to static-12 universe.",
+            target_date.isoformat(), _imp_err,
+        )
         return 0
     out_root.mkdir(parents=True, exist_ok=True)
     client = StockHistoricalDataClient(key, sec)

@@ -6169,6 +6169,36 @@ def gap_detect_task() -> None:
 # ============================================================
 # SCHEDULER THREAD
 # ============================================================
+def _earnings_refresh_with_alert():
+    """Fire the weekly earnings-calendar refresh and surface failures
+    via Telegram.
+
+    v10.0.1: the dashboard does not yet render the earnings_refresh
+    status block (it's available at /api/state.earnings_refresh but no
+    UI consumer reads it), so a refresh failure -- including the silent
+    lxml-missing trap -- would only be visible to an operator who
+    manually curls the JSON. Routing through report_error makes any
+    non-"ok" status fire the standard 5-min-deduped Telegram page so
+    the operator hears about it on Sunday afternoon instead of finding
+    out via stale earnings data the following Monday morning.
+    """
+    try:
+        from orb import earnings_refresh as _er
+        s = _er.fire_refresh()
+        if s.last_status != "ok":
+            severity = "warning" if s.last_status == "empty_payload" else "critical"
+            report_error(
+                executor="main",
+                code="EARNINGS_REFRESH",
+                severity=severity,
+                summary=f"weekly refresh: {s.last_status}",
+                detail=(s.error_msg or "")[:200],
+            )
+    except Exception as exc:
+        # Don't ever let the alert itself crash the scheduler thread.
+        logger.exception("[V100-EARNINGS-REFRESH] alert wrapper crashed: %s", exc)
+
+
 def scheduler_thread():
     """Background scheduler \u2014 all times in ET."""
     DAY_NAMES = [
@@ -6229,11 +6259,14 @@ def scheduler_thread():
         # retired GHA cron). Runs Sunday 13:00 ET in a daemon thread so
         # a slow yfinance HTTP call can't block the scheduler. The fire
         # function itself updates orb.earnings_refresh module state for
-        # /api/state staleness surfacing.
+        # /api/state staleness surfacing; if the refresh ends in any
+        # status other than "ok" we fire a Telegram alert via
+        # report_error so the operator sees the failure even though
+        # nothing on the dashboard renders the earnings_refresh status
+        # block yet.
         ("sunday", "13:00",
          lambda: threading.Thread(
-             target=lambda: __import__("orb.earnings_refresh",
-                                       fromlist=["fire_refresh"]).fire_refresh(),
+             target=_earnings_refresh_with_alert,
              name="earnings-refresh", daemon=True,
          ).start()),
     ]
