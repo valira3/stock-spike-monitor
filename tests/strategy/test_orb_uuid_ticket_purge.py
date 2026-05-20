@@ -141,3 +141,60 @@ class TestPurgeNonRecoverTickets:
         eng.purge_non_recover_tickets()
         assert rb.open_risk == 0.0
         assert rb.open_notional == 0.0
+
+    # v9.1.140 -- V834-PERSIST section G builds tickets as
+    # `recover-{original_tid}` (i.e. `recover-<uuid>`). The
+    # pre-v9.1.140 V8322 only matched `recover-{pid}-` which deleted
+    # these legitimate restored tickets and produced the 2026-05-20
+    # NVDA phantom (positions held, RiskBook empty).
+
+    def test_recover_uuid_prefix_kept(self):
+        """V834-PERSIST section G shape: recover-<original_uuid>.
+        Must survive V8322 even though it doesn't carry a pid hint."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _insert_ticket(eng, "main", "recover-abc123def456", risk=100, notional=73000)
+        out = eng.purge_non_recover_tickets()
+        assert out == {}
+        rb = eng._risk.get("main")
+        assert rb.open_count == 1
+        assert rb.open_notional == pytest.approx(73000.0)
+
+    def test_recover_recover_uuid_prefix_kept(self):
+        """Multi-boot V834-PERSIST shape: recover-recover-<uuid>.
+        Each rehydrate cycle wraps the persisted tid with another
+        `recover-` prefix, so a position that survives 2+ deploys
+        accumulates the doubled prefix."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        _insert_ticket(eng, "main", "recover-recover-abc123def456", risk=100, notional=60000)
+        out = eng.purge_non_recover_tickets()
+        assert out == {}
+        rb = eng._risk.get("main")
+        assert rb.open_count == 1
+
+    def test_v834_persist_section_g_roundtrip_survives_purge(self):
+        """Integration: simulate the exact post-rehydrate state from
+        the 2026-05-20 NVDA incident. Section C loaded the raw uuid
+        ticket (no prefix) AND section G layered a
+        `recover-{original_tid}` ticket on top with the same risk.
+        V8322 should purge only the bare uuid, leaving the recover-
+        ticket and its risk_dollars intact."""
+        eng = OrbEngine(_cfg(), portfolio_ids=["main"])
+        # Section C: raw uuid ticket -- to be purged.
+        _insert_ticket(eng, "main", "abc123def456uuid", risk=150, notional=77000)
+        # Section G: recover-<uuid> ticket -- to be kept.
+        _insert_ticket(eng, "main", "recover-abc123def456uuid", risk=150, notional=77000)
+        rb = eng._risk.get("main")
+        # Pre-purge double-count (the design comment in apply_loaded_state):
+        # _open_risk = C_persisted + G_recover.
+        assert rb.open_count == 2
+        assert rb.open_risk == pytest.approx(300.0)
+        out = eng.purge_non_recover_tickets()
+        # Only section C (uuid) is purged.
+        assert out == {"main": 1}
+        assert rb.open_count == 1
+        # Section G ticket survives with its risk_dollars intact.
+        assert rb.open_risk == pytest.approx(150.0)
+        assert rb.open_notional == pytest.approx(77000.0)
+        with rb._lock:
+            assert "recover-abc123def456uuid" in rb._open_tickets
+            assert "abc123def456uuid" not in rb._open_tickets
