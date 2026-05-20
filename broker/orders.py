@@ -724,46 +724,9 @@ def check_breakout(ticker, side):
     # / prev_sess_lod fields), so the upstream call to
     # _v570_update_session_hod_lod is intentionally retained.
 
-    # v15.0 SPEC Alarm E pre-entry filter:
-    #   Spec \u00a71.2: "If a price prints a new extreme but RSI(15) is
-    #   diverging (lower for Longs, higher for Shorts), the bot is prohibited
-    #   from opening new Strike 2 or Strike 3 positions."
-    # Strike 1 is unaffected by the pre-filter; the post-entry sentinel covers it.
-    if _next_strike_num >= 2:
-        try:
-            from engine.sentinel import check_alarm_e_pre as _alarm_e_pre
-            from broker.positions import get_divergence_memory as _get_dm
-
-            _closes_1m_e = (bars or {}).get("closes") or []
-            _rsi15_e = (
-                tg._compute_rsi(_closes_1m_e, period=15)
-                if _closes_1m_e and hasattr(tg, "_compute_rsi")
-                else None
-            )
-            if _rsi15_e is not None:
-                _e_blocked = _alarm_e_pre(
-                    memory=_get_dm(),
-                    ticker=ticker,
-                    side=side_label,
-                    current_price=float(current_price),
-                    current_rsi_15=float(_rsi15_e),
-                    strike_num=_next_strike_num,
-                )
-                if _e_blocked:
-                    tg._v561_log_skip(
-                        ticker=ticker,
-                        reason="V15_ALARM_E_PRE_STRIKE%d" % _next_strike_num,
-                        ts_utc=tg._utc_now_iso(),
-                        gate_state=None,
-                    )
-                    _emit_decision("SKIP:V15_ALARM_E_PRE_STRIKE%d" % _next_strike_num)
-                    return False, None
-        except Exception as _alarm_e_err:
-            tg.logger.warning(
-                "[V15-ALARM-E] %s pre-filter eval error: %s",
-                ticker,
-                _alarm_e_err,
-            )
+    # v10.0.1 \u2014 Alarm E (RSI-divergence Strike-2/3 pre-filter) deleted
+    # along with the rest of engine.sentinel. v10 ORB single-entry
+    # path doesn't fire Strike 2/3 so the filter has nothing to gate.
 
     # v10.0.1 \u2014 Volume Bucket gate deleted (v6.14.10 era). Not in the
     # Keystone backtest path; live now matches backtest.

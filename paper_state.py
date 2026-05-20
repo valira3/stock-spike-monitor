@@ -124,10 +124,8 @@ def _rehydrate_runtime_caches(pos_map):
     """
     if not pos_map:
         return
-    try:
-        from engine.sentinel import new_pnl_history
-    except Exception:
-        new_pnl_history = None
+    # v10.0.1 -- engine.sentinel deleted; pnl_history is no longer
+    # rebuilt on load (the Tiger Sentinel alarm chain consumed it).
     try:
         from engine.alarm_f_trail import TrailState
     except Exception:
@@ -138,11 +136,7 @@ def _rehydrate_runtime_caches(pos_map):
             continue
         ph = pos.get("pnl_history")
         if ph is None or isinstance(ph, str):
-            if new_pnl_history is not None:
-                pos["pnl_history"] = new_pnl_history()
-                repaired += 1
-            else:
-                pos.pop("pnl_history", None)
+            pos.pop("pnl_history", None)
         ts = pos.get("trail_state")
         if ts is None or isinstance(ts, str):
             if TrailState is not None:
