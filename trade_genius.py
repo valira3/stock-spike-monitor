@@ -150,7 +150,11 @@ def _derive_current_main_note() -> str:
         if not changelog.is_file():
             return fallback
         import re as _re
-        heading_re = _re.compile(r"^##\s+v(\S+)\s*\([^)]*\)\s*--\s*(.+?)\s*$")
+        # v10.0.1 -- accept both literal "--" and real em-dash since
+        # CHANGELOG.md style allows the latter (CLAUDE.md exception).
+        heading_re = _re.compile(
+            "^##\\s+v(\\S+)\\s*\\([^)]*\\)\\s*(?:--|" + "\u2014" + ")\\s*(.+?)\\s*$"
+        )
         lines = changelog.read_text().splitlines()
         i = 0
         title = None
@@ -4320,7 +4324,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
     # is paper_cash + open long market value \u2212 open short liability,
     # mirrored from the /accounts and /portfolio commands.
     try:
-        from eye_of_tiger import scaled_daily_circuit_breaker_dollars
+        from engine.legacy_constants import scaled_daily_circuit_breaker_dollars
 
         portfolio_value_now = paper_cash
         for _pt, _pp in positions.items():
@@ -7014,7 +7018,7 @@ except Exception as _ff_err:
     logger.warning("[STARTUP] feature_flags read failed: %s", _ff_err)
 # v6.11.0 -- C25 regime-B amp startup surface.
 try:
-    from eye_of_tiger import (
+    from engine.legacy_constants import (
         V611_REGIME_B_ENABLED as _v611_enabled,
         V611_REGIME_B_SHORT_SCALE_MULT as _v611_mult,
         V611_REGIME_B_SHORT_ARM_HHMM_ET as _v611_arm,

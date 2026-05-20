@@ -1387,19 +1387,14 @@ def _proximity_rows() -> list[dict]:
         best_pct = None
         best_label = ""
         if px and px > 0:
+            # v10.0.1 -- Section I permit retired; both OR boundaries
+            # are always candidates. The permit_side="NONE" marker
+            # above is kept for proximity-payload back-compat.
             candidates: list[tuple[str, float]] = []
-            if long_permit and orh:
+            if orh:
                 candidates.append(("OR-high", orh))
-            if short_permit and orl:
+            if orl:
                 candidates.append(("OR-low", orl))
-            if not candidates:
-                # No permit active \u2014 still report whichever boundary is
-                # closer so the operator sees how far we are, but mark
-                # the row "no permit" via permit_side="NONE".
-                if orh:
-                    candidates.append(("OR-high", orh))
-                if orl:
-                    candidates.append(("OR-low", orl))
             for label, lvl in candidates:
                 if lvl:
                     d = abs(px - lvl) / px

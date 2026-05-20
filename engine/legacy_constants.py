@@ -132,6 +132,32 @@ def scaled_sovereign_brake_dollars(portfolio_value: float | None) -> float:
     return -clamped
 
 
+# Daily circuit breaker -- portfolio-scaled per-session realized-loss halt.
+DAILY_CIRCUIT_BREAKER_DOLLARS = -1500.0
+DAILY_CIRCUIT_BREAKER_PORTFOLIO_PCT = 0.015  # 1.5% per-day
+DAILY_CIRCUIT_BREAKER_FLOOR_DOLLARS = 300.0
+DAILY_CIRCUIT_BREAKER_CEILING_DOLLARS = 1500.0
+
+
+def scaled_daily_circuit_breaker_dollars(portfolio_value: float | None) -> float:
+    """Daily realized-loss halt threshold scaled to portfolio size.
+
+    Returns a NEGATIVE dollar threshold. Falls back to the legacy
+    absolute DAILY_CIRCUIT_BREAKER_DOLLARS when portfolio_value is
+    None or non-positive. Clamped to
+    [DAILY_CIRCUIT_BREAKER_FLOOR_DOLLARS,
+    DAILY_CIRCUIT_BREAKER_CEILING_DOLLARS].
+    """
+    if portfolio_value is None or portfolio_value <= 0:
+        return float(DAILY_CIRCUIT_BREAKER_DOLLARS)
+    raw = float(portfolio_value) * DAILY_CIRCUIT_BREAKER_PORTFOLIO_PCT
+    clamped = max(
+        DAILY_CIRCUIT_BREAKER_FLOOR_DOLLARS,
+        min(DAILY_CIRCUIT_BREAKER_CEILING_DOLLARS, raw),
+    )
+    return -clamped
+
+
 # ---------------------------------------------------------------------------
 # v15.0 / vAA-1 Strike sizing (Phase 3 momentum-sensitive tiers)
 # Live broker/orders.py:execute_breakout uses this to decide FULL vs

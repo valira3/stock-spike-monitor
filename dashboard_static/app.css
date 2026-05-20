@@ -1024,35 +1024,6 @@
     letter-spacing: 0 !important;
   }
 
-  /* Permit Matrix readability — the table-wrap retains overflow-x:auto
-     so the full 760 px row is reachable by swipe, but at 430 every
-     non-essential horizontal pixel was a tax. Trim cell padding once
-     more, drop the State pill border to flat fill (saves ~8 px), and
-     hint that the table scrolls with a soft fade on the right edge. */
-  .pmtx-table tbody td,
-  .pmtx-table thead th {
-    padding-left: 3px;
-    padding-right: 3px;
-  }
-  .pmtx-table thead th.pmtx-col-titan,
-  .pmtx-table td.pmtx-col-titan {
-    padding-left: 8px;
-  }
-  .pmtx-state-pill {
-    border-width: 0 !important;
-    padding: 2px 5px !important;
-  }
-  /* Soft right-edge fade on the matrix wrap to signal scroll affordance.
-     Pure CSS, no JS hook — a sticky pseudo using mask-image keeps the
-     real cells unobstructed. */
-  .pmtx-table-wrap {
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
-            mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
-  }
-  .pmtx-table-wrap.pmtx-fully-scrolled {
-    -webkit-mask-image: none;
-            mask-image: none;
-  }
 
   /* General element sizing — tighten card padding so each card uses
      more horizontal real estate for content. The card-body padding
@@ -1082,63 +1053,7 @@
   }
 }
 
-/* v6.0.8 - the expanded permit-matrix row's <td> uses colspan and was
-   rendering ~653 px wide on a 453 px iPhone viewport, clipping the
-   right edge of every component-card description (e.g. "Phase 2 entry
-   gate" was cut off after "Phase 2 entr"). Constrain the td and its
-   descendants so block-level children inside cannot push the row past
-   the visible viewport. The other media queries above shrink fonts
-   and gaps; this block fixes the actual width-overflow root cause. */
-@media (max-width: 480px) {
-  .pmtx-detail-row td {
-    max-width: 100vw;
-    box-sizing: border-box;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    padding: 10px 10px 12px 12px !important;
-  }
-  .pmtx-detail-row td > * { min-width: 0; max-width: 100%; }
-  .pmtx-detail-grid { min-width: 0; }
-  .pmtx-comp-cards { min-width: 0; }
-  .pmtx-comp-card { min-width: 0; }
-  .pmtx-comp-desc {
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    white-space: normal;
-  }
-}
 
-/* v6.0.8.1 \u2014 v6.0.8's mobile expanded-detail rule didn't actually
-   shrink the <td> because table-cell width is driven by the parent
-   <table>'s layout (anchored to the wide collapsed-row column widths,
-   ~650 px), so max-width:100vw on the <td> alone is ignored by the
-   table layout algorithm. Live measurement on iPhone 13 (453 px
-   viewport) post-v6.0.8: td=653 px, .pmtx-comp-card=605 px, descriptions
-   still clipped. Fix: only on the EXPANDED detail row, switch the <td>
-   to display:block so it leaves the table layout, and pin it with
-   position:sticky; left:0 so it stays anchored to the viewport's left
-   edge as the user swipes the (still horizontally scrollable) collapsed
-   matrix above. width:calc(100vw - 24px) accounts for the page padding.
-   Verified live: td 653 \u2192 366 px, card 605 \u2192 318 px, all 8
-   component cards fit, intraday chart + SMA stack bounded, while the
-   collapsed permit rows above retain their swipe-to-see-ADX/DI/Vol
-   behavior (wrap overflow-x:auto and tableW unchanged when nothing is
-   expanded). */
-@media (max-width: 480px) {
-  tr.pmtx-detail-row.pmtx-detail-open > td {
-    display: block !important;
-    position: sticky !important;
-    left: 0 !important;
-    width: calc(100vw - 24px) !important;
-    max-width: calc(100vw - 24px) !important;
-    box-sizing: border-box !important;
-    padding: 10px 10px 12px 12px !important;
-  }
-  tr.pmtx-detail-row.pmtx-detail-open > td > * { min-width: 0; max-width: 100%; }
-  .pmtx-detail-row .pmtx-intraday-canvas,
-  .pmtx-detail-row .pmtx-sma-table { max-width: 100%; }
-  .pmtx-detail-row .pmtx-sma-table { table-layout: fixed; width: 100%; }
-}
 
 /* v6.11.12 — brand-row mobile compaction. The flat 10px gap between
    every pill (logo, name, version, TO chip, L heartbeat, health,
