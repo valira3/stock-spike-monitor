@@ -44,7 +44,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_BAR_ARCHIVE_ROOT = "/data/bars"
+import os as _os
+
+# Honor BARS_BASE_DIR for sim / non-Railway environments (mirrors
+# engine/scan._load_eod_prior_closes and bar_archive's DEFAULT_BASE_DIR).
+# Pre-2026-05-20 this was hardcoded /data/bars, so the SPY-D1 regime
+# gate fail-opened in any environment where the volume wasn't mounted.
+DEFAULT_BAR_ARCHIVE_ROOT = _os.environ.get("BARS_BASE_DIR", "/data/bars")
 DEFAULT_CSV_PATH = "data/external/spy-daily.csv"
 
 # v9.1.3 -- module-level cache keyed on decision_date so a single

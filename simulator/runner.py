@@ -230,32 +230,20 @@ class SimulatorRunner:
         # simulator pre-computed -- so the engine's session start, the
         # cluster gate, and the simulator's universe all agree.
         _ensure_data_root_layout(os.environ["TG_DATA_ROOT"])
-        # engine.scan._load_eod_prior_closes reads from BARS_BASE_DIR
-        # (falls back to /data/bars in production). Point it at the
-        # same symlinked-to-corpus dir so the EOD reversal addon can
-        # find prior-day closes and actually fire entries.
-        os.environ["BARS_BASE_DIR"] = os.path.join(
-            os.environ["TG_DATA_ROOT"], "bars"
-        )
-        # bar_archive.write_bar/write_daily_bar default to TG_DATA_ROOT
-        # /bars when BAR_ARCHIVE_BASE is unset. Because we symlinked
-        # TG_DATA_ROOT/bars -> data_pm_universe to make READS find the
-        # corpus, those writes mutate the corpus directly -- producing
-        # cross-day non-determinism and (with `find -delete`) data loss.
-        # Redirect WRITES to a per-worker scratch dir; reads still use
-        # the symlinked path via BARS_BASE_DIR.
-        os.environ["BAR_ARCHIVE_BASE"] = os.path.join(
-            os.environ["TG_DATA_ROOT"], "_bar_writes"
-        )
-        os.makedirs(os.environ["BAR_ARCHIVE_BASE"], exist_ok=True)
-        # forensic_capture.write_daily_bar (called from broker.lifecycle.
-        # eod_close at 15:55 ET) defaults to TG_DATA_ROOT/bars/daily.
-        # Same symlink-into-corpus hazard as BAR_ARCHIVE_BASE -- redirect
-        # to the same scratch dir.
-        os.environ["DAILY_BAR_DIR"] = os.path.join(
-            os.environ["BAR_ARCHIVE_BASE"], "daily"
-        )
-        os.makedirs(os.environ["DAILY_BAR_DIR"], exist_ok=True)
+        # engine.scan._load_eod_prior_closes + tools.orb_spy_loader +
+        # spy_regime.backfill_from_bars all read prior-day RTH archives.
+        # In production they default to /data/bars; in sim we point them
+        # at the corpus via TG_DATA_ROOT/bars (symlinked to data_pm_universe).
+        _bars_path = os.path.join(os.environ["TG_DATA_ROOT"], "bars")
+        os.environ["BARS_BASE_DIR"] = _bars_path
+        # BAR_ARCHIVE_BASE is shared by READS (spy_regime backfill) AND
+        # WRITES (bar_archive.write_bar). If we point it at a scratch
+        # dir, the reads break; if we point it at the corpus, the writes
+        # corrupt the corpus. So we point it at the corpus AND
+        # monkeypatch the write functions to no-ops in _run_session_via_
+        # scan_loop (see _patch_writes_to_noop).
+        os.environ["BAR_ARCHIVE_BASE"] = _bars_path
+        os.environ["DAILY_BAR_DIR"] = os.path.join(_bars_path, "daily")
 
         # 2. Bar feeder.
         date = self.scenario["date"]
@@ -700,6 +688,19 @@ class SimulatorRunner:
         bf_orig = _install_bar_fetch(self._feeder, self.state,
                                      _prior_close_lookup)
         self._orig["bar_fetch"] = bf_orig
+        # No-op the bar archive writers so the bot can't mutate the
+        # corpus during a run. We keep BAR_ARCHIVE_BASE pointed at the
+        # corpus for READERS (spy_regime backfill, etc); writers go
+        # nowhere. Saves the cross-day non-determinism that previously
+        # surfaced when worker N's writes ended up in worker N+1's reads.
+        import bar_archive as _bar_archive_mod
+        import forensic_capture as _forensic_mod
+        self._orig["bar_archive.write_bar"] = _bar_archive_mod.write_bar
+        self._orig["bar_archive.write_daily_bar"] = _bar_archive_mod.write_daily_bar
+        self._orig["forensic_capture.write_daily_bar"] = _forensic_mod.write_daily_bar
+        _bar_archive_mod.write_bar = lambda *a, **kw: None
+        _bar_archive_mod.write_daily_bar = lambda *a, **kw: None
+        _forensic_mod.write_daily_bar = lambda *a, **kw: None
         rep.line(f"trade_genius booted  BOT_VERSION={tg.BOT_VERSION}")
         rep.line(f"_ProdCallbacks() resolved  prior_date={prior_date}")
 
