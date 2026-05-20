@@ -23,14 +23,65 @@ import json
 import os
 import sys
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from simulator.batch import BatchConfig, _list_corpus_dates_between, run_days
+from simulator.diff import diff_one_day, load_trade_log
 
 
 # ----------------------------------------------------------------------
 # Aggregation
 # ----------------------------------------------------------------------
+
+
+def aggregate_live_divergence(
+    results: List[dict],
+    trade_log_path: str = "data/trade_log.jsonl",
+) -> Optional[dict]:
+    """For every day in `results`, load the live trade log and diff
+    simulator entries against live trades. Return None if the trade
+    log file is absent (e.g. CI / sandbox); otherwise return a dict
+    with per-day diffs + roll-up counters."""
+    import os as _os
+    if not _os.path.isfile(trade_log_path):
+        return None
+
+    per_day = {}
+    total_matched = 0
+    total_drift = 0
+    total_sim_only = 0
+    total_live_only = 0
+    days_with_divergence = 0
+    days_with_live_trades = 0
+
+    for r in results:
+        date = r["date"]
+        live = load_trade_log(date, path=trade_log_path)
+        if not live and not r.get("entries"):
+            continue  # nothing to diff on either side
+        if live:
+            days_with_live_trades += 1
+        d = diff_one_day(r, live)
+        per_day[date] = d
+        total_matched += len(d["matched"]) - d["drift_count"]
+        total_drift += d["drift_count"]
+        total_sim_only += len(d["sim_only"])
+        total_live_only += len(d["live_only"])
+        if d["verdict"] == "DIVERGE":
+            days_with_divergence += 1
+
+    return {
+        "trade_log_path": trade_log_path,
+        "days_with_live_trades": days_with_live_trades,
+        "days_with_divergence": days_with_divergence,
+        "totals": {
+            "matched": total_matched,
+            "drift": total_drift,
+            "sim_only": total_sim_only,
+            "live_only": total_live_only,
+        },
+        "per_day": per_day,
+    }
 
 
 def aggregate(results: List[dict], starting_equity: float = 100_000.0,
@@ -204,6 +255,37 @@ def _print_annual_report(agg: dict, dates_range: str):
         print()
 
 
+def _print_divergence_block(div: dict):
+    """Pretty-print the live-vs-sim divergence summary."""
+    print("  Live-vs-sim divergence")
+    print(f"    trade log:               {div['trade_log_path']}")
+    print(f"    days with live trades:   {div['days_with_live_trades']}")
+    print(f"    days with divergence:    {div['days_with_divergence']}")
+    t = div["totals"]
+    print(f"    MATCH:    {t['matched']:>4d}")
+    print(f"    DRIFT:    {t['drift']:>4d}   "
+          f"(same key, entry price > $0.10 apart)")
+    print(f"    SIM-ONLY: {t['sim_only']:>4d}   "
+          f"(simulator fired, live did not)")
+    print(f"    LIVE-ONLY:{t['live_only']:>4d}   "
+          f"(live fired, simulator did not)")
+    if div["days_with_divergence"] > 0:
+        print()
+        print("  Days flagged for review:")
+        for date, d in sorted(div["per_day"].items()):
+            if d["verdict"] != "DIVERGE":
+                continue
+            issues = []
+            if d["sim_only"]:
+                issues.append(f"sim-only {','.join(d['sim_only'])}")
+            if d["live_only"]:
+                issues.append(f"live-only {','.join(d['live_only'])}")
+            if d["drift_count"]:
+                issues.append(f"drift x{d['drift_count']}")
+            print(f"    {date}  {' | '.join(issues)}")
+    print()
+
+
 # ----------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------
@@ -220,6 +302,10 @@ def _main(argv=None):
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--starting-equity", type=float, default=100_000.0)
     p.add_argument("--no-compound", action="store_true")
+    p.add_argument("--diff-live", action="store_true",
+                   help="Also diff sim outcomes vs data/trade_log.jsonl per day")
+    p.add_argument("--trade-log", default="data/trade_log.jsonl",
+                   help="Path to live trade log JSONL (when --diff-live)")
     p.add_argument("--out-json", default="results/simulator/annual.json",
                    help="Where to write the aggregated report")
     args = p.parse_args(argv)
@@ -254,12 +340,24 @@ def _main(argv=None):
     range_str = f"{dates[0]} -> {dates[-1]}, {len(dates)} days"
     _print_annual_report(agg, range_str)
 
+    # Optional live-vs-sim divergence block.
+    divergence = None
+    if args.diff_live:
+        divergence = aggregate_live_divergence(results, trade_log_path=args.trade_log)
+        if divergence is None:
+            print(f"  (--diff-live skipped: trade log not found at {args.trade_log})")
+            print()
+        else:
+            _print_divergence_block(divergence)
+
     if args.out_json:
         os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
         agg_full = {"meta": {"range": range_str, "universe": universe,
                              "from": from_d, "to": to_d},
                     "summary": agg,
                     "per_day": results}
+        if divergence is not None:
+            agg_full["divergence"] = divergence
         with open(args.out_json, "w") as fh:
             json.dump(agg_full, fh, indent=2, default=str)
         print(f"[annual] wrote {args.out_json}")

@@ -437,6 +437,94 @@ To raise the floor in the future: bump this tuple + remove any
 """
 
 
+def check_simulator() -> bool:
+    """Run a fast simulator anomaly check on a tiny representative set.
+
+    Picks one day per category (~3-5 days), runs them through the
+    simulator in parallel, evaluates DEFAULT_RULES. Fails only on
+    ERROR-severity rule violations. Designed to complete in <30s on
+    a 4-worker machine. Gracefully degrades when the corpus is
+    missing (e.g. sandbox/CI without /data corpus mounted).
+    """
+    corpus_root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    if not os.path.isdir(corpus_root):
+        print(
+            f"  {YELLOW}[SKIP] simulator corpus not found at {corpus_root}; "
+            f"set SIMULATOR_CORPUS_ROOT or mount data/ to enable{RESET}",
+            flush=True,
+        )
+        return True
+
+    # The simulator package lives at the repo root, but this script
+    # runs from scripts/. Make sure the import path covers both.
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    try:
+        from simulator.batch import BatchConfig, run_days
+        from simulator.corpus_index import (
+            build_index, load_index, pick_representative,
+        )
+        from simulator.expectations import DEFAULT_RULES, evaluate
+    except Exception as exc:
+        print(f"  {YELLOW}[SKIP] simulator import failed: {exc}{RESET}",
+              flush=True)
+        return True
+
+    index_path = str(REPO / "simulator" / "corpus" / "day_index.json")
+    rows = load_index(index_path)
+    if not rows:
+        # First-time build (cheap -- a couple of seconds for 343 days).
+        try:
+            rows = build_index(corpus_root=corpus_root, out_path=index_path)
+        except Exception as exc:
+            print(f"  {YELLOW}[SKIP] corpus index build failed: {exc}{RESET}",
+                  flush=True)
+            return True
+
+    if not rows:
+        print(f"  {YELLOW}[SKIP] corpus index empty{RESET}", flush=True)
+        return True
+
+    dates = pick_representative(rows, per_category=1)
+    if not dates:
+        print(f"  {YELLOW}[SKIP] no representative days{RESET}", flush=True)
+        return True
+
+    universe = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOG", "AVGO",
+                "NFLX", "ORCL", "TSLA", "QQQ", "SPY"]
+    cfg = BatchConfig(workers=0, show_progress=False, corpus_root=corpus_root)
+    results = run_days(dates, universe, cfg)
+    rows_by_date = {r["date"]: r for r in rows}
+
+    errors = 0
+    warnings = 0
+    bad_days: list[str] = []
+    for r in results:
+        if r.get("error"):
+            errors += 1
+            bad_days.append(f"{r['date']}: {r['error']}")
+            continue
+        failures = evaluate(rows_by_date.get(r["date"], {}), r, DEFAULT_RULES)
+        for f in failures:
+            if f.severity == "ERROR":
+                errors += 1
+                bad_days.append(f"{r['date']} [{f.rule_name}]: {f.why_fail}")
+            elif f.severity == "WARN":
+                warnings += 1
+
+    if errors:
+        print(f"  {RED}[FAIL] simulator: {errors} ERROR-severity anomaly(ies) "
+              f"across {len(results)} days, {warnings} warnings{RESET}",
+              flush=True)
+        for b in bad_days[:10]:
+            print(f"    {b}", flush=True)
+        return False
+
+    print(f"  {GREEN}[OK]{RESET} simulator: {len(results)} representative days "
+          f"clean ({warnings} warnings)", flush=True)
+    return True
+
+
 def check_python_version() -> bool:
     """Warn (don't fail) on older Python. Tests that strictly need 3.10+
     use `from __future__ import annotations` to keep 3.9 compatible.
@@ -487,19 +575,30 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--simulator",
+        action="store_true",
+        help=(
+            "Run a fast simulator-based anomaly gate (~30s). Picks one "
+            "representative day per market-regime category and asserts "
+            "the v10 gates behave as defined in DEFAULT_RULES. Skipped "
+            "gracefully if the corpus is not mounted."
+        ),
+    )
+    parser.add_argument(
         "--all",
         dest="all_checks",
         action="store_true",
-        help="Equivalent to --smoke --slow --wide.",
+        help="Equivalent to --smoke --slow --wide --simulator.",
     )
     args = parser.parse_args()
 
     smoke = args.smoke or args.all_checks
     slow = args.slow or args.all_checks
     wide = args.wide or args.all_checks
+    sim = args.simulator or args.all_checks
 
     total_fast = 5
-    total = total_fast + (1 if smoke else 0) + (1 if wide else 0)
+    total = total_fast + (1 if smoke else 0) + (1 if wide else 0) + (1 if sim else 0)
 
     print(f"{BOLD}=== run_ci.py (stock-spike-monitor local CI) ==={RESET}", flush=True)
     if slow:
@@ -548,6 +647,14 @@ def main() -> int:
         _hdr(str(next_step), total, "pytest tests/ (wide lane; needs prod deps)")
         if not check_pytest_wide():
             failures.append("pytest tests/ (wide lane)")
+        next_step += 1
+
+    # [opt] simulator anomaly gate
+    if sim:
+        _hdr(str(next_step), total,
+             "simulator anomaly gate (representative days)")
+        if not check_simulator():
+            failures.append("simulator anomaly gate")
         next_step += 1
 
     # [opt] smoke

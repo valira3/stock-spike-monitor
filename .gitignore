@@ -58,3 +58,4 @@ data_rth_expand/
 .DS_Store
 *.webloc
 simulator/corpus/day_index.json
+simulator/corpus/synthetic/

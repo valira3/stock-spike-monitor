@@ -24,6 +24,7 @@ import sys
 from typing import Dict, List, Optional
 
 from simulator.batch import BatchConfig, run_days
+from simulator.diff import diff_one_day, load_trade_log
 
 
 # ----------------------------------------------------------------------
@@ -43,106 +44,10 @@ def last_n_corpus_dates(n: int, root: str = "data") -> List[str]:
     return list_corpus_dates(root=root)[-n:]
 
 
-# ----------------------------------------------------------------------
-# Live trade-log loader
-# ----------------------------------------------------------------------
-
-
-def _load_trade_log(date: str,
-                    path: str = "data/trade_log.jsonl",
-                    extra_paths: Optional[List[str]] = None) -> List[dict]:
-    """Pull the trades for `date` from the JSONL trade log. The log
-    records ALL closed trades; we filter by entry_ts / exit_ts being
-    on the same ET date."""
-    candidates = [path]
-    if extra_paths:
-        candidates.extend(extra_paths)
-    rows: List[dict] = []
-    for p in candidates:
-        if not os.path.isfile(p):
-            continue
-        with open(p) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                # Trade log entries carry entry_ts_utc + exit_ts_utc;
-                # accept any row where either touches our date.
-                if _on_date(obj.get("entry_ts_utc"), date) or _on_date(obj.get("exit_ts_utc"), date):
-                    rows.append(obj)
-    return rows
-
-
-def _on_date(iso_ts: Optional[str], date: str) -> bool:
-    if not iso_ts:
-        return False
-    return iso_ts.startswith(date)
-
-
-# ----------------------------------------------------------------------
-# Diff renderer
-# ----------------------------------------------------------------------
-
-
-def _diff_one_day(sim_result: dict, live_trades: List[dict]) -> Dict:
-    """Pair each simulator entry with the nearest live trade on the
-    same (ticker, side); count exact matches, mismatches, sim-only,
-    live-only."""
-    sim_entries = sim_result.get("entries", [])
-    sim_by_key = {(e["ticker"], _side_norm(e["side"])): e for e in sim_entries}
-    live_by_key: Dict[tuple, dict] = {}
-    for t in live_trades:
-        key = (str(t.get("ticker", "")).upper(),
-               _side_norm(str(t.get("side", ""))))
-        live_by_key[key] = t
-
-    rows = []
-    matched: List[str] = []
-    sim_only: List[str] = []
-    live_only: List[str] = []
-    for key, sim in sim_by_key.items():
-        live = live_by_key.get(key)
-        if live is None:
-            sim_only.append(f"{key[0]} {key[1]}")
-            rows.append({"key": key, "sim": sim, "live": None, "verdict": "SIM-ONLY"})
-            continue
-        sim_price = sim.get("price", 0)
-        live_entry_px = live.get("entry_price") or live.get("price") or 0
-        try:
-            delta = abs(float(sim_price) - float(live_entry_px))
-        except Exception:
-            delta = 0.0
-        verdict = "MATCH" if delta < 0.10 else "DRIFT"
-        matched.append(f"{key[0]} {key[1]}")
-        rows.append({"key": key, "sim": sim, "live": live, "verdict": verdict,
-                     "price_delta": delta})
-
-    for key in live_by_key:
-        if key not in sim_by_key:
-            live_only.append(f"{key[0]} {key[1]}")
-            rows.append({"key": key, "sim": None, "live": live_by_key[key],
-                         "verdict": "LIVE-ONLY"})
-
-    return {
-        "rows": rows,
-        "matched": matched,
-        "sim_only": sim_only,
-        "live_only": live_only,
-        "verdict": "PASS" if (not sim_only and not live_only) else "DIVERGE",
-    }
-
-
-def _side_norm(s: str) -> str:
-    s = (s or "").upper()
-    if "LONG" in s or s == "BUY":
-        return "LONG"
-    if "SHORT" in s or s == "SELL":
-        return "SHORT"
-    return s
+# Public re-exports for back-compat with tests that imported the
+# private helpers from this module.
+_load_trade_log = load_trade_log
+_diff_one_day = diff_one_day
 
 
 # ----------------------------------------------------------------------
@@ -259,8 +164,8 @@ def _main(argv=None):
     if args.diff_live:
         diffs = {}
         for r in results:
-            live = _load_trade_log(r["date"], path=args.trade_log)
-            diffs[r["date"]] = _diff_one_day(r, live)
+            live = load_trade_log(r["date"], path=args.trade_log)
+            diffs[r["date"]] = diff_one_day(r, live)
 
     _print_replay_summary(results, diffs)
 
