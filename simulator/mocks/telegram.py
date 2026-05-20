@@ -20,9 +20,19 @@ from typing import Any
 
 
 def handle(req: Any, scenario_state: dict):
+    from simulator.mocks.errors import telegram_failure, http_error_resp
     url = _get_url(req)
     path = url.split("api.telegram.org", 1)[-1] if "api.telegram.org" in url else url
     method = path.rsplit("/", 1)[-1].split("?")[0]
+
+    fail = telegram_failure(scenario_state)
+    if fail is not None:
+        # Record the attempted send before erroring out so assertions see it.
+        scenario_state["telegram_sends"].append({
+            "method": method, "url": url, "status": fail[0],
+            "error": "injected failure",
+        })
+        http_error_resp(*fail)
 
     body_bytes = b""
     try:

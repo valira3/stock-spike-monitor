@@ -72,6 +72,17 @@ def _bars_range_too_narrow(date: str):
     return {"AAPL": bars}
 
 
+def _bars_quick_aapl(date: str):
+    """Tiny AAPL bar series for failure-injection scenarios (we don't
+    need a realistic OR window -- we just need bars to feed)."""
+    bars = []
+    px = 174.0
+    for mm in range(30, 60):
+        bars.append(make_bar(date, 9, mm, px, px + 0.10, px - 0.05, px + 0.05, 12000))
+        px += 0.05
+    return {"AAPL": bars}
+
+
 SCENARIOS: Dict[str, dict] = {
     "golden_orb_long": {
         "name": "golden_orb_long",
@@ -133,6 +144,49 @@ SCENARIOS: Dict[str, dict] = {
             "min_entries": 0,
             "max_entries": 0,
         },
+    },
+    # ----- Failure-mode scenarios ---------------------------------------
+    "alpaca_rate_limited": {
+        "name": "alpaca_rate_limited",
+        "description": (
+            "Alpaca returns 429 on first 3 submit_order calls. The bot's "
+            "broker.orders layer must retry / log without crashing the "
+            "scan loop. No entries SHOULD fire (synthetic data) but the "
+            "session must complete cleanly."
+        ),
+        "date": "2026-05-15",
+        "universe": ["AAPL"],
+        "bars": _bars_quick_aapl,
+        "config_overrides": {"ORB_LIVE_MODE": "1", "ORB_ACCOUNT": "100000"},
+        "inject_failures": {"alpaca_rate_limited": 3},
+        "expected": {"max_entries": 0},
+    },
+    "fmp_quote_timeout": {
+        "name": "fmp_quote_timeout",
+        "description": (
+            "FMP /quote returns 504 for AAPL. The bot's get_fmp_quote "
+            "wrapper must fall through to Yahoo without crashing."
+        ),
+        "date": "2026-05-15",
+        "universe": ["AAPL"],
+        "bars": _bars_quick_aapl,
+        "config_overrides": {"ORB_LIVE_MODE": "1", "ORB_ACCOUNT": "100000"},
+        "inject_failures": {"fmp_quote_timeout": ["AAPL"]},
+        "expected": {"max_entries": 0},
+    },
+    "telegram_unauthorized": {
+        "name": "telegram_unauthorized",
+        "description": (
+            "Telegram bot token revoked (401 Unauthorized). Every send "
+            "fails; the bot must continue trading without paging the "
+            "operator (telegram_io swallows the exception)."
+        ),
+        "date": "2026-05-15",
+        "universe": ["AAPL"],
+        "bars": _bars_quick_aapl,
+        "config_overrides": {"ORB_LIVE_MODE": "1", "ORB_ACCOUNT": "100000"},
+        "inject_failures": {"telegram_unauthorized": True},
+        "expected": {"max_entries": 0},
     },
 }
 

@@ -147,3 +147,130 @@ def test_mocks_capture_fmp(tmp_path):
         assert len(runner.state["fmp_calls"]) == 1
     finally:
         runner.teardown()
+
+
+# ----- error simulation ---------------------------------------------
+
+
+def test_alpaca_rejects_zero_qty(tmp_path):
+    """Alpaca's real API returns 422 on qty=0. The mock must match so
+    the bot's order-submit error path gets exercised."""
+    from simulator import SimulatorRunner
+    from simulator.mocks.errors import MockAlpacaAPIError
+
+    os.environ["TG_DATA_ROOT"] = str(tmp_path)
+    runner = SimulatorRunner.from_scenario("golden_orb_long")
+    runner.setup()
+    try:
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.requests import LimitOrderRequest
+        from alpaca.trading.enums import OrderSide
+
+        tc = TradingClient("key", "secret", paper=True)
+        req = LimitOrderRequest(
+            symbol="AAPL", qty=0, side=OrderSide.BUY,
+            type="limit", limit_price=100.0,
+        )
+        with pytest.raises(MockAlpacaAPIError) as exc:
+            tc.submit_order(req)
+        assert exc.value.status_code == 422
+    finally:
+        runner.teardown()
+
+
+def test_alpaca_rejects_missing_position(tmp_path):
+    """close_position on a non-existent symbol must raise 404."""
+    from simulator import SimulatorRunner
+    from simulator.mocks.errors import MockAlpacaAPIError
+
+    os.environ["TG_DATA_ROOT"] = str(tmp_path)
+    runner = SimulatorRunner.from_scenario("golden_orb_long")
+    runner.setup()
+    try:
+        from alpaca.trading.client import TradingClient
+
+        tc = TradingClient("key", "secret", paper=True)
+        with pytest.raises(MockAlpacaAPIError) as exc:
+            tc.close_position("NEVERHELD")
+        assert exc.value.status_code == 404
+    finally:
+        runner.teardown()
+
+
+def test_fmp_quote_returns_504_when_injected(tmp_path):
+    """fmp_quote_timeout injection turns /quote calls into 504."""
+    import urllib.error
+    import urllib.request
+    from simulator import SimulatorRunner
+
+    os.environ["TG_DATA_ROOT"] = str(tmp_path)
+    runner = SimulatorRunner.from_scenario("fmp_quote_timeout")
+    runner.setup()
+    try:
+        req = urllib.request.Request(
+            "https://financialmodelingprep.com/api/v3/quote/AAPL",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req)
+        assert exc.value.code == 504
+    finally:
+        runner.teardown()
+
+
+def test_telegram_unauthorized_when_injected(tmp_path):
+    """telegram_unauthorized injection makes every send return 401."""
+    import urllib.error
+    import urllib.request
+    from simulator import SimulatorRunner
+
+    os.environ["TG_DATA_ROOT"] = str(tmp_path)
+    runner = SimulatorRunner.from_scenario("telegram_unauthorized")
+    runner.setup()
+    try:
+        req = urllib.request.Request(
+            "https://api.telegram.org/bot999/sendMessage",
+            data=b"chat_id=1&text=test",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req)
+        assert exc.value.code == 401
+        # The send was recorded with the failure status.
+        sends = runner.state["telegram_sends"]
+        assert sends and sends[-1].get("status") == 401
+    finally:
+        runner.teardown()
+
+
+def test_alpaca_rate_limit_decrements(tmp_path):
+    """alpaca_rate_limited=N injects 429 for the first N submit_order
+    calls, then succeeds."""
+    from simulator import SimulatorRunner
+    from simulator.mocks.errors import MockAlpacaAPIError
+
+    os.environ["TG_DATA_ROOT"] = str(tmp_path)
+    runner = SimulatorRunner.from_scenario("alpaca_rate_limited")
+    runner.setup()
+    try:
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.requests import LimitOrderRequest
+        from alpaca.trading.enums import OrderSide
+
+        tc = TradingClient("key", "secret", paper=True)
+        # First 3 calls should raise 429 (per scenario inject_failures).
+        for _ in range(3):
+            req = LimitOrderRequest(
+                symbol="AAPL", qty=10, side=OrderSide.BUY,
+                type="limit", limit_price=100.0,
+            )
+            with pytest.raises(MockAlpacaAPIError) as exc:
+                tc.submit_order(req)
+            assert exc.value.status_code == 429
+        # 4th call must succeed.
+        req = LimitOrderRequest(
+            symbol="AAPL", qty=10, side=OrderSide.BUY,
+            type="limit", limit_price=100.0,
+        )
+        order = tc.submit_order(req)
+        assert order.status == "filled"
+    finally:
+        runner.teardown()

@@ -34,6 +34,11 @@ from typing import Any, Dict, List, Optional
 from simulator.bar_feeder import BarFeeder
 from simulator.clock import SimulatedClock
 from simulator.mocks import install_all, uninstall_all
+from simulator.reporter import (
+    ScenarioReporter,
+    install_log_capture,
+    uninstall_log_capture,
+)
 from simulator.scenarios import SCENARIOS, get_scenario, list_scenarios
 
 logger = logging.getLogger(__name__)
@@ -51,10 +56,13 @@ SESSION_END = 16 * 60
 class SimulatorRunner:
     scenario: dict
     verbose: bool = False
+    quiet: bool = False
     state: Dict[str, Any] = field(default_factory=dict)
+    reporter: Optional[ScenarioReporter] = None
     _orig: Dict[str, Any] = field(default_factory=dict)
     _clock: Optional[SimulatedClock] = None
     _feeder: Optional[BarFeeder] = None
+    _log_handler: Any = None
 
     # ---- factories ----------------------------------------------------
 
@@ -82,7 +90,7 @@ class SimulatorRunner:
     # ---- lifecycle ----------------------------------------------------
 
     def setup(self) -> None:
-        """Apply config, build feeder, install clock + mocks."""
+        """Apply config, build feeder, install clock + mocks + reporter."""
         # 1. Config overrides.
         for k, v in self.scenario.get("config_overrides", {}).items():
             os.environ[k] = str(v)
@@ -111,12 +119,31 @@ class SimulatorRunner:
         self.state["entries"] = []
         self.state["exits"] = []
         self.state["log"] = []
+        # Scenario-injected failure registry (see simulator.mocks.errors).
+        # Copy to mutate-safe dict so each scenario starts from its own
+        # baseline (the counters in inject_failures decrement during the run).
+        self.state["inject_failures"] = dict(self.scenario.get("inject_failures") or {})
         self._clock.install()
 
         # 4. Mocks.
         self._orig = install_all(self._feeder, self.state)
 
+        # 5. Reporter + log capture.
+        if self.reporter is None:
+            self.reporter = ScenarioReporter(
+                name=self.scenario["name"],
+                description=self.scenario.get("description", ""),
+                universe=list(universe),
+                date=date,
+                quiet=self.quiet,
+                verbose=self.verbose,
+            )
+        self.reporter.header(self.scenario.get("config_overrides", {}))
+        self._log_handler = install_log_capture(self.reporter)
+
     def teardown(self) -> None:
+        uninstall_log_capture(self._log_handler)
+        self._log_handler = None
         uninstall_all(self._orig)
         if self._clock is not None:
             self._clock.uninstall()
@@ -140,6 +167,10 @@ class SimulatorRunner:
         check_exit_by_ticker every minute.
         """
         import orb.live_runtime as live_runtime  # noqa: WPS433
+        rep = self.reporter
+
+        # ----- Premarket phase -----
+        rep.phase("Premarket (boot / session start)")
 
         # Reset + boot.
         if hasattr(live_runtime, "_reset_for_testing"):
@@ -171,8 +202,9 @@ class SimulatorRunner:
             ticker_prev_close=pdcs,
             equity_per_portfolio={"main": 100_000.0, "val": 30_000.0, "gene": 100_000.0},
         )
-        if self.verbose:
-            self._log(f"session start: {date} tickers={universe} ok={ok}")
+        rep.line(f"ensure_session_started: date={date}  tickers={list(universe)}  ok={ok}")
+        rep.line(f"opens     = " + ", ".join(f"{t}={opens[t]:.2f}" for t in universe))
+        rep.line(f"prev_close= " + ", ".join(f"{t}={pdcs[t]:.2f}" for t in universe))
 
         # Walk minute-by-minute from 09:30 to 16:00 ET.
         # Use a 30-min OR by default; v10 keystone uses 30m.
@@ -180,9 +212,34 @@ class SimulatorRunner:
         or_end_bucket = OR_START + cfg_or_minutes
         cutoff = _bucket_str_to_min(os.environ.get("ORB_TIME_CUTOFF_ET", "11:00"))
 
+        rep.phase(f"OR Window (09:30 -> {_bucket_to_str(or_end_bucket)} ET)")
+        _last_phase = "or"
+
         for bucket in range(OR_START, SESSION_END):
             self._clock.set_et(hour=bucket // 60, minute=bucket % 60)
             self._feed_minute(live_runtime, universe, bucket)
+
+            # OR-window progress: track per-ticker high/low.
+            if bucket < or_end_bucket:
+                for ticker in universe:
+                    bar = self._feeder.bar_at(ticker, bucket)
+                    if bar:
+                        rep.on_or_bar(ticker, bucket,
+                                      float(bar.get("high", 0) or 0),
+                                      float(bar.get("low", 0) or 0))
+            elif bucket == or_end_bucket:
+                rep.on_or_complete()
+
+            # Phase transitions for the report.
+            if bucket == or_end_bucket and _last_phase != "entry":
+                rep.phase(f"Entry Window ({_bucket_to_str(or_end_bucket)} -> {_bucket_to_str(cutoff)} ET)")
+                _last_phase = "entry"
+            elif bucket == cutoff + 1 and _last_phase != "manage":
+                rep.phase(f"Management ({_bucket_to_str(cutoff + 1)} -> 15:55 ET)")
+                _last_phase = "manage"
+            elif bucket == EOD_BUCKET and _last_phase != "eod":
+                rep.phase("EOD Flush (15:55 -> 16:00 ET)")
+                _last_phase = "eod"
 
             # Entry window: from OR end to the operator-configured cutoff.
             if or_end_bucket <= bucket <= cutoff:
@@ -206,20 +263,16 @@ class SimulatorRunner:
                         continue
                     if result and getattr(result, "ok", False):
                         side = getattr(result, "side", "LONG")
-                        self.state["entries"].append({
+                        entry = {
                             "ticker": ticker, "side": str(side),
                             "bucket": bucket,
                             "price": float(getattr(result, "fill_price", 0) or 0),
                             "stop": float(getattr(result, "stop", 0) or 0),
                             "target": float(getattr(result, "target", 0) or 0),
                             "shares": int(getattr(result, "shares", 0) or 0),
-                        })
-                        if self.verbose:
-                            self._log(
-                                f"[{_bucket_to_str(bucket)} ET] ENTRY {ticker} {side} "
-                                f"fill={result.fill_price:.2f} stop={result.stop:.2f} "
-                                f"target={result.target:.2f}"
-                            )
+                        }
+                        self.state["entries"].append(entry)
+                        rep.on_entry(entry)
 
             # Exit check on any open position.
             for ticker in universe:
@@ -238,16 +291,13 @@ class SimulatorRunner:
                 except Exception:
                     continue
                 if exit_res and getattr(exit_res, "exit", False):
-                    self.state["exits"].append({
+                    exit_evt = {
                         "ticker": ticker, "reason": exit_res.reason,
                         "bucket": bucket,
                         "price": float(getattr(exit_res, "price", 0) or 0),
-                    })
-                    if self.verbose:
-                        self._log(
-                            f"[{_bucket_to_str(bucket)} ET] EXIT {ticker} "
-                            f"reason={exit_res.reason} @ {exit_res.price:.2f}"
-                        )
+                    }
+                    self.state["exits"].append(exit_evt)
+                    rep.on_exit(exit_evt)
 
     # ---- helpers ------------------------------------------------------
 
@@ -320,7 +370,10 @@ def _main(argv=None):
     g.add_argument("--replay", help="Historical replay for YYYY-MM-DD")
     g.add_argument("--list", action="store_true", help="List built-in scenarios")
     p.add_argument("--tickers", help="Comma-separated tickers (for --replay)")
-    p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument("--verbose", "-v", action="store_true",
+                   help="Show per-entry/exit detail in the progress stream")
+    p.add_argument("--quiet", "-q", action="store_true",
+                   help="Suppress phase progress; just print the summary")
     args = p.parse_args(argv)
 
     if args.list:
@@ -334,56 +387,15 @@ def _main(argv=None):
     else:
         tickers = [t.strip().upper() for t in (args.tickers or "AAPL").split(",") if t.strip()]
         runner = SimulatorRunner.from_replay(args.replay, tickers, verbose=args.verbose)
+    runner.quiet = args.quiet
 
-    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+    # Suppress the bot's INFO chatter; reporter captures WARNING+ on its own.
+    logging.basicConfig(level=logging.ERROR)
+
     state = runner.run()
-
-    print("\n===== Scenario Summary =====")
-    print(f"name:           {state.get('scenario_name')}")
-    print(f"entries:        {len(state.get('entries', []))}")
-    print(f"exits:          {len(state.get('exits', []))}")
-    print(f"telegram sends: {len(state.get('telegram_sends', []))}")
-    print(f"alpaca orders:  {len(state.get('alpaca_orders', []))}")
-    print(f"fmp calls:      {len(state.get('fmp_calls', []))}")
-    print(f"yahoo calls:    {len(state.get('yahoo_calls', []))}")
-    positions = state.get("alpaca_positions", {})
-    print(f"open positions: {len(positions)}")
-    realized = state.get("alpaca_realized_pl", {})
-    if realized:
-        total = sum(realized.values())
-        print(f"realized P&L:   ${total:+.2f}  ({realized})")
-
-    if args.verbose and state.get("entries"):
-        print("\n--- Entries ---")
-        for e in state["entries"]:
-            print(f"  {_bucket_to_str(e['bucket'])} ET  {e['ticker']:6s} {e['side']:5s} @ {e['price']:.2f}")
-    if args.verbose and state.get("exits"):
-        print("\n--- Exits ---")
-        for x in state["exits"]:
-            print(f"  {_bucket_to_str(x['bucket'])} ET  {x['ticker']:6s} {x['reason']:20s} @ {x['price']:.2f}")
-
     expected = runner.scenario.get("expected") or {}
-    failures = _validate(state, expected)
-    if failures:
-        print("\n--- Expectation failures ---")
-        for f in failures:
-            print(f"  FAIL: {f}")
-        return 1
-    print("\n--- Expectations: PASS ---")
-    return 0
-
-
-def _validate(state, expected):
-    out = []
-    n_entries = len(state.get("entries", []))
-    if "min_entries" in expected and n_entries < expected["min_entries"]:
-        out.append(f"min_entries={expected['min_entries']} got {n_entries}")
-    if "max_entries" in expected and n_entries > expected["max_entries"]:
-        out.append(f"max_entries={expected['max_entries']} got {n_entries}")
-    n_sends = len(state.get("telegram_sends", []))
-    if "telegram_sends_max" in expected and n_sends > expected["telegram_sends_max"]:
-        out.append(f"telegram_sends_max={expected['telegram_sends_max']} got {n_sends}")
-    return out
+    passed = runner.reporter.summary(state, expected)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

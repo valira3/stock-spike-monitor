@@ -29,14 +29,25 @@ def handle(req: Any, scenario_state: dict):
     parsed = urllib.parse.urlparse(url)
     path = parsed.path or ""
 
+    from simulator.mocks.errors import (
+        fmp_quote_failure, fmp_earnings_failure, http_error_resp,
+    )
+
     if "/quote/" in path:
         # /api/v3/quote/AAPL,MSFT or /api/v3/quote/AAPL
         symbols_part = path.rsplit("/quote/", 1)[-1]
         symbols = [s.strip().upper() for s in symbols_part.split(",") if s.strip()]
+        for sym in symbols:
+            fail = fmp_quote_failure(sym, scenario_state)
+            if fail is not None:
+                http_error_resp(*fail)  # raises HTTPError
         payload = _quotes(symbols, scenario_state)
         return _resp(json.dumps(payload).encode())
 
     if "/earning_calendar" in path:
+        fail = fmp_earnings_failure(scenario_state)
+        if fail is not None:
+            http_error_resp(*fail)
         from_date = _qs_get(parsed.query, "from")
         to_date = _qs_get(parsed.query, "to")
         payload = scenario_state.get("fmp_earnings_calendar", [])

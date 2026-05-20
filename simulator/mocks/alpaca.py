@@ -131,13 +131,27 @@ class MockTradingClient:
         return list(self._state.positions.values())
 
     def get_open_position(self, symbol: str) -> _MockPosition:
+        from simulator.mocks.errors import MockAlpacaAPIError
         symbol = symbol.upper()
         pos = self._state.positions.get(symbol)
         if pos is None:
-            raise Exception(f"position does not exist: {symbol}")
+            raise MockAlpacaAPIError(404, f"position not found for {symbol}")
         return pos
 
     def submit_order(self, order_data: Any) -> _MockOrder:
+        # Scenario-injected failure check (rate limit, service down).
+        from simulator.mocks.errors import (
+            alpaca_validate_order,
+            alpaca_scenario_failure,
+        )
+        scenario_err = alpaca_scenario_failure(self._state.scenario_state)
+        if scenario_err is not None:
+            raise scenario_err
+        # Input-shape validation (matches Alpaca's 422 errors).
+        validation_err = alpaca_validate_order(order_data)
+        if validation_err is not None:
+            raise validation_err
+
         # order_data may be a LimitOrderRequest, MarketOrderRequest, or a
         # plain dict. Read the fields defensively.
         symbol = _attr(order_data, "symbol", "").upper()
@@ -179,10 +193,11 @@ class MockTradingClient:
         return order
 
     def close_position(self, symbol: str, qty: Optional[float] = None) -> _MockOrder:
+        from simulator.mocks.errors import MockAlpacaAPIError
         symbol = symbol.upper()
         pos = self._state.positions.get(symbol)
         if pos is None:
-            raise Exception(f"position does not exist: {symbol}")
+            raise MockAlpacaAPIError(404, f"position not found for {symbol}")
         close_qty = abs(qty if qty is not None else pos.qty)
         # Opposite side to flatten.
         side = "sell" if pos.side == "long" else "buy"

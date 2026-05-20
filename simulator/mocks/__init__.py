@@ -72,7 +72,7 @@ def install_all(bar_feeder: BarFeeder, scenario_state: dict) -> dict:
         if "api.telegram.org" in url:
             return _telegram_mock.handle(req, scenario_state)
         if "backboard.railway" in url:
-            return _railway_noop(req)
+            return _railway_noop(req, scenario_state)
         # Unknown -- let real urlopen handle it (test, github, etc.)
         return orig["urlopen"](req, *args, **kwargs)
 
@@ -98,10 +98,16 @@ def _get_req_url(req) -> str:
     return str(req)
 
 
-def _railway_noop(req):
+def _railway_noop(req, scenario_state: Optional[dict] = None):
     """Railway GraphQL is no-op in simulator mode. The bot polls it for
-    deployment status; we always return an empty success response."""
+    deployment status; we return an empty success response by default
+    or an injected error if scenario_state asks for one."""
     import io
+    if scenario_state is not None:
+        from simulator.mocks.errors import railway_failure, http_error_resp
+        fail = railway_failure(scenario_state)
+        if fail is not None:
+            http_error_resp(*fail)
     payload = b'{"data": {}}'
     resp = io.BytesIO(payload)
     resp.headers = {}  # type: ignore[attr-defined]

@@ -26,9 +26,13 @@ def handle(req: Any, scenario_state: dict, bar_feeder=None):
     path = parsed.path or ""
 
     if "/v8/finance/chart/" in path:
+        from simulator.mocks.errors import yahoo_chart_failure, http_error_resp
         sym = path.rsplit("/v8/finance/chart/", 1)[-1].strip().upper()
         clock = scenario_state.get("clock")
         bucket = clock.bucket_min() if clock else (9 * 60 + 30)
+        fail = yahoo_chart_failure(scenario_state, bucket)
+        if fail is not None:
+            http_error_resp(*fail)
         bars = bar_feeder.bars_up_to(sym, bucket) if bar_feeder else []
         payload = _yahoo_chart(sym, bars)
         return _resp(json.dumps(payload).encode())
