@@ -39,7 +39,6 @@ from side import Side, CONFIGS  # noqa: E402
 # front of the v4 entry/close paths and decides when to fire each
 # stage. Unit-sizing math is preserved unchanged from v4 (50/50 staging
 # means "50% of the v4 unit, then add the other 50%").
-import tiger_buffalo_v5 as v5  # noqa: E402
 # v10.0.1 -- eye_of_tiger + v5_10_1_integration imports deleted.
 # Constants + sizing helpers migrated to engine/legacy_constants.py;
 # admission-gate evaluators (Section I, Boundary Hold, Entry-1/2,
@@ -2506,53 +2505,6 @@ daily_short_entry_count: dict = {}   # {ticker: int} \u2014 resets daily, separa
 daily_short_entry_date: str = ""     # v4.7.0 \u2014 mirror of daily_entry_date for shorts
 short_trade_history: list = []       # max 500 closed paper shorts
 
-# v5.0.0 \u2014 Tiger/Buffalo two-stage state-machine tracks. Per-ticker per-
-# direction. Schema and transitions defined in STRATEGY.md (canonical
-# spec) and tiger_buffalo_v5.py. Persisted in paper_state.json under
-# the "v5_tracks" key. v4 paper_state files load with empty tracks
-# (defaults to IDLE) \u2014 see paper_state.py load_paper_state.
-v5_long_tracks: dict = {}    # {ticker: track_dict}
-v5_short_tracks: dict = {}   # {ticker: track_dict}
-# C-R1: at most one direction is active per ticker per session.
-v5_active_direction: dict = {}  # {ticker: "long"|"short"|None}
-
-
-def v5_lock_all_tracks(reason: str) -> int:
-    """v6.3.2 \u2014 lock every live v5 track to LOCKED_FOR_DAY.
-
-    Implements the C-R4 (daily-loss-limit), C-R5 (EOD), and C-R6
-    (Sovereign Regime Shield) contract referenced by smoke_test
-    cases C-R4/C-R5 and called from broker/lifecycle.eod_close. Was
-    referenced but never defined since the v5 series shipped
-    (smoke tests only enforced source-string presence, not behaviour),
-    so EOD lock and daily-breaker lock were silently swallowed by
-    the surrounding try/except at every call site.
-
-    Args:
-        reason: short tag ("eod", "daily_loss", "shield", "test")
-            included in the log line. No semantic effect.
-
-    Returns:
-        Total number of tracks transitioned (long + short).
-    """
-    n = 0
-    for _bucket in (v5_long_tracks, v5_short_tracks):
-        for _track in _bucket.values():
-            try:
-                v5.transition_to_locked(_track)
-                n += 1
-            except Exception:
-                logger.exception(
-                    "v5_lock_all_tracks: transition failed for %s", _track,
-                )
-    if n:
-        logger.info(
-            "[V5-LOCK] reason=%s locked_tracks=%d (long=%d short=%d)",
-            reason, n, len(v5_long_tracks), len(v5_short_tracks),
-        )
-    return n
-
-
 # Daily loss limit (Feature 2 / System B realized+MTM circuit breaker).
 # v6.6.1 (C-B fix): same DAILY_LOSS_LIMIT env var as DAILY_LOSS_LIMIT_DOLLARS
 # at line ~499 (System A realized-only kill-switch). Both constants MUST stay
@@ -2582,9 +2534,6 @@ _MAIN_BOOK.paper_trades = paper_trades
 _MAIN_BOOK.paper_all_trades = paper_all_trades
 _MAIN_BOOK.trade_history = trade_history
 _MAIN_BOOK.short_trade_history = short_trade_history
-_MAIN_BOOK.v5_long_tracks = v5_long_tracks
-_MAIN_BOOK.v5_short_tracks = v5_short_tracks
-_MAIN_BOOK.v5_active_direction = v5_active_direction
 # v7.72.0 -- bridge paper_cash too. Pre-v7.72.0 the global
 # `tg.paper_cash` was the only source updated on every fill (broker/
 # positions.py + broker/orders.py mutate it via `+= cfg.*cash_delta`),
@@ -3176,27 +3125,6 @@ def tiger_di(ticker):
     if len(closes) < DI_PERIOD + 1:
         return None, None
     return _compute_di(highs, lows, closes)
-
-
-# ============================================================
-# v5.0.0 \u2014 Tiger/Buffalo state-machine integration helpers
-# ============================================================
-# Spec: STRATEGY.md (canonical). Pure-function rule logic lives in
-# tiger_buffalo_v5.py; this block is the runtime glue that pulls live
-# market data into the spec helpers and persists track state.
-def v5_get_track(ticker: str, direction: str) -> dict:
-    """Return the live track for (ticker, direction), creating an IDLE
-    record if absent. C-R1 mutex is enforced separately by callers.
-    """
-    if direction == v5.DIR_LONG:
-        bucket = v5_long_tracks
-    elif direction == v5.DIR_SHORT:
-        bucket = v5_short_tracks
-    else:
-        raise ValueError(f"unknown direction {direction!r}")
-    if ticker not in bucket:
-        bucket[ticker] = v5.new_track(direction)
-    return bucket[ticker]
 
 
 def v5_di_1m_5m(ticker):
@@ -4490,14 +4418,7 @@ def _check_daily_loss_limit(ticker: str) -> bool:
                 )
         # v6.3.2 C-R4: lock every v5 track on daily-breaker trip so
         # in-flight tracks cannot resume tomorrow mid-state. Mirrors the
-        # C-R5 EOD lock path. The smoke-test C-R4 source-string check
-        # has been failing on main since the v5 series shipped because
-        # the function was never defined; v6.3.2 ships the function and
-        # this wiring together.
-        try:
-            v5_lock_all_tracks("daily_loss")
-        except Exception:
-            logger.exception("v5_lock_all_tracks failed (daily_loss)")
+        # v10.0.1 -- v5_lock_all_tracks deleted with the v5 track state machine.
         pnl_fmt = "%+.2f" % today_pnl
         limit_fmt = "%.2f" % effective_limit
         _trading_halted_reason = "Daily loss limit hit: $%s" % pnl_fmt
@@ -5263,10 +5184,9 @@ def _check_ingest_gate() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 def _check_sqlite_reachable() -> CheckResult:
-    """Check 8 \u2014 SQLite reachability via v5_long_tracks table.
-
-    Note: shadow_positions was removed in v5.x; v5_long_tracks is the active
-    positions-persistence table. Check verifies DB reachability as intended.
+    """Check 8 -- SQLite reachability. v10.0.1 retires the v5_long_tracks
+    table probe; we just open the connection and read the SQLite version
+    pragma so the check still verifies the DB is usable.
     """
     t0 = time.monotonic()
     def _ms():
@@ -5274,10 +5194,10 @@ def _check_sqlite_reachable() -> CheckResult:
     try:
         import persistence as _pers
         conn = _pers._conn()
-        row = conn.execute("SELECT COUNT(*) FROM v5_long_tracks LIMIT 1").fetchone()
-        count = row[0] if row else 0
+        row = conn.execute("SELECT sqlite_version()").fetchone()
+        ver = row[0] if row else "?"
         return CheckResult("SQLite", "C", "ok",
-                           "positions=%s" % format(count, ","), _ms())
+                           "sqlite=%s" % ver, _ms())
     except Exception as exc:
         return CheckResult("SQLite", "C", "critical",
                            "%s: %s" % (type(exc).__name__, str(exc)[:80]), _ms())
@@ -5946,12 +5866,7 @@ def reset_daily_state():
             _v561_reset_or_snap_state()
         except Exception:
             logger.exception("reset_daily_state: _v561 OR snap reset failed")
-        # v5.0.0 \u2014 fresh session: clear all v5 state-machine tracks so
-        # tomorrow's first ARMED transition gets a clean tab. C-R5 / C-R6
-        # only LOCK; only the daily reset clears.
-        v5_long_tracks.clear()
-        v5_short_tracks.clear()
-        v5_active_direction.clear()
+        # v10.0.1 -- v5 track state machine retired; no per-session clear needed.
         # v4.11.0 \u2014 health-pill: clear today's error counts at the
         # same boundary as the existing daily counters so the pill
         # rolls back to green at session reset.

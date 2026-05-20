@@ -446,14 +446,6 @@ def save_paper_state():
             "_scan_paused": tg._scan_paused,
             "_trading_halted": tg._trading_halted,
             "_trading_halted_reason": tg._trading_halted_reason,
-            # v5.1.8 \u2014 v5_long_tracks / v5_short_tracks are now persisted
-            # in SQLite (persistence.v5_long_tracks table) rather than
-            # serialized into paper_state.json. Reasons: (a) avoid the
-            # non-atomic json.dump corrupting the whole portfolio file
-            # on a mid-write crash, (b) decouple Tiger/Buffalo state
-            # from the slower 5-minute cadence here. v5_active_direction
-            # is small + cheap and stays in JSON.
-            "v5_active_direction": dict(getattr(tg, "v5_active_direction", {})),
             # v7.0.0 Phase 2.5 \u2014 persist ratchet dicts so they survive a
             # mid-day restart.  Keys are (portfolio_id, ticker) tuples;
             # json.dump serializes them as lists, load_paper_state restores
@@ -479,13 +471,6 @@ def save_paper_state():
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, default=str)
             os.replace(tmp, _main_path)
-            try:
-                persistence.replace_all_tracks(
-                    dict(getattr(tg, "v5_long_tracks", {})),
-                    dict(getattr(tg, "v5_short_tracks", {})),
-                )
-            except Exception as v5e:
-                logger.error("save_paper_state: SQLite track sync failed: %s", v5e)
             logger.debug("Paper state saved -> %s (%.3fs)", _main_path, time.time() - t0)
         except Exception as e:
             logger.error("save_paper_state failed: %s", e)
@@ -531,26 +516,7 @@ def load_paper_state():
             "No saved state at %s. Starting fresh $%.0f."
             % (_main_path, tg.PAPER_STARTING_CAPITAL)
         )
-        # Pull any v5 tracks already in SQLite (e.g. left over from a
-        # previous run whose JSON file was rotated away).
-        try:
-            from tiger_buffalo_v5 import load_track as _v5_load, DIR_LONG, DIR_SHORT
-
-            # v7.0.0 Phase 2B: use .clear() + .update() to preserve dict identity
-            # so _MAIN_BOOK.v5_long_tracks stays bound to the same object after load.
-            tg.v5_long_tracks.clear()
-            tg.v5_long_tracks.update(
-                {t: _v5_load(s, DIR_LONG) for t, s in persistence.load_all_tracks("long").items()}
-            )
-            tg.v5_short_tracks.clear()
-            tg.v5_short_tracks.update(
-                {t: _v5_load(s, DIR_SHORT) for t, s in persistence.load_all_tracks("short").items()}
-            )
-        except Exception as v5e:
-            logger.warning("v5 SQLite restore failed: %s", v5e)
-            tg.v5_long_tracks.clear()
-            tg.v5_short_tracks.clear()
-        tg.v5_active_direction.clear()
+        # v10.0.1 -- v5 track state machine retired; no SQLite restore needed.
         _state_loaded = True
         return
 
@@ -635,36 +601,8 @@ def load_paper_state():
         tg._trading_halted = state.get("_trading_halted", False)
         tg._trading_halted_reason = state.get("_trading_halted_reason", "")
 
-        # Tiger/Buffalo tracks live in SQLite via persistence.load_all_tracks().
-        # Any v5_* keys in the JSON file itself are ignored; the SQLite store is
-        # the sole source of truth. Malformed rows are sanitized via
-        # tiger_buffalo_v5.load_track.
-        try:
-            from tiger_buffalo_v5 import load_track, DIR_LONG, DIR_SHORT
-
-            sql_long = persistence.load_all_tracks("long")
-            sql_short = persistence.load_all_tracks("short")
-            # v7.0.0 Phase 2B: .clear() + .update() to preserve dict identity.
-            tg.v5_long_tracks.clear()
-            tg.v5_long_tracks.update(
-                {t: load_track(sql_long.get(t), DIR_LONG) for t in sql_long}
-            )
-            tg.v5_short_tracks.clear()
-            tg.v5_short_tracks.update(
-                {t: load_track(sql_short.get(t), DIR_SHORT) for t in sql_short}
-            )
-            tg.v5_active_direction.clear()
-            tg.v5_active_direction.update(
-                dict(state.get("v5_active_direction", {}) or {})
-            )
-        except Exception as v5e:
-            logger.warning(
-                "v5 tracks restore failed: %s \u2014 starting clean",
-                v5e,
-            )
-            tg.v5_long_tracks.clear()
-            tg.v5_short_tracks.clear()
-            tg.v5_active_direction.clear()
+        # v10.0.1 -- v5 track state machine retired; saved v5_active_direction
+        # keys in older JSON files are silently ignored.
 
         # v7.0.0 Phase 2.5 \u2014 restore ratchet dicts (survive mid-day restart).
         # Must happen BEFORE the daily-reset check so the dicts are populated
@@ -742,11 +680,6 @@ def load_paper_state():
         tg._scan_paused = False
         tg._trading_halted = False
         tg._trading_halted_reason = ""
-        # v5: clear tracks on a recovery reset. v7.0.0 Phase 2B: .clear() to
-        # preserve dict identity so _MAIN_BOOK.v5_* stays bound to same objects.
-        tg.v5_long_tracks.clear()
-        tg.v5_short_tracks.clear()
-        tg.v5_active_direction.clear()
         _state_loaded = True
 
 
@@ -767,17 +700,6 @@ def _do_reset_paper():
     tg._sync_main_book_cash()  # v7.72.0 -- mirror to _MAIN_BOOK.paper_cash
     tg._trading_halted = False
     tg._trading_halted_reason = ""
-    # v5.0.0 \u2014 reset Tiger/Buffalo tracks on a paper-book reset.
-    # v5.1.8: tracks live in SQLite; replace_all_tracks with empty
-    # dicts is what actually clears the persisted store.
-    # v7.0.0 Phase 2B: .clear() to preserve dict identity.
-    tg.v5_long_tracks.clear()
-    tg.v5_short_tracks.clear()
-    tg.v5_active_direction.clear()
-    try:
-        persistence.replace_all_tracks({}, {})
-    except Exception as e:
-        logger.warning("paper reset: SQLite track clear failed: %s", e)
     # v7.0.0 Phase 2.5 \u2014 reset ratchet dicts on full paper-book reset.
     _book = _get_main_book()
     if _book is not None:

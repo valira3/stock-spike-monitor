@@ -33,8 +33,7 @@ COPY market_brief.py .
 COPY paper_state.py .
 COPY side.py .
 COPY error_state.py .
-# v5.0.0 — Tiger/Buffalo state-machine module (imported by trade_genius.py).
-COPY tiger_buffalo_v5.py .
+# v10.0.1 -- tiger_buffalo_v5.py COPY deleted with the legacy state machine.
 # v5.9.0 — QQQ Regime Shield (5m EMA3/EMA9 cross) module.
 COPY qqq_regime.py .
 # v6.11.0 — SPY Regime Classifier (C25 short amplification gate).

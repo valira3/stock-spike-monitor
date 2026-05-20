@@ -97,9 +97,8 @@ class PortfolioBook:
         self.trade_history: list = []
         self.short_trade_history: list = []
 
-        self.v5_long_tracks: dict = {}
-        self.v5_short_tracks: dict = {}
-        self.v5_active_direction: dict = {}
+        # v10.0.1 -- v5_long_tracks / v5_short_tracks / v5_active_direction
+        # attrs retired along with the rest of the tiger_buffalo_v5 surface.
 
         # --- v7.0.0 Phase 2.5: per-book session ratchet dicts (Eugene's rule) ---
         # Keys: (portfolio_id, ticker).  Cleared on EOD daily reset via paper_state.
