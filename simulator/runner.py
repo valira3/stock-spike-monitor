@@ -106,19 +106,23 @@ _KEYSTONE_DEFAULTS: Dict[str, str] = {
 # Broad-universe winner overrides (per memory/broad_universe_winner.md).
 # Layered ON TOP of Keystone when the broad-universe scanner is active
 # (i.e. data_pm_universe/<date>/ exists and the scanner picks a top-K
-# universe instead of falling back to static-12). Re-baselines three
-# levers around the wider universe's behavior:
-#   - earlier cutoff (10:25): wider universe yields more entries
-#     earlier; after 10:25 the win rate drops
-#   - higher range floor (0.012 from 0.008): the wider universe
-#     includes lower-vol names that need more juice to be worth trading
-#   - wider ATR stop (2.0 from 1.75): wider universe trades wider names
-#     where the tighter stop gets whipsawed
-_BROAD_UNIVERSE_OVERRIDES: Dict[str, str] = {
-    "ORB_TIME_CUTOFF_ET": "10:25",
-    "ORB_RANGE_MIN_PCT": "0.012",
-    "ORB_ATR_STOP_MULT": "2.0",
-}
+# universe instead of falling back to static-12).
+#
+# 2026-05-20: emptied. The original overrides came from a sweep against
+# the standalone orb_backtest.py harness; they were carried into the
+# scan_loop driver path WITHOUT re-validation. Full-year run with the
+# old overrides (cutoff 10:25 in particular) produced -$14.5k / yr
+# because the production engine fires breakouts via 1-minute scan_loop
+# ticks and most real breakouts arrive 10:28-10:45 ET, which the
+# 10:25 cutoff trims. Keystone production's actual cutoff is 11:00
+# (CLAUDE.md "Keystone" section). Until the sweep is re-run against
+# the scan_loop path, fall back to Keystone defaults across the board.
+#
+# Original overrides for reference:
+#   "ORB_TIME_CUTOFF_ET": "10:25",
+#   "ORB_RANGE_MIN_PCT": "0.012",
+#   "ORB_ATR_STOP_MULT":  "2.0",
+_BROAD_UNIVERSE_OVERRIDES: Dict[str, str] = {}
 
 
 # ----- session pacing ---------------------------------------------------
