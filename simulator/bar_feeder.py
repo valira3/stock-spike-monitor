@@ -25,11 +25,38 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 _NY = ZoneInfo("America/New_York")
+_CACHE_DIRNAME = ".bt_cache"
+
+
+def _load_ticker_pkl(corpus_root: str, date: str, ticker: str,
+                     src_path: str) -> Optional[List[dict]]:
+    """Try to load a per-(date, ticker) pickle. Layout:
+        <corpus_root>/.bt_cache/<date>/<TICKER>.pkl
+    Stale when pkl mtime < src JSONL mtime.
+    """
+    pkl_path = os.path.join(corpus_root, _CACHE_DIRNAME, date,
+                            f"{ticker.upper()}.pkl")
+    if not os.path.isfile(pkl_path):
+        return None
+    try:
+        if os.path.getmtime(pkl_path) < os.path.getmtime(src_path):
+            return None
+    except OSError:
+        return None
+    try:
+        with open(pkl_path, "rb") as fh:
+            data = pickle.load(fh)
+        if isinstance(data, list):
+            return data
+        return None
+    except Exception:
+        return None
 
 
 class BarFeeder:
@@ -46,17 +73,32 @@ class BarFeeder:
 
         Missing tickers are silently skipped -- the caller decides whether
         a missing roster constitutes a scenario failure.
+
+        Performance: when `<corpus_root>/.bt_cache/<date>.pkl` is present
+        AND not stale (mtime >= newest JSONL), load from the pickle
+        instead of 500 separate file opens + json.loads. Build the
+        cache with `python tools/build_sim_bar_cache.py`. Cache build
+        is auto-invalidated when any underlying JSONL is newer.
         """
         feeder = cls()
         feeder._date = date
         day_dir = os.path.join(corpus_root, date)
         if not os.path.isdir(day_dir):
             return feeder
+
         for ticker in tickers:
-            path = os.path.join(day_dir, f"{ticker}.jsonl")
-            if not os.path.isfile(path):
+            t_upper = ticker.upper()
+            src_path = os.path.join(day_dir, f"{ticker}.jsonl")
+            if not os.path.isfile(src_path):
                 continue
-            with open(path, "r") as fh:
+
+            # Try per-ticker pickle first; fall back to JSONL parse.
+            cached = _load_ticker_pkl(corpus_root, date, t_upper, src_path)
+            if cached is not None:
+                feeder._bars_by_ticker[t_upper] = cached
+                continue
+
+            with open(src_path, "r") as fh:
                 rows = []
                 for line in fh:
                     line = line.strip()
@@ -66,7 +108,7 @@ class BarFeeder:
                         rows.append(json.loads(line))
                     except Exception:
                         continue
-                feeder._bars_by_ticker[ticker.upper()] = rows
+                feeder._bars_by_ticker[t_upper] = rows
         return feeder
 
     @classmethod
