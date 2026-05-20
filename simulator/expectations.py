@@ -52,22 +52,36 @@ class Rule:
     def evaluate(self, day_result: Dict[str, Any]) -> Optional["RuleFailure"]:
         """Returns a RuleFailure if the day_result violates `expect`,
         else None."""
-        # The day_result keys we use to evaluate.
+        entries = day_result.get("entries", [])
+        # Per-entry max/min for the per-ticker gates.
+        max_abs_gap = 0.0
+        min_or_range = 9999.0
+        max_or_range = 0.0
+        if entries:
+            for e in entries:
+                ag = abs(float(e.get("ticker_gap_pct", 0.0) or 0.0))
+                if ag > max_abs_gap:
+                    max_abs_gap = ag
+                rg = float(e.get("ticker_or_range_pct", 0.0) or 0.0)
+                if 0 < rg < min_or_range:
+                    min_or_range = rg
+                if rg > max_or_range:
+                    max_or_range = rg
+
         ctx = {
-            "n_entries": len(day_result.get("entries", [])),
+            "n_entries": len(entries),
             "n_exits": len(day_result.get("exits", [])),
-            "max_entries": len(day_result.get("entries", [])),
-            "min_entries": len(day_result.get("entries", [])),
             "telegram_count": day_result.get("telegram_count", 0),
             "fmp_count": day_result.get("fmp_count", 0),
             "yahoo_count": day_result.get("yahoo_count", 0),
             "alpaca_orders": len(day_result.get("alpaca_orders", [])),
             "realized_pl_total": day_result.get("realized_pl_total", 0.0),
             "open_at_eod": len(day_result.get("open_at_eod", [])),
+            # Per-entry roll-ups for the per-ticker gate assertions.
+            "max_entry_abs_gap_pct": max_abs_gap,
+            "min_entry_or_range_pct": min_or_range if entries else 0.0,
+            "max_entry_or_range_pct": max_or_range,
         }
-        # Special-case the bounded asserts (max_X / min_X) so the rule
-        # author can write expect={"max_entries": 0} without the __le
-        # suffix.
         ok, why_fail = _evaluate_expect(self.expect, ctx)
         if ok:
             return None
@@ -96,58 +110,72 @@ class RuleFailure:
 #   - the algorithm letting something slip (false negative)
 #   - a regression introduced since the rule was written
 
-# Important: simulator categories are SPY-day-level proxies. The bot's
-# gates run per-ticker (each ticker's gap vs its own PDC; each ticker's
-# OR range). So a day where SPY gapped 1.5% does NOT mean AAPL did. The
-# gap/range rules below are therefore INFO-severity (operator-eye, not
-# auto-fail) -- they highlight days worth investigating when the bot
-# fired entries on the same date SPY hit a category. Promote any rule
-# to WARN/ERROR after adding per-ticker classification in corpus_index.
+# Two tiers of rules:
 #
-# Rules at ERROR severity are SEV-1 invariants that should hold
-# regardless of corpus classification accuracy.
+#   TIER A -- Per-ticker bot invariants (ERROR severity)
+#     Assert against the firing ticker's *own* gap / OR range. These
+#     are the actual rules the v10 admission path runs. The runner
+#     stamps `ticker_gap_pct` and `ticker_or_range_pct` on every entry
+#     so the evaluator can check whichever ticker actually fired.
+#
+#   TIER B -- Day-level invariants (ERROR severity)
+#     EOD-flush correctness, VIX kill. These apply globally per day
+#     and survive even when corpus_index is approximate.
+#
+# We deliberately do NOT keep SPY-day proxy rules anymore -- they
+# created false positives because SPY's gap/range does not predict
+# any individual ticker's gate behavior.
 
 DEFAULT_RULES: List[Rule] = [
+    # ---- TIER A: per-ticker invariants ----
     Rule(
-        name="gap_skip",
-        matcher={"categories__contains": "gap_up_1_5pct"},
-        expect={"max_entries": 0},
-        severity="INFO",
-        why="SPY gapped >=1.5% up; the per-ticker ORB_SKIP_GAP_ABOVE_PCT "
-            "may or may not have blocked the entry depending on the firing "
-            "ticker's own gap. Investigate any fires.",
+        name="per_ticker_gap_gate",
+        matcher={},  # every day
+        expect={"max_entry_abs_gap_pct": 1.5},
+        severity="ERROR",
+        why="ORB_SKIP_GAP_ABOVE_PCT=1.5 must block any entry on a ticker "
+            "whose own open is >= 1.5% away from its prior-day close. "
+            "Each entry carries `ticker_gap_pct` derived from the bar "
+            "feeder's prior-day data; this rule asserts the bot honored "
+            "the gate.",
     ),
     Rule(
-        name="gap_down_skip",
-        matcher={"categories__contains": "gap_down_1_5pct"},
-        expect={"max_entries": 0},
-        severity="INFO",
-        why="SPY gapped <=-1.5% down; same per-ticker caveat as gap_skip.",
+        name="per_ticker_range_floor",
+        matcher={},
+        expect={"min_entry_or_range_pct": 0.8},
+        severity="ERROR",
+        why="ORB_RANGE_MIN_PCT=0.8 must block any entry where the firing "
+            "ticker's own OR window (09:30-10:00 high-low) is below 0.8%.",
     ),
+    Rule(
+        name="per_ticker_range_ceiling",
+        matcher={},
+        expect={"max_entry_or_range_pct": 2.5},
+        severity="ERROR",
+        why="ORB_RANGE_MAX_PCT=2.5 must block any entry where the firing "
+            "ticker's own OR window range exceeds 2.5%.",
+    ),
+
+    # ---- TIER B: day-level invariants ----
     Rule(
         name="vix_kill",
         matcher={"categories__contains": "vix_high"},
         expect={"max_entries": 0},
         severity="ERROR",
         why="ORB_SKIP_VIX_ABOVE=25 is a day-level gate (uses prior-day VIX "
-            "close). When this trips, the bot SHOULD reject every entry.",
+            "close globally). When this trips, the bot SHOULD reject every "
+            "entry across every ticker.",
     ),
     Rule(
-        name="range_floor",
-        matcher={"categories__contains": "range_compression"},
-        expect={"max_entries": 0},
-        severity="INFO",
-        why="SPY OR-range below 0.4%. Each ticker is gated on its own OR "
-            "range (ORB_RANGE_MIN_PCT=0.8); a fire on AAPL with a 1%+ range "
-            "is legal even on a tight-SPY day.",
+        name="no_carry_over",
+        matcher={},
+        expect={"open_at_eod": 0},
+        severity="ERROR",
+        why="The EOD flush at 15:57 ET must close all positions; carryover "
+            "is a SEV-1 invariant violation regardless of the day's regime.",
     ),
-    Rule(
-        name="range_ceiling",
-        matcher={"categories__contains": "range_expansion"},
-        expect={"max_entries": 0},
-        severity="INFO",
-        why="SPY OR-range above 1.6%. Per-ticker caveat as range_floor.",
-    ),
+
+    # ---- INFO-only operator pointers (not auto-fail) ----
     Rule(
         name="halt_safety",
         matcher={"categories__contains": "halt_present"},
@@ -155,14 +183,6 @@ DEFAULT_RULES: List[Rule] = [
         severity="INFO",
         why="A trading halt on any RTH bar; expect at most 1 entry "
             "(volume=0 should defeat the v10 admission filters).",
-    ),
-    Rule(
-        name="no_carry_over",
-        matcher={},  # every day
-        expect={"open_at_eod": 0},
-        severity="ERROR",
-        why="The EOD flush at 15:57 ET must close all positions; carryover "
-            "is a SEV-1 invariant violation regardless of the day's regime.",
     ),
     # alpaca_order_count_matches_entries was removed: the simulator's
     # runner.py calls live_runtime.check_entry() directly to test the
@@ -237,11 +257,29 @@ def _evaluate_expect(expect: Dict[str, Any], ctx: Dict[str, Any]):
             if ctx["open_at_eod"] != expected:
                 return False, f"expected {expected} positions open at EOD, got {ctx['open_at_eod']}"
         elif key == "alpaca_orders_within_one_of_entries":
-            # entries + exits should roughly equal order count.
             entries = ctx["n_entries"]
             orders = ctx["alpaca_orders"]
             if entries > 0 and orders == 0:
                 return False, f"saw {entries} entries but 0 broker orders"
+        # ----- per-ticker bot-invariant assertions -----
+        elif key == "max_entry_abs_gap_pct":
+            if ctx["max_entry_abs_gap_pct"] > expected:
+                return False, (
+                    f"a firing ticker gapped {ctx['max_entry_abs_gap_pct']:.2f}% "
+                    f"(threshold {expected}%); ORB_SKIP_GAP_ABOVE_PCT did not block"
+                )
+        elif key == "min_entry_or_range_pct":
+            if 0 < ctx["min_entry_or_range_pct"] < expected:
+                return False, (
+                    f"a firing ticker had OR range {ctx['min_entry_or_range_pct']:.2f}% "
+                    f"(floor {expected}%); ORB_RANGE_MIN_PCT did not block"
+                )
+        elif key == "max_entry_or_range_pct":
+            if ctx["max_entry_or_range_pct"] > expected:
+                return False, (
+                    f"a firing ticker had OR range {ctx['max_entry_or_range_pct']:.2f}% "
+                    f"(ceiling {expected}%); ORB_RANGE_MAX_PCT did not block"
+                )
         else:
             # Generic compare against ctx (allows future expansion).
             if ctx.get(key) != expected:

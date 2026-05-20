@@ -181,18 +181,19 @@ class SimulatorRunner:
         date = self.scenario["date"]
         universe = self.scenario["universe"]
 
-        # Seed open / PDC for ensure_session_started. Use the first bar's
-        # open for both -- close enough for simulator purposes.
+        # Seed open / PDC for ensure_session_started.
+        # opens[t]  = today's 09:30 open (first bar of `date`)
+        # pdcs[t]   = prior trading day's last bar close (read from the
+        #             previous date directory under corpus_root)
+        # Using bars[0].open for BOTH (a previous bug) zeroes the
+        # per-ticker gap and silently disables ORB_SKIP_GAP_ABOVE_PCT.
         opens = {}
         pdcs = {}
+        prior_date = _previous_corpus_date(date, self._feeder)
         for ticker in universe:
             bars = self._feeder._bars_by_ticker.get(ticker.upper(), [])
-            if bars:
-                opens[ticker] = float(bars[0].get("open", 100.0))
-                pdcs[ticker] = float(bars[0].get("open", 100.0))
-            else:
-                opens[ticker] = 100.0
-                pdcs[ticker] = 100.0
+            opens[ticker] = float(bars[0].get("open", 100.0)) if bars else 100.0
+            pdcs[ticker] = _prior_close_for(prior_date, ticker, opens[ticker])
 
         ok = live_runtime.ensure_session_started(
             date_iso=date,
@@ -283,6 +284,19 @@ class SimulatorRunner:
                         rep.on_warning(f"check_entry({ticker}@{bucket}) raised: {exc}")
                         continue
                     if result and getattr(result, "ok", False):
+                        # Stamp per-ticker context so the expectation
+                        # evaluator can run a *real* per-ticker check
+                        # against the bot's actual gates (not a SPY proxy).
+                        ticker_open = opens.get(ticker, 0.0)
+                        ticker_pdc = pdcs.get(ticker, 0.0)
+                        gap_pct = (
+                            ((ticker_open - ticker_pdc) / ticker_pdc) * 100.0
+                            if ticker_pdc else 0.0
+                        )
+                        or_state = rep._or_states.get(ticker, {})
+                        oh, ol = or_state.get("high", 0.0), or_state.get("low", 0.0)
+                        or_mid = (oh + ol) / 2.0
+                        or_pct = ((oh - ol) / or_mid) * 100.0 if or_mid else 0.0
                         entry = {
                             "ticker": ticker, "side": side,
                             "bucket": bucket,
@@ -291,6 +305,8 @@ class SimulatorRunner:
                             "stop": float(getattr(result, "stop", 0) or 0),
                             "target": float(getattr(result, "target", 0) or 0),
                             "shares": int(getattr(result, "shares", 0) or 0),
+                            "ticker_gap_pct": round(gap_pct, 3),
+                            "ticker_or_range_pct": round(or_pct, 3),
                         }
                         self.state["entries"].append(entry)
                         rep.on_entry(entry)
@@ -376,6 +392,40 @@ def _build_config(live_runtime):
         return live_runtime._build_config_from_env()
     # Older shape -- just call OrbConfig().
     return live_runtime.OrbConfig()
+
+
+def _previous_corpus_date(date: str, feeder) -> Optional[str]:
+    """Walk backward in the on-disk corpus to find the previous trading
+    day. Falls back to None when nothing earlier is on disk."""
+    root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    if not os.path.isdir(root):
+        return None
+    days = sorted(d for d in os.listdir(root)
+                  if len(d) == 10 and d[4] == "-" and d[7] == "-"
+                  and os.path.isdir(os.path.join(root, d)))
+    if date not in days:
+        return None
+    i = days.index(date)
+    return days[i - 1] if i > 0 else None
+
+
+def _prior_close_for(prior_date: Optional[str], ticker: str,
+                     fallback: float) -> float:
+    """Read the prior day's last bar close for `ticker`. Falls back to
+    `fallback` (typically today's open, giving 0% gap) when prior data
+    is unavailable."""
+    if not prior_date:
+        return fallback
+    from simulator.bar_feeder import BarFeeder
+    root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    feeder = BarFeeder.from_corpus(prior_date, [ticker], corpus_root=root)
+    bars = feeder._bars_by_ticker.get(ticker.upper(), [])
+    if not bars:
+        return fallback
+    try:
+        return float(bars[-1].get("close", fallback))
+    except Exception:
+        return fallback
 
 
 def _bucket_str_to_min(s: str) -> int:
