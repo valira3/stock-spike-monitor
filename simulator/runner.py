@@ -181,6 +181,28 @@ class SimulatorRunner:
         # Force in-process state -- no /data volume writes.
         os.environ.setdefault("TG_DATA_ROOT", "/tmp/simulator_data")
         os.makedirs(os.environ["TG_DATA_ROOT"], exist_ok=True)
+        # Pin orb_state persistence inside TG_DATA_ROOT so a stale
+        # ./orb_state_<date>.json in the repo root doesn't poison a
+        # clean run (the bot writes there when PAPER_STATE_PATH unset).
+        _tg_root = os.environ["TG_DATA_ROOT"]
+        os.environ.setdefault("PAPER_STATE_PATH",
+                              os.path.join(_tg_root, "paper_state.json"))
+        os.environ.setdefault("ORB_STATE_PERSIST_PATH",
+                              os.path.join(_tg_root, "orb_state_{date}.json"))
+        # Production env stubs required by trade_genius bootstrap.
+        # The scan_loop driver path imports trade_genius in-process and
+        # the import-time checks (SSM_SMOKE_TEST, FMP_API_KEY, etc.)
+        # must be present BEFORE the import. They're harmless for the
+        # legacy direct-check_entry path too.
+        os.environ.setdefault("SSM_SMOKE_TEST", "1")
+        os.environ.setdefault("FMP_API_KEY", "sim-stub")
+        os.environ.setdefault("TELEGRAM_TOKEN", "000:simstub")
+        os.environ.setdefault("CHAT_ID", "999999999")
+        os.environ.setdefault("DASHBOARD_PASSWORD", "simstub-pass-min8")
+        os.environ.setdefault("VAL_ALPACA_PAPER_KEY", "sim")
+        os.environ.setdefault("VAL_ALPACA_PAPER_SECRET", "sim")
+        os.environ.setdefault("GENE_ALPACA_PAPER_KEY", "sim")
+        os.environ.setdefault("GENE_ALPACA_PAPER_SECRET", "sim")
         # Link the premarket-aware corpus into TG_DATA_ROOT so the bot's
         # default_bar_archive_root() (= $TG_DATA_ROOT/bars) finds the same
         # files our pre-compute scanner used. Symlinks let the bot's
@@ -303,7 +325,15 @@ class SimulatorRunner:
     def run(self) -> Dict[str, Any]:
         self.setup()
         try:
-            self._run_session()
+            # SIMULATOR_USE_SCAN_LOOP=1 routes through the production
+            # engine.scan.scan_loop minute-by-minute (boots trade_genius
+            # in-process; mocks replace alpaca / fmp / yahoo / telegram /
+            # bar fetch). Default 0 still uses the legacy
+            # direct-check_entry path while parity is being validated.
+            if os.environ.get("SIMULATOR_USE_SCAN_LOOP", "0") == "1":
+                self._run_session_via_scan_loop()
+            else:
+                self._run_session()
         finally:
             self.teardown()
         return self.state
@@ -577,6 +607,191 @@ class SimulatorRunner:
                 rep=rep,
             )
 
+    # ---- scan_loop driver (the production code path) -----------------
+
+    def _run_session_via_scan_loop(self) -> None:
+        """Drive trade_genius's engine.scan.scan_loop minute-by-minute.
+
+        Unlike _run_session (which calls orb.live_runtime.check_entry
+        directly and bypasses every production decision around it), this
+        path boots the real trade_genius module in-process and lets the
+        bot's own scan loop run every minute. Mocks at the
+        third-party-service boundary (simulator.mocks.alpaca,
+        simulator.mocks.bar_fetch, urlopen route for FMP/Yahoo/Telegram)
+        keep the bot's external dependencies happy without network.
+
+        Per minute:
+          - SimulatedClock advances by 1 minute (set_et(hh, mm))
+          - engine.scan.scan_loop(_ProdCallbacks()) runs ONE cycle
+        scan_loop handles its own session-start, OR-window builder,
+        admission, broker fanout (per-portfolio executors via the mock
+        Alpaca client), exits, EOD safety net, and the v9.1 EOD reversal
+        addon. The simulator's job here is just to drive minutes.
+
+        Captures entries / exits from the mock-Alpaca order log
+        (scenario_state["alpaca_orders"]) which is the single source of
+        truth for what the bot *actually executed*. The orchestrator
+        scenario_state -> reporter call sites stamp the same fields the
+        legacy path emitted so expectations.evaluate() keeps working.
+        """
+        rep = self.reporter
+        rep.phase("Premarket (boot via scan_loop driver)")
+
+        # Install the bar_fetch interceptor BEFORE importing trade_genius
+        # so the production fetch path reads from the simulator BarFeeder.
+        # The clock and base mocks were already installed in setup().
+        # Note: we import trade_genius lazily HERE (not at module top)
+        # because the clock must be installed before engine.timefmt's
+        # `from datetime import datetime` captures the patched class.
+        date_iso = self.scenario["date"]
+        prior_date = _previous_corpus_date(date_iso, self._feeder)
+
+        def _prior_close_lookup(ticker: str):
+            return _prior_close_for(prior_date, ticker, 0.0) or None
+
+        import trade_genius as tg  # noqa: WPS433
+        from simulator.mocks.bar_fetch import install as _install_bar_fetch
+        bf_orig = _install_bar_fetch(self._feeder, self.state,
+                                     _prior_close_lookup)
+        self._orig["bar_fetch"] = bf_orig
+        rep.line(f"trade_genius booted  BOT_VERSION={tg.BOT_VERSION}")
+        rep.line(f"_ProdCallbacks() resolved  prior_date={prior_date}")
+
+        # Build the production EngineCallbacks instance.
+        cb = tg._ProdCallbacks()
+
+        # Drive scan_loop minute-by-minute. Premarket OR-warmup window
+        # starts at 08:00 ET (production pulls premarket bars to seed the
+        # bar archive). RTH OR window 09:30-09:59. We start the driver at
+        # 09:25 ET so [V79-ORB-RESET] + [V100-SCANNER] both fire on the
+        # first tick before OR opens.
+        import engine.scan as _engine_scan
+        from datetime import datetime, timezone
+
+        PREMARKET_START = 9 * 60 + 25
+        SESSION_END_PLUS = 16 * 60 + 5
+
+        rep.phase(
+            f"scan_loop driver  "
+            f"{_bucket_to_str(PREMARKET_START)} -> "
+            f"{_bucket_to_str(SESSION_END_PLUS)} ET"
+        )
+
+        scan_calls = 0
+        scan_errs = 0
+        for bucket in range(PREMARKET_START, SESSION_END_PLUS):
+            self._clock.set_et(hour=bucket // 60, minute=bucket % 60)
+            try:
+                _engine_scan.scan_loop(cb)
+                scan_calls += 1
+            except Exception as exc:
+                scan_errs += 1
+                if scan_errs <= 3:
+                    rep.on_warning(
+                        f"scan_loop@{_bucket_to_str(bucket)} raised: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+        rep.line(
+            f"scan_loop driver  done  cycles={scan_calls}  errors={scan_errs}"
+        )
+
+        # Capture entries + exits from the mock-Alpaca order log. Each
+        # submit_order goes through MockTradingClient -> apply_fill which
+        # tracks position opens / partial reductions / full closes. We
+        # walk orders chronologically and classify each fill as
+        # entry (opens a position from flat) vs exit (reduces / closes).
+        self._collect_results_from_mock_broker()
+
+    def _collect_results_from_mock_broker(self) -> None:
+        """Walk scenario_state["alpaca_orders"] chronologically and
+        bucket each fill as entry, partial, or exit. Stamps the same
+        shape into self.state["entries"]/["exits"] that the legacy path
+        produces so simulator.expectations + simulator.diff keep working.
+
+        Tracks running per-ticker position so we know whether a fill
+        opens, reduces, or closes.
+        """
+        orders = self.state.get("alpaca_orders") or []
+        pos_qty: Dict[str, int] = {}  # signed: +long, -short
+        pos_avg: Dict[str, float] = {}
+        rep = self.reporter
+        ts_to_bucket = _ts_to_et_bucket
+
+        entries: List[Dict[str, Any]] = []
+        exits: List[Dict[str, Any]] = []
+
+        for ord_ in orders:
+            sym = (ord_.get("symbol") or "").upper()
+            qty = float(ord_.get("qty") or 0)
+            side = (ord_.get("side") or "").lower()  # buy / sell
+            fill = float(ord_.get("filled_avg_price") or 0)
+            iso = ord_.get("submitted_at") or ""
+            bucket = ts_to_bucket(iso)
+
+            cur = pos_qty.get(sym, 0)
+            sign = 1 if side == "buy" else -1
+            new_qty = cur + sign * int(qty)
+
+            opens_new = (cur == 0 and new_qty != 0)
+            flips = (cur != 0 and new_qty != 0 and (cur > 0) != (new_qty > 0))
+            reduces = (cur != 0 and (cur > 0) == (sign < 0) and abs(new_qty) < abs(cur))
+            closes = (cur != 0 and new_qty == 0)
+
+            if opens_new or flips:
+                pos_side = "LONG" if (sign > 0 or (flips and new_qty > 0)) else "SHORT"
+                # Reset avg price to this fill (flips treat opposite-side
+                # leg as a fresh open at this price).
+                pos_avg[sym] = fill
+                entries.append({
+                    "ticker": sym, "side": pos_side, "bucket": bucket,
+                    "price": fill, "shares": int(qty),
+                    "ticker_gap_pct": 0.0,
+                    "ticker_or_range_pct": 1.0,
+                    "_source": "mock_broker_fill",
+                })
+            elif closes or reduces:
+                entry_px = pos_avg.get(sym, fill)
+                # PnL from this leg (long: fill - entry; short: entry - fill).
+                pnl = (fill - entry_px) * float(qty) if cur > 0 else (entry_px - fill) * float(qty)
+                exits.append({
+                    "ticker": sym, "reason": "broker_close",
+                    "bucket": bucket, "price": fill,
+                    "partial": reduces,
+                    "shares": int(qty),
+                    "pnl": float(pnl),
+                    "_source": "mock_broker_fill",
+                })
+
+            pos_qty[sym] = new_qty
+            if new_qty == 0:
+                pos_avg.pop(sym, None)
+
+        # Stamp into state for the expectation evaluator + reporter.
+        # Don't blow away anything the legacy path already wrote (defense
+        # against accidental dual-path runs in the same session).
+        if not self.state.get("entries"):
+            self.state["entries"] = entries
+        else:
+            self.state["entries"].extend(entries)
+        if not self.state.get("exits"):
+            self.state["exits"] = exits
+        else:
+            self.state["exits"].extend(exits)
+
+        # Compute realized P&L from the mock-broker shared state. This
+        # matches what production would have written to the trade ledger.
+        realized = self.state.get("alpaca_realized_pl", {})
+        total_realized = sum(float(v or 0.0) for v in realized.values())
+        self.state["realized_pl_total"] = total_realized
+
+        if rep is not None:
+            rep.line(
+                f"mock-broker fills: orders={len(orders)}  "
+                f"entries={len(entries)}  exits={len(exits)}  "
+                f"realized_pl=${total_realized:+.2f}"
+            )
+
     # ---- helpers ------------------------------------------------------
 
     def _run_eod_reversal_tick(self, *, live_runtime, bucket: int,
@@ -761,6 +976,27 @@ class SimulatorRunner:
 
 
 # ----- module helpers ----------------------------------------------------
+
+
+def _ts_to_et_bucket(iso_ts: str) -> int:
+    """Map an ISO timestamp to ET minutes-since-midnight bucket.
+
+    Used by _collect_results_from_mock_broker to time-stamp mock-Alpaca
+    fills into the simulator's bucket convention. Returns OR_START
+    (09:30) on parse failure -- the bucket is informational only.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    if not iso_ts:
+        return OR_START
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+    except Exception:
+        return OR_START
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    et = dt.astimezone(ZoneInfo("America/New_York"))
+    return et.hour * 60 + et.minute
 
 
 def _fresh_runtime():

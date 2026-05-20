@@ -71,6 +71,17 @@ class _MockBarSet:
 
 
 @dataclass
+class _MockQuote:
+    """Mirrors alpaca.data.models.Quote."""
+    symbol: str
+    ask_price: float = 0.0
+    bid_price: float = 0.0
+    ask_size: int = 0
+    bid_size: int = 0
+    timestamp: Optional[datetime] = None
+
+
+@dataclass
 class _MockPosition:
     symbol: str
     qty: float
@@ -208,12 +219,48 @@ class MockTradingClient:
     def cancel_orders(self) -> List[Any]:
         return []
 
+    def get_orders(self, *args, **kwargs) -> List[Any]:
+        """v6.140 cancel-first calls this to find open orders to cancel
+        before placing the new one. Sim never has hanging open orders
+        (mock fills immediately), so an empty list is always correct."""
+        return []
+
+    def cancel_order_by_id(self, order_id: str) -> None:
+        return None
+
 
 class MockStockHistoricalDataClient:
     """Stand-in for alpaca.data.historical.StockHistoricalDataClient."""
 
     def __init__(self, *args, **kwargs):
         self._state = _SHARED_STATE
+
+    def get_stock_latest_quote(self, request: Any) -> Dict[str, Any]:
+        """Return the latest 1m bar's close as a synthetic latest-quote.
+
+        Production code uses this for the realtime entry-fill price.
+        Schema mirrors alpaca-py: {symbol: Quote(ask_price, bid_price,
+        ...)}. We return ask_price = bid_price = last_close so the
+        bot's quote-driven decisions remain deterministic.
+        """
+        symbols = _attr(request, "symbol_or_symbols", []) or []
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        out: Dict[str, Any] = {}
+        for sym in symbols:
+            px = self._state.last_price(sym.upper()) or 0.0
+            out[sym.upper()] = _MockQuote(
+                symbol=sym.upper(), ask_price=px, bid_price=px,
+                ask_size=100, bid_size=100,
+                timestamp=datetime.now(timezone.utc),
+            )
+        return out
+
+    def get_stock_snapshot(self, request: Any):
+        """Used by the dashboard's chart endpoint; sim never reaches it
+        from scan_loop, but provide a stub so an exception doesn't
+        propagate from an accidental import."""
+        return {}
 
     def get_stock_bars(self, request: Any) -> _MockBarSet:
         """Return bars from the simulator feeder, up to the current
@@ -395,11 +442,43 @@ def _ensure_modules():
     if "alpaca.data.requests" not in sys.modules:
         m = types.ModuleType("alpaca.data.requests")
         m.StockBarsRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        m.StockLatestQuoteRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        m.StockSnapshotRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        m.StockTradesRequest = _SimpleOrderReq  # type: ignore[attr-defined]
         sys.modules["alpaca.data.requests"] = m
+    else:
+        # Module already exists (e.g. real alpaca-py installed); ensure
+        # the request types the bot imports are present (some versions
+        # of alpaca-py don't expose them all at top level).
+        m = sys.modules["alpaca.data.requests"]
+        if not hasattr(m, "StockLatestQuoteRequest"):
+            m.StockLatestQuoteRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        if not hasattr(m, "StockSnapshotRequest"):
+            m.StockSnapshotRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        if not hasattr(m, "StockTradesRequest"):
+            m.StockTradesRequest = _SimpleOrderReq  # type: ignore[attr-defined]
     if "alpaca.data.timeframe" not in sys.modules:
         m = types.ModuleType("alpaca.data.timeframe")
         m.TimeFrame = _TimeFrame  # type: ignore[attr-defined]
         sys.modules["alpaca.data.timeframe"] = m
+    if "alpaca.data.enums" not in sys.modules:
+        m = types.ModuleType("alpaca.data.enums")
+        m.DataFeed = _DataFeed  # type: ignore[attr-defined]
+        sys.modules["alpaca.data.enums"] = m
+    # Trading requests: GetOrdersRequest (used by orb-broker.cancel-first)
+    # and the enums QueryOrderStatus + OrderClass.
+    if "alpaca.trading.requests" in sys.modules:
+        m = sys.modules["alpaca.trading.requests"]
+        if not hasattr(m, "GetOrdersRequest"):
+            m.GetOrdersRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+        if not hasattr(m, "ClosePositionRequest"):
+            m.ClosePositionRequest = _SimpleOrderReq  # type: ignore[attr-defined]
+    if "alpaca.trading.enums" in sys.modules:
+        m = sys.modules["alpaca.trading.enums"]
+        if not hasattr(m, "QueryOrderStatus"):
+            m.QueryOrderStatus = _QueryOrderStatus  # type: ignore[attr-defined]
+        if not hasattr(m, "OrderType"):
+            m.OrderType = _OrderType  # type: ignore[attr-defined]
 
 
 # ----- Simple stand-in request / enum types --------------------------
@@ -441,6 +520,24 @@ class _TimeInForce:
 class _TimeFrame:
     Minute = "1Min"
     Day = "1Day"
+
+
+class _DataFeed:
+    IEX = "iex"
+    SIP = "sip"
+    OTC = "otc"
+
+
+class _QueryOrderStatus:
+    OPEN = "open"
+    CLOSED = "closed"
+    ALL = "all"
+
+
+class _OrderType:
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
 
 
 # ----- helpers --------------------------------------------------------
