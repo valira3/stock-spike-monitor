@@ -1172,8 +1172,20 @@ def run_ticker_day(
                     continue
 
         entry_candle = candles_5m[i + 1]
-        # Entry at next 5-min candle open with adverse slippage.
-        raw_entry = entry_candle.open
+        # Match engine convention: engine.bars.compute_5m_ohlc_and_ema9
+        # drops the newest 5m anchor as "possibly forming", so the live
+        # engine detects the breakout on the 1m tick AFTER the signal
+        # bar's last 1m closes. By that time current_price = close of
+        # the 1m bar at signal_anchor + 5 (the first 1m of the next 5m
+        # candle). Without this match, the backtest fires 1 minute
+        # earlier than production and bakes in the intra-minute spread
+        # of that bar (~9 bps median, p90 ~22 bps on Keystone universe).
+        # Fall back to entry_candle.open if the 1m bar is missing.
+        target_1m_bucket = sig.bucket + 5
+        raw_entry = next(
+            (b.close for b in rth if b.bucket == target_1m_bucket),
+            entry_candle.open,
+        )
         slip_bps = cfg.entry_slippage_bps + (cfg.short_pen_bps if side == "short" else 0)
         slip = raw_entry * slip_bps / 10000.0
         entry_price = raw_entry + slip if side == "long" else raw_entry - slip
