@@ -500,6 +500,18 @@ def ensure_session_started(
         _recover_riskbook_from_held_positions()
     except Exception as _re:
         logger.debug("[V9139-RECOVER] auto-recover failed: %s", _re)
+    # v9.1.142 -- inverse of V9139-RECOVER: prune adapter._open_positions
+    # entries whose ticker is NOT in the source-of-truth book. Catches
+    # the legacy-close -> v10-adapter desync where the bison/chandelier
+    # path closed a position out of tg.positions but never notified v10,
+    # leaving a stale adapter ghost that re-imports via V834-PERSIST on
+    # every redeploy. Same source-of-truth definitions as V9139-RECOVER:
+    #   - main:     tg.positions + tg.short_positions
+    #   - val/gene: executor.positions
+    try:
+        _prune_stale_adapter_positions()
+    except Exception as _pe:
+        logger.debug("[V9142-PRUNE] prune failed: %s", _pe)
     _record_activity(
         kind="session_start",
         detail="date "
@@ -724,6 +736,132 @@ def _recover_riskbook_from_held_positions() -> None:
                 )
             except Exception as _ie:
                 logger.warning("[V9139-RECOVER] failed for %s/%s: %s", pid, ticker, _ie)
+
+
+def _prune_stale_adapter_positions() -> None:
+    """v9.1.142 -- inverse of V9139-RECOVER. Walks adapter._open_positions
+    and removes entries whose ticker is NOT in the source-of-truth book:
+
+      - main:       tg.positions + tg.short_positions (paper book)
+      - val/gene:   executors[pid].positions (broker side)
+
+    When an entry is pruned, the matching RiskBook ticket is released
+    too so `_open_risk` / `_open_notional` stay consistent.
+
+    The 2026-05-20 ORCL incident: today's ORCL was closed at 11:18 ET
+    via the legacy `chandelier_exit` path in `bison_v5`. That path
+    removed ORCL from `tg.positions` but never notified v10's adapter,
+    so `adapter._open_positions` retained the ORCL ticket. Every
+    persistence dump after 11:18 ET captured the stale ORCL; every
+    boot rehydrated it via V834-PERSIST. v9.1.141's adapter-aware
+    V8322 correctly preserved the RiskBook ticket (because the
+    adapter had a matching position) -- but the underlying adapter
+    state was a ghost.
+
+    This helper is the symmetric defense to V9139-RECOVER:
+      - V9139-RECOVER: position in tg.positions but not in adapter
+                       -> inject ticket (catches legacy-OPEN -> v10 gap)
+      - V9142-PRUNE:   position in adapter but not in tg.positions
+                       -> remove ticket (catches legacy-CLOSE -> v10 gap)
+
+    Idempotent: a clean state with no orphans is a no-op (empty log).
+
+    Skips val/gene when the executor is disabled or missing (e.g.
+    ALPACA_SKIP_PORTFOLIOS) -- we can't tell broker-side positions
+    without the executor, so we conservatively leave the adapter
+    state untouched.
+    """
+    if _engine is None or _adapters is None:
+        return
+
+    # Per-pid set of source-of-truth tickers (UPPERCASE).
+    truth: dict[str, set] = {pid: set() for pid in _engine.portfolio_ids}
+
+    # Main: tg.positions (long) + tg.short_positions (short).
+    try:
+        import trade_genius as _tg
+        for ticker in (getattr(_tg, "positions", None) or {}).keys():
+            truth.setdefault("main", set()).add(str(ticker).upper())
+        for ticker in (getattr(_tg, "short_positions", None) or {}).keys():
+            truth.setdefault("main", set()).add(str(ticker).upper())
+    except Exception as _te:
+        logger.debug("[V9142-PRUNE] main truth read failed: %s", _te)
+        # Conservative: skip main rather than prune against an empty set
+        # that would nuke real positions.
+        truth.pop("main", None)
+
+    # Val/Gene: executor.positions.
+    try:
+        from executors.bootstrap import get_executor
+
+        for pid in _engine.portfolio_ids:
+            if pid == "main":
+                continue
+            ex = get_executor(pid)
+            if ex is None:
+                # Executor disabled -- don't prune adapter.
+                truth.pop(pid, None)
+                continue
+            for ticker in (getattr(ex, "positions", None) or {}).keys():
+                truth.setdefault(pid, set()).add(str(ticker).upper())
+    except Exception as _ee:
+        logger.debug("[V9142-PRUNE] executor truth read failed: %s", _ee)
+
+    pruned: dict = {}
+    for pid in list(truth.keys()):
+        adapter = _adapters.get(pid)
+        rb = _engine._risk.get(pid)
+        if adapter is None or rb is None:
+            continue
+        truth_set = truth[pid]
+        try:
+            adapter_tids = list(adapter._open_positions.items())
+        except Exception:
+            continue
+        for tid, pos in adapter_tids:
+            try:
+                ticker = str(getattr(pos, "ticker", "")).upper()
+            except Exception:
+                continue
+            if not ticker:
+                continue
+            if ticker in truth_set:
+                continue
+            # Stale -- remove from adapter + release RiskBook ticket.
+            try:
+                del adapter._open_positions[tid]
+            except KeyError:
+                pass
+            try:
+                # Also clean up ticker -> ticket index if it points at
+                # this tid (avoid clearing a NEW ticket that the engine
+                # may have re-issued for the same ticker).
+                if getattr(adapter, "_ticker_to_ticket", None) is not None:
+                    if adapter._ticker_to_ticket.get(ticker) == tid:
+                        del adapter._ticker_to_ticket[ticker]
+            except Exception:
+                pass
+            try:
+                with rb._lock:
+                    ticket = rb._open_tickets.pop(tid, None)
+                    if ticket is not None:
+                        rb._open_risk -= float(ticket.risk_dollars)
+                        rb._open_notional -= float(ticket.notional)
+                        if rb._open_risk < 0:
+                            rb._open_risk = 0.0
+                        if rb._open_notional < 0:
+                            rb._open_notional = 0.0
+            except Exception as _re:
+                logger.debug("[V9142-PRUNE] ticket release failed %s/%s: %s", pid, tid, _re)
+            pruned.setdefault(pid, []).append(ticker)
+            logger.warning(
+                "[V9142-PRUNE] removed stale adapter position %s/%s tid=%s "
+                "(not in source-of-truth book -- likely legacy-close "
+                "that didn't notify v10)",
+                pid, ticker, tid[:24],
+            )
+    if pruned:
+        logger.warning("[V9142-PRUNE] summary: %s", pruned)
 
 
 # v8.3.4 -- engine state persistence wrappers.

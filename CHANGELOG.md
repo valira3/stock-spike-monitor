@@ -4,6 +4,54 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.142 (2026-05-20) — V9142-PRUNE stale adapter positions
+
+Follow-up to v9.1.141. After v9.1.141 made V8322 position-aware,
+monitor CRIT persisted with `open_count=2` on Main vs
+`len(tg.positions)=1`. Root cause was one layer deeper: today's
+ORCL was closed at 11:18 ET via the **legacy** `chandelier_exit`
+path in `bison_v5`, which removed ORCL from `tg.positions` but
+never notified v10. `adapter._open_positions` retained the stale
+ORCL ticket, every persistence dump captured it, every redeploy
+rehydrated it — and v9.1.141's adapter-aware V8322 then correctly
+preserved the RiskBook ticket (because the adapter still had a
+matching position). Symptom: 2 RiskBook tickets backing 2 adapter
+positions, but 1 of the 2 adapter positions had no corresponding
+paper book entry.
+
+**Fix:** new `_prune_stale_adapter_positions()` helper runs at
+`ensure_session_started` right after V9139-RECOVER. Walks each
+portfolio's `adapter._open_positions` and removes any entry whose
+ticker isn't in the source-of-truth book:
+
+| pid       | source of truth                         |
+| --------- | --------------------------------------- |
+| main      | `tg.positions` + `tg.short_positions`   |
+| val/gene  | `executors[pid].positions`              |
+
+Releases the matching RiskBook ticket too, so `_open_risk` and
+`_open_notional` stay consistent.
+
+Defense pairing:
+- **V9139-RECOVER**: position in tg.positions but not in adapter
+  → inject ticket (legacy-OPEN didn't notify v10)
+- **V9142-PRUNE**:   position in adapter but not in tg.positions
+  → remove ticket (legacy-CLOSE didn't notify v10)
+
+Conservative: when the source-of-truth read fails (e.g. executor
+disabled on Gene, or trade_genius import errors), the pid is
+skipped rather than pruned against an empty set.
+
+**Forensic:** `[V9142-PRUNE]` per-ticker WARNINGs and a summary
+`{pid: [tickers]}` line. Clean state = no log output.
+
+**Tests:** `tests/strategy/test_v9_1_142_prune_stale_adapter.py`
+— 6 cases (main pruned, val pruned by executor, gene skipped
+when executor disabled, no-op on clean state, multi-stale
+multi-pid, RiskBook accounting clamp).
+
+---
+
 ## v9.1.141 (2026-05-20) — V8322 position-aware purge
 
 Follow-up to v9.1.140. After the prefix broaden landed and Railway
