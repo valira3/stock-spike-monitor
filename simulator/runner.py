@@ -83,6 +83,12 @@ _KEYSTONE_DEFAULTS: Dict[str, str] = {
     "ORB_MAX_VWAP_DEV_BPS": "15.0",
     "ORB_MAX_VWAP_DEV_TICKERS": "META,MSFT,AAPL,AMZN,GOOG,AVGO",
     "ORB_POST_TRADE_COOLDOWN_MIN": "10",
+    # R21 / R26 / 1.9x notional -- the post-v9.1 production additions
+    # documented in `tools/orb_broad_sweep.py:148`. These are part of
+    # "full Keystone production env" per memory/broad_universe_winner.md.
+    "ORB_RUNNER_EOD_PREP_ET": "14:00",   # R21: runner-trail prep window
+    "ORB_STALE_FULL_EXIT_ET": "14:30",   # R26: stale-full position exit
+    "ORB_MAX_CONCURRENT_NOTIONAL_MULT": "1.9",  # v9.1.136: 95% Reg T cap
     # v9.1 EOD reversal addon
     "ORB_EOD_REVERSAL_ENABLED": "1",
     "ORB_EOD_UNIVERSE": "ORCL,AAPL,MSFT,AVGO,NFLX,TSLA",
@@ -94,6 +100,24 @@ _KEYSTONE_DEFAULTS: Dict[str, str] = {
     "ORB_EOD_EXIT_ET": "15:56",
     "ORB_EOD_ENTRY_CUTOFF_ET": "15:51",
     "ORB_EOD_FIRE_BROKER": "0",  # simulator never reaches a real broker
+}
+
+
+# Broad-universe winner overrides (per memory/broad_universe_winner.md).
+# Layered ON TOP of Keystone when the broad-universe scanner is active
+# (i.e. data_pm_universe/<date>/ exists and the scanner picks a top-K
+# universe instead of falling back to static-12). Re-baselines three
+# levers around the wider universe's behavior:
+#   - earlier cutoff (10:25): wider universe yields more entries
+#     earlier; after 10:25 the win rate drops
+#   - higher range floor (0.012 from 0.008): the wider universe
+#     includes lower-vol names that need more juice to be worth trading
+#   - wider ATR stop (2.0 from 1.75): wider universe trades wider names
+#     where the tighter stop gets whipsawed
+_BROAD_UNIVERSE_OVERRIDES: Dict[str, str] = {
+    "ORB_TIME_CUTOFF_ET": "10:25",
+    "ORB_RANGE_MIN_PCT": "0.012",
+    "ORB_ATR_STOP_MULT": "2.0",
 }
 
 
@@ -157,18 +181,81 @@ class SimulatorRunner:
         # Force in-process state -- no /data volume writes.
         os.environ.setdefault("TG_DATA_ROOT", "/tmp/simulator_data")
         os.makedirs(os.environ["TG_DATA_ROOT"], exist_ok=True)
+        # Link the premarket-aware corpus into TG_DATA_ROOT so the bot's
+        # default_bar_archive_root() (= $TG_DATA_ROOT/bars) finds the same
+        # files our pre-compute scanner used. Symlinks let the bot's
+        # `_run_dynamic_universe_scanner` reach the same picks the
+        # simulator pre-computed -- so the engine's session start, the
+        # cluster gate, and the simulator's universe all agree.
+        _ensure_data_root_layout(os.environ["TG_DATA_ROOT"])
 
         # 2. Bar feeder.
         date = self.scenario["date"]
-        universe = self.scenario["universe"]
         bars_builder = self.scenario.get("bars")
         if callable(bars_builder):
+            # Synthetic scenario -- ticker list is whatever the builder
+            # produces; respect the scenario's declared universe.
+            universe = self.scenario["universe"]
             bars_map = bars_builder(date)
             self._feeder = BarFeeder.from_synthetic(date, bars_map)
         else:
-            self._feeder = BarFeeder.from_corpus(
-                date, universe, corpus_root=os.environ.get("SIMULATOR_CORPUS_ROOT", "data"),
-            )
+            # Corpus replay -- consult the bot's premarket scanner so the
+            # universe matches the documented broad-universe path (top-K
+            # compression picks + sector-cluster gate). The morning
+            # universe = scanner picks; EOD reversal always uses the r17
+            # fence (ORCL/AAPL/MSFT/AVGO/NFLX/TSLA). Both load into the
+            # same feeder so the runtime sees them all.
+            corpus_root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+            picked_universe, scanner_meta = _try_dynamic_universe(date)
+            self.state["scanner_meta"] = scanner_meta
+            # Apply broad-universe-winner levers ONLY when the scanner
+            # is active for this day; restore Keystone defaults when it
+            # falls back. setdefault would "stick" across days inside a
+            # worker process, so we use direct assignment + a snapshot
+            # of pre-scenario env to restore in teardown().
+            self._env_snapshot = {
+                k: os.environ.get(k) for k in _BROAD_UNIVERSE_OVERRIDES
+            }
+            if picked_universe and os.environ.get(
+                "SIMULATOR_BROAD_UNIVERSE_OVERRIDES", "1"
+            ) != "0":
+                for k, v in _BROAD_UNIVERSE_OVERRIDES.items():
+                    os.environ[k] = v
+            else:
+                # Scanner fallback -- restore Keystone defaults for any
+                # winner-override key the worker might have set on a
+                # previous day.
+                for k in _BROAD_UNIVERSE_OVERRIDES:
+                    keystone_val = _KEYSTONE_DEFAULTS.get(k)
+                    if keystone_val is not None:
+                        os.environ[k] = keystone_val
+                    else:
+                        os.environ.pop(k, None)
+            if picked_universe:
+                # Morning picks + EOD reversal fence (always).
+                eod_fence = os.environ.get(
+                    "ORB_EOD_UNIVERSE", "ORCL,AAPL,MSFT,AVGO,NFLX,TSLA"
+                ).split(",")
+                universe = sorted(set([t.strip().upper() for t in picked_universe]
+                                       + [t.strip().upper() for t in eod_fence
+                                          if t.strip()]))
+                # Premarket bars (with full intraday) live in
+                # data_pm_universe; fall back to the RTH-only `data/`
+                # corpus when a ticker isn't there.
+                self._feeder = BarFeeder.from_corpus(
+                    date, universe,
+                    corpus_root=os.environ.get(
+                        "SIMULATOR_PM_CORPUS_ROOT", "data_pm_universe",
+                    ),
+                )
+            else:
+                universe = self.scenario["universe"]
+                self._feeder = BarFeeder.from_corpus(
+                    date, universe, corpus_root=corpus_root,
+                )
+
+        # Persist the resolved universe so _run_session iterates it.
+        self.scenario["universe"] = list(universe)
 
         # 3. Clock + state.
         self._clock = SimulatedClock.at_et(date=date, hour=9, minute=25)
@@ -696,10 +783,103 @@ def _build_config(live_runtime):
     return live_runtime.OrbConfig()
 
 
+def _ensure_data_root_layout(tg_data_root: str) -> None:
+    """Set up <TG_DATA_ROOT>/bars/ -> data_pm_universe/ and the
+    universe/sectors JSON files via symlink so the bot's internal
+    scanner (called by ensure_session_started) finds the same bars."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pm_root = os.path.join(repo_root,
+                            os.environ.get("SIMULATOR_PM_CORPUS_ROOT",
+                                           "data_pm_universe"))
+    if not os.path.isdir(pm_root):
+        return
+    # bars/ symlink.
+    bars_link = os.path.join(tg_data_root, "bars")
+    if not os.path.exists(bars_link):
+        try:
+            os.symlink(pm_root, bars_link)
+        except FileExistsError:
+            pass
+    # universe/ symlink for sp500.json + sp500_sectors.json.
+    univ_link = os.path.join(tg_data_root, "universe")
+    repo_univ = os.path.join(repo_root, "data", "universe")
+    if not os.path.exists(univ_link) and os.path.isdir(repo_univ):
+        try:
+            os.symlink(repo_univ, univ_link)
+        except FileExistsError:
+            pass
+
+
+def _try_dynamic_universe(date: str) -> tuple:
+    """Run the bot's premarket scanner against the data_pm_universe corpus.
+
+    Returns (picked_tickers, meta_dict). On any failure (scanner disabled,
+    no corpus, etc.) returns ([], {"active": False, "reason": ...}).
+
+    The scanner uses the SAME code path the production engine runs in
+    `_run_dynamic_universe_scanner` -- so the simulator gets the live
+    v10 compression top-K + sector-cluster gate behavior end-to-end.
+    """
+    pm_root = os.environ.get("SIMULATOR_PM_CORPUS_ROOT", "data_pm_universe")
+    if not os.path.isdir(pm_root):
+        return [], {"active": False, "reason": "no_pm_corpus"}
+    if not os.path.isdir(os.path.join(pm_root, date)):
+        return [], {"active": False, "reason": "no_pm_day"}
+
+    # Defaults match the documented v10 champion config (CLAUDE.md +
+    # memory/broad_universe_winner.md):
+    #   signal=compression, top_k=7, min_dollar_volume=$30M,
+    #   cluster_max_sector_pct=60, min_pm_bars=10, lookback 5 bars / 30m.
+    enabled = os.environ.get("ORB_DYNAMIC_UNIVERSE_ENABLED", "1").strip() in ("1", "true", "yes")
+    if not enabled:
+        return [], {"active": False, "reason": "disabled"}
+    try:
+        from pathlib import Path
+        from orb.live_premarket_scanner import compute_universe
+        result = compute_universe(
+            date_str=date,
+            bar_archive_root=Path(pm_root),
+            universe_path=Path("data/universe/sp500.json"),
+            sectors_path=Path("data/universe/sp500_sectors.json"),
+            signal=os.environ.get("ORB_DYNAMIC_UNIVERSE_SIGNAL", "compression"),
+            top_k=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_TOP_K", "7")),
+            min_pm_bars=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_MIN_PM_BARS", "10")),
+            min_dollar_volume=float(
+                os.environ.get("ORB_DYNAMIC_UNIVERSE_MIN_DOLLAR_VOL", "30000000")
+            ),
+            pm_lookback_n=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_PM_LOOKBACK_N", "5")),
+            pm_min_lookback_min=int(os.environ.get("ORB_DYNAMIC_UNIVERSE_PM_MIN_LOOKBACK_MIN", "30")),
+            cluster_max_sector_pct=float(os.environ.get("ORB_CLUSTER_MAX_SECTOR_PCT", "60.0")),
+            enabled=True,
+        )
+        meta = {
+            "active": result.dynamic_universe_active,
+            "cluster_skip": result.cluster_gate_skipped_day,
+            "top_sector": result.cluster_top_sector,
+            "top_sector_pct": result.cluster_max_sector_pct,
+            "fallback": result.fallback_reason or "",
+            "picks": [p.get("ticker") for p in result.picks],
+        }
+        if not result.dynamic_universe_active:
+            return [], meta
+        return list(result.universe), meta
+    except Exception as exc:
+        return [], {"active": False, "reason": f"scanner_error: {exc}"}
+
+
+def _resolve_corpus_root() -> str:
+    """Prefer the premarket-aware corpus (has both PM + RTH bars per
+    day) when present, fall back to the RTH-only `data/` corpus."""
+    pm = os.environ.get("SIMULATOR_PM_CORPUS_ROOT", "data_pm_universe")
+    if os.path.isdir(pm):
+        return pm
+    return os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+
+
 def _previous_corpus_date(date: str, feeder) -> Optional[str]:
     """Walk backward in the on-disk corpus to find the previous trading
     day. Falls back to None when nothing earlier is on disk."""
-    root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    root = _resolve_corpus_root()
     if not os.path.isdir(root):
         return None
     days = sorted(d for d in os.listdir(root)
@@ -719,7 +899,7 @@ def _prior_close_for(prior_date: Optional[str], ticker: str,
     if not prior_date:
         return fallback
     from simulator.bar_feeder import BarFeeder
-    root = os.environ.get("SIMULATOR_CORPUS_ROOT", "data")
+    root = _resolve_corpus_root()
     feeder = BarFeeder.from_corpus(prior_date, [ticker], corpus_root=root)
     bars = feeder._bars_by_ticker.get(ticker.upper(), [])
     if not bars:
