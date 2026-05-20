@@ -496,6 +496,23 @@ class ORBConfig:
     # block re-entry for this many minutes. Symmetric variant of
     # post_loss_cooldown_min. Production v9.1.111+ uses this with value 10.
     # 0 = off.
+
+    # Production legacy gates (added 2026-05-20 to close the 7th
+    # backtest-vs-sim divergence). Both default ON to mirror live behavior.
+    total_exposure_cap_pct: float = 95.0  # broker/orders.py v7.86.0:
+    # block any entry when (open_long_mv + open_short_liab + new_notional)
+    # exceeds this pct of current equity. Cap is per-trade, evaluated at
+    # admission. 0 = disabled. Production default 95.
+    v611_enabled: bool = True  # broker/orders.py V611-AMP regime-B short
+    # amplifier. When True, shorts during [arm, disarm) ET on regime-B days
+    # are scaled by v611_short_scale_mult before the exposure cap. Regime
+    # B is defined by SPY 30-min return (09:30 -> 10:00) in the band
+    # (v611_regime_lower_pct, v611_regime_upper_pct).
+    v611_short_scale_mult: float = 1.5
+    v611_arm_minutes: int = 600   # 10:00 ET, inclusive
+    v611_disarm_minutes: int = 660  # 11:00 ET, exclusive
+    v611_regime_lower_pct: float = -0.50  # ret <= this -> regime A
+    v611_regime_upper_pct: float = -0.15  # ret in (lower, upper) -> regime B
     # R20 afternoon-discipline levers (2026-05-18). Morning ORB positions
     # carried into the afternoon block EOD reversal entries (15:00-15:50)
     # by consuming the equity needed for the 35%-notional EOD legs. These
@@ -712,6 +729,15 @@ class ORBConfig:
             premkt_align_bps=_envf("ORB_PREMKT_ALIGN_BPS", 0.0),
             post_loss_cooldown_min=_envi("ORB_POST_LOSS_COOLDOWN_MIN", 0),
             post_trade_cooldown_min=_envi("ORB_POST_TRADE_COOLDOWN_MIN", 0),
+            total_exposure_cap_pct=_envf("ORB_TOTAL_EXPOSURE_CAP_PCT", 95.0),
+            v611_enabled=_envs("V611_REGIME_B_ENABLED", "1") == "1",
+            v611_short_scale_mult=_envf("V611_REGIME_B_SHORT_SCALE_MULT", 1.5),
+            v611_arm_minutes=_et_to_minutes(
+                _envs("V611_REGIME_B_SHORT_ARM_HHMM_ET", "10:00")),
+            v611_disarm_minutes=_et_to_minutes(
+                _envs("V611_REGIME_B_SHORT_DISARM_HHMM_ET", "11:00")),
+            v611_regime_lower_pct=_envf("V611_REGIME_B_LOWER_PCT", -0.50),
+            v611_regime_upper_pct=_envf("V611_REGIME_B_UPPER_PCT", -0.15),
             # R20 afternoon-discipline levers.
             eod_prep_exit_minutes=(
                 _et_to_minutes(_envs("ORB_EOD_PREP_EXIT_ET", ""))
@@ -2169,6 +2195,32 @@ def run(
             if base > 0:
                 prior_spy_ret_bps[d] = (close - base) / base * 10000.0
 
+    # 2026-05-20 -- V611-AMP regime classifier (matches spy_regime.SpyRegime).
+    # Computes SPY 30-min return (09:30 -> 10:00 close) per date and emits
+    # regime band "B" when -0.50% < ret < -0.15% (default thresholds).
+    # Stored as bool flag per date for fast lookup in the simulate loop.
+    v611_regime_b_today: dict[str, bool] = {}
+    if cfg.v611_enabled:
+        spy_open_close_at = {}  # date -> (open_930_close, close_1000_close)
+        for d in dates:
+            try:
+                bars = load_day_bars(corpus_dir, d, "SPY")
+            except Exception:
+                bars = []
+            if not bars:
+                continue
+            # 09:30 anchor = close of 1m bar at bucket 570 (= 09:30).
+            # 10:00 anchor = close of 1m bar at bucket 600 (= 10:00).
+            b930 = next((b for b in bars if b.bucket == 570), None)
+            b1000 = next((b for b in bars if b.bucket == 600), None)
+            if b930 is None or b1000 is None or b930.close <= 0:
+                continue
+            ret = (b1000.close - b930.close) / b930.close * 100.0
+            # Regime B band: cfg.v611_regime_lower_pct < ret < cfg.v611_regime_upper_pct
+            v611_regime_b_today[d] = (
+                cfg.v611_regime_lower_pct < ret < cfg.v611_regime_upper_pct
+            )
+
     spy_regime_days_skipped = 0
     for date in dates:
         # v22 prior-day SPY regime skip. Apply BEFORE per-ticker work to
@@ -2435,11 +2487,37 @@ def run(
         max_notional = current_account * cfg.max_concurrent_notional_mult
         max_risk_budget = cfg.max_concurrent_risk_dollars
         kill_threshold = -current_account * cfg.daily_loss_kill_pct / 100.0
+        # 2026-05-20 -- production-mirror gates (V611-AMP + total-exposure cap).
+        # The cap is on (open_long_mv + open_short_liab + new_notional) <=
+        # cfg.total_exposure_cap_pct * current_account. 0 = disabled.
+        # `open_notional` already sums long + short notionals (entry_price *
+        # shares) over open trades, so it's directly comparable.
+        exposure_cap = (
+            current_account * cfg.total_exposure_cap_pct / 100.0
+            if cfg.total_exposure_cap_pct > 0 else float("inf")
+        )
+        is_v611_b_day = bool(
+            cfg.v611_enabled and v611_regime_b_today.get(date, False)
+        )
         events = []
         for idx, p in enumerate(candidate_pairs):
             ent_ts = p["entry_ts"]
             ext_ts = p["exit_ts"]
+            # V611-AMP: scale shorts in the [arm, disarm) window on regime-B
+            # days. Apply BEFORE the exposure cap so the cap sees the amped
+            # notional that production's broker would. The amp does NOT
+            # modify shares on the pnl_pair (so per-trade P&L accounting
+            # uses the v10 size); it only affects the notional used by the
+            # cap check at admit time. Production cancels the entry if the
+            # amped notional exceeds the cap, which makes the trade NOT
+            # happen at all. Mirror by storing the amped-notional alongside
+            # the event so the cap check uses it.
             notional = p["entry_price"] * p["shares"]
+            if (is_v611_b_day and str(p["side"]).lower() == "short"
+                    and p.get("entry_ts")):
+                ent_min = int(p["entry_ts"][11:13]) * 60 + int(p["entry_ts"][14:16])
+                if cfg.v611_arm_minutes <= ent_min < cfg.v611_disarm_minutes:
+                    notional = notional * cfg.v611_short_scale_mult
             # Risk-dollars per trade is always written by run_ticker_day
             # (= shares * |entry - stop|). Assert it's present so any
             # future schema drift fails loudly instead of silently
@@ -2521,6 +2599,14 @@ def run(
                         r18_lock_rejects += 1
                         continue
                 if open_notional + notional > max_notional:
+                    rejected_idx.add(idx)
+                    continue
+                # 2026-05-20 -- total-exposure cap (broker/orders.py v7.86.0).
+                # production rejects when (long_mv + short_liab + new_notional)
+                # > cap. `open_notional` here already sums long + short
+                # notionals over open trades, matching the production calc.
+                # `notional` may be V611-AMP scaled (set above).
+                if open_notional + notional > exposure_cap:
                     rejected_idx.add(idx)
                     continue
                 if open_risk + risk > max_risk_budget:
