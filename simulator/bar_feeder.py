@@ -91,32 +91,60 @@ class BarFeeder:
         """Return all bars for `ticker` whose ET bucket <= bucket_min."""
         out = []
         for b in self._bars_by_ticker.get(ticker.upper(), []):
-            try:
-                ts = _parse_ts(b)
-            except Exception:
-                continue
-            bk = ts.hour * 60 + ts.minute
-            if bk <= bucket_min:
+            bk = _bar_bucket(b)
+            if bk is not None and bk <= bucket_min:
                 out.append(b)
         return out
 
     def bar_at(self, ticker: str, bucket_min: int) -> Optional[dict]:
         """Return the single bar whose ET bucket matches bucket_min."""
         for b in self._bars_by_ticker.get(ticker.upper(), []):
-            try:
-                ts = _parse_ts(b)
-            except Exception:
-                continue
-            if ts.hour * 60 + ts.minute == bucket_min:
+            bk = _bar_bucket(b)
+            if bk == bucket_min:
                 return b
         return None
 
 
+def _bar_bucket(bar: dict) -> Optional[int]:
+    """ET minutes-since-midnight. Tries the pre-computed et_bucket
+    field first (much faster); falls back to parsing the timestamp.
+
+    Recognized timestamp field names: ``ts``, ``timestamp_utc``,
+    ``timestamp``, ``t``."""
+    et_bucket = bar.get("et_bucket")
+    if et_bucket is not None:
+        # et_bucket is "HHMM" string ("0930") in the corpus.
+        try:
+            s = str(et_bucket)
+            if len(s) == 4 and s.isdigit():
+                return int(s[:2]) * 60 + int(s[2:])
+            if isinstance(et_bucket, int):
+                return et_bucket
+        except Exception:
+            pass
+    raw = bar.get("ts") or bar.get("timestamp_utc") or bar.get("timestamp") \
+        or bar.get("t") or ""
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, str) and raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    et = dt.astimezone(_NY)
+    return et.hour * 60 + et.minute
+
+
 def _parse_ts(bar: dict) -> datetime:
-    raw = bar.get("timestamp_utc") or bar.get("timestamp") or bar.get("t") or ""
-    if raw.endswith("Z"):
+    """Legacy helper -- kept for back-compat with anything that imports it."""
+    raw = bar.get("ts") or bar.get("timestamp_utc") or bar.get("timestamp") \
+        or bar.get("t") or ""
+    if isinstance(raw, str) and raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
-    dt = datetime.fromisoformat(raw)
+    dt = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(_NY)

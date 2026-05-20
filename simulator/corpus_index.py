@@ -225,12 +225,25 @@ def _load_bars(date: str, ticker: str, root: str) -> List[dict]:
 
 
 def _bar_bucket(bar: dict) -> int:
-    """ET minutes-since-midnight from the bar timestamp."""
-    raw = bar.get("timestamp_utc") or bar.get("timestamp") or ""
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
+    """ET minutes-since-midnight from the bar timestamp or pre-computed
+    et_bucket field (whichever is present)."""
+    et_bucket = bar.get("et_bucket")
+    if et_bucket is not None:
+        try:
+            s = str(et_bucket)
+            if len(s) == 4 and s.isdigit():
+                return int(s[:2]) * 60 + int(s[2:])
+            if isinstance(et_bucket, int):
+                return et_bucket
+        except Exception:
+            pass
+    raw = bar.get("ts") or bar.get("timestamp_utc") or bar.get("timestamp") or ""
+    if not raw:
+        return -1
     try:
-        dt = datetime.fromisoformat(raw)
+        if isinstance(raw, str) and raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
     except Exception:
         return -1
     if dt.tzinfo is None:

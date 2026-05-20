@@ -242,37 +242,67 @@ class SimulatorRunner:
                 _last_phase = "eod"
 
             # Entry window: from OR end to the operator-configured cutoff.
+            # v10 ORB fires when a 5-min close breaks OR boundaries.
+            # We approximate with the 1m close + locally-tracked OR bounds.
             if or_end_bucket <= bucket <= cutoff:
                 for ticker in universe:
                     bar = self._feeder.bar_at(ticker, bucket)
                     if not bar:
                         continue
+                    or_state = rep._or_states.get(ticker)
+                    if not or_state:
+                        continue
+                    or_high = or_state["high"]
+                    or_low = or_state["low"]
+                    close_px = float(bar["close"])
+                    # Detect breakout direction; only call check_entry on
+                    # genuine signals (don't pound the gate every minute).
+                    side = None
+                    if close_px > or_high:
+                        side = "LONG"
+                    elif close_px < or_low:
+                        side = "SHORT"
+                    if side is None:
+                        continue
                     try:
                         result = live_runtime.check_entry(
                             portfolio_id="main",
                             ticker=ticker,
-                            bar_high=float(bar["high"]),
-                            bar_low=float(bar["low"]),
-                            bar_open=float(bar["open"]),
-                            bar_close=float(bar["close"]),
-                            bar_bucket_min=bucket,
+                            side=side,
+                            five_min_close=close_px,
+                            next_open=close_px,
                             equity=100_000.0,
                         )
+                    except TypeError as exc:
+                        # Signature mismatch is a programmer error -- surface
+                        # it as a WARNING so the next session sees it instead
+                        # of silently swallowing every call.
+                        rep.on_warning(f"check_entry signature mismatch: {exc}")
+                        continue
                     except Exception as exc:
-                        self._log(f"check_entry({ticker}@{bucket}) raised: {exc}")
+                        rep.on_warning(f"check_entry({ticker}@{bucket}) raised: {exc}")
                         continue
                     if result and getattr(result, "ok", False):
-                        side = getattr(result, "side", "LONG")
                         entry = {
-                            "ticker": ticker, "side": str(side),
+                            "ticker": ticker, "side": side,
                             "bucket": bucket,
-                            "price": float(getattr(result, "fill_price", 0) or 0),
+                            "price": float(getattr(result, "fill_price",
+                                                   getattr(result, "next_open", close_px)) or close_px),
                             "stop": float(getattr(result, "stop", 0) or 0),
                             "target": float(getattr(result, "target", 0) or 0),
                             "shares": int(getattr(result, "shares", 0) or 0),
                         }
                         self.state["entries"].append(entry)
                         rep.on_entry(entry)
+                    else:
+                        # Optional: surface the rejection reason for the
+                        # first few attempts per ticker so the report tells
+                        # us WHY entries didn't fire on a day they "should".
+                        reason = getattr(result, "reason_no", "") if result else "no_result"
+                        key = f"_seen_reject_{ticker}"
+                        if not self.state.get(key) and reason:
+                            self.state[key] = True
+                            rep.line(f"[{_bucket_to_str(bucket)} ET] check_entry({ticker} {side}) rejected: {reason}")
 
             # Exit check on any open position.
             for ticker in universe:
