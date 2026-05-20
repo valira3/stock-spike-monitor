@@ -156,7 +156,7 @@ def test_alpaca_rejects_zero_qty(tmp_path):
     """Alpaca's real API returns 422 on qty=0. The mock must match so
     the bot's order-submit error path gets exercised."""
     from simulator import SimulatorRunner
-    from simulator.mocks.errors import MockAlpacaAPIError
+    from simulator.mocks.mock_errors import MockAlpacaAPIError
 
     os.environ["TG_DATA_ROOT"] = str(tmp_path)
     runner = SimulatorRunner.from_scenario("golden_orb_long")
@@ -181,7 +181,7 @@ def test_alpaca_rejects_zero_qty(tmp_path):
 def test_alpaca_rejects_missing_position(tmp_path):
     """close_position on a non-existent symbol must raise 404."""
     from simulator import SimulatorRunner
-    from simulator.mocks.errors import MockAlpacaAPIError
+    from simulator.mocks.mock_errors import MockAlpacaAPIError
 
     os.environ["TG_DATA_ROOT"] = str(tmp_path)
     runner = SimulatorRunner.from_scenario("golden_orb_long")
@@ -245,7 +245,7 @@ def test_alpaca_rate_limit_decrements(tmp_path):
     """alpaca_rate_limited=N injects 429 for the first N submit_order
     calls, then succeeds."""
     from simulator import SimulatorRunner
-    from simulator.mocks.errors import MockAlpacaAPIError
+    from simulator.mocks.mock_errors import MockAlpacaAPIError
 
     os.environ["TG_DATA_ROOT"] = str(tmp_path)
     runner = SimulatorRunner.from_scenario("alpaca_rate_limited")

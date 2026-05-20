@@ -1,4 +1,4 @@
-"""simulator.mocks.telegram -- intercept Telegram bot API HTTP calls.
+"""simulator.mocks.mock_telegram -- intercept Telegram bot API HTTP calls.
 
 Production path:
     telegram_io.send_telegram -> urllib.request.urlopen(POST
@@ -20,7 +20,7 @@ from typing import Any
 
 
 def handle(req: Any, scenario_state: dict):
-    from simulator.mocks.errors import telegram_failure, http_error_resp
+    from simulator.mocks.mock_errors import telegram_failure, http_error_resp
     url = _get_url(req)
     path = url.split("api.telegram.org", 1)[-1] if "api.telegram.org" in url else url
     method = path.rsplit("/", 1)[-1].split("?")[0]

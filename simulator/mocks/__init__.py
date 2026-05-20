@@ -27,10 +27,10 @@ import urllib.request
 from typing import Optional
 
 from simulator.bar_feeder import BarFeeder
-from simulator.mocks import alpaca as _alpaca_mock
-from simulator.mocks import fmp as _fmp_mock
-from simulator.mocks import telegram as _telegram_mock
-from simulator.mocks import yahoo as _yahoo_mock
+from simulator.mocks import mock_alpaca as _alpaca_mock
+from simulator.mocks import mock_fmp as _fmp_mock
+from simulator.mocks import mock_telegram as _telegram_mock
+from simulator.mocks import mock_yahoo as _yahoo_mock
 
 
 def install_all(bar_feeder: BarFeeder, scenario_state: dict) -> dict:
@@ -104,7 +104,7 @@ def _railway_noop(req, scenario_state: Optional[dict] = None):
     or an injected error if scenario_state asks for one."""
     import io
     if scenario_state is not None:
-        from simulator.mocks.errors import railway_failure, http_error_resp
+        from simulator.mocks.mock_errors import railway_failure, http_error_resp
         fail = railway_failure(scenario_state)
         if fail is not None:
             http_error_resp(*fail)

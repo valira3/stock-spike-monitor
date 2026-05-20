@@ -1,4 +1,4 @@
-"""simulator.mocks.alpaca -- in-process replacements for alpaca-py clients.
+"""simulator.mocks.mock_alpaca -- in-process replacements for alpaca-py clients.
 
 The bot uses two alpaca-py clients:
 
@@ -142,7 +142,7 @@ class MockTradingClient:
         return list(self._state.positions.values())
 
     def get_open_position(self, symbol: str) -> _MockPosition:
-        from simulator.mocks.errors import MockAlpacaAPIError
+        from simulator.mocks.mock_errors import MockAlpacaAPIError
         symbol = symbol.upper()
         pos = self._state.positions.get(symbol)
         if pos is None:
@@ -151,7 +151,7 @@ class MockTradingClient:
 
     def submit_order(self, order_data: Any) -> _MockOrder:
         # Scenario-injected failure check (rate limit, service down).
-        from simulator.mocks.errors import (
+        from simulator.mocks.mock_errors import (
             alpaca_validate_order,
             alpaca_scenario_failure,
         )
@@ -204,7 +204,7 @@ class MockTradingClient:
         return order
 
     def close_position(self, symbol: str, qty: Optional[float] = None) -> _MockOrder:
-        from simulator.mocks.errors import MockAlpacaAPIError
+        from simulator.mocks.mock_errors import MockAlpacaAPIError
         symbol = symbol.upper()
         pos = self._state.positions.get(symbol)
         if pos is None:

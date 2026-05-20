@@ -1,4 +1,4 @@
-"""simulator.mocks.errors -- documented failure modes the bot must handle.
+"""simulator.mocks.mock_errors -- documented failure modes the bot must handle.
 
 Real services return errors. The mocks should too, so the bot's defensive
 code paths get exercised. Two injection mechanisms:

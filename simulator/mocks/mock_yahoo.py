@@ -1,4 +1,4 @@
-"""simulator.mocks.yahoo -- intercept Yahoo Finance HTTP calls.
+"""simulator.mocks.mock_yahoo -- intercept Yahoo Finance HTTP calls.
 
 The bot's Yahoo endpoint (via urllib.request.urlopen in orb.bar_fetch):
 
@@ -26,7 +26,7 @@ def handle(req: Any, scenario_state: dict, bar_feeder=None):
     path = parsed.path or ""
 
     if "/v8/finance/chart/" in path:
-        from simulator.mocks.errors import yahoo_chart_failure, http_error_resp
+        from simulator.mocks.mock_errors import yahoo_chart_failure, http_error_resp
         sym = path.rsplit("/v8/finance/chart/", 1)[-1].strip().upper()
         clock = scenario_state.get("clock")
         bucket = clock.bucket_min() if clock else (9 * 60 + 30)

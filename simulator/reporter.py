@@ -242,7 +242,16 @@ class ScenarioReporter:
         eod_ok = len(positions) == 0
         eod_mark = "" if eod_ok else "  WARN (should flush at EOD)"
         self._w(f"  Open at EOD:             {len(positions):>4d}{eod_mark}")
-        total_pl = sum(realized.values())
+        # Total realized P&L blends two sources:
+        #  - alpaca_realized_pl: mock-broker fills (Val/Gene executor path)
+        #  - realized_pl_total: trade_log.jsonl P&L (Main legacy paper
+        #    path under SIMULATOR_USE_SCAN_LOOP=1; the runner populates
+        #    this when it walks the bot's own trade ledger).
+        broker_pl = sum(float(v or 0.0) for v in realized.values())
+        runner_pl = float(state.get("realized_pl_total") or 0.0)
+        # Prefer runner_pl when set (it's the more authoritative source);
+        # broker_pl is back-compat for the legacy direct-check_entry path.
+        total_pl = runner_pl if runner_pl else broker_pl
         self._w(f"  Realized P&L:            ${total_pl:>+10.2f}")
         if realized:
             for sym, pl in sorted(realized.items()):

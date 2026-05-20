@@ -1,4 +1,4 @@
-"""simulator.mocks.bar_fetch -- intercept the production 1m bar fetch.
+"""simulator.mocks.mock_bar_fetch -- intercept the production 1m bar fetch.
 
 The bot's bar fetch path lives in ``orb.bar_fetch``:
 

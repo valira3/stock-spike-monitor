@@ -1,4 +1,4 @@
-"""simulator.mocks.fmp -- intercept FMP REST calls.
+"""simulator.mocks.mock_fmp -- intercept FMP REST calls.
 
 The bot's FMP endpoints (via urllib.request.urlopen):
 
@@ -29,7 +29,7 @@ def handle(req: Any, scenario_state: dict):
     parsed = urllib.parse.urlparse(url)
     path = parsed.path or ""
 
-    from simulator.mocks.errors import (
+    from simulator.mocks.mock_errors import (
         fmp_quote_failure, fmp_earnings_failure, http_error_resp,
     )
 

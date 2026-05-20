@@ -287,7 +287,7 @@ class SimulatorRunner:
         self.state["entries"] = []
         self.state["exits"] = []
         self.state["log"] = []
-        # Scenario-injected failure registry (see simulator.mocks.errors).
+        # Scenario-injected failure registry (see simulator.mocks.mock_errors).
         # Copy to mutate-safe dict so each scenario starts from its own
         # baseline (the counters in inject_failures decrement during the run).
         self.state["inject_failures"] = dict(self.scenario.get("inject_failures") or {})
@@ -616,8 +616,8 @@ class SimulatorRunner:
         directly and bypasses every production decision around it), this
         path boots the real trade_genius module in-process and lets the
         bot's own scan loop run every minute. Mocks at the
-        third-party-service boundary (simulator.mocks.alpaca,
-        simulator.mocks.bar_fetch, urlopen route for FMP/Yahoo/Telegram)
+        third-party-service boundary (simulator.mocks.mock_alpaca,
+        simulator.mocks.mock_bar_fetch, urlopen route for FMP/Yahoo/Telegram)
         keep the bot's external dependencies happy without network.
 
         Per minute:
@@ -650,7 +650,7 @@ class SimulatorRunner:
             return _prior_close_for(prior_date, ticker, 0.0) or None
 
         import trade_genius as tg  # noqa: WPS433
-        from simulator.mocks.bar_fetch import install as _install_bar_fetch
+        from simulator.mocks.mock_bar_fetch import install as _install_bar_fetch
         bf_orig = _install_bar_fetch(self._feeder, self.state,
                                      _prior_close_lookup)
         self._orig["bar_fetch"] = bf_orig
@@ -704,23 +704,92 @@ class SimulatorRunner:
         self._collect_results_from_mock_broker()
 
     def _collect_results_from_mock_broker(self) -> None:
-        """Walk scenario_state["alpaca_orders"] chronologically and
-        bucket each fill as entry, partial, or exit. Stamps the same
-        shape into self.state["entries"]/["exits"] that the legacy path
-        produces so simulator.expectations + simulator.diff keep working.
+        """Capture entries/exits the bot actually executed.
 
-        Tracks running per-ticker position so we know whether a fill
-        opens, reduces, or closes.
+        Two sources, in order of authority:
+
+        1. trade_log.jsonl -- the bot's own ledger, written by
+           orb.trade_log.append_trade_closed. Production calls it from
+           inside close_breakout for the Main paper book and from each
+           Val/Gene executor. Every CLOSED leg writes one record with
+           entry_price + exit_price + pnl. This is the SAME file
+           production dashboards read for /trades and the same file
+           the keystone backtester would replay. We treat it as the
+           single source of truth for THE TRADES.
+
+        2. scenario_state["alpaca_orders"] -- the mock-Alpaca order
+           ledger. Captures Val/Gene executor fills (they DO go through
+           our MockTradingClient.submit_order). Main's legacy paper
+           path bypasses this -- it writes positions in-process. So
+           the order log is partial coverage; combine with trade_log
+           for full picture.
+
+        Cross-references both to build self.state["entries"]/["exits"]
+        with the shape simulator.expectations.evaluate() requires.
         """
-        orders = self.state.get("alpaca_orders") or []
-        pos_qty: Dict[str, int] = {}  # signed: +long, -short
-        pos_avg: Dict[str, float] = {}
         rep = self.reporter
-        ts_to_bucket = _ts_to_et_bucket
-
         entries: List[Dict[str, Any]] = []
         exits: List[Dict[str, Any]] = []
 
+        # 1. trade_log.jsonl -- canonical closed-trade source.
+        trade_log_path = os.environ.get(
+            "TRADE_LOG_PATH",
+            os.path.join(os.environ.get("TG_DATA_ROOT", ""), "trade_log.jsonl"),
+        )
+        if trade_log_path and os.path.isfile(trade_log_path):
+            try:
+                with open(trade_log_path, "r") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        # Only records for THIS day.
+                        rec_date = (rec.get("date") or "")[:10]
+                        if rec_date and rec_date != self.scenario["date"]:
+                            continue
+                        ticker = (rec.get("ticker") or "").upper()
+                        side = (rec.get("side") or "").upper()
+                        entry_px = float(rec.get("entry_price") or 0)
+                        exit_px = float(rec.get("exit_price") or 0)
+                        shares = int(rec.get("shares") or 0)
+                        pnl = float(rec.get("pnl") or 0)
+                        entry_time = rec.get("entry_time") or ""
+                        # entry_time format: "HH:MM:SS" (ET)
+                        entry_bucket = _hhmm_to_bucket(entry_time)
+                        entries.append({
+                            "ticker": ticker,
+                            "side": side,
+                            "bucket": entry_bucket,
+                            "price": entry_px,
+                            "shares": shares,
+                            "ticker_gap_pct": 0.0,
+                            "ticker_or_range_pct": 1.0,
+                            "_source": "trade_log",
+                        })
+                        exits.append({
+                            "ticker": ticker,
+                            "reason": rec.get("reason") or "trade_log_close",
+                            "bucket": entry_bucket,
+                            "price": exit_px,
+                            "pnl": pnl,
+                            "_source": "trade_log",
+                        })
+            except Exception as exc:
+                if rep is not None:
+                    rep.on_warning(f"trade_log read raised: {exc}")
+
+        # 2. Walk alpaca_orders for Val/Gene fills (mock broker side).
+        # Skip if trade_log already covered every (ticker, side); the
+        # Val/Gene executors also append to trade_log on close, so this
+        # is defense-in-depth for open-without-close cases.
+        orders = self.state.get("alpaca_orders") or []
+        pos_qty: Dict[str, int] = {}
+        pos_avg: Dict[str, float] = {}
+        ts_to_bucket = _ts_to_et_bucket
         for ord_ in orders:
             sym = (ord_.get("symbol") or "").upper()
             qty = float(ord_.get("qty") or 0)
@@ -779,16 +848,21 @@ class SimulatorRunner:
         else:
             self.state["exits"].extend(exits)
 
-        # Compute realized P&L from the mock-broker shared state. This
-        # matches what production would have written to the trade ledger.
-        realized = self.state.get("alpaca_realized_pl", {})
-        total_realized = sum(float(v or 0.0) for v in realized.values())
+        # Realized P&L: sum the trade_log "pnl" field (the bot's own
+        # ledger), plus the mock-broker's realized_pl for Val/Gene.
+        log_pnl = sum(float(e.get("pnl") or 0.0) for e in exits
+                      if e.get("_source") == "trade_log")
+        broker_pnl = sum(float(v or 0.0)
+                         for v in (self.state.get("alpaca_realized_pl") or {}).values())
+        total_realized = log_pnl + broker_pnl
         self.state["realized_pl_total"] = total_realized
 
         if rep is not None:
             rep.line(
-                f"mock-broker fills: orders={len(orders)}  "
+                f"results captured: orders={len(orders)}  "
                 f"entries={len(entries)}  exits={len(exits)}  "
+                f"trade_log_pnl=${log_pnl:+.2f}  "
+                f"broker_pnl=${broker_pnl:+.2f}  "
                 f"realized_pl=${total_realized:+.2f}"
             )
 
@@ -976,6 +1050,23 @@ class SimulatorRunner:
 
 
 # ----- module helpers ----------------------------------------------------
+
+
+def _hhmm_to_bucket(hhmm: str) -> int:
+    """Map a 'HH:MM' or 'HH:MM:SS' ET string to minutes-since-midnight.
+
+    Returns OR_START on parse failure. Used to bucket trade_log
+    entry_time strings (which the bot stores as ET 'HH:MM:SS').
+    """
+    if not hhmm:
+        return OR_START
+    try:
+        parts = str(hhmm).split(":")
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        return h * 60 + m
+    except Exception:
+        return OR_START
 
 
 def _ts_to_et_bucket(iso_ts: str) -> int:
