@@ -74,6 +74,8 @@ class ScenarioReporter:
     _phase: str = ""
     _phase_lines: List[str] = field(default_factory=list)
     _warnings: List[str] = field(default_factory=list)
+    _audit_trail: List[str] = field(default_factory=list)
+    _audit_in_phase: List[str] = field(default_factory=list)
     _entries: List[dict] = field(default_factory=list)
     _exits: List[dict] = field(default_factory=list)
     _or_states: Dict[str, dict] = field(default_factory=dict)  # per-ticker {high, low, bars_seen}
@@ -122,18 +124,38 @@ class ScenarioReporter:
         if not self._phase:
             return
         self._w(_section_header(self._phase))
-        if not self._phase_lines:
+        if not self._phase_lines and not self._audit_in_phase:
             self._w("  (nothing notable)")
         else:
             for ln in self._phase_lines:
                 self._w("  " + ln)
+            if self._audit_in_phase:
+                if self._phase_lines:
+                    self._w("")
+                self._w("  --- engine forensic trace ---")
+                for ln in self._audit_in_phase:
+                    self._w("  " + ln[:140])
         self._w("")
         self._phase_lines = []
+        self._audit_in_phase = []
 
     # ----- structured events -------------------------------------------
 
     def on_warning(self, text: str):
         self._warnings.append(text.strip())
+
+    def on_audit(self, text: str):
+        """Per-bar forensic audit line (e.g. `[V79-ORB-ENTRY] AAPL LONG
+        admit ...`). Accumulates per-phase so each section header shows
+        what the bot decided during that window."""
+        if not text:
+            return
+        self._audit_trail.append(text.strip())
+        # Keep only the latest ~12 lines per phase to avoid drowning
+        # the report with bar-by-bar feed_bar chatter.
+        self._audit_in_phase.append(text.strip())
+        if len(self._audit_in_phase) > 24:
+            self._audit_in_phase = self._audit_in_phase[-24:]
 
     def on_or_bar(self, ticker: str, bucket: int, high: float, low: float):
         """Record OR-window bar progress. Used for the per-ticker OR
@@ -367,22 +389,59 @@ def _wrap(text: str, width: int) -> str:
 # ---- log capture -------------------------------------------------------
 
 
-def install_log_capture(reporter: ScenarioReporter):
-    """Hook the bot's WARNING+ log records into the reporter's warnings
-    list so they surface in the final summary. Returns the handler so
-    the caller can uninstall after the scenario completes."""
+# Forensic-log tags the bot emits at INFO. Routed to the reporter's
+# audit trail so the operator can correlate each decision step
+# against the strategy:
+#
+#   V79-ORB-*    morning ORB engine boot, OR lock, gates, admit/reject
+#   V900-*       per-bar admission filters (mbr, vwap-chase, spy-regime)
+#   V10-FIRE     dispatch to executor
+#   V10-FIRE-OK  fill confirmed
+#   V81-*        partial-at-1R fire + BE-stop move
+#   V910-EOD-*   EOD reversal addon
+#   V611-*       regime-B short amplification
+FORENSIC_PREFIXES = (
+    "[V79-ORB-", "[V900-", "[V10-FIRE", "[V81-", "[V910-EOD-",
+    "[V611-", "[V79-", "[V10-", "[V73", "[V74", "[V90",
+)
+
+
+def install_log_capture(reporter: ScenarioReporter,
+                        capture_audit: bool = True):
+    """Hook the bot's log records into the reporter:
+
+      - WARNING+ go to the reporter's `warnings` list (shown in summary)
+      - INFO records matching one of FORENSIC_PREFIXES go to the
+        per-bucket audit trail (shown inline in each phase) when
+        `capture_audit=True` (the default)
+
+    Returns the handler so the caller can uninstall after the scenario.
+    """
     import logging
 
     class _CaptureHandler(logging.Handler):
         def emit(self, record):
             try:
-                reporter.on_warning(self.format(record))
+                msg = self.format(record)
             except Exception:
-                pass
+                return
+            if record.levelno >= logging.WARNING:
+                reporter.on_warning(msg)
+                return
+            if not capture_audit:
+                return
+            for pfx in FORENSIC_PREFIXES:
+                if pfx in msg:
+                    reporter.on_audit(msg)
+                    return
 
-    h = _CaptureHandler(level=logging.WARNING)
+    h = _CaptureHandler(level=logging.INFO if capture_audit else logging.WARNING)
     h.setFormatter(logging.Formatter("%(message)s"))
-    logging.getLogger().addHandler(h)
+    root = logging.getLogger()
+    root.addHandler(h)
+    if capture_audit and root.level > logging.INFO:
+        h._prev_root_level = root.level  # type: ignore[attr-defined]
+        root.setLevel(logging.INFO)
     return h
 
 

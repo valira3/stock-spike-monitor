@@ -128,7 +128,9 @@ class SimulatorRunner:
         # 4. Mocks.
         self._orig = install_all(self._feeder, self.state)
 
-        # 5. Reporter + log capture.
+        # 5. Reporter + log capture. Capture the forensic audit trail
+        # only when NOT in quiet mode (e.g. batch runs); in quiet mode
+        # the audit lines balloon the output across hundreds of days.
         if self.reporter is None:
             self.reporter = ScenarioReporter(
                 name=self.scenario["name"],
@@ -139,7 +141,9 @@ class SimulatorRunner:
                 verbose=self.verbose,
             )
         self.reporter.header(self.scenario.get("config_overrides", {}))
-        self._log_handler = install_log_capture(self.reporter)
+        self._log_handler = install_log_capture(
+            self.reporter, capture_audit=not self.quiet,
+        )
 
     def teardown(self) -> None:
         uninstall_log_capture(self._log_handler)
@@ -297,19 +301,33 @@ class SimulatorRunner:
                         oh, ol = or_state.get("high", 0.0), or_state.get("low", 0.0)
                         or_mid = (oh + ol) / 2.0
                         or_pct = ((oh - ol) / or_mid) * 100.0 if or_mid else 0.0
+                        fill_px = float(
+                            getattr(result, "fill_price",
+                                    getattr(result, "next_open", close_px)) or close_px
+                        )
+                        n_shares = int(getattr(result, "shares", 0) or 0)
                         entry = {
                             "ticker": ticker, "side": side,
                             "bucket": bucket,
-                            "price": float(getattr(result, "fill_price",
-                                                   getattr(result, "next_open", close_px)) or close_px),
+                            "price": fill_px,
                             "stop": float(getattr(result, "stop", 0) or 0),
                             "target": float(getattr(result, "target", 0) or 0),
-                            "shares": int(getattr(result, "shares", 0) or 0),
+                            "shares": n_shares,
                             "ticker_gap_pct": round(gap_pct, 3),
                             "ticker_or_range_pct": round(or_pct, 3),
                         }
                         self.state["entries"].append(entry)
                         rep.on_entry(entry)
+                        # v10.1: dispatch a mock-Alpaca order so the mock
+                        # broker tracks the position + realized P&L. The
+                        # mock fills immediately at the limit price; the
+                        # admission's `fill_price` becomes the cost basis.
+                        self._dispatch_mock_order(
+                            ticker=ticker,
+                            side="buy" if side == "LONG" else "sell",
+                            qty=n_shares,
+                            limit_price=fill_px,
+                        )
                     else:
                         # Optional: surface the rejection reason for the
                         # first few attempts per ticker so the report tells
@@ -336,6 +354,27 @@ class SimulatorRunner:
                     )
                 except Exception:
                     continue
+                # Partial-at-1R fire: half-close, position stays open.
+                if exit_res and getattr(exit_res, "partial", False):
+                    p_shares = int(getattr(exit_res, "partial_shares", 0) or 0)
+                    p_price = float(getattr(exit_res, "partial_price", 0) or 0)
+                    if p_shares > 0 and p_price > 0:
+                        # Determine the closing side from the existing
+                        # mock-broker position (opposite to entry side).
+                        pos = self.state.get("alpaca_positions", {}).get(ticker.upper())
+                        side_close = "sell" if (pos and pos.side == "long") else "buy"
+                        self._dispatch_mock_order(
+                            ticker=ticker,
+                            side=side_close,
+                            qty=p_shares,
+                            limit_price=p_price,
+                        )
+                        rep.on_exit({
+                            "ticker": ticker, "reason": "partial_1R",
+                            "bucket": bucket, "price": p_price,
+                            "partial": True, "shares": p_shares,
+                        })
+
                 if exit_res and getattr(exit_res, "exit", False):
                     exit_evt = {
                         "ticker": ticker, "reason": exit_res.reason,
@@ -344,8 +383,41 @@ class SimulatorRunner:
                     }
                     self.state["exits"].append(exit_evt)
                     rep.on_exit(exit_evt)
+                    # Close the full remaining position on the mock book.
+                    self._dispatch_mock_close(ticker, exit_evt["price"])
 
     # ---- helpers ------------------------------------------------------
+
+    def _dispatch_mock_order(self, *, ticker: str, side: str, qty: int,
+                              limit_price: float) -> None:
+        """Submit a mock-Alpaca order to track the fill in the in-process
+        broker book. Used right after a v10 admission so realized P&L
+        accrues on the mock side."""
+        if qty <= 0 or limit_price <= 0:
+            return
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import LimitOrderRequest
+            client = TradingClient("sim", "sim", paper=True)
+            req = LimitOrderRequest(
+                symbol=ticker, qty=qty, side=side,
+                type="limit", limit_price=limit_price,
+            )
+            client.submit_order(req)
+        except Exception as exc:
+            if self.reporter is not None:
+                self.reporter.on_warning(f"mock-Alpaca order failed: {exc}")
+
+    def _dispatch_mock_close(self, ticker: str, fallback_price: float) -> None:
+        """Close any remaining mock-Alpaca position for `ticker` at the
+        current bar's price (set via the simulator clock)."""
+        try:
+            from alpaca.trading.client import TradingClient
+            client = TradingClient("sim", "sim", paper=True)
+            client.close_position(ticker)
+        except Exception as exc:
+            if self.reporter is not None:
+                self.reporter.on_warning(f"mock-Alpaca close failed: {exc}")
 
     def _feed_minute(self, live_runtime, universe, bucket):
         for ticker in universe:
