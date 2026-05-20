@@ -126,3 +126,121 @@ def test_atr_stop_silent_when_bot_flat():
     checks = checks_market_validation(raw, md)
     warns = [c for c in checks if c.name == "atr_stop" and c.status == "WARN"]
     assert not warns, f"atr_stop must be silent when bot is flat: {warns}"
+
+
+# ---------------------------------------------------------------------- #
+# v9.1.x hotfix (2026-05-20): /api/state.positions can be a LIST of dicts,
+# not just a dict. Earlier production traffic returned a dict; production
+# now returns a list when non-empty. Previous patch crashed with
+# `'list' object has no attribute 'keys'`.
+# ---------------------------------------------------------------------- #
+
+
+def _raw_list_shape(trade_rows, *, main_long_list=None, main_short_list=None):
+    """Build /api/state with positions as a LIST of dicts (production shape)."""
+    return {
+        "/api/state": {
+            "positions": main_long_list or [],
+            "short_positions": main_short_list or [],
+        },
+        "/api/executor/val": {"positions": []},
+        "/api/executor/gene": {"positions": []},
+        "/api/trade_log?limit=5000": {"rows": trade_rows},
+    }
+
+
+def test_atr_stop_handles_main_positions_as_list_of_dicts():
+    """Production /api/state.positions = [{"ticker":"NVDA","side":"LONG",...}]
+    must not crash. Verified after 2026-05-20 monitor crash where the prior
+    `.keys()` patch raised AttributeError on the live shape."""
+    rows = [_row("NVDA", "LONG", entry=224.71, stop=223.59)]
+    raw = _raw_list_shape(
+        rows,
+        main_long_list=[
+            {"ticker": "NVDA", "side": "LONG", "shares": 343, "entry": 224.71}
+        ],
+    )
+    md = _market_data({"NVDA": _ticker_bars(base=224.0, step=1.0)})
+    # Must not raise.
+    checks = checks_market_validation(raw, md)
+    atr_checks = [c for c in checks if c.name == "atr_stop"]
+    assert atr_checks, "atr_stop check should run for NVDA open position via list shape"
+
+
+def test_atr_stop_handles_short_positions_as_none():
+    """short_positions=None (no shorts open) must not crash."""
+    rows = [_row("AAPL", "LONG", entry=200.0, stop=199.95)]
+    raw = {
+        "/api/state": {
+            "positions": [{"ticker": "AAPL", "side": "LONG"}],
+            "short_positions": None,  # production has been observed as null
+        },
+        "/api/executor/val": {"positions": []},
+        "/api/executor/gene": {"positions": []},
+        "/api/trade_log?limit=5000": {"rows": rows},
+    }
+    md = _market_data({"AAPL": _ticker_bars(base=200.0, step=2.0)})
+    # Must not raise.
+    checks = checks_market_validation(raw, md)
+    atr_checks = [c for c in checks if c.name == "atr_stop"]
+    assert atr_checks, "atr_stop should run when short_positions is None"
+
+
+# ---------------------------------------------------------------------- #
+# v9.1.139: risk_sizing must also skip CLOSED historical positions.
+# Same pattern as atr_stop (v9.1.136 + above hotfix). Triggered by the
+# 2026-05-20 ORCL $96 incident where the closed trade kept firing the
+# WARN every 5 min for hours.
+# ---------------------------------------------------------------------- #
+
+
+def _row_with_shares(ticker, side, entry, stop, shares, *, entry_time="10:11:00"):
+    """Build a trade_log row with `shares` so risk_sizing has data."""
+    r = _row(ticker, side, entry, stop, entry_time=entry_time)
+    r["shares"] = shares
+    return r
+
+
+def test_risk_sizing_skips_closed_position():
+    """The 2026-05-20 ORCL case: $96 risk on a closed entry row.
+    Must NOT fire WARN (position not in currently_open)."""
+    from tools.system_check_bot import checks_trade_log
+    rows = [_row_with_shares("ORCL", "LONG", entry=181.81, stop=180.91, shares=106)]
+    raw = _raw_list_shape(rows)  # nothing open
+    checks = checks_trade_log(raw)
+    warns = [c for c in checks if c.name == "risk_sizing" and c.status == "WARN"]
+    assert not warns, f"risk_sizing must skip closed positions: {warns}"
+
+
+def test_risk_sizing_fires_for_open_position():
+    """Position still open => check runs."""
+    from tools.system_check_bot import checks_trade_log
+    rows = [_row_with_shares("NVDA", "LONG", entry=224.71, stop=223.59, shares=343)]
+    raw = _raw_list_shape(
+        rows,
+        main_long_list=[
+            {"ticker": "NVDA", "side": "LONG", "shares": 343, "entry": 224.71}
+        ],
+    )
+    checks = checks_trade_log(raw)
+    risk_check = [c for c in checks if c.name == "risk_sizing"]
+    assert risk_check, "risk_sizing should run for currently-open NVDA"
+    # NVDA risk = (224.71 - 223.59) * 343 = $384.16 → within band → OK
+    assert risk_check[0].status == "OK"
+
+
+def test_risk_sizing_warns_for_open_oversized():
+    """If currently-open position is oversized, WARN should fire."""
+    from tools.system_check_bot import checks_trade_log
+    rows = [_row_with_shares("TSLA", "SHORT", entry=400.0, stop=420.0, shares=200)]
+    raw = _raw_list_shape(
+        rows,
+        main_short_list=[
+            {"ticker": "TSLA", "side": "SHORT", "shares": 200, "entry": 400.0}
+        ],
+    )
+    checks = checks_trade_log(raw)
+    warns = [c for c in checks if c.name == "risk_sizing" and c.status == "WARN"]
+    # risk = (420-400) * 200 = $4000 → oversized.
+    assert warns, "risk_sizing should warn on oversized open position"
+    assert "oversized" in warns[0].detail

@@ -4,6 +4,62 @@ All notable changes to TradeGenius (formerly Stock Spike Monitor, renamed in v3.
 
 ---
 
+## v9.1.139 (2026-05-20) — monitor + persistence hotfix (4-in-1)
+
+Bundles 4 fixes triggered by today's RTH incidents:
+
+### A. atr_stop list-shape crash (monitor)
+
+`tools/system_check_bot.py:checks_market_validation` assumed
+`/api/state.positions` was always a dict. Production returns it as a
+LIST of dicts when non-empty, crashing the v9.1.136 patch with
+`'list' object has no attribute 'keys'`. Refactored into a shared
+`_build_currently_open_set(raw)` helper that handles dict/list/None.
+
+### B. risk_sizing skip-closed-positions (monitor)
+
+`tools/system_check_bot.py:checks_trade_log:risk_sizing` was firing
+a fresh Telegram WARN every 5 min on CLOSED historical trades (today
+the Main ORCL entry had risk=$96, position closed 11:18 ET, alert
+spammed for hours). Filter by `currently_open` — same pattern as
+v9.1.136 atr_stop. Closed trades silently drop out of the warning
+surface.
+
+### C. Synchronous persistence dump on admit (engine)
+
+`orb/live_runtime.py:persist_engine_state(force=False)` added a
+`force=True` parameter that bypasses the throttle window. Wired into
+`engine/scan.py:_orb_long_entry` and `_orb_short_entry` so EVERY
+successful admit (Main + Val + Gene) flushes the RiskBook ticket to
+disk before the next potential restart. Closes the 2026-05-20 NVDA
+window where a Railway restart between admit + next-throttled-dump
+left the bot in `tg.positions ∋ NVDA` but `RiskBook ∌ NVDA` state.
+
+### D. RiskBook auto-recover from held positions (engine)
+
+`orb/live_runtime.py:_recover_riskbook_from_held_positions()` runs
+at `ensure_session_started` (after rehydrate + V8322 purge + V9161
+env-var orphan inject). Walks `tg.positions` / `tg.short_positions`
+(Main) and `executor.positions` (Val/Gene); for any held position
+not currently tracked in the matching RiskBook, synthesizes a
+`recover-held-&lt;TICKER&gt;-&lt;PID&gt;` ticket. Defense-in-depth
+against any restart-induced state divergence — even if Fix C above
+ever misses a dump, the auto-recovery rebuilds the ticket from
+source of truth (the broker positions themselves).
+
+**Forensic**: `[V9139-PERSIST-ADMIT]` (force-dump), `[V9139-RECOVER]`
+(ticket synthesis from held positions).
+
+**Tests**:
+- `tests/strategy/test_system_check_atr_stop_skip_closed.py` — 9 cases
+  (atr_stop list-shape + risk_sizing skip-closed)
+- `tests/strategy/test_v9_1_139_riskbook_recover.py` — 6 cases
+  (auto-recover synthesis, idempotency, geometry validation,
+  short-side, force=True throttle bypass)
+- All 1070 strategy tests still green.
+
+---
+
 ## v9.1.138 (2026-05-20) — /close on Val/Gene executor bots
 
 v9.1.135 added `/close &lt;TICKER&gt;` to the MAIN bot (`TELEGRAM_TOKEN`)
