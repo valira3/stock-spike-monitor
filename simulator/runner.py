@@ -1347,23 +1347,58 @@ def _previous_corpus_date(date: str, feeder) -> Optional[str]:
     return days[i - 1] if i > 0 else None
 
 
+_PRIOR_CLOSE_CACHE: Dict[tuple, float] = {}
+
+
 def _prior_close_for(prior_date: Optional[str], ticker: str,
                      fallback: float) -> float:
     """Read the prior day's last bar close for `ticker`. Falls back to
     `fallback` (typically today's open, giving 0% gap) when prior data
-    is unavailable."""
+    is unavailable.
+
+    Module-level cache keyed by (prior_date, ticker). Profile showed
+    this function was called 4,367 times per day-worker (once per
+    `mock_bar_fetch` call from inside scan_loop) because the
+    interceptor's `prior_close_lookup` closure forwards to here. Each
+    miss re-parses the prior-day JSONL via BarFeeder.from_corpus -- the
+    single biggest hot path (json.loads 7M calls, ~15s wall). The cache
+    collapses those to one BarFeeder build per (date, ticker)."""
     if not prior_date:
         return fallback
-    from simulator.bar_feeder import BarFeeder
+    key = (prior_date, ticker.upper())
+    cached = _PRIOR_CLOSE_CACHE.get(key)
+    if cached is not None:
+        return cached if cached > 0 else fallback
+    # Fast path: read the LAST line of the prior-day pickle / JSONL
+    # directly instead of parsing the whole file via BarFeeder.from_corpus.
+    # The bar_feeder pickle cache (data_pm_universe/.bt_cache/<date>/
+    # <TICKER>.pkl) is a list[dict] of bar rows in chronological order;
+    # bars[-1].close IS the prior-day's last close.
+    import pickle as _pkl
     root = _resolve_corpus_root()
-    feeder = BarFeeder.from_corpus(prior_date, [ticker], corpus_root=root)
-    bars = feeder._bars_by_ticker.get(ticker.upper(), [])
-    if not bars:
-        return fallback
-    try:
-        return float(bars[-1].get("close", fallback))
-    except Exception:
-        return fallback
+    t_upper = ticker.upper()
+    pkl_path = os.path.join(root, ".bt_cache", prior_date, f"{t_upper}.pkl")
+    v = 0.0
+    if os.path.isfile(pkl_path):
+        try:
+            with open(pkl_path, "rb") as fh:
+                bars = _pkl.load(fh)
+            if isinstance(bars, list) and bars:
+                v = float(bars[-1].get("close", 0.0) or 0.0)
+        except Exception:
+            v = 0.0
+    if v <= 0:
+        # Fall back to the JSONL via BarFeeder (cache miss / fresh corpus).
+        from simulator.bar_feeder import BarFeeder
+        feeder = BarFeeder.from_corpus(prior_date, [ticker], corpus_root=root)
+        bars = feeder._bars_by_ticker.get(t_upper, [])
+        if bars:
+            try:
+                v = float(bars[-1].get("close", 0.0) or 0.0)
+            except Exception:
+                v = 0.0
+    _PRIOR_CLOSE_CACHE[key] = v if v > 0 else 0.0
+    return v if v > 0 else fallback
 
 
 def _bucket_str_to_min(s: str) -> int:

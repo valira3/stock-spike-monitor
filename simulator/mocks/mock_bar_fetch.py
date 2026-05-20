@@ -61,39 +61,73 @@ def install(bar_feeder: BarFeeder, scenario_state: dict,
     from orb import bar_fetch as _orb_bf
     import trade_genius as _tg
 
+    # Per-ticker pre-extracted columns cache + sorted bucket list. Profile
+    # showed each scan_loop tick re-iterates the entire bars list and
+    # re-extracts the same columns; for a 12-ticker day this was ~4M dict
+    # accesses per simulated minute. Cache columns + bucket index once
+    # per ticker; on each fetch, bisect bucket -> slice arrays.
+    import bisect as _bisect
+    _col_cache: dict[str, dict] = {}
+
+    def _columns_for(sym: str) -> Optional[dict]:
+        cached = _col_cache.get(sym)
+        if cached is not None:
+            return cached
+        bars = bar_feeder._bars_by_ticker.get(sym) if bar_feeder else None
+        if not bars:
+            _col_cache[sym] = {}
+            return None
+        buckets: list[int] = []
+        timestamps: list[int] = []
+        opens: list[float] = []
+        highs: list[float] = []
+        lows: list[float] = []
+        closes: list[float] = []
+        volumes: list[int] = []
+        from simulator.bar_feeder import _bar_bucket
+        for b in bars:
+            bk = _bar_bucket(b)
+            if bk is None:
+                continue
+            ts_unix = _row_ts_unix(b)
+            if ts_unix is None:
+                continue
+            buckets.append(bk)
+            timestamps.append(ts_unix)
+            opens.append(float(b.get("open", 0) or 0))
+            highs.append(float(b.get("high", 0) or 0))
+            lows.append(float(b.get("low", 0) or 0))
+            closes.append(float(b.get("close", 0) or 0))
+            volumes.append(int(b.get("total_volume")
+                               or b.get("iex_volume") or 0))
+        cols = {
+            "buckets": buckets,
+            "timestamps": timestamps,
+            "opens": opens,
+            "highs": highs,
+            "lows": lows,
+            "closes": closes,
+            "volumes": volumes,
+        }
+        _col_cache[sym] = cols
+        return cols
+
     def _mk_fetch(source_name: str):
         def _fetch(ticker: str) -> Optional[dict]:
             sym = (ticker or "").strip().upper()
             if not sym:
                 return None
+            cols = _columns_for(sym)
+            if not cols or not cols.get("closes"):
+                return None
             clock = scenario_state.get("clock") if scenario_state else None
-            if clock is None:
-                bucket = 9 * 60 + 30
-            else:
-                bucket = clock.bucket_min()
-            raw = bar_feeder.bars_up_to(sym, bucket) if bar_feeder else []
-            if not raw:
+            bucket = 9 * 60 + 30 if clock is None else clock.bucket_min()
+            # bisect_right(buckets, bucket) gives count of bars with
+            # bar_bucket <= bucket. Equivalent to bars_up_to.
+            n = _bisect.bisect_right(cols["buckets"], bucket)
+            if n == 0:
                 return None
-            timestamps: list[int] = []
-            opens: list[float] = []
-            highs: list[float] = []
-            lows: list[float] = []
-            closes: list[float] = []
-            volumes: list[int] = []
-            for b in raw:
-                ts_unix = _row_ts_unix(b)
-                if ts_unix is None:
-                    continue
-                timestamps.append(ts_unix)
-                opens.append(float(b.get("open", 0) or 0))
-                highs.append(float(b.get("high", 0) or 0))
-                lows.append(float(b.get("low", 0) or 0))
-                closes.append(float(b.get("close", 0) or 0))
-                volumes.append(int(b.get("total_volume")
-                                   or b.get("iex_volume") or 0))
-            if not closes:
-                return None
-            current_price = closes[-1]
+            closes = cols["closes"][:n]
             pdc = 0.0
             try:
                 pdc_val = prior_close_lookup(sym)
@@ -102,13 +136,13 @@ def install(bar_feeder: BarFeeder, scenario_state: dict,
             except Exception:
                 pdc = 0.0
             return {
-                "timestamps": timestamps,
-                "opens": opens,
-                "highs": highs,
-                "lows": lows,
+                "timestamps": cols["timestamps"][:n],
+                "opens": cols["opens"][:n],
+                "highs": cols["highs"][:n],
+                "lows": cols["lows"][:n],
                 "closes": closes,
-                "volumes": volumes,
-                "current_price": current_price,
+                "volumes": cols["volumes"][:n],
+                "current_price": closes[-1],
                 "pdc": pdc,
                 "_simulator_source": source_name,
             }
