@@ -38,6 +38,15 @@ def _summarize_day(state: dict, scenario: dict, elapsed_s: float) -> dict:
     """Strip non-picklable references and project to a stable shape."""
     realized = dict(state.get("alpaca_realized_pl", {}) or {})
     open_at_eod = list((state.get("alpaca_positions", {}) or {}).keys())
+    # P&L: prefer runner's state["realized_pl_total"] when populated
+    # (set by _collect_results_from_mock_broker under
+    # SIMULATOR_USE_SCAN_LOOP=1 from trade_log.jsonl). Falls back to
+    # mock-broker sum for the legacy direct-check_entry path.
+    runner_total = state.get("realized_pl_total")
+    if runner_total is not None:
+        pl_total = float(runner_total)
+    else:
+        pl_total = float(sum(realized.values()))
     return {
         "date": scenario.get("date"),
         "name": scenario.get("name"),
@@ -46,7 +55,7 @@ def _summarize_day(state: dict, scenario: dict, elapsed_s: float) -> dict:
         "exits": [_clone(x) for x in state.get("exits", [])],
         "alpaca_orders": [_clone(o) for o in state.get("alpaca_orders", [])],
         "realized_pl": realized,
-        "realized_pl_total": float(sum(realized.values())),
+        "realized_pl_total": pl_total,
         "open_at_eod": open_at_eod,
         "telegram_count": len(state.get("telegram_sends", []) or []),
         "fmp_count": len(state.get("fmp_calls", []) or []),
@@ -160,9 +169,16 @@ def run_days(
             completed += 1
             _emit_progress(cfg, completed, len(args_list), results[i], t_start)
     else:
-        # multiprocessing pool. imap preserves input order.
+        # multiprocessing pool. imap preserves input order. maxtasksperchild=1
+        # forces a fresh Python process for EACH day so trade_genius
+        # module-level globals (positions, short_positions, _session_open,
+        # _orb_runtime state, the FSM cache, ...) can never leak between
+        # days in the same worker. This is a hard requirement for the
+        # SIMULATOR_USE_SCAN_LOOP=1 path -- the bot was never designed
+        # to be re-booted in-process for a different trading date.
+        # The ~150ms-per-spawn overhead is the price of correctness.
         ctx = _mp.get_context("spawn")
-        with ctx.Pool(processes=workers) as pool:
+        with ctx.Pool(processes=workers, maxtasksperchild=1) as pool:
             for i, res in enumerate(pool.imap(_run_one_day, args_list, chunksize=1)):
                 results[i] = res
                 completed += 1

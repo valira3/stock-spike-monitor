@@ -198,7 +198,11 @@ class SimulatorRunner:
         os.environ.setdefault("FMP_API_KEY", "sim-stub")
         os.environ.setdefault("TELEGRAM_TOKEN", "000:simstub")
         os.environ.setdefault("CHAT_ID", "999999999")
-        os.environ.setdefault("DASHBOARD_PASSWORD", "simstub-pass-min8")
+        # Empty DASHBOARD_PASSWORD disables the in-process Flask server
+        # ("Dashboard disabled: DASHBOARD_PASSWORD must be at least 8
+        # characters" log line). Without this, every worker tries to
+        # bind 0.0.0.0:8080 and races.
+        os.environ.setdefault("DASHBOARD_PASSWORD", "")
         os.environ.setdefault("VAL_ALPACA_PAPER_KEY", "sim")
         os.environ.setdefault("VAL_ALPACA_PAPER_SECRET", "sim")
         os.environ.setdefault("GENE_ALPACA_PAPER_KEY", "sim")

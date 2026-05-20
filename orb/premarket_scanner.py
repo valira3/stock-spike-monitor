@@ -62,8 +62,15 @@ def _load_bars(path: Path) -> list[dict]:
 
 
 def _premarket_bars(bars: list[dict]) -> list[dict]:
-    """Filter to et_bucket strictly < 0930."""
-    return [b for b in bars if b.get("et_bucket", "9999") < RTH_OPEN_BUCKET]
+    """Filter to et_bucket strictly < 0930.
+
+    `or "9999"` (not just default arg) handles rows where et_bucket
+    is explicitly None as well as missing -- `.get(k, default)` returns
+    None when the key is present with value None, which then breaks the
+    `<` comparison against a string. Some corpus rows in
+    data_pm_universe have null et_bucket.
+    """
+    return [b for b in bars if (b.get("et_bucket") or "9999") < RTH_OPEN_BUCKET]
 
 
 def _prior_close(corpus_root: Path, ticker: str, current_date: str, lookback_days: int = 7) -> float | None:
@@ -75,8 +82,10 @@ def _prior_close(corpus_root: Path, ticker: str, current_date: str, lookback_day
         prev = d - timedelta(days=back)
         path = corpus_root / prev.isoformat() / f"{ticker}.jsonl"
         bars = _load_bars(path)
-        # Last bar inside RTH (bucket between 0930 and 1559)
-        rth = [b for b in bars if RTH_OPEN_BUCKET <= b.get("et_bucket", "9999") < "1600"]
+        # Last bar inside RTH (bucket between 0930 and 1559). `or "9999"`
+        # guards against null et_bucket rows in data_pm_universe.
+        rth = [b for b in bars
+               if RTH_OPEN_BUCKET <= (b.get("et_bucket") or "9999") < "1600"]
         if rth:
             return float(rth[-1]["close"])
     return None
