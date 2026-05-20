@@ -984,6 +984,23 @@ def run_ticker_day(
     if not candles_5m:
         return []
 
+    # 2026-05-20 ATR-window fix: the production engine builds its 5m
+    # ATR input from the full fetch_1min_bars payload (04:00 - now ET,
+    # including premarket + OR window bars). Backtest was using only
+    # the post-OR candles_5m series, which on volatile open prints
+    # yielded a much wider ATR -> wider stops -> 2.5R targets placed
+    # further out -> more positions held to EOD instead of taking the
+    # target. Sim's narrower premarket-inclusive ATR was producing
+    # tighter stops and earlier target exits.
+    #
+    # `candles_5m_for_atr` is the premarket+OR+post-OR series. The
+    # `pre_or_5m` prefix is fixed; we'll prepend it to each per-signal
+    # slice taken from candles_5m below so the ATR sees the same data
+    # the engine would have at that timestamp.
+    pre_or_1m = [b for b in bars_1m
+                 if _et_to_minutes("04:00") <= b.bucket < or_end]
+    pre_or_5m = aggregate_5m(pre_or_1m)
+
     blocked_sides = {s.upper() for s in cfg.blocklist.get(ticker, [])}
 
     # v20 premkt-alignment precompute (once per ticker-day). Uses bars in
@@ -1207,7 +1224,7 @@ def run_ticker_day(
         # stops. ATR computed on candles up to and including signal bar.
         stop_buf = entry_price * cfg.stop_buffer_bps / 10000.0
         if cfg.atr_stop_mult > 0:
-            atr = atr_5m(candles_5m[: i + 1], lookback=14)
+            atr = atr_5m(pre_or_5m + candles_5m[: i + 1], lookback=14)
             if atr > 0:
                 if side == "long":
                     stop = entry_price - cfg.atr_stop_mult * atr
@@ -1238,7 +1255,7 @@ def run_ticker_day(
         # computed from prior bars (slice [:i+1] is up to and including the
         # signal bar; entry fires on bar i+1's open).
         if cfg.vol_target_atr_pct > 0 and sig.close > 0:
-            atr_now = atr_5m(candles_5m[: i + 1], lookback=14)
+            atr_now = atr_5m(pre_or_5m + candles_5m[: i + 1], lookback=14)
             atr_pct = atr_now / sig.close * 100.0
             if atr_pct > 0:
                 scale = cfg.vol_target_atr_pct / atr_pct
